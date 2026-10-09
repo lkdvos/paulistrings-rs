@@ -136,6 +136,56 @@ impl<const W: usize> LocalPtm<W> {
         }
     }
 
+    /// The support qubits of `mask` with no entries yet; `None` above [`MAX_LOCAL_SUPPORT`].
+    fn on_support(mask: &[u64; W]) -> Option<Self> {
+        let k: usize = mask.iter().map(|w| w.count_ones() as usize).sum();
+        if k > MAX_LOCAL_SUPPORT {
+            return None;
+        }
+        let mut qubits = [0u32; MAX_LOCAL_SUPPORT];
+        let mut n = 0usize;
+        for (w, &word) in mask.iter().enumerate() {
+            let mut live = word;
+            while live != 0 {
+                qubits[n] = (64 * w) as u32 + live.trailing_zeros();
+                n += 1;
+                live &= live - 1;
+            }
+        }
+        Some(LocalPtm {
+            qubits,
+            k: k as u8,
+            deltas: Vec::new(),
+        })
+    }
+
+    /// One entry per local delta that `table` reaches, ascending.
+    fn push_deltas(&mut self, table: &[[Complex64; LOCAL_DIM]; LOCAL_DIM], hash: &Gf2Hash<W>) {
+        let dim = 1usize << (2 * self.k);
+        let mut has_delta = [false; LOCAL_DIM];
+        for (s, row) in table.iter().enumerate().take(dim) {
+            for (t, &amplitude) in row.iter().enumerate().take(dim) {
+                if amplitude != ZERO {
+                    has_delta[s ^ t] = true;
+                }
+            }
+        }
+        for d in (0..dim).filter(|&d| has_delta[d]) {
+            let mut amplitude = [ZERO; LOCAL_DIM];
+            for (s, slot) in amplitude.iter_mut().enumerate().take(dim) {
+                *slot = table[s][s ^ d];
+            }
+            let (mask_x, mask_z) = self.lift(d as u8);
+            self.deltas.push(DeltaEntry {
+                bucket_delta: hash.bucket_of(&mask_x, &mask_z),
+                local_delta: d as u8,
+                mask_x,
+                mask_z,
+                amplitude,
+            });
+        }
+    }
+
     /// Lift a local delta to full-width XOR masks.
     fn lift(&self, local_delta: u8) -> ([u64; W], [u64; W]) {
         let mut mx = [0u64; W];
@@ -223,31 +273,7 @@ impl<const W: usize> Prepared<W> {
     where
         C: Channel<W> + ?Sized,
     {
-        let mask = channel.support();
-        let k: usize = mask.iter().map(|w| w.count_ones() as usize).sum();
-        if k > MAX_LOCAL_SUPPORT {
-            return None;
-        }
-
-        let mut qubits = [0u32; MAX_LOCAL_SUPPORT];
-        let mut n = 0usize;
-        for (w, &word) in mask.iter().enumerate() {
-            let mut live = word;
-            while live != 0 {
-                let bit = live.trailing_zeros();
-                qubits[n] = (64 * w) as u32 + bit;
-                n += 1;
-                live &= live - 1;
-            }
-        }
-        debug_assert_eq!(n, k);
-
-        let mut ptm = LocalPtm {
-            qubits,
-            k: k as u8,
-            deltas: Vec::new(),
-        };
-
+        let mut ptm = LocalPtm::on_support(&channel.support())?;
         let table = probe_table(channel, &ptm, adjoint, false)?;
 
         // The probe only sees zero background bits; a channel violating the bounded-support contract disagrees on an all-ones background.
@@ -261,35 +287,19 @@ impl<const W: usize> Prepared<W> {
             );
         }
 
-        let dim = 1usize << (2 * k);
-        let mut has_delta = [false; LOCAL_DIM];
-        for s in 0..dim {
-            for t in 0..dim {
-                if table[s][t] != ZERO {
-                    has_delta[s ^ t] = true;
-                }
-            }
-        }
-
-        for d in 0..dim {
-            if !has_delta[d] {
-                continue;
-            }
-            let mut amp = [ZERO; LOCAL_DIM];
-            for s in 0..dim {
-                amp[s] = table[s][s ^ d];
-            }
-            let (mask_x, mask_z) = ptm.lift(d as u8);
-            ptm.deltas.push(DeltaEntry {
-                bucket_delta: hash.bucket_of(&mask_x, &mask_z),
-                local_delta: d as u8,
-                mask_x,
-                mask_z,
-                amplitude: amp,
-            });
-        }
-
+        ptm.push_deltas(&table, hash);
         Some(Prepared::Local(ptm))
+    }
+
+    /// [`Prepared::Local`] from a known local PTM `table[s][t]` on the support `mask`, in ascending-qubit local indices.
+    pub(crate) fn from_transfer_matrix(
+        mask: &[u64; W],
+        table: &[[Complex64; LOCAL_DIM]; LOCAL_DIM],
+        hash: &Gf2Hash<W>,
+    ) -> Self {
+        let mut ptm = LocalPtm::on_support(mask).expect("a PTM support has at most two qubits");
+        ptm.push_deltas(table, hash);
+        Prepared::Local(ptm)
     }
 }
 

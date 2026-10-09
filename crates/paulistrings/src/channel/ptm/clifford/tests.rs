@@ -1,46 +1,30 @@
 use super::*;
-use crate::pauli_string::PauliString;
-use crate::test_support::alloc_bufs;
+use crate::test_support::raw_outputs;
+use num_complex::Complex64;
 
-/// A one-row output buffer — every Clifford has `max_fanout == 1`.
-#[allow(clippy::type_complexity)]
-fn alloc_buf<const W: usize>() -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
-    alloc_bufs::<W>(1)
-}
-
-/// Apply `gate` to `input` with coefficient 1 and return `(output, coeff)`.
-fn apply_1q<const W: usize>(
-    gate: &Clifford1Q,
+/// The one output of `gate` on `input` with coefficient 1.
+fn apply_once<const W: usize>(
+    gate: &PtmChannel,
+    adjoint: bool,
     input: &PauliString<W>,
 ) -> (PauliString<W>, Complex64) {
-    let (mut x, mut z, mut c, mut len) = alloc_buf::<W>();
-    let mut buffer = OutputBuffer::<W> {
-        x: &mut x,
-        z: &mut z,
-        coeff: &mut c,
-        len: &mut len,
-    };
-    gate.apply(&input.x, &input.z, Complex64::new(1.0, 0.0), &mut buffer);
-    assert_eq!(*buffer.len, 1);
-    let out = PauliString::<W> { x: x[0], z: z[0] };
-    (out, c[0])
+    let out = raw_outputs(gate, adjoint, *input, Complex64::new(1.0, 0.0));
+    assert_eq!(out.len(), 1, "a Clifford has fanout 1");
+    out[0]
+}
+
+fn apply_1q<const W: usize>(
+    gate: &PtmChannel,
+    input: &PauliString<W>,
+) -> (PauliString<W>, Complex64) {
+    apply_once(gate, false, input)
 }
 
 fn apply_2q<const W: usize>(
-    gate: &Clifford2Q,
+    gate: &PtmChannel,
     input: &PauliString<W>,
 ) -> (PauliString<W>, Complex64) {
-    let (mut x, mut z, mut c, mut len) = alloc_buf::<W>();
-    let mut buffer = OutputBuffer::<W> {
-        x: &mut x,
-        z: &mut z,
-        coeff: &mut c,
-        len: &mut len,
-    };
-    gate.apply(&input.x, &input.z, Complex64::new(1.0, 0.0), &mut buffer);
-    assert_eq!(*buffer.len, 1);
-    let out = PauliString::<W> { x: x[0], z: z[0] };
-    (out, c[0])
+    apply_once(gate, false, input)
 }
 
 fn pauli_y<const W: usize>(qubit: usize) -> PauliString<W> {
@@ -49,7 +33,7 @@ fn pauli_y<const W: usize>(qubit: usize) -> PauliString<W> {
 
 #[test]
 fn h_on_qubit_0_w1() {
-    let h = Clifford1Q::h(0);
+    let h = PtmChannel::hadamard(0);
     // I → I, +1
     let (out, c) = apply_1q::<1>(&h, &PauliString::<1>::identity());
     assert_eq!(out, PauliString::<1>::identity());
@@ -70,7 +54,7 @@ fn h_on_qubit_0_w1() {
 
 #[test]
 fn s_on_qubit_0_w1() {
-    let s = Clifford1Q::s(0);
+    let s = PtmChannel::phase_gate(0);
     // X → Y, +1
     let (out, c) = apply_1q::<1>(&s, &PauliString::<1>::x(0));
     assert_eq!(out, pauli_y::<1>(0));
@@ -87,7 +71,7 @@ fn s_on_qubit_0_w1() {
 
 #[test]
 fn x_gate_w1() {
-    let g = Clifford1Q::x(0);
+    let g = PtmChannel::pauli_x(0);
     // X → X, Z → -Z, Y → -Y
     let (o, c) = apply_1q::<1>(&g, &PauliString::<1>::x(0));
     assert_eq!(o, PauliString::<1>::x(0));
@@ -102,7 +86,7 @@ fn x_gate_w1() {
 
 #[test]
 fn y_gate_w1() {
-    let g = Clifford1Q::y(0);
+    let g = PtmChannel::pauli_y(0);
     let (o, c) = apply_1q::<1>(&g, &PauliString::<1>::x(0));
     assert_eq!(o, PauliString::<1>::x(0));
     assert_eq!(c, Complex64::new(-1.0, 0.0));
@@ -116,7 +100,7 @@ fn y_gate_w1() {
 
 #[test]
 fn z_gate_w1() {
-    let g = Clifford1Q::z(0);
+    let g = PtmChannel::pauli_z(0);
     let (o, c) = apply_1q::<1>(&g, &PauliString::<1>::x(0));
     assert_eq!(o, PauliString::<1>::x(0));
     assert_eq!(c, Complex64::new(-1.0, 0.0));
@@ -130,7 +114,7 @@ fn z_gate_w1() {
 
 #[test]
 fn h_on_qubit_64_w2_word_boundary() {
-    let h = Clifford1Q::h(64);
+    let h = PtmChannel::hadamard(64);
     // X(64) → Z(64), bits live in word 1.
     let (out, c) = apply_1q::<2>(&h, &PauliString::<2>::x(64));
     assert_eq!(out, PauliString::<2>::z(64));
@@ -147,7 +131,7 @@ fn support_outside_bits_untouched_w2() {
     // Build X(0) · X(70) and apply H(70). Bit 0 must stay X, bit 70 must become Z, and the coefficient stays +1.
     let mut input = PauliString::<2>::x(0);
     let _ = input.mul_assign(&PauliString::<2>::x(70));
-    let h = Clifford1Q::h(70);
+    let h = PtmChannel::hadamard(70);
     let (out, c) = apply_1q::<2>(&h, &input);
 
     // Expected: X(0) · Z(70).
@@ -160,7 +144,7 @@ fn support_outside_bits_untouched_w2() {
 #[test]
 fn h_squared_is_identity() {
     // Apply H twice; the result is the input with phase +1.
-    let h = Clifford1Q::h(0);
+    let h = PtmChannel::hadamard(0);
     for input in [
         PauliString::<1>::identity(),
         PauliString::<1>::x(0),
@@ -182,53 +166,63 @@ fn h_squared_is_identity() {
 #[test]
 fn h_x_y_z_are_self_adjoint() {
     for gate in [
-        Clifford1Q::h(0),
-        Clifford1Q::x(0),
-        Clifford1Q::y(0),
-        Clifford1Q::z(0),
+        PtmChannel::hadamard(0),
+        PtmChannel::pauli_x(0),
+        PtmChannel::pauli_y(0),
+        PtmChannel::pauli_z(0),
     ] {
-        let adjoint = gate.adjoint();
-        assert_eq!(adjoint.out_pauli, gate.out_pauli);
-        assert_eq!(adjoint.phase, gate.phase);
+        assert_eq!(
+            gate.adjoint().transfer_matrix(false),
+            gate.transfer_matrix(false)
+        );
     }
 }
 
-/// `S` is not self-adjoint: its adjoint table differs in the phase pattern, but `(S†)† = S` (involution).
+/// `S` is not self-adjoint, but `(S†)† = S`.
 #[test]
 fn s_adjoint_inverts_table_and_is_involutive() {
-    let s = Clifford1Q::s(0);
-    let s_dag = s.adjoint();
+    let s = PtmChannel::phase_gate(0);
+    let s_dagger = s.adjoint();
     // S†: I→I, X→-Y, Z→Z, Y→X.
-    assert_eq!(s_dag.out_pauli, [0, 3, 2, 1]);
+    let table = s_dagger.transfer_matrix(false);
+    assert_eq!(table[0][0], Complex64::new(1.0, 0.0));
+    assert_eq!(table[1][3], Complex64::new(-1.0, 0.0));
+    assert_eq!(table[2][2], Complex64::new(1.0, 0.0));
+    assert_eq!(table[3][1], Complex64::new(1.0, 0.0));
+    assert_eq!(s_dagger.transfer_matrix(false), s.transfer_matrix(true));
     assert_eq!(
-        s_dag.phase,
-        [Phase::ONE, Phase::MINUS_ONE, Phase::ONE, Phase::ONE]
+        s_dagger.adjoint().transfer_matrix(false),
+        s.transfer_matrix(false)
     );
-    // Involution: (S†)† = S.
-    let s_again = s_dag.adjoint();
-    assert_eq!(s_again.out_pauli, s.out_pauli);
-    assert_eq!(s_again.phase, s.phase);
 }
 
-/// `apply_adjoint` on `S` followed by `apply` on `S` round-trips X.
+/// `apply_adjoint` on `S` undoes `apply` on X.
 #[test]
 fn s_apply_then_apply_adjoint_round_trips() {
-    let s = Clifford1Q::s(0);
+    let s = PtmChannel::phase_gate(0);
     let x_in = PauliString::<1>::x(0);
     let (mid, c1) = apply_1q::<1>(&s, &x_in);
-    // mid = Y. Now apply S†.
-    let (mut bx, mut bz, mut bc, mut len) = alloc_buf::<1>();
-    let mut buffer = OutputBuffer::<1> {
-        x: &mut bx,
-        z: &mut bz,
-        coeff: &mut bc,
-        len: &mut len,
-    };
-    s.apply_adjoint(&mid.x, &mid.z, c1, &mut buffer);
-    assert_eq!(*buffer.len, 1);
-    assert_eq!(bx[0], x_in.x);
-    assert_eq!(bz[0], x_in.z);
-    assert_eq!(bc[0], Complex64::new(1.0, 0.0));
+    let (back, c2) = apply_once::<1>(&s, true, &mid);
+    assert_eq!(back, x_in);
+    assert_eq!(c1 * c2, Complex64::new(1.0, 0.0));
+}
+
+/// CNOT, CZ and SWAP are involutions, so their adjoint is themselves; the old table type silently relied on this.
+#[test]
+fn two_qubit_cliffords_are_self_adjoint() {
+    for gate in [
+        PtmChannel::cnot(1, 4),
+        PtmChannel::cz(4, 1),
+        PtmChannel::swap(1, 4),
+    ] {
+        assert_eq!(gate.transfer_matrix(true), gate.transfer_matrix(false));
+    }
+}
+
+#[test]
+#[should_panic(expected = "PtmChannel::cnot: the two qubits must differ (both are 3)")]
+fn cnot_rejects_equal_qubits() {
+    let _ = PtmChannel::cnot(3, 3);
 }
 
 /// Build `P_a ⊗ P_b` on qubits `(q0, q1)` of a `PauliString<W>` using `mul_assign`, where `pa` and `pb` are 2-bit single-qubit Pauli codes (`I=0, X=1, Z=2, Y=3`).
@@ -252,7 +246,7 @@ fn tensor<const W: usize>(q0: usize, q1: usize, pa: u8, pb: u8) -> PauliString<W
 
 #[test]
 fn cnot_generator_rules_w1() {
-    let cnot = Clifford2Q::cnot(0, 1);
+    let cnot = PtmChannel::cnot(0, 1);
     // X⊗I → X⊗X
     let (o, c) = apply_2q::<1>(&cnot, &tensor::<1>(0, 1, 1, 0));
     assert_eq!(o, tensor::<1>(0, 1, 1, 1));
@@ -329,7 +323,7 @@ fn cnot_reference<const W: usize>(
 
 #[test]
 fn cnot_full_table_w1() {
-    let cnot = Clifford2Q::cnot(0, 1);
+    let cnot = PtmChannel::cnot(0, 1);
     for pa in 0u8..4 {
         for pb in 0u8..4 {
             let input = tensor::<1>(0, 1, pa, pb);
@@ -354,7 +348,7 @@ fn cnot_full_table_w1() {
 #[test]
 fn cnot_word_boundary_w2() {
     // Control on qubit 63 (last bit of word 0), target on qubit 64 (first bit of word 1) — exercises the per-qubit word/bit math independently for each support qubit.
-    let cnot = Clifford2Q::cnot(63, 64);
+    let cnot = PtmChannel::cnot(63, 64);
     // X⊗X on (63, 64) → X⊗I (per CNOT rules: X⊗X → X⊗I).
     let input = tensor::<2>(63, 64, 1, 1);
     let (out, c) = apply_2q::<2>(&cnot, &input);
@@ -372,8 +366,8 @@ fn cnot_word_boundary_w2() {
 #[test]
 fn cz_symmetry_w1() {
     // CZ is symmetric in its qubits.
-    let cz_ab = Clifford2Q::cz(0, 1);
-    let cz_ba = Clifford2Q::cz(1, 0);
+    let cz_ab = PtmChannel::cz(0, 1);
+    let cz_ba = PtmChannel::cz(1, 0);
     for pa in 0u8..4 {
         for pb in 0u8..4 {
             let input = tensor::<1>(0, 1, pa, pb);
@@ -387,7 +381,7 @@ fn cz_symmetry_w1() {
 
 #[test]
 fn cz_generator_rules_w1() {
-    let cz = Clifford2Q::cz(0, 1);
+    let cz = PtmChannel::cz(0, 1);
     // X⊗I → X⊗Z
     let (o, c) = apply_2q::<1>(&cz, &tensor::<1>(0, 1, 1, 0));
     assert_eq!(o, tensor::<1>(0, 1, 1, 2));
@@ -408,7 +402,7 @@ fn cz_generator_rules_w1() {
 
 #[test]
 fn swap_table_w1() {
-    let swap = Clifford2Q::swap(0, 1);
+    let swap = PtmChannel::swap(0, 1);
     // II → II, XI → IX, IY → YI, XZ → ZX
     let (o, c) = apply_2q::<1>(&swap, &tensor::<1>(0, 1, 0, 0));
     assert_eq!(o, tensor::<1>(0, 1, 0, 0));

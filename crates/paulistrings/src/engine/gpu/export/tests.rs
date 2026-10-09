@@ -1,8 +1,7 @@
 use super::premerge::SCAN_LIMIT;
 use super::receive::{chunk_layout, chunk_max, recv_chunks, rows_between};
 use super::*;
-use crate::channel::clifford::Clifford2Q;
-use crate::channel::{Channel, GeneralUnitary2Q};
+use crate::channel::{Channel, PtmChannel};
 use crate::engine::coset::Gf2Span;
 use crate::engine::gpu::layer::GpuLayerOptions;
 use crate::engine::gpu::payload::DeviceBlock;
@@ -19,15 +18,15 @@ fn fixture_channels<const W: usize>() -> Vec<(&'static str, Box<dyn Channel<W>>)
     vec![
         (
             "su4",
-            Box::new(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix())),
+            Box::new(PtmChannel::unitary_2q(0, 1, haar_su4_matrix())),
         ),
-        ("cnot", Box::new(Clifford2Q::cnot(1, 3))),
+        ("cnot", Box::new(PtmChannel::cnot(1, 3))),
         ("zz", Box::new(zz_rotation::<W>(0, 2, 0.3))),
     ]
 }
 
-fn su4<const W: usize>() -> GeneralUnitary2Q {
-    GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix())
+fn su4<const W: usize>() -> PtmChannel {
+    PtmChannel::unitary_2q(0, 1, haar_su4_matrix())
 }
 
 /// Every support pattern of qubits 0 and 1 under each of `base`'s keys, so an SU(4) on `(0, 1)` makes one partner's remote rows collide.
@@ -459,7 +458,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     let hash = crate::pauli_sum::hash::Gf2Hash::<1>::new(nq, 2, 0xCA);
     // The row reads x on qubit 0, so a delta flipping qubit 0's x-bit is remote.
     let rows = PartitionRows::<1>::from_rows(nq, vec![[0b1u64]], vec![[0u64]]);
-    let channel = GeneralUnitary2Q::from_matrix(0, 1, sqrt_swap_matrix());
+    let channel = PtmChannel::unitary_2q(0, 1, sqrt_swap_matrix());
     let prepared = channel.prepare(&hash, false).expect("prepared");
     let Prepared::Local(ptm) = &prepared else {
         unreachable!()

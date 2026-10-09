@@ -235,7 +235,7 @@ order suits its parallelism. This circuit is built entirely from
 `PauliRotation` layers, which merge at most two contributions per output
 key, and two-operand floating-point addition is exactly commutative, so the
 curves above are insensitive to that order. A channel with wider fan-in
-(e.g. `GeneralUnitary2Q`, merging three or more contributions per key) could
+(e.g. a dense `PtmChannel::unitary_2q`, merging three or more contributions per key) could
 show a nonzero, floating-point-tolerance-size shift instead.
 
 # Result

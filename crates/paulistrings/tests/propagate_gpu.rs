@@ -13,9 +13,7 @@ use paulistrings::{
     PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff};
-use paulistrings::{
-    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
+use paulistrings::{Channel, PauliRotation, PtmChannel};
 
 const TOL: f64 = 1e-11;
 
@@ -268,7 +266,7 @@ where
     T: TruncationPolicy<1> + Clone + Into<BuiltinTruncation>,
 {
     let input = rand_sum::<1>(100, 8, 0x55);
-    let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
+    let circuit = one_layer(8, Box::new(PtmChannel::cnot(0, 1)));
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     let r = dev.propagate(&circuit, policy, Direction::Forward);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{what}: {r:?}");
@@ -318,7 +316,7 @@ fn exact_top_n_is_unsupported_above_one_partition() {
     use paulistrings::{PartitionConfig, Placement};
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);
-    let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
+    let circuit = one_layer(8, Box::new(PtmChannel::cnot(0, 1)));
     let config = PartitionConfig {
         placement: Placement::Devices {
             devices: vec![0, 0],
@@ -354,7 +352,7 @@ fn short_fingerprints_still_agree() {
 fn su4_layer<const W: usize>(num_qubits: usize, q0: usize, q1: usize) -> Circuit<W> {
     one_layer(
         num_qubits,
-        Box::new(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())),
+        Box::new(PtmChannel::unitary_2q(q0, q1, haar_su4_matrix())),
     )
 }
 
@@ -475,7 +473,7 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
     let input = rand_sum::<2>(4000, 128, 0xE44);
     let seed = input.hash().seed();
     let input = with_hash(input, Gf2Hash::new(128, 1, seed));
-    let su4 = || GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix());
+    let su4 = || PtmChannel::unitary_2q(2, 3, haar_su4_matrix());
     let mut first = Circuit::<2>::new(128);
     first.push(zz_rotation::<2>(0, 1, 0.3));
     let mut whole = Circuit::<2>::new(128);
@@ -483,11 +481,11 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
     whole.push(su4());
     let mut rest = Circuit::<2>::new(128);
     rest.push(su4());
-    rest.push(Clifford2Q::cnot(7, 90));
+    rest.push(PtmChannel::cnot(7, 90));
     let mut all = Circuit::<2>::new(128);
     all.push(zz_rotation::<2>(0, 1, 0.3));
     all.push(su4());
-    all.push(Clifford2Q::cnot(7, 90));
+    all.push(PtmChannel::cnot(7, 90));
 
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(GpuLayerOptions {
@@ -520,15 +518,12 @@ fn repeated_propagate_on_one_resident_sum() {
     let mut host = rand_sum::<1>(2000, 8, 0x8E9);
     let mut dev = GpuPauliSum::from_host(&host, 0).expect("upload");
     let mut c1 = Circuit::<1>::new(8);
-    c1.push(Depolarizing {
-        support: [3],
-        p: 0.1,
-    });
+    c1.push(PtmChannel::depolarizing(3, 0.1));
     let mut c2 = Circuit::<1>::new(8);
-    c2.push(GeneralUnitary2Q::from_matrix(1, 3, haar_su4_matrix()));
+    c2.push(PtmChannel::unitary_2q(1, 3, haar_su4_matrix()));
     let mut c3 = Circuit::<1>::new(8);
-    c3.push(Clifford2Q::cnot(2, 5));
-    c3.push(Clifford1Q::h(0));
+    c3.push(PtmChannel::cnot(2, 5));
+    c3.push(PtmChannel::hadamard(0));
     for (i, c) in [c1, c2, c3].iter().enumerate() {
         host = propagate(c, host, &KeepAll, Direction::Heisenberg);
         dev.propagate(c, KeepAll, Direction::Heisenberg)
@@ -606,9 +601,9 @@ fn wide_words<const W: usize>(nq: usize, seed: u64) {
     gen.z[W / 2] |= 1 << 7;
     gen.x[W - 2] |= 1 << 60;
     let mut c = Circuit::<W>::new(nq);
-    c.push(Clifford2Q::cnot(3, nq - 100));
+    c.push(PtmChannel::cnot(3, nq - 100));
     c.push(PauliRotation::new(gen, 0.3));
-    c.push(GeneralUnitary2Q::from_matrix(5, nq - 60, haar_su4_matrix()));
+    c.push(PtmChannel::unitary_2q(5, nq - 60, haar_su4_matrix()));
     check(&c, &input, &KeepAll, &format!("W={W}"));
 }
 
@@ -651,11 +646,11 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
         .iter()
         .any(|(_, _, c)| c == num_complex::Complex64::new(0.0, 0.0)));
     let gates: Vec<(&str, Box<dyn Channel<W>>)> = vec![
-        ("h", Box::new(Clifford1Q::h(q0))),
-        ("s", Box::new(Clifford1Q::s(q1))),
-        ("cnot", Box::new(Clifford2Q::cnot(q0, q1))),
-        ("cz", Box::new(Clifford2Q::cz(q0, q1))),
-        ("swap", Box::new(Clifford2Q::swap(q0, q1))),
+        ("h", Box::new(PtmChannel::hadamard(q0))),
+        ("s", Box::new(PtmChannel::phase_gate(q1))),
+        ("cnot", Box::new(PtmChannel::cnot(q0, q1))),
+        ("cz", Box::new(PtmChannel::cz(q0, q1))),
+        ("swap", Box::new(PtmChannel::swap(q0, q1))),
     ];
     let policies: Vec<(&str, BuiltinTruncation)> = vec![
         ("keep", BuiltinTruncation::Keep),
@@ -704,7 +699,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
     };
     let cnot = one_layer(
         nq,
-        Box::new(Clifford2Q::cnot(q0, q1)) as Box<dyn Channel<W>>,
+        Box::new(PtmChannel::cnot(q0, q1)) as Box<dyn Channel<W>>,
     );
     check_with(
         &cnot,
@@ -747,10 +742,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
     );
     let dep = one_layer(
         nq,
-        Box::new(Depolarizing {
-            support: [q0],
-            p: 0.1,
-        }) as Box<dyn Channel<W>>,
+        Box::new(PtmChannel::depolarizing(q0, 0.1)) as Box<dyn Channel<W>>,
     );
     let (_, c) = device_run(&dep, &input, &KeepAll, Direction::Forward, None, &[]);
     assert!(c.rescaled && !c.permuted, "{c:?}");
@@ -783,7 +775,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     };
     let circuit = one_layer(
         128,
-        Box::new(Clifford2Q::cnot(3, 90)) as Box<dyn Channel<2>>,
+        Box::new(PtmChannel::cnot(3, 90)) as Box<dyn Channel<2>>,
     );
     let want = propagate_with(
         &circuit,

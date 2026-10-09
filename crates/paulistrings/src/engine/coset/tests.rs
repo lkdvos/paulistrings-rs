@@ -187,12 +187,12 @@ proptest! {
 /// For a two-qubit channel `rank(h(D))` depends on the hash rows, so one Haar SU(4) gets different coset widths on different supports under one seed.
 #[test]
 fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
-    use crate::channel::{Channel, GeneralUnitary2Q};
+    use crate::channel::{Channel, PtmChannel};
     use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
     use crate::pauli_sum::Gf2Hash;
     use crate::test_support::{haar_su4_matrix, support_delta_rank};
 
-    let channel = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+    let channel = PtmChannel::unitary_2q(0, 1, haar_su4_matrix());
 
     for bits in 0..=9u8 {
         // W = 2: full rank from `bits = 7`, the engine's own floor.
@@ -219,7 +219,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
     // At the default bucket floor the support `(0, 7)` gets 8 members against 16 elsewhere, at both widths.
     let h2 = Gf2Hash::<2>::new(128, 7, DEFAULT_HASH_SEED);
     let h1 = Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED);
-    let deficient = GeneralUnitary2Q::from_matrix(0, 7, haar_su4_matrix());
+    let deficient = PtmChannel::unitary_2q(0, 7, haar_su4_matrix());
     let s2 = Gf2Span::new(
         &Channel::<2>::prepare(&channel, &h2, false)
             .unwrap()

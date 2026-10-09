@@ -1,6 +1,6 @@
 use num_complex::Complex64;
 
-use crate::channel::{support_mask, Channel, Clifford1Q, OutputBuffer};
+use crate::channel::{support_mask, Channel, OutputBuffer, PtmChannel};
 use crate::circuit::Circuit;
 use crate::engine::bucketed::LayerScratch;
 use crate::pauli_string::PauliString;
@@ -51,8 +51,8 @@ fn gate_trace_forward_indices_match_circuit_order() {
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford1Q::s(0));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::phase_gate(0));
 
     let mut scratch = LayerScratch::<1>::new();
     scratch.enable_gate_trace();
@@ -81,8 +81,8 @@ fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford1Q::s(0));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::phase_gate(0));
 
     let mut scratch = LayerScratch::<1>::new();
     scratch.enable_gate_trace();
@@ -108,7 +108,7 @@ fn gate_trace_stays_empty_when_not_enabled() {
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(Clifford1Q::h(0));
+    circuit.push(PtmChannel::hadamard(0));
 
     let mut scratch = LayerScratch::<1>::new();
     let _ = propagate_with(

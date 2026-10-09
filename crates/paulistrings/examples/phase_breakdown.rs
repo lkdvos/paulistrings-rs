@@ -27,11 +27,11 @@ use paulistrings::{
     PauliString, PauliSum, PhaseStats, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{ApproxTopN, CoefficientThreshold, TopN};
-use paulistrings::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::{
     CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum,
     Placement,
 };
+use paulistrings::{PauliRotation, PtmChannel};
 use paulistrings::{ScatterOptions, ScatterRows};
 
 const USAGE: &str = "\
@@ -884,12 +884,12 @@ fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotatio
 }
 
 /// sqrt(SWAP) on `(q0, q1)`, verbatim from `benches/pauli_ops.rs::sqrt_swap`.
-fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
+fn sqrt_swap(q0: usize, q1: usize) -> PtmChannel {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
     let zero = Complex64::new(0.0, 0.0);
-    GeneralUnitary2Q::from_matrix(
+    PtmChannel::unitary_2q(
         q0,
         q1,
         [
@@ -904,8 +904,8 @@ fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
 /// One fixed Haar-random SU(4) block on `(q0, q1)`, the probe's stand-in for the general matrix-gate path.
 ///
 /// Unlike [`sqrt_swap`], a generic SU(4) keeps a dense PTM under repeated application rather than cycling.
-fn haar_su4_block(q0: usize, q1: usize) -> GeneralUnitary2Q {
-    GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
+fn haar_su4_block(q0: usize, q1: usize) -> PtmChannel {
+    PtmChannel::unitary_2q(q0, q1, haar_su4_matrix())
 }
 
 /// Qubit count of the fixed [`trotter_circuit`] chain.
@@ -1059,7 +1059,7 @@ fn build_circuit<const W: usize>(
         LayerKind::Cnot => {
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
-                c.push(Clifford2Q::cnot(0, 1));
+                c.push(PtmChannel::cnot(0, 1));
             }
             c
         }
@@ -1081,10 +1081,7 @@ fn build_circuit<const W: usize>(
         LayerKind::Depolarizing => {
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
-                c.push(Depolarizing {
-                    support: [3],
-                    p: 0.05,
-                });
+                c.push(PtmChannel::depolarizing(3, 0.05));
             }
             c
         }

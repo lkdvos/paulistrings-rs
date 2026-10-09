@@ -1,8 +1,7 @@
 use super::*;
 
-use crate::channel::clifford::{Clifford1Q, Clifford2Q};
 use crate::channel::rotation::PauliRotation;
-use crate::channel::{Channel, GeneralUnitary2Q};
+use crate::channel::{Channel, PtmChannel};
 use crate::pauli_string::PauliString;
 use crate::test_support::{haar_su4_matrix, Xs64};
 
@@ -27,11 +26,14 @@ fn prep_of<C: Channel<2>>(channel: &C) -> Prepared<2> {
 fn without_partition_rows_nothing_is_remote() {
     let rows = PartitionRows::<2>::none(NQ);
     for (name, channel) in [
-        ("h", Box::new(Clifford1Q::h(3)) as Box<dyn Channel<2>>),
-        ("cnot", Box::new(Clifford2Q::cnot(1, 4))),
+        (
+            "h",
+            Box::new(PtmChannel::hadamard(3)) as Box<dyn Channel<2>>,
+        ),
+        ("cnot", Box::new(PtmChannel::cnot(1, 4))),
         (
             "haar",
-            Box::new(GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix())),
+            Box::new(PtmChannel::unitary_2q(1, 5, haar_su4_matrix())),
         ),
     ] {
         let prepared = channel.prepare(&hash(), false).unwrap();
@@ -72,7 +74,7 @@ fn a_delta_whose_mask_sets_the_partition_bit_is_remote() {
     // H(3)'s delta set is {0, XZ on qubit 3}. A single partition row that is Z on qubit 3 reads the z-bit there, which that mask sets, so `part(XZ_3) = 1`.
     let rows = z_row(3);
     assert_eq!(rows.num_partitions(), 2);
-    let prepared = prep_of(&Clifford1Q::h(3));
+    let prepared = prep_of(&PtmChannel::hadamard(3));
     let Prepared::Local(ptm) = &prepared else {
         panic!("expected Local")
     };
@@ -139,7 +141,7 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
 #[test]
 fn local_and_remote_cover_every_entry_exactly_once() {
     let mut rng = Xs64::new(0xA11CE);
-    let prepared = prep_of(&GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix()));
+    let prepared = prep_of(&PtmChannel::unitary_2q(1, 5, haar_su4_matrix()));
     let Prepared::Local(ptm) = &prepared else {
         panic!("expected Local")
     };
@@ -210,8 +212,8 @@ fn count_remote_deltas_reports_layers_in_application_order() {
     let rows = z_row(3);
     let h = hash();
     let mut circuit = Circuit::<2>::new(NQ);
-    circuit.push(Clifford1Q::h(3));
-    circuit.push(Clifford1Q::s(9));
+    circuit.push(PtmChannel::hadamard(3));
+    circuit.push(PtmChannel::phase_gate(9));
 
     assert_eq!(
         count_remote_deltas(&circuit, &h, &rows, false),
@@ -229,8 +231,8 @@ fn count_remote_deltas_without_rows_is_all_local() {
     let rows = PartitionRows::<2>::none(NQ);
     let h = hash();
     let mut circuit = Circuit::<2>::new(NQ);
-    circuit.push(Clifford2Q::cnot(1, 4));
-    circuit.push(Clifford1Q::h(3));
+    circuit.push(PtmChannel::cnot(1, 4));
+    circuit.push(PtmChannel::hadamard(3));
     assert_eq!(
         count_remote_deltas(&circuit, &h, &rows, false),
         vec![(4, 0), (2, 0)],

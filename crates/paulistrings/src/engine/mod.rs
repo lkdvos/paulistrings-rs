@@ -76,7 +76,7 @@ impl Default for PropagateOptions {
 /// ```
 /// use paulistrings::{
 ///     BuildAccumulator, Circuit, Direction, PauliString, Phase, TruncationPolicy,
-///     Clifford1Q, propagate,
+///     PtmChannel, propagate,
 /// };
 /// use num_complex::Complex64;
 ///
@@ -85,7 +85,7 @@ impl Default for PropagateOptions {
 /// let observable = accumulator.finalize();
 ///
 /// let mut circuit = Circuit::<1>::new(1);
-/// circuit.push(Clifford1Q::h(0));
+/// circuit.push(PtmChannel::hadamard(0));
 ///
 /// struct KeepAll;
 /// impl<const W: usize> TruncationPolicy<W> for KeepAll {}

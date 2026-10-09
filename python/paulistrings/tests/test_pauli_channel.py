@@ -245,6 +245,20 @@ def test_depolarize2_rejects_a_probability_outside_the_unit_interval(p):
         noise.depolarize2(p, 0, 1)
 
 
+@pytest.mark.parametrize("name", ["depolarize", "dephase", "amplitude_damping"])
+@pytest.mark.parametrize("p", [-0.01, 1.5, float("nan")])
+def test_single_qubit_noise_rejects_a_parameter_outside_the_unit_interval(name, p):
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        getattr(noise, name)(p, 0)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        getattr(Circuit(2), name)(p, [0])
+
+
+def test_pauli_channel_rejects_nan():
+    with pytest.raises(ValueError, match="non-negative"):
+        noise.pauli_channel(float("nan"), 0.1, 0.1, 0)
+
+
 def test_depolarize2_rejects_a_repeated_qubit():
     with pytest.raises(ValueError, match="must differ"):
         noise.depolarize2(0.1, 2, 2)

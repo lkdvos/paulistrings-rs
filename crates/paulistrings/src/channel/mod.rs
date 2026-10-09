@@ -1,18 +1,14 @@
 //! The [`Channel`] trait, its output buffer, and the built-in gates and noise channels.
 //! See ARCHITECTURE.md §Channels.
 
-pub(crate) mod clifford;
 pub(crate) mod identity;
-pub(crate) mod noise;
 pub(crate) mod prepared;
+pub(crate) mod ptm;
 pub(crate) mod rotation;
-pub(crate) mod unitary;
 
-pub use clifford::{Clifford1Q, Clifford2Q};
 pub use identity::IdentityChannel;
-pub use noise::{AmplitudeDamping, Dephasing, Depolarizing, Depolarizing2Q, PauliChannel};
+pub use ptm::PtmChannel;
 pub use rotation::PauliRotation;
-pub use unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
 
 use crate::pauli_sum::hash::Gf2Hash;
 use num_complex::Complex64;
@@ -95,18 +91,9 @@ fn write_pauli<const W: usize>(
     z[word] = (z[word] & !mask) | (z_bit << bit);
 }
 
-/// Set or clear the bit at `(word, mask)` of one bit-plane.
-fn set_bit<const W: usize>(plane: &mut [u64; W], word: usize, mask: u64, value: bool) {
-    if value {
-        plane[word] |= mask;
-    } else {
-        plane[word] &= !mask;
-    }
-}
-
 /// A gate or noise channel: maps a Pauli string to a small weighted sum of Pauli strings.
 ///
-/// Built-ins: [`Clifford1Q`], [`Clifford2Q`], [`PauliRotation`], [`GeneralUnitary1Q`], [`GeneralUnitary2Q`], [`Depolarizing`], [`Dephasing`], [`PauliChannel`], [`Depolarizing2Q`], [`AmplitudeDamping`], [`IdentityChannel`].
+/// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel), [`PauliRotation`], [`IdentityChannel`].
 /// A custom channel implements `max_fanout`, `support` and `apply`; the engine derives everything else (ARCHITECTURE.md §Prepared-Channels).
 ///
 /// ```

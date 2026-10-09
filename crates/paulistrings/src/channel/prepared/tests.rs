@@ -1,9 +1,7 @@
 use super::*;
-use crate::channel::clifford::{Clifford1Q, Clifford2Q};
 use crate::channel::identity::IdentityChannel;
-use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
 use crate::channel::rotation::PauliRotation;
-use crate::channel::unitary::{GeneralUnitary1Q, GeneralUnitary2Q};
+use crate::channel::PtmChannel;
 
 use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, Xs64};
 
@@ -141,54 +139,37 @@ fn derived_table_matches_apply_identity() {
 #[test]
 fn derived_table_matches_apply_clifford1q() {
     for (name, channel) in [
-        ("h", Clifford1Q::h(3)),
-        ("s", Clifford1Q::s(3)),
-        ("x", Clifford1Q::x(3)),
-        ("y", Clifford1Q::y(3)),
-        ("z", Clifford1Q::z(3)),
+        ("h", PtmChannel::hadamard(3)),
+        ("s", PtmChannel::phase_gate(3)),
+        ("x", PtmChannel::pauli_x(3)),
+        ("y", PtmChannel::pauli_y(3)),
+        ("z", PtmChannel::pauli_z(3)),
     ] {
         check_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
     // Also across a word boundary.
-    check_agrees_on_random_inputs::<2, _>(&Clifford1Q::h(70), 128, "h@70");
+    check_agrees_on_random_inputs::<2, _>(&PtmChannel::hadamard(70), 128, "h@70");
 }
 
 #[test]
 fn derived_table_matches_apply_clifford2q() {
     for (name, channel) in [
-        ("cnot", Clifford2Q::cnot(1, 4)),
-        ("cz", Clifford2Q::cz(1, 4)),
-        ("swap", Clifford2Q::swap(1, 4)),
+        ("cnot", PtmChannel::cnot(1, 4)),
+        ("cz", PtmChannel::cz(1, 4)),
+        ("swap", PtmChannel::swap(1, 4)),
     ] {
         check_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
     // Straddling the word boundary.
-    check_agrees_on_random_inputs::<2, _>(&Clifford2Q::cnot(60, 70), 128, "cnot@60,70");
+    check_agrees_on_random_inputs::<2, _>(&PtmChannel::cnot(60, 70), 128, "cnot@60,70");
 }
 
 #[test]
 fn derived_table_matches_apply_noise() {
+    check_agrees_on_random_inputs::<2, _>(&PtmChannel::depolarizing(5, 0.07), 128, "depolarizing");
+    check_agrees_on_random_inputs::<2, _>(&PtmChannel::dephasing(5, 0.07), 128, "dephasing");
     check_agrees_on_random_inputs::<2, _>(
-        &Depolarizing {
-            support: [5],
-            p: 0.07,
-        },
-        128,
-        "depolarizing",
-    );
-    check_agrees_on_random_inputs::<2, _>(
-        &Dephasing {
-            support: [5],
-            p: 0.07,
-        },
-        128,
-        "dephasing",
-    );
-    check_agrees_on_random_inputs::<2, _>(
-        &AmplitudeDamping {
-            support: [5],
-            gamma: 0.3,
-        },
+        &PtmChannel::amplitude_damping(5, 0.3),
         128,
         "amplitude_damping",
     );
@@ -292,16 +273,16 @@ fn check_emit_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
 #[test]
 fn emit_matches_apply_for_cliffords() {
     for (name, channel) in [
-        ("h", Clifford1Q::h(3)),
-        ("s", Clifford1Q::s(3)),
-        ("x", Clifford1Q::x(3)),
+        ("h", PtmChannel::hadamard(3)),
+        ("s", PtmChannel::phase_gate(3)),
+        ("x", PtmChannel::pauli_x(3)),
     ] {
         check_emit_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
     for (name, channel) in [
-        ("cnot", Clifford2Q::cnot(1, 4)),
-        ("cz", Clifford2Q::cz(1, 4)),
-        ("swap", Clifford2Q::swap(1, 4)),
+        ("cnot", PtmChannel::cnot(1, 4)),
+        ("cz", PtmChannel::cz(1, 4)),
+        ("swap", PtmChannel::swap(1, 4)),
     ] {
         check_emit_agrees_on_random_inputs::<2, _>(&channel, 128, name);
     }
@@ -310,7 +291,7 @@ fn emit_matches_apply_for_cliffords() {
 #[test]
 fn emit_matches_apply_for_general_unitaries() {
     // T gate: a non-Clifford 1Q PTM.
-    let t = GeneralUnitary1Q::from_matrix(
+    let t = PtmChannel::unitary_1q(
         2,
         [
             [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
@@ -323,13 +304,13 @@ fn emit_matches_apply_for_general_unitaries() {
     check_emit_agrees_on_random_inputs::<2, _>(&t, 128, "t_gate");
 
     check_emit_agrees_on_random_inputs::<2, _>(
-        &GeneralUnitary2Q::from_matrix(1, 5, sqrt_swap_matrix()),
+        &PtmChannel::unitary_2q(1, 5, sqrt_swap_matrix()),
         128,
         "sqrt_swap",
     );
     // The dense fixture: all sixteen entries carry a nonzero amplitude.
     check_emit_agrees_on_random_inputs::<2, _>(
-        &GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix()),
+        &PtmChannel::unitary_2q(1, 5, haar_su4_matrix()),
         128,
         "haar_su4",
     );
@@ -338,10 +319,7 @@ fn emit_matches_apply_for_general_unitaries() {
 #[test]
 fn emit_matches_apply_for_noise() {
     check_emit_agrees_on_random_inputs::<2, _>(
-        &AmplitudeDamping {
-            support: [5],
-            gamma: 0.3,
-        },
+        &PtmChannel::amplitude_damping(5, 0.3),
         128,
         "amplitude_damping",
     );
@@ -372,7 +350,7 @@ fn emit_matches_apply_for_rotations_at_every_width() {
 fn emit_returns_none_exactly_on_a_zero_amplitude() {
     // CNOT's identity entry is nonzero on 4 of the 16 support patterns, so both branches of `emit` are reachable from one table.
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
+    let Prepared::Local(p) = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap() else {
         panic!("expected Local")
     };
     let one = Complex64::new(1.0, 0.0);
@@ -401,7 +379,7 @@ fn emit_returns_none_exactly_on_a_zero_amplitude() {
 #[test]
 fn mask_returns_the_entrys_lifted_delta() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = Clifford1Q::h(3).prepare(&hash, false).unwrap() else {
+    let Prepared::Local(p) = PtmChannel::hadamard(3).prepare(&hash, false).unwrap() else {
         panic!("expected Local")
     };
     // H's delta set is {0, XZ on qubit 3}.
@@ -433,7 +411,7 @@ fn assert_entry_eq<const W: usize>(a: &DeltaEntry<W>, b: &DeltaEntry<W>, what: &
 #[test]
 fn retain_entries_keeps_the_selected_entries_in_order() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap() else {
+    let Prepared::Local(p) = PtmChannel::swap(1, 4).prepare(&hash, false).unwrap() else {
         panic!("expected Local")
     };
     assert_eq!(p.num_deltas(), 4);
@@ -449,7 +427,7 @@ fn retain_entries_keeps_the_selected_entries_in_order() {
 #[test]
 fn a_retain_to_the_identity_alone_is_key_preserving() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
+    let Prepared::Local(p) = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap() else {
         panic!("expected Local")
     };
     assert!(!p.is_key_preserving());
@@ -462,7 +440,7 @@ fn a_retain_to_the_identity_alone_is_key_preserving() {
 #[test]
 fn retain_entries_keeping_everything_is_the_original() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap() else {
+    let Prepared::Local(p) = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap() else {
         panic!("expected Local")
     };
     let keep = vec![true; p.num_deltas()];
@@ -498,44 +476,41 @@ fn bucket_fanin_matches_the_design_table() {
         ),
         (
             "depolarizing",
-            n_bucket_deltas::<2, _>(
-                &Depolarizing {
-                    support: [5],
-                    p: 0.1,
-                },
-                false,
-            ),
+            n_bucket_deltas::<2, _>(&PtmChannel::depolarizing(5, 0.1), false),
         ),
         (
             "dephasing",
-            n_bucket_deltas::<2, _>(
-                &Dephasing {
-                    support: [5],
-                    p: 0.1,
-                },
-                false,
-            ),
+            n_bucket_deltas::<2, _>(&PtmChannel::dephasing(5, 0.1), false),
         ),
-        ("pauli_x", n_bucket_deltas::<2, _>(&Clifford1Q::x(5), false)),
-        ("pauli_y", n_bucket_deltas::<2, _>(&Clifford1Q::y(5), false)),
-        ("pauli_z", n_bucket_deltas::<2, _>(&Clifford1Q::z(5), false)),
+        (
+            "pauli_x",
+            n_bucket_deltas::<2, _>(&PtmChannel::pauli_x(5), false),
+        ),
+        (
+            "pauli_y",
+            n_bucket_deltas::<2, _>(&PtmChannel::pauli_y(5), false),
+        ),
+        (
+            "pauli_z",
+            n_bucket_deltas::<2, _>(&PtmChannel::pauli_z(5), false),
+        ),
     ] {
         assert_eq!(n, 1, "{name} should read 1 input bucket per output bucket");
     }
 
     // 2 buckets: 1-dimensional delta sets.
     for (name, n) in [
-        ("h", n_bucket_deltas::<2, _>(&Clifford1Q::h(5), false)),
-        ("s", n_bucket_deltas::<2, _>(&Clifford1Q::s(5), false)),
+        (
+            "h",
+            n_bucket_deltas::<2, _>(&PtmChannel::hadamard(5), false),
+        ),
+        (
+            "s",
+            n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), false),
+        ),
         (
             "amplitude_damping",
-            n_bucket_deltas::<2, _>(
-                &AmplitudeDamping {
-                    support: [5],
-                    gamma: 0.3,
-                },
-                false,
-            ),
+            n_bucket_deltas::<2, _>(&PtmChannel::amplitude_damping(5, 0.3), false),
         ),
         (
             "rot_z",
@@ -549,12 +524,12 @@ fn bucket_fanin_matches_the_design_table() {
     for (name, n) in [
         (
             "cnot",
-            n_bucket_deltas::<2, _>(&Clifford2Q::cnot(1, 4), false),
+            n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), false),
         ),
-        ("cz", n_bucket_deltas::<2, _>(&Clifford2Q::cz(1, 4), false)),
+        ("cz", n_bucket_deltas::<2, _>(&PtmChannel::cz(1, 4), false)),
         (
             "swap",
-            n_bucket_deltas::<2, _>(&Clifford2Q::swap(1, 4), false),
+            n_bucket_deltas::<2, _>(&PtmChannel::swap(1, 4), false),
         ),
     ] {
         assert_eq!(n, 4, "{name} should read 4 input buckets per output bucket");
@@ -585,13 +560,13 @@ fn adjoint_preparations_have_the_same_fanin() {
     for (name, forward, adjoint) in [
         (
             "s",
-            n_bucket_deltas::<2, _>(&Clifford1Q::s(5), false),
-            n_bucket_deltas::<2, _>(&Clifford1Q::s(5), true),
+            n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), false),
+            n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), true),
         ),
         (
             "cnot",
-            n_bucket_deltas::<2, _>(&Clifford2Q::cnot(1, 4), false),
-            n_bucket_deltas::<2, _>(&Clifford2Q::cnot(1, 4), true),
+            n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), false),
+            n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), true),
         ),
         (
             "rot_z",
@@ -600,20 +575,8 @@ fn adjoint_preparations_have_the_same_fanin() {
         ),
         (
             "amp_damping",
-            n_bucket_deltas::<2, _>(
-                &AmplitudeDamping {
-                    support: [5],
-                    gamma: 0.3,
-                },
-                false,
-            ),
-            n_bucket_deltas::<2, _>(
-                &AmplitudeDamping {
-                    support: [5],
-                    gamma: 0.3,
-                },
-                true,
-            ),
+            n_bucket_deltas::<2, _>(&PtmChannel::amplitude_damping(5, 0.3), false),
+            n_bucket_deltas::<2, _>(&PtmChannel::amplitude_damping(5, 0.3), true),
         ),
     ] {
         assert_eq!(
@@ -628,17 +591,11 @@ fn key_preserving_channels_are_detected() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
     let yes: Vec<Box<dyn Channel<2>>> = vec![
         Box::new(IdentityChannel::new()),
-        Box::new(Depolarizing {
-            support: [5],
-            p: 0.1,
-        }),
-        Box::new(Dephasing {
-            support: [5],
-            p: 0.1,
-        }),
-        Box::new(Clifford1Q::x(5)),
-        Box::new(Clifford1Q::y(5)),
-        Box::new(Clifford1Q::z(5)),
+        Box::new(PtmChannel::depolarizing(5, 0.1)),
+        Box::new(PtmChannel::dephasing(5, 0.1)),
+        Box::new(PtmChannel::pauli_x(5)),
+        Box::new(PtmChannel::pauli_y(5)),
+        Box::new(PtmChannel::pauli_z(5)),
     ];
     for channel in &yes {
         match channel.prepare(&hash, false).unwrap() {
@@ -648,8 +605,8 @@ fn key_preserving_channels_are_detected() {
     }
 
     let no: Vec<Box<dyn Channel<2>>> = vec![
-        Box::new(Clifford1Q::h(5)),
-        Box::new(Clifford2Q::cnot(1, 4)),
+        Box::new(PtmChannel::hadamard(5)),
+        Box::new(PtmChannel::cnot(1, 4)),
         Box::new(PauliRotation::new(PauliString::<2>::z(5), 0.3)),
     ];
     for channel in &no {
@@ -663,7 +620,7 @@ fn key_preserving_channels_are_detected() {
 #[test]
 fn support_bits_use_the_clifford2q_packing() {
     let hash = Gf2Hash::<1>::new(64, 8, 0x1);
-    let prepared = Clifford2Q::cnot(2, 7).prepare(&hash, false).unwrap();
+    let prepared = PtmChannel::cnot(2, 7).prepare(&hash, false).unwrap();
     let Prepared::Local(p) = prepared else {
         panic!("expected Local")
     };
@@ -687,7 +644,7 @@ fn support_bits_use_the_clifford2q_packing() {
 fn colliding_deltas_share_a_group_rather_than_being_lost() {
     // With 1 bucket bit, CNOT's four key deltas collide on bucket deltas.
     let hash = Gf2Hash::<2>::new(128, 1, 0xC011);
-    let prepared = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
+    let prepared = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap();
     let Prepared::Local(p) = prepared else {
         panic!("expected Local")
     };
@@ -698,7 +655,7 @@ fn colliding_deltas_share_a_group_rather_than_being_lost() {
     // No delta is dropped: the total member count is still |D| = 4.
     assert_eq!(p.num_deltas(), 4);
     // And the table still reproduces `apply`.
-    check_agrees_on_random_inputs::<2, _>(&Clifford2Q::cnot(1, 4), 128, "cnot_collided");
+    check_agrees_on_random_inputs::<2, _>(&PtmChannel::cnot(1, 4), 128, "cnot_collided");
 }
 
 #[test]
@@ -706,7 +663,7 @@ fn deltas_are_ascending_by_local_delta() {
     // Entries ascend by `local_delta` even when bucket deltas collide.
     for bits in [1u8, 4, 16] {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC012);
-        let prepared = Clifford2Q::swap(1, 4).prepare(&hash, false).unwrap();
+        let prepared = PtmChannel::swap(1, 4).prepare(&hash, false).unwrap();
         let Prepared::Local(p) = prepared else {
             panic!("expected Local")
         };
@@ -724,7 +681,7 @@ fn delta_iteration_order_is_independent_of_bucket_count() {
     // Changing `bits` must not reorder the entries.
     let order = |bits: u8| -> Vec<u8> {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC013);
-        let prepared = Clifford2Q::cnot(1, 4).prepare(&hash, false).unwrap();
+        let prepared = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap();
         let Prepared::Local(p) = prepared else {
             panic!("expected Local")
         };

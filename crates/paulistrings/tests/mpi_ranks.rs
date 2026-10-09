@@ -40,11 +40,11 @@ use paulistrings::{
     PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
-use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::{
     Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
     ScatterOptions, ScatterRows,
 };
+use paulistrings::{PauliRotation, PtmChannel};
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
 use rsmpi::Threading;
@@ -67,7 +67,7 @@ fn single_rotation<const W: usize>(nq: usize) -> Circuit<W> {
 fn cnot_ring<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
     for q in 0..nq {
-        circuit.push(Clifford2Q::cnot(q, (q + 1) % nq));
+        circuit.push(PtmChannel::cnot(q, (q + 1) % nq));
     }
     circuit
 }
@@ -75,9 +75,9 @@ fn cnot_ring<const W: usize>(nq: usize) -> Circuit<W> {
 /// Haar SU(4) blocks: all 15 deltas, the worst fan-out a two-qubit layer has.
 fn haar_su4<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
-    circuit.push(GeneralUnitary2Q::from_matrix(1, 2, haar_su4_matrix()));
-    circuit.push(GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix()));
+    circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
+    circuit.push(PtmChannel::unitary_2q(1, 2, haar_su4_matrix()));
+    circuit.push(PtmChannel::unitary_2q(2, 3, haar_su4_matrix()));
     circuit
 }
 
@@ -117,10 +117,7 @@ fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
 fn depolarizing_only<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
     for q in 0..nq {
-        circuit.push(Depolarizing {
-            support: [q],
-            p: 0.05,
-        });
+        circuit.push(PtmChannel::depolarizing(q, 0.05));
     }
     circuit
 }
@@ -537,9 +534,9 @@ fn run_host_cases(r: &mut Runner) {
     // ---- policies -------------------------------------------------------
     r.case("policies on a mixed circuit", |r| {
         let mut circuit = cnot_ring::<1>(8);
-        circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
+        circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
         circuit.push(zz_rotation::<1>(0, 4, 0.31));
-        circuit.push(GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix()));
+        circuit.push(PtmChannel::unitary_2q(2, 3, haar_su4_matrix()));
         let sum = rand_sum::<1>(250, 8, 0xA007);
 
         r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "policy none");
@@ -580,8 +577,8 @@ fn run_host_cases(r: &mut Runner) {
     // ---- degenerate inputs ----------------------------------------------
     r.case("a three-term sum leaves ranks empty", |r| {
         let mut circuit = Circuit::<1>::new(8);
-        circuit.push(Clifford1Q::h(0));
-        circuit.push(Clifford2Q::cnot(0, 1));
+        circuit.push(PtmChannel::hadamard(0));
+        circuit.push(PtmChannel::cnot(0, 1));
         for n in 1..=3 {
             let sum = rand_sum::<1>(n, 8, 0xA009 + n as u64);
             r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "tiny sum");
@@ -766,7 +763,7 @@ fn run_host_cases(r: &mut Runner) {
         // The pathological end of the same path: every byte its own message.
         // Small input, or the message count explodes.
         let mut circuit = Circuit::<1>::new(6);
-        circuit.push(Clifford2Q::cnot(0, 3));
+        circuit.push(PtmChannel::cnot(0, 3));
         let sum = rand_sum::<1>(24, 6, 0xA031);
         r.differential(
             backend,
@@ -791,9 +788,9 @@ fn run_host_cases(r: &mut Runner) {
         // rank (the reduction is symmetric), and it must do so before the first
         // exchange, so the group is still in step afterwards.
         let mut circuit = Circuit::<1>::new(8);
-        circuit.push(Clifford1Q::h(0));
+        circuit.push(PtmChannel::hadamard(0));
         if r.rank == 1 {
-            circuit.push(Clifford1Q::h(1));
+            circuit.push(PtmChannel::hadamard(1));
         }
 
         let transport = MpiTransport::from_communicator(r.world);
@@ -1008,7 +1005,7 @@ mod device {
         r.case("device several distinct-size blocks per partner", |r| {
             let mut circuit = Circuit::<1>::new(12);
             for (q0, q1) in [(0, 1), (2, 5), (3, 9), (4, 11)] {
-                circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
+                circuit.push(PtmChannel::unitary_2q(q0, q1, haar_su4_matrix()));
             }
             let sum = rand_sum::<1>(2_000, 12, 0xB031);
             r.both_directions(

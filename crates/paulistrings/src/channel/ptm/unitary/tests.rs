@@ -1,6 +1,6 @@
 use super::*;
-use crate::channel::clifford::{Clifford1Q, Clifford2Q};
 use crate::channel::prepared::Prepared;
+use crate::channel::Channel;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::outputs;
@@ -53,32 +53,32 @@ where
 
 #[test]
 fn hadamard_as_a_general_unitary_matches_clifford1q() {
-    let h = GeneralUnitary1Q::from_matrix(3, [[c(R), c(R)], [c(R), c(-R)]]);
-    assert_agrees_on_basis::<2, _, _>(&h, &Clifford1Q::h(3), &[3], "hadamard");
+    let h = PtmChannel::unitary_1q(3, [[c(R), c(R)], [c(R), c(-R)]]);
+    assert_agrees_on_basis::<2, _, _>(&h, &PtmChannel::hadamard(3), &[3], "hadamard");
 }
 
 #[test]
 fn phase_gate_as_a_general_unitary_matches_clifford1q() {
     let i = Complex64::new(0.0, 1.0);
-    let s = GeneralUnitary1Q::from_matrix(3, [[ONE, ZERO], [ZERO, i]]);
-    assert_agrees_on_basis::<2, _, _>(&s, &Clifford1Q::s(3), &[3], "phase");
+    let s = PtmChannel::unitary_1q(3, [[ONE, ZERO], [ZERO, i]]);
+    assert_agrees_on_basis::<2, _, _>(&s, &PtmChannel::phase_gate(3), &[3], "phase");
 }
 
 #[test]
 fn pauli_gates_as_general_unitaries_match_clifford1q() {
     let i = Complex64::new(0.0, 1.0);
-    let x = GeneralUnitary1Q::from_matrix(5, [[ZERO, ONE], [ONE, ZERO]]);
-    assert_agrees_on_basis::<2, _, _>(&x, &Clifford1Q::x(5), &[5], "pauli_x");
-    let y = GeneralUnitary1Q::from_matrix(5, [[ZERO, -i], [i, ZERO]]);
-    assert_agrees_on_basis::<2, _, _>(&y, &Clifford1Q::y(5), &[5], "pauli_y");
-    let z = GeneralUnitary1Q::from_matrix(5, [[ONE, ZERO], [ZERO, -ONE]]);
-    assert_agrees_on_basis::<2, _, _>(&z, &Clifford1Q::z(5), &[5], "pauli_z");
+    let x = PtmChannel::unitary_1q(5, [[ZERO, ONE], [ONE, ZERO]]);
+    assert_agrees_on_basis::<2, _, _>(&x, &PtmChannel::pauli_x(5), &[5], "pauli_x");
+    let y = PtmChannel::unitary_1q(5, [[ZERO, -i], [i, ZERO]]);
+    assert_agrees_on_basis::<2, _, _>(&y, &PtmChannel::pauli_y(5), &[5], "pauli_y");
+    let z = PtmChannel::unitary_1q(5, [[ONE, ZERO], [ZERO, -ONE]]);
+    assert_agrees_on_basis::<2, _, _>(&z, &PtmChannel::pauli_z(5), &[5], "pauli_z");
 }
 
 #[test]
 fn hadamard_across_a_word_boundary_w2() {
-    let h = GeneralUnitary1Q::from_matrix(70, [[c(R), c(R)], [c(R), c(-R)]]);
-    assert_agrees_on_basis::<2, _, _>(&h, &Clifford1Q::h(70), &[70], "hadamard@70");
+    let h = PtmChannel::unitary_1q(70, [[c(R), c(R)], [c(R), c(-R)]]);
+    assert_agrees_on_basis::<2, _, _>(&h, &PtmChannel::hadamard(70), &[70], "hadamard@70");
 }
 
 #[test]
@@ -90,8 +90,8 @@ fn cnot_as_a_general_unitary_matches_clifford2q() {
         [ZERO, ZERO, ZERO, ONE],
         [ZERO, ZERO, ONE, ZERO],
     ];
-    let g = GeneralUnitary2Q::from_matrix(1, 4, u);
-    assert_agrees_on_basis::<2, _, _>(&g, &Clifford2Q::cnot(1, 4), &[1, 4], "cnot");
+    let g = PtmChannel::unitary_2q(1, 4, u);
+    assert_agrees_on_basis::<2, _, _>(&g, &PtmChannel::cnot(1, 4), &[1, 4], "cnot");
 }
 
 #[test]
@@ -100,8 +100,8 @@ fn cz_as_a_general_unitary_matches_clifford2q() {
     for (i, row) in u.iter_mut().enumerate() {
         row[i] = if i == 3 { -ONE } else { ONE };
     }
-    let g = GeneralUnitary2Q::from_matrix(1, 4, u);
-    assert_agrees_on_basis::<2, _, _>(&g, &Clifford2Q::cz(1, 4), &[1, 4], "cz");
+    let g = PtmChannel::unitary_2q(1, 4, u);
+    assert_agrees_on_basis::<2, _, _>(&g, &PtmChannel::cz(1, 4), &[1, 4], "cz");
 }
 
 #[test]
@@ -112,8 +112,8 @@ fn swap_as_a_general_unitary_matches_clifford2q() {
         [ZERO, ONE, ZERO, ZERO],
         [ZERO, ZERO, ZERO, ONE],
     ];
-    let g = GeneralUnitary2Q::from_matrix(1, 4, u);
-    assert_agrees_on_basis::<2, _, _>(&g, &Clifford2Q::swap(1, 4), &[1, 4], "swap");
+    let g = PtmChannel::unitary_2q(1, 4, u);
+    assert_agrees_on_basis::<2, _, _>(&g, &PtmChannel::swap(1, 4), &[1, 4], "swap");
 }
 
 #[test]
@@ -124,14 +124,14 @@ fn cnot_across_a_word_boundary_w2() {
         [ZERO, ZERO, ZERO, ONE],
         [ZERO, ZERO, ONE, ZERO],
     ];
-    let g = GeneralUnitary2Q::from_matrix(60, 70, u);
-    assert_agrees_on_basis::<2, _, _>(&g, &Clifford2Q::cnot(60, 70), &[60, 70], "cnot@60,70");
+    let g = PtmChannel::unitary_2q(60, 70, u);
+    assert_agrees_on_basis::<2, _, _>(&g, &PtmChannel::cnot(60, 70), &[60, 70], "cnot@60,70");
 }
 
 /// The `T` gate mixes `X` with `Y` and fixes `I` and `Z`, so it is a genuine fanout-2 non-Clifford whose delta set is only one-dimensional, reading 2 buckets rather than the 4 a dense 1Q unitary would.
 #[test]
 fn t_gate_expansion_and_bucket_fanin() {
-    let t = GeneralUnitary1Q::from_matrix(
+    let t = PtmChannel::unitary_1q(
         2,
         [
             [ONE, ZERO],
@@ -173,7 +173,7 @@ fn dense_unitaries_reach_the_quoted_bucket_fanin() {
         [c(ca) - i * c(sa * n), (-i * c(sa * n)) - c(sa * n)],
         [(-i * c(sa * n)) + c(sa * n), c(ca) + i * c(sa * n)],
     ];
-    let g = GeneralUnitary1Q::from_matrix(0, u);
+    let g = PtmChannel::unitary_1q(0, u);
     let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
     let prepared = Channel::<1>::prepare(&g, &hash, false).unwrap();
     assert_eq!(
@@ -187,7 +187,7 @@ fn dense_unitaries_reach_the_quoted_bucket_fanin() {
 fn adjoint_reads_the_table_transposed_and_round_trips() {
     let i = Complex64::new(0.0, 1.0);
     // T gate: not self-adjoint.
-    let t = GeneralUnitary1Q::from_matrix(
+    let t = PtmChannel::unitary_1q(
         2,
         [
             [ONE, ZERO],
@@ -234,8 +234,8 @@ fn cnot_general_unitary_adjoint_matches_clifford2q_adjoint() {
         [ZERO, ZERO, ZERO, ONE],
         [ZERO, ZERO, ONE, ZERO],
     ];
-    let g = GeneralUnitary2Q::from_matrix(1, 4, u);
-    let cn = Clifford2Q::cnot(1, 4);
+    let g = PtmChannel::unitary_2q(1, 4, u);
+    let cn = PtmChannel::cnot(1, 4);
     for s in 0..16usize {
         let mut p = PauliString::<1> { x: [0], z: [0] };
         for (j, q) in [1u32, 4].iter().enumerate() {
@@ -260,22 +260,23 @@ fn cnot_general_unitary_adjoint_matches_clifford2q_adjoint() {
 /// The derivation must recover exactly the table it was built from — a bounded-support channel *is* its local PTM.
 #[test]
 fn derive_local_recovers_the_table() {
-    let h = GeneralUnitary1Q::from_matrix(3, [[c(R), c(R)], [c(R), c(-R)]]);
+    let h = PtmChannel::unitary_1q(3, [[c(R), c(R)], [c(R), c(-R)]]);
     let hash = Gf2Hash::<2>::new(128, 12, 0x1234);
     let prepared = Channel::<2>::prepare(&h, &hash, false).unwrap();
+    let table = h.transfer_matrix(false);
     let Prepared::Local(ptm) = prepared else {
         panic!("expected a Local preparation")
     };
     assert_eq!(ptm.qubits().collect::<Vec<_>>(), [3]);
     for d in ptm.deltas() {
-        for s in 0..4usize {
+        for (s, row) in table.iter().enumerate().take(4) {
             let t = s ^ d.local_delta as usize;
             assert!(
-                (d.amplitude[s] - h.table[s][t]).norm() < TOL,
+                (d.amplitude[s] - row[t]).norm() < TOL,
                 "amplitude[{s}] for delta {} is {} but table[{s}][{t}] is {}",
                 d.local_delta,
                 d.amplitude[s],
-                h.table[s][t],
+                row[t],
             );
         }
     }

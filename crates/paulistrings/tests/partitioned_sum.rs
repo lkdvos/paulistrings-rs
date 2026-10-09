@@ -9,9 +9,9 @@ use paulistrings::{
     propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
 };
 use paulistrings::{ApproxTopN, CoefficientThreshold};
-use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
 use paulistrings::{PartitionRowPolicy, ScatterOptions, ScatterRows};
+use paulistrings::{PauliRotation, PtmChannel};
 
 const TOL: f64 = 1e-11;
 const NQ: usize = 16;
@@ -24,8 +24,8 @@ fn config(partitions: usize) -> PartitionConfig {
 /// so both prepared arms and a crossing generator are exercised.
 fn circuit() -> Circuit<1> {
     let mut c = Circuit::<1>::new(NQ);
-    c.push(Clifford1Q::h(0));
-    c.push(Clifford2Q::cnot(1, 2));
+    c.push(PtmChannel::hadamard(0));
+    c.push(PtmChannel::cnot(1, 2));
     let mut zz = PauliString::<1> { x: [0], z: [0b110] };
     zz.z[0] |= 1 << 5;
     c.push(PauliRotation::new(zz, 0.31));
@@ -34,7 +34,7 @@ fn circuit() -> Circuit<1> {
         z: [0b0110],
     };
     c.push(PauliRotation::new(wide, 0.17));
-    c.push(Clifford1Q::s(3));
+    c.push(PtmChannel::phase_gate(3));
     c
 }
 

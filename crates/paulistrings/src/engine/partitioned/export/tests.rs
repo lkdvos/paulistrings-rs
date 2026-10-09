@@ -1,6 +1,6 @@
 use super::*;
-use crate::channel::clifford::Clifford1Q;
 use crate::channel::rotation::PauliRotation;
+use crate::channel::PtmChannel;
 use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
@@ -145,7 +145,7 @@ fn a_single_bucket_h_layer_exports_the_swapped_keys() {
     assert_eq!(rows.partition_of(&[0], &[1]), 0, "Z₀ is in partition 0");
 
     // `bits = 0`: one bucket, so every block is a single segment.
-    let exports = export_all(&input, &Clifford1Q::h(0), false, 0, 0x51, &rows);
+    let exports = export_all(&input, &PtmChannel::hadamard(0), false, 0, 0x51, &rows);
     assert_eq!(exports.len(), 2);
 
     // Partition 0 holds Z₀ (coeff 2) and ships X₀ to partition 1.
@@ -377,7 +377,7 @@ fn a_layer_with_no_remote_delta_exports_nothing() {
     let input = rand_sum::<1>(200, 8, 0x9C4);
     // `h(3)`'s only non-identity delta is the mask `x₃ z₃`; a partition row reading qubit 0 alone cannot see it.
     let rows = PartitionRows::<1>::from_rows(8, vec![[1u64]], vec![[0u64]]);
-    let exports = export_all(&input, &Clifford1Q::h(3), false, 3, 0x55, &rows);
+    let exports = export_all(&input, &PtmChannel::hadamard(3), false, 3, 0x55, &rows);
     for e in &exports {
         assert!(e.send.iter().all(Option::is_none));
         assert_eq!(e.counts.rows_to, vec![0, 0]);
@@ -406,7 +406,7 @@ fn a_reused_scratch_gives_the_same_export() {
     let map = map_for(&plan, wide_local.num_buckets());
     let _ = export_layer(&wide_local, &prepared, &plan, 4, &map, &mut scratch);
 
-    let h = Clifford1Q::h(3);
+    let h = PtmChannel::hadamard(3);
     let prepared = Channel::<1>::prepare(&h, whole.hash(), false).unwrap();
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let local = whole.filter_partition(&rows, 0);

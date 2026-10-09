@@ -4,32 +4,61 @@ use crate::channel_spec::{ChannelSpec, PyChannel};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-#[pyfunction]
-fn depolarize(p: f64, qubit: usize) -> PyChannel {
-    PyChannel::new(ChannelSpec::Depolarize { p, qubit })
+/// A `ValueError` unless `value` lies in `[0, 1]`, raised before the core constructor would panic on it.
+fn check_probability(channel: &str, name: &str, value: f64) -> PyResult<()> {
+    if (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{channel}: {name} must be between 0 and 1 (got {value})"
+        )))
+    }
+}
+
+/// Shared by `noise.depolarize` and `Circuit.depolarize`.
+pub(crate) fn depolarize_spec(p: f64, qubit: usize) -> PyResult<ChannelSpec> {
+    check_probability("depolarize", "p", p)?;
+    Ok(ChannelSpec::Depolarize { p, qubit })
+}
+
+/// Shared by `noise.dephase` and `Circuit.dephase`.
+pub(crate) fn dephase_spec(p: f64, qubit: usize) -> PyResult<ChannelSpec> {
+    check_probability("dephase", "p", p)?;
+    Ok(ChannelSpec::Dephase { p, qubit })
+}
+
+/// Shared by `noise.amplitude_damping` and `Circuit.amplitude_damping`.
+pub(crate) fn amplitude_damping_spec(gamma: f64, qubit: usize) -> PyResult<ChannelSpec> {
+    check_probability("amplitude_damping", "gamma", gamma)?;
+    Ok(ChannelSpec::AmplitudeDamping { gamma, qubit })
 }
 
 #[pyfunction]
-fn dephase(p: f64, qubit: usize) -> PyChannel {
-    PyChannel::new(ChannelSpec::Dephase { p, qubit })
+fn depolarize(p: f64, qubit: usize) -> PyResult<PyChannel> {
+    Ok(PyChannel::new(depolarize_spec(p, qubit)?))
 }
 
 #[pyfunction]
-fn amplitude_damping(gamma: f64, qubit: usize) -> PyChannel {
-    PyChannel::new(ChannelSpec::AmplitudeDamping { gamma, qubit })
+fn dephase(p: f64, qubit: usize) -> PyResult<PyChannel> {
+    Ok(PyChannel::new(dephase_spec(p, qubit)?))
+}
+
+#[pyfunction]
+fn amplitude_damping(gamma: f64, qubit: usize) -> PyResult<PyChannel> {
+    Ok(PyChannel::new(amplitude_damping_spec(gamma, qubit)?))
 }
 
 /// Shared by `noise.pauli_channel` and `Circuit.pauli_channel`. The three probabilities must be a sub-probability distribution (fourth weight `1 - px - py - pz` is the "no error" branch); otherwise the channel is non-physical and coefficients would grow layer over layer unflagged.
 pub(crate) fn pauli_channel_spec(px: f64, py: f64, pz: f64, qubit: usize) -> PyResult<ChannelSpec> {
     for (name, p) in [("px", px), ("py", py), ("pz", pz)] {
-        if p < 0.0 {
+        if p < 0.0 || p.is_nan() {
             return Err(PyValueError::new_err(format!(
                 "pauli_channel: {name} must be non-negative (got {p})"
             )));
         }
     }
     let total = px + py + pz;
-    if total > 1.0 {
+    if total > 1.0 || total.is_nan() {
         return Err(PyValueError::new_err(format!(
             "pauli_channel: px + py + pz must be at most 1 (got {total})"
         )));

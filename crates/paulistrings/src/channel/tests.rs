@@ -22,48 +22,25 @@ fn debug_name_through_dyn_trims_path_and_generics() {
     use crate::pauli_string::PauliString;
 
     let channels: Vec<(Box<dyn Channel<1>>, &str)> = vec![
-        (Box::new(Clifford1Q::h(0)), "Clifford1Q"),
-        (Box::new(Clifford2Q::cnot(0, 1)), "Clifford2Q"),
+        (Box::new(PtmChannel::hadamard(0)), "Clifford1Q"),
+        (Box::new(PtmChannel::cnot(0, 1)), "Clifford2Q"),
         (
             // Generic in `W`, so `type_name` carries a `<1>` to trim.
             Box::new(PauliRotation::new(PauliString::<1>::z(0), 0.3)),
             "PauliRotation",
         ),
+        (Box::new(PtmChannel::depolarizing(0, 0.1)), "Depolarizing"),
+        (Box::new(PtmChannel::dephasing(0, 0.1)), "Dephasing"),
         (
-            Box::new(Depolarizing {
-                support: [0],
-                p: 0.1,
-            }),
-            "Depolarizing",
-        ),
-        (
-            Box::new(Dephasing {
-                support: [0],
-                p: 0.1,
-            }),
-            "Dephasing",
-        ),
-        (
-            Box::new(PauliChannel {
-                support: [0],
-                px: 0.1,
-                py: 0.1,
-                pz: 0.1,
-            }),
+            Box::new(PtmChannel::pauli_channel(0, 0.1, 0.1, 0.1)),
             "PauliChannel",
         ),
         (
-            Box::new(Depolarizing2Q {
-                support: [0, 1],
-                p: 0.1,
-            }),
+            Box::new(PtmChannel::depolarizing_2q(0, 1, 0.1)),
             "Depolarizing2Q",
         ),
         (
-            Box::new(AmplitudeDamping {
-                support: [0],
-                gamma: 0.1,
-            }),
+            Box::new(PtmChannel::amplitude_damping(0, 0.1)),
             "AmplitudeDamping",
         ),
         (Box::new(IdentityChannel), "IdentityChannel"),

@@ -1,7 +1,7 @@
 use super::*;
 
-use crate::channel::clifford::Clifford1Q;
 use crate::channel::rotation::PauliRotation;
+use crate::channel::PtmChannel;
 use crate::pauli_string::PauliString;
 use crate::test_support::zz_rotation;
 
@@ -31,8 +31,8 @@ fn circuit_generators_merges_duplicate_masks_and_counts_layers() {
 #[test]
 fn circuit_generators_walks_layers_in_application_order() {
     let mut c = Circuit::<1>::new(4);
-    c.push(Clifford1Q::h(0)); // delta X_0 Z_0
-    c.push(Clifford1Q::s(1)); // delta Z_1
+    c.push(PtmChannel::hadamard(0)); // delta X_0 Z_0
+    c.push(PtmChannel::phase_gate(1)); // delta Z_1
     let forward = circuit_generators(&c, &hash(4), false);
     let adjoint = circuit_generators(&c, &hash(4), true);
     assert_eq!(forward.len(), 2);

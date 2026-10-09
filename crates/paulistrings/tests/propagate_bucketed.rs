@@ -7,12 +7,9 @@ use num_complex::Complex64;
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, bucket, canonical_triples, naive_apply_layer, rand_sum,
 };
-use paulistrings::{
-    AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, IdentityChannel,
-    PauliRotation,
-};
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
+use paulistrings::{Channel, IdentityChannel, PauliRotation, PtmChannel};
 
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
@@ -67,7 +64,7 @@ fn identity_channel_passes_the_sum_through_unchanged() {
 fn weight_cutoff_drops_high_weight_terms() {
     let input = rand_sum::<1>(1000, 8, 0x2D);
     let out = paulistrings::propagate(
-        &single(8, Clifford1Q::h(0)),
+        &single(8, PtmChannel::hadamard(0)),
         input.clone(),
         &WeightCutoff(2),
         Direction::Forward,
@@ -87,7 +84,7 @@ fn top_n_truncates_each_layer() {
     let input = rand_sum::<1>(2000, 8, 0x3D);
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(PauliRotation::new(PauliString::<1>::z(2), 0.4));
-    circuit.push(Clifford1Q::h(0));
+    circuit.push(PtmChannel::hadamard(0));
     let out = paulistrings::propagate(&circuit, input, &TopN(100), Direction::Forward);
     assert_eq!(out.len(), 100);
 }
@@ -173,27 +170,18 @@ fn mixed_channels() -> Vec<Box<dyn Channel<1>>> {
         wide.mul_assign(&PauliString::<1>::x(q));
     }
     vec![
-        Box::new(Clifford1Q::h(0)),
+        Box::new(PtmChannel::hadamard(0)),
         Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.31)),
-        Box::new(Clifford2Q::cnot(1, 5)),
-        Box::new(Depolarizing {
-            support: [3],
-            p: 0.05,
-        }),
+        Box::new(PtmChannel::cnot(1, 5)),
+        Box::new(PtmChannel::depolarizing(3, 0.05)),
         Box::new(PauliRotation::new(zz, 0.23)),
-        Box::new(Clifford1Q::s(6)),
-        Box::new(Dephasing {
-            support: [7],
-            p: 0.04,
-        }),
-        Box::new(Clifford2Q::cz(0, 7)),
-        Box::new(AmplitudeDamping {
-            support: [4],
-            gamma: 0.2,
-        }),
+        Box::new(PtmChannel::phase_gate(6)),
+        Box::new(PtmChannel::dephasing(7, 0.04)),
+        Box::new(PtmChannel::cz(0, 7)),
+        Box::new(PtmChannel::amplitude_damping(4, 0.2)),
         // Weight 4: takes the functional rotation path.
         Box::new(PauliRotation::new(wide, 0.17)),
-        Box::new(Clifford2Q::swap(2, 6)),
+        Box::new(PtmChannel::swap(2, 6)),
     ]
 }
 

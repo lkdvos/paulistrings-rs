@@ -3,7 +3,7 @@
 //! scratch across calls does not leak state into the output. They run in both
 //! feature configurations (`--features phase-timing` must not change a bit).
 
-use paulistrings::{Clifford2Q, Depolarizing, PauliRotation};
+use paulistrings::{PauliRotation, PtmChannel};
 // `rand_sum_real`: same xorshift stream, same masking, real coefficients only,
 // shared with the other propagation test files so fixtures are comparable.
 use paulistrings::test_support::rand_sum_real;
@@ -30,11 +30,8 @@ fn test_circuit<const W: usize>() -> Circuit<W> {
         },
     };
     c.push(PauliRotation::new(gen, 0.37));
-    c.push(Clifford2Q::cnot(1, 2));
-    c.push(Depolarizing {
-        support: [3],
-        p: 0.05,
-    });
+    c.push(PtmChannel::cnot(1, 2));
+    c.push(PtmChannel::depolarizing(3, 0.05));
     c
 }
 

@@ -14,7 +14,7 @@ use paulistrings::{
     propagate, propagate_with, BuildAccumulator, Circuit, Direction, LayerScratch, PauliString,
     PauliSum, PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{Clifford1Q, PauliRotation};
+use paulistrings::{PauliRotation, PtmChannel};
 
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
@@ -43,7 +43,7 @@ fn x0_observable<const W: usize>() -> PauliSum<W> {
 fn three_layer_circuit<const W: usize>() -> Circuit<W> {
     let mut c = Circuit::<W>::new(NUM_QUBITS);
     c.push(PauliRotation::new(PauliString::<W>::z(0), THETA));
-    c.push(Clifford1Q::h(0));
+    c.push(PtmChannel::hadamard(0));
     c.push(PauliRotation::new(PauliString::<W>::z(0), THETA));
     c
 }

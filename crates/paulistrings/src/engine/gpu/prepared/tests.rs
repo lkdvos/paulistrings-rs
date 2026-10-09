@@ -1,8 +1,6 @@
 use super::*;
-use crate::channel::clifford::Clifford2Q;
-use crate::channel::noise::Depolarizing;
 use crate::channel::rotation::PauliRotation;
-use crate::channel::{Channel, GeneralUnitary2Q};
+use crate::channel::{Channel, PtmChannel};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
 use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, zz_rotation};
@@ -15,7 +13,7 @@ fn table<const W: usize>(channel: &dyn Channel<W>, nq: usize) -> DevicePrepared<
 
 #[test]
 fn classification_and_fanout_per_table() {
-    let cnot = table::<1>(&Clifford2Q::cnot(1, 3), 8);
+    let cnot = table::<1>(&PtmChannel::cnot(1, 3), 8);
     assert_eq!(
         (cnot.fanout, cnot.dense, cnot.key_preserving),
         (cnot.entries, false, false)
@@ -23,17 +21,11 @@ fn classification_and_fanout_per_table() {
     assert!(cnot.entries > 1);
     let zz = table::<1>(&zz_rotation::<1>(1, 3, 0.3), 8);
     assert_eq!((zz.fanout, zz.dense), (2, false));
-    let swap = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, sqrt_swap_matrix()), 8);
+    let swap = table::<1>(&PtmChannel::unitary_2q(1, 3, sqrt_swap_matrix()), 8);
     assert!(swap.dense, "sqrt-swap averages 3.65 rows per pattern");
-    let su4 = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, haar_su4_matrix()), 8);
+    let su4 = table::<1>(&PtmChannel::unitary_2q(1, 3, haar_su4_matrix()), 8);
     assert_eq!((su4.fanout, su4.dense), (16, true));
-    let dep = table::<1>(
-        &Depolarizing {
-            support: [2],
-            p: 0.1,
-        },
-        8,
-    );
+    let dep = table::<1>(&PtmChannel::depolarizing(2, 0.1), 8);
     assert!(dep.key_preserving && dep.fanout == 1 && !dep.dense);
     let mut gen = PauliString::<2>::x(3);
     gen.z[1] |= 1 << 2;
@@ -56,7 +48,7 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
     let fingerprints = FingerprintRows::new(hash.seed());
     // `H` has the deltas `{0, X₁Z₁}`; a row reading qubit 1's x-bit makes the one non-identity entry remote.
-    let channel = crate::channel::clifford::Clifford1Q::h(1);
+    let channel = crate::channel::PtmChannel::hadamard(1);
     let prepared = channel.prepare(&hash, false).unwrap();
     let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
@@ -84,15 +76,15 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
 #[test]
 fn collisions_between_entries_follow_the_output_patterns() {
     let all = |t: &DevicePrepared<1>| (0..t.entries).collect::<Vec<_>>();
-    let cnot = table::<1>(&Clifford2Q::cnot(1, 3), 8);
+    let cnot = table::<1>(&PtmChannel::cnot(1, 3), 8);
     assert!(!cnot.entries_can_collide(&all(&cnot)));
-    let su4 = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, haar_su4_matrix()), 8);
+    let su4 = table::<1>(&PtmChannel::unitary_2q(1, 3, haar_su4_matrix()), 8);
     assert!(su4.entries_can_collide(&all(&su4)));
     assert!(
         !su4.entries_can_collide(&[3]),
         "one entry cannot collide with itself"
     );
-    let swap = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, sqrt_swap_matrix()), 8);
+    let swap = table::<1>(&PtmChannel::unitary_2q(1, 3, sqrt_swap_matrix()), 8);
     assert!(swap.entries_can_collide(&all(&swap)));
     let mut gen = PauliString::<2>::x(3);
     gen.z[1] |= 1 << 2;
@@ -105,14 +97,13 @@ fn collisions_between_entries_follow_the_output_patterns() {
 /// A Clifford maps every support pattern to exactly one entry and no two entries onto one output pattern; a fanout-2 `T`, a dense SU(4), a rotation and a table with a received entry are not permutations.
 #[test]
 fn the_permutation_gate_holds_for_cliffords_alone() {
-    use crate::channel::clifford::Clifford1Q;
-    use crate::channel::GeneralUnitary1Q;
+    use crate::channel::PtmChannel;
     let cliffords: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-        ("h", Box::new(Clifford1Q::h(3))),
-        ("s", Box::new(Clifford1Q::s(3))),
-        ("cnot", Box::new(Clifford2Q::cnot(1, 3))),
-        ("cz", Box::new(Clifford2Q::cz(1, 3))),
-        ("swap", Box::new(Clifford2Q::swap(1, 3))),
+        ("h", Box::new(PtmChannel::hadamard(3))),
+        ("s", Box::new(PtmChannel::phase_gate(3))),
+        ("cnot", Box::new(PtmChannel::cnot(1, 3))),
+        ("cz", Box::new(PtmChannel::cz(1, 3))),
+        ("swap", Box::new(PtmChannel::swap(1, 3))),
     ];
     for (name, channel) in &cliffords {
         let t = table::<1>(channel.as_ref(), 8);
@@ -130,10 +121,10 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
         }
     }
     // `X` is a Pauli gate: key-preserving, so K5 takes it before the permutation path.
-    let x = table::<1>(&Clifford1Q::x(3), 8);
+    let x = table::<1>(&PtmChannel::pauli_x(3), 8);
     assert!(x.key_preserving && x.permutation);
     let t = table::<1>(
-        &GeneralUnitary1Q::from_matrix(
+        &PtmChannel::unitary_1q(
             3,
             [
                 [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
@@ -146,11 +137,11 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
         8,
     );
     assert!(!t.permutation, "T emits two rows for X and for Y");
-    let su4 = table::<1>(&GeneralUnitary2Q::from_matrix(1, 3, haar_su4_matrix()), 8);
+    let su4 = table::<1>(&PtmChannel::unitary_2q(1, 3, haar_su4_matrix()), 8);
     assert!(!su4.permutation);
     let rot = table::<1>(&zz_rotation::<1>(1, 3, 0.3), 8);
     assert!(!rot.permutation);
-    let restricted = table::<1>(&Clifford2Q::cnot(1, 3), 8).restrict(&[0, 1]);
+    let restricted = table::<1>(&PtmChannel::cnot(1, 3), 8).restrict(&[0, 1]);
     assert!(!restricted.permutation);
 }
 
@@ -160,7 +151,7 @@ fn a_received_entry_disables_the_permutation_path() {
     use crate::pauli_sum::hash::PartitionRows;
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
     let fingerprints = FingerprintRows::new(hash.seed());
-    let channel = crate::channel::clifford::Clifford1Q::h(1);
+    let channel = crate::channel::PtmChannel::hadamard(1);
     let prepared = channel.prepare(&hash, false).unwrap();
     let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
@@ -171,10 +162,7 @@ fn a_received_entry_disables_the_permutation_path() {
 
 #[test]
 fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
-    let su4 = table::<2>(
-        &GeneralUnitary2Q::from_matrix(1, 70, haar_su4_matrix()),
-        128,
-    );
+    let su4 = table::<2>(&PtmChannel::unitary_2q(1, 70, haar_su4_matrix()), 128);
     let pick = [9usize, 2, 14];
     let r = su4.restrict(&pick);
     assert_eq!((r.entries, r.n_remote, r.key_preserving), (3, 0, false));
@@ -196,7 +184,7 @@ fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
 #[test]
 fn rehash_tracks_the_hash_and_gm_is_the_fingerprint_of_the_mask() {
     let hash = Gf2Hash::<1>::new(8, 3, DEFAULT_HASH_SEED);
-    let channel = Clifford2Q::cnot(1, 3);
+    let channel = PtmChannel::cnot(1, 3);
     let prepared = channel.prepare(&hash, false).unwrap();
     let fingerprints = FingerprintRows::new(hash.seed());
     let mut t = DevicePrepared::new(&prepared, &hash, &fingerprints, &[]);

@@ -7,7 +7,7 @@ use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
-use crate::channel::{Channel, OutputBuffer};
+use crate::channel::{Channel, OutputBuffer, PtmChannel};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
@@ -720,42 +720,24 @@ pub fn support_delta_rank<const W: usize>(
 /// Shared by `engine::bucketed`'s differential net and the partitioned engine's, so both exercise exactly the same channels.
 /// Ends with three structurally distinct gather shapes: a fanout-2 non-Clifford, a sparse-but-wide 2Q PTM, a dense one, and a rotation wider than `MAX_LOCAL_SUPPORT` (the `Prepared::Rotation` arm).
 pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::identity::IdentityChannel;
-    use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
     use crate::channel::rotation::PauliRotation;
-    use crate::channel::{GeneralUnitary1Q, GeneralUnitary2Q};
 
     vec![
         ("identity", Box::new(IdentityChannel::new())),
-        ("h", Box::new(Clifford1Q::h(3))),
-        ("s", Box::new(Clifford1Q::s(3))),
-        ("x", Box::new(Clifford1Q::x(3))),
-        ("y", Box::new(Clifford1Q::y(3))),
-        ("z", Box::new(Clifford1Q::z(3))),
-        ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
-        ("cz", Box::new(Clifford2Q::cz(1, 5))),
-        ("swap", Box::new(Clifford2Q::swap(1, 5))),
-        (
-            "depolarizing",
-            Box::new(Depolarizing {
-                support: [2],
-                p: 0.07,
-            }),
-        ),
-        (
-            "dephasing",
-            Box::new(Dephasing {
-                support: [2],
-                p: 0.07,
-            }),
-        ),
+        ("h", Box::new(PtmChannel::hadamard(3))),
+        ("s", Box::new(PtmChannel::phase_gate(3))),
+        ("x", Box::new(PtmChannel::pauli_x(3))),
+        ("y", Box::new(PtmChannel::pauli_y(3))),
+        ("z", Box::new(PtmChannel::pauli_z(3))),
+        ("cnot", Box::new(PtmChannel::cnot(1, 5))),
+        ("cz", Box::new(PtmChannel::cz(1, 5))),
+        ("swap", Box::new(PtmChannel::swap(1, 5))),
+        ("depolarizing", Box::new(PtmChannel::depolarizing(2, 0.07))),
+        ("dephasing", Box::new(PtmChannel::dephasing(2, 0.07))),
         (
             "amp_damping",
-            Box::new(AmplitudeDamping {
-                support: [2],
-                gamma: 0.3,
-            }),
+            Box::new(PtmChannel::amplitude_damping(2, 0.3)),
         ),
         (
             "rot_z",
@@ -775,7 +757,7 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
         (
             // A non-Clifford T gate (fanout 2), as a local PTM.
             "t_gate",
-            Box::new(GeneralUnitary1Q::from_matrix(
+            Box::new(PtmChannel::unitary_1q(
                 2,
                 [
                     [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
@@ -789,12 +771,12 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
         (
             // sqrt(SWAP): a wide delta set with a sparse PTM.
             "general_2q",
-            Box::new(GeneralUnitary2Q::from_matrix(1, 5, sqrt_swap_matrix())),
+            Box::new(PtmChannel::unitary_2q(1, 5, sqrt_swap_matrix())),
         ),
         (
             // A dense SU(4): every PTM entry nonzero (fanout ~15) — the shape the per-run sort kernel is selected on (`merge::sort_rows_radix_with_scratch`).
             "haar_su4",
-            Box::new(GeneralUnitary2Q::from_matrix(1, 5, haar_su4_matrix())),
+            Box::new(PtmChannel::unitary_2q(1, 5, haar_su4_matrix())),
         ),
         (
             // Weight 4 > MAX_LOCAL_SUPPORT: exercises the Rotation variant.
@@ -816,22 +798,16 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
 /// The engine's differential channel net at `W = 2`: the other occupancy regime — 128 qubits, wide keys, supports straddling the 64-bit word boundary.
 /// Shared by `engine::bucketed`'s differential net and the partitioned engine's, as [`differential_channels_w1`] is.
 pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
-    use crate::channel::noise::AmplitudeDamping;
     use crate::channel::rotation::PauliRotation;
-    use crate::channel::GeneralUnitary2Q;
 
     vec![
-        ("h@70", Box::new(Clifford1Q::h(70))),
-        ("s@64", Box::new(Clifford1Q::s(64))),
-        ("cnot@60,70", Box::new(Clifford2Q::cnot(60, 70))),
-        ("swap@0,127", Box::new(Clifford2Q::swap(0, 127))),
+        ("h@70", Box::new(PtmChannel::hadamard(70))),
+        ("s@64", Box::new(PtmChannel::phase_gate(64))),
+        ("cnot@60,70", Box::new(PtmChannel::cnot(60, 70))),
+        ("swap@0,127", Box::new(PtmChannel::swap(0, 127))),
         (
             "amp_damping@70",
-            Box::new(AmplitudeDamping {
-                support: [70],
-                gamma: 0.25,
-            }),
+            Box::new(PtmChannel::amplitude_damping(70, 0.25)),
         ),
         (
             "rot_y@70",
@@ -851,7 +827,7 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
         // Dense SU(4), support straddling the word boundary — the dense-PTM run shape at `W = 2`.
         (
             "haar_su4_cross_word",
-            Box::new(GeneralUnitary2Q::from_matrix(60, 70, haar_su4_matrix())),
+            Box::new(PtmChannel::unitary_2q(60, 70, haar_su4_matrix())),
         ),
     ]
 }
@@ -896,12 +872,7 @@ pub fn random_circuit<const W: usize>(
     seed: u64,
     dense: bool,
 ) -> crate::Circuit<W> {
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
-    use crate::channel::noise::{
-        AmplitudeDamping, Dephasing, Depolarizing, Depolarizing2Q, PauliChannel,
-    };
     use crate::channel::rotation::PauliRotation;
-    use crate::channel::{GeneralUnitary1Q, GeneralUnitary2Q};
 
     let mut rng = Xs64::new(seed);
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
@@ -912,12 +883,12 @@ pub fn random_circuit<const W: usize>(
         let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as usize;
         let wrap = |q: usize, d: usize| (q + d) % num_qubits;
         match rng.next_u64() % kinds {
-            0 => circuit.push(Clifford1Q::h(q0)),
-            1 => circuit.push(Clifford1Q::s(q0)),
-            2 => circuit.push(Clifford1Q::y(q0)),
-            3 => circuit.push(Clifford2Q::cnot(q0, q1)),
-            4 => circuit.push(Clifford2Q::cz(q0, q1)),
-            5 => circuit.push(Clifford2Q::swap(q0, q1)),
+            0 => circuit.push(PtmChannel::hadamard(q0)),
+            1 => circuit.push(PtmChannel::phase_gate(q0)),
+            2 => circuit.push(PtmChannel::pauli_y(q0)),
+            3 => circuit.push(PtmChannel::cnot(q0, q1)),
+            4 => circuit.push(PtmChannel::cz(q0, q1)),
+            5 => circuit.push(PtmChannel::swap(q0, q1)),
             6 => circuit.push(PauliRotation::new(PauliString::<W>::z(q0), 0.37)),
             7 => circuit.push(zz_rotation::<W>(q0, q1, 0.21)),
             8 => {
@@ -931,37 +902,20 @@ pub fn random_circuit<const W: usize>(
                 set_z(&mut gen, wrap(q0, 3));
                 circuit.push(PauliRotation::new(gen, 0.29));
             }
-            9 => circuit.push(Depolarizing {
-                support: [q0],
-                p: 0.05,
-            }),
-            10 => circuit.push(Dephasing {
-                support: [q0],
-                p: 0.11,
-            }),
-            11 => circuit.push(PauliChannel {
-                support: [q0],
-                px: 0.03,
-                py: 0.04,
-                pz: 0.05,
-            }),
-            12 => circuit.push(Depolarizing2Q {
-                support: [q0, q1],
-                p: 0.07,
-            }),
-            13 => circuit.push(AmplitudeDamping {
-                support: [q0],
-                gamma: 0.09,
-            }),
-            14 => circuit.push(GeneralUnitary1Q::from_matrix(
+            9 => circuit.push(PtmChannel::depolarizing(q0, 0.05)),
+            10 => circuit.push(PtmChannel::dephasing(q0, 0.11)),
+            11 => circuit.push(PtmChannel::pauli_channel(q0, 0.03, 0.04, 0.05)),
+            12 => circuit.push(PtmChannel::depolarizing_2q(q0, q1, 0.07)),
+            13 => circuit.push(PtmChannel::amplitude_damping(q0, 0.09)),
+            14 => circuit.push(PtmChannel::unitary_1q(
                 q0,
                 [
                     [Complex64::new(0.6, 0.0), Complex64::new(0.0, -0.8)],
                     [Complex64::new(0.0, -0.8), Complex64::new(0.6, 0.0)],
                 ],
             )),
-            15 => circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, sqrt_swap_matrix())),
-            16 => circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())),
+            15 => circuit.push(PtmChannel::unitary_2q(q0, q1, sqrt_swap_matrix())),
+            16 => circuit.push(PtmChannel::unitary_2q(q0, q1, haar_su4_matrix())),
             _ => unreachable!(),
         }
     }
@@ -974,7 +928,6 @@ pub fn random_clifford_circuit<const W: usize>(
     layers: usize,
     seed: u64,
 ) -> crate::Circuit<W> {
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     let mut rng = Xs64::new(seed);
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
     let n = num_qubits as u64;
@@ -982,12 +935,12 @@ pub fn random_clifford_circuit<const W: usize>(
         let q0 = (rng.next_u64() % n) as usize;
         let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as usize;
         match rng.next_u64() % 6 {
-            0 => circuit.push(Clifford1Q::h(q0)),
-            1 => circuit.push(Clifford1Q::s(q0)),
-            2 => circuit.push(Clifford1Q::y(q0)),
-            3 => circuit.push(Clifford2Q::cnot(q0, q1)),
-            4 => circuit.push(Clifford2Q::cz(q0, q1)),
-            _ => circuit.push(Clifford2Q::swap(q0, q1)),
+            0 => circuit.push(PtmChannel::hadamard(q0)),
+            1 => circuit.push(PtmChannel::phase_gate(q0)),
+            2 => circuit.push(PtmChannel::pauli_y(q0)),
+            3 => circuit.push(PtmChannel::cnot(q0, q1)),
+            4 => circuit.push(PtmChannel::cz(q0, q1)),
+            _ => circuit.push(PtmChannel::swap(q0, q1)),
         }
     }
     circuit
@@ -1052,11 +1005,8 @@ impl<const W: usize> Channel<W> for ShiftX {
 }
 
 /// The channel [`cancellation_sum`] is built for.
-pub fn cancellation_channel() -> crate::channel::noise::AmplitudeDamping {
-    crate::channel::noise::AmplitudeDamping {
-        support: [0],
-        gamma: 0.5,
-    }
+pub fn cancellation_channel() -> PtmChannel {
+    PtmChannel::amplitude_damping(0, 0.5)
 }
 
 /// `n` distinct terms carrying `X₀` and the identity on qubit 63: all on rank 0 under [`rows_reading_z63`], and every one anticommutes with `Z₀Z₆₃`, so a `ZZ(0, 63)` layer exports all `n` to rank 1.
@@ -1106,11 +1056,7 @@ pub fn rows_reading_z63() -> crate::pauli_sum::hash::PartitionRows<1> {
 pub fn su4_chain<const W: usize>(num_qubits: usize) -> crate::Circuit<W> {
     let mut c = crate::Circuit::<W>::new(num_qubits);
     for (a, b) in [(0, 1), (1, 2), (0, 1)] {
-        c.push(crate::channel::GeneralUnitary2Q::from_matrix(
-            a,
-            b,
-            haar_su4_matrix(),
-        ));
+        c.push(PtmChannel::unitary_2q(a, b, haar_su4_matrix()));
     }
     c
 }

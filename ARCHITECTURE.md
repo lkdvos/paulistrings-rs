@@ -142,6 +142,7 @@ The `i^k` phase is folded into `amplitude` at prepare time.
 
 `Channel::prepare` has a **default implementation that is automatic and complete for any channel with support on ≤ 2 qubits**: `derive_local` calls the channel's own `apply` on each of the ≤ 16 local basis Paulis and reads the PTM off the results.
 A custom channel that implements `apply` gets the bucketed engine for free, and the derivation doubles as a cross-check between the two representations.
+`PtmChannel` overrides `prepare` to build the same table straight from its stored PTM, without probing `apply`.
 `PauliRotation` overrides `prepare` and returns `Prepared::Rotation` at any generator weight — its delta set is `{0, gen}` regardless of weight, with the amplitude computed per term from commutation with the generator.
 
 **Soundness precondition:** `derive_local` is correct exactly when the channel honors the bounded-support contract — output amplitudes may depend on the input only through its support bits.
@@ -444,7 +445,9 @@ pub trait Channel<const W: usize>: Send + Sync {
 Implementing `apply` (plus `support`) is the whole cost of a custom channel; `prepare`'s default derives the engine form automatically (§Prepared-Channels).
 `max_fanout` is a method rather than an associated const so `Circuit` can store `Box<dyn Channel<W>>`; concrete impls return literals, so call sites through generics still constant-fold.
 
-Built-ins: `Clifford1Q` / `Clifford2Q` (table-driven from their symplectic action), `PauliRotation` (`exp(-iθP/2)`, any generator weight; support derived from the generator, never caller-supplied), `GeneralUnitary1Q` / `GeneralUnitary2Q` (from a matrix or a Pauli-transfer matrix), and the noise channels `Depolarizing`, `Dephasing` (pure coefficient rescales) and `AmplitudeDamping` (genuine fanout 2).
+Built-ins: `PauliRotation` (`exp(-iθP/2)`, any generator weight; support derived from the generator, never caller-supplied) and `PtmChannel`, every one- and two-qubit gate and noise channel as its Pauli-transfer matrix (PTM), built by named constructors that assert distinct qubits and parameters in `[0, 1]`.
+`PtmChannel` stores the PTM in the cheapest exact form its constructor knows: a signed permutation for the Cliffords (`hadamard`, `phase_gate`, `pauli_x/y/z`, `cnot`, `cz`, `swap`), the diagonal for the Pauli-diagonal noise (`depolarizing`, `dephasing`, `pauli_channel`, `depolarizing_2q`), and sparse `(s, t, amplitude)` entries for `amplitude_damping` (genuine fanout 2) and the general unitaries `unitary_1q` / `unitary_2q` (PTM derived from the matrix).
+`apply` reads a PTM row, `apply_adjoint` its transpose, and `adjoint()` returns the transposed channel.
 `IdentityChannel` exists for tests and composition.
 
 ## Ingestion

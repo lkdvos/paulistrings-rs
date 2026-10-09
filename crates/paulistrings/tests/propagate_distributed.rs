@@ -18,12 +18,12 @@ use paulistrings::test_support::{
     assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real,
     trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
 };
+use paulistrings::PtmChannel;
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, RotationAxis,
     TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
-use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
 use paulistrings::{
     DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime, ScatterOptions,
     ScatterRows,
@@ -61,18 +61,15 @@ fn mixed_circuit<const W: usize>(num_qubits: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(num_qubits);
     let n = num_qubits;
     for q in 0..n {
-        circuit.push(Clifford2Q::cnot(q, (q + 1) % n));
+        circuit.push(PtmChannel::cnot(q, (q + 1) % n));
     }
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
     circuit.push(zz_rotation::<W>(0, n / 2, 0.31));
     for q in 0..n {
-        circuit.push(Depolarizing {
-            support: [q],
-            p: 0.04,
-        });
+        circuit.push(PtmChannel::depolarizing(q, 0.04));
     }
-    circuit.push(GeneralUnitary2Q::from_matrix(1, 2, haar_su4_matrix()));
+    circuit.push(PtmChannel::unitary_2q(1, 2, haar_su4_matrix()));
     circuit
 }
 
@@ -225,8 +222,8 @@ fn mixed_channels_match_propagate() {
 #[test]
 fn a_two_term_sum_survives_four_ranks() {
     let mut circuit = Circuit::<1>::new(4);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford2Q::cnot(0, 1));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::cnot(0, 1));
 
     let sum = rand_sum::<1>(2, 4, 0x0D19);
     check(&circuit, &sum, &KeepAll, "two terms");
@@ -314,7 +311,7 @@ fn ranks_driven_through_different_circuits_are_caught() {
     let sum = rand_sum::<1>(50, 4, 0x0D1D);
     let short = Circuit::<1>::new(4);
     let mut long = Circuit::<1>::new(4);
-    long.push(Clifford1Q::h(0));
+    long.push(PtmChannel::hadamard(0));
 
     let mut group = InProcessTransport::group(2);
     let one = group.pop().expect("rank 1");
@@ -528,10 +525,7 @@ fn collapse_sample_distributed_picks_by_weight() {
     let keys = four_term_keys::<1>();
     let input = weighted_four_term_sum::<1>(8);
     let mut circuit = Circuit::<1>::new(8);
-    circuit.push(Depolarizing {
-        support: [0],
-        p: 0.0,
-    });
+    circuit.push(PtmChannel::depolarizing(0, 0.0));
 
     for size in [2u32, 4] {
         let rows =
@@ -596,9 +590,9 @@ fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[usize], s
     let sum = rand_sum_on::<W>(400, num_qubits, window, 0xEC40);
     let mut circuit = Circuit::<W>::new(num_qubits);
     for pair in window.windows(2) {
-        circuit.push(Clifford2Q::cnot(pair[0], pair[1]));
+        circuit.push(PtmChannel::cnot(pair[0], pair[1]));
     }
-    circuit.push(GeneralUnitary2Q::from_matrix(
+    circuit.push(PtmChannel::unitary_2q(
         window[0],
         window[1],
         haar_su4_matrix(),

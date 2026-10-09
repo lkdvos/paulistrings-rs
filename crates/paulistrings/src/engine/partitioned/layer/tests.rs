@@ -1,7 +1,7 @@
 use super::*;
-use crate::channel::clifford::Clifford1Q;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
+use crate::channel::PtmChannel;
 use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
@@ -244,7 +244,7 @@ fn no_remote_deltas_means_no_exchange() {
     let input = rand_sum::<1>(300, 8, 0x9D2);
     // `h(3)`'s only non-identity delta is the mask `x₃ z₃`; a partition row reading qubit 0 alone cannot see it.
     let rows = PartitionRows::<1>::from_rows(8, vec![[1u64]], vec![[0u64]]);
-    let h = Clifford1Q::h(3);
+    let h = PtmChannel::hadamard(3);
     let hash = Gf2Hash::<1>::new(8, 4, 0x9D);
     let whole = input.clone().with_hash(hash);
     let prepared = Channel::<1>::prepare(&h, whole.hash(), false).expect("prepare");

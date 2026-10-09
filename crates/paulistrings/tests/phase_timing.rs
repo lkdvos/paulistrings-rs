@@ -5,8 +5,8 @@
 #![cfg(feature = "phase-timing")]
 
 use paulistrings::test_support::InProcessTransport;
-use paulistrings::{Depolarizing, PauliRotation};
 use paulistrings::{DistributedSum, PartitionRuntime, PartitionedSum, ScatterOptions, ScatterRows};
+use paulistrings::{PauliRotation, PtmChannel};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
@@ -101,10 +101,7 @@ fn take_stats_drains() {
 #[test]
 fn rescale_path_is_attributed() {
     let mut circuit = Circuit::<1>::new(16);
-    circuit.push(Depolarizing {
-        support: [2],
-        p: 0.05,
-    });
+    circuit.push(PtmChannel::depolarizing(2, 0.05));
     let sum = rand_sum_real::<1>(5_000, 16, 0xACE);
 
     let mut scratch = LayerScratch::<1>::new();

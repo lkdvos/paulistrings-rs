@@ -20,7 +20,7 @@ use paulistrings::test_support::{approx_eq, bucket};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy,
 };
-use paulistrings::{Channel, Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
+use paulistrings::{Channel, IdentityChannel, PauliRotation, PtmChannel};
 use paulistrings::{CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-12;
@@ -88,7 +88,7 @@ fn layer2<C: Channel<2> + 'static, T: TruncationPolicy<2>>(
 #[test]
 fn single_layer_h_conjugates_z_to_x() {
     let input = sum1(1, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
-    let out = layer1(&input, 1, Clifford1Q::h(0), &NoTruncation);
+    let out = layer1(&input, 1, PtmChannel::hadamard(0), &NoTruncation);
     assert_eq!(out.len(), 1);
     let x = PauliString::<1>::x(0);
     assert_eq!(bucket(&out, 0).0[0], x.x);
@@ -103,7 +103,7 @@ fn single_layer_h_conjugates_z_to_x() {
 #[test]
 fn single_layer_h_conjugates_x_to_z() {
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
-    let out = layer1(&input, 1, Clifford1Q::h(0), &NoTruncation);
+    let out = layer1(&input, 1, PtmChannel::hadamard(0), &NoTruncation);
     assert_eq!(out.len(), 1);
     let z = PauliString::<1>::z(0);
     assert_eq!(bucket(&out, 0).0[0], z.x);
@@ -119,7 +119,7 @@ fn single_layer_h_conjugates_x_to_z() {
 fn single_layer_s_conjugates_x_to_y() {
     // S · X · S† = Y (with phase +1).
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
-    let out = layer1(&input, 1, Clifford1Q::s(0), &NoTruncation);
+    let out = layer1(&input, 1, PtmChannel::phase_gate(0), &NoTruncation);
     assert_eq!(out.len(), 1);
     let y = PauliString::<1>::y(0);
     assert_eq!(bucket(&out, 0).0[0], y.x);
@@ -136,7 +136,7 @@ fn single_layer_cnot_propagates_z_control() {
     // The non-trivial generators for CNOT(0,1) are X⊗I → X⊗X and I⊗Z → Z⊗Z.
     // Test the I⊗Z case: input Z on qubit 1 → Z on qubit 0 AND qubit 1.
     let input = sum2(2, &[(PauliString::<2>::z(1), Complex64::new(1.0, 0.0))]);
-    let out = layer2(&input, 2, Clifford2Q::cnot(0, 1), &NoTruncation);
+    let out = layer2(&input, 2, PtmChannel::cnot(0, 1), &NoTruncation);
     assert_eq!(out.len(), 1);
     let mut expected = PauliString::<2>::z(0);
     let _ = expected.mul_assign(&PauliString::<2>::z(1));
@@ -153,7 +153,7 @@ fn single_layer_cnot_propagates_z_control() {
 fn single_layer_cnot_propagates_x_target() {
     // CNOT(0,1) · (X⊗I) · CNOT = X⊗X (X on the control fans out to target).
     let input = sum2(2, &[(PauliString::<2>::x(0), Complex64::new(1.0, 0.0))]);
-    let out = layer2(&input, 2, Clifford2Q::cnot(0, 1), &NoTruncation);
+    let out = layer2(&input, 2, PtmChannel::cnot(0, 1), &NoTruncation);
     assert_eq!(out.len(), 1);
     let mut expected = PauliString::<2>::x(0);
     let _ = expected.mul_assign(&PauliString::<2>::x(1));
@@ -170,7 +170,7 @@ fn single_layer_cnot_propagates_x_target() {
 fn single_layer_cnot_w1_propagates_z_control() {
     // The W=2 cases above pack the two qubits in separate words; here both sit in word 0.
     let input = sum1(4, &[(PauliString::<1>::z(1), Complex64::new(1.0, 0.0))]);
-    let out = layer1(&input, 4, Clifford2Q::cnot(0, 1), &NoTruncation);
+    let out = layer1(&input, 4, PtmChannel::cnot(0, 1), &NoTruncation);
     assert_eq!(out.len(), 1);
     assert_eq!(bucket(&out, 0).0[0], [0]);
     assert_eq!(bucket(&out, 0).1[0], [0b11]);
@@ -184,7 +184,7 @@ fn single_layer_cnot_w1_propagates_z_control() {
 #[test]
 fn single_layer_cnot_w1_propagates_x_target() {
     let input = sum1(4, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
-    let out = layer1(&input, 4, Clifford2Q::cnot(0, 1), &NoTruncation);
+    let out = layer1(&input, 4, PtmChannel::cnot(0, 1), &NoTruncation);
     assert_eq!(out.len(), 1);
     assert_eq!(bucket(&out, 0).0[0], [0b11]);
     assert_eq!(bucket(&out, 0).1[0], [0]);
@@ -253,7 +253,7 @@ fn single_layer_w2_word_boundary() {
     // H on qubit 64 conjugates Z(qubit 64) → X(qubit 64) — same as W=1
     // but with the bit in word 1.
     let input = sum2(65, &[(PauliString::<2>::z(64), Complex64::new(1.0, 0.0))]);
-    let out = layer2(&input, 65, Clifford1Q::h(64), &NoTruncation);
+    let out = layer2(&input, 65, PtmChannel::hadamard(64), &NoTruncation);
     assert_eq!(out.len(), 1);
     let x = PauliString::<2>::x(64);
     assert_eq!(bucket(&out, 0).0[0], x.x);
@@ -268,8 +268,8 @@ fn single_layer_w2_word_boundary() {
 #[test]
 fn propagate_empty_sum_stays_empty() {
     let mut circuit = Circuit::<1>::new(8);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford2Q::cnot(0, 1));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::cnot(0, 1));
     circuit.push(PauliRotation::new(PauliString::<1>::z(2), 0.3));
     let out = propagate(
         &circuit,
@@ -299,8 +299,8 @@ fn propagate_zero_channel_circuit_returns_input() {
 fn propagate_two_h_layers_is_identity() {
     let input = sum1(1, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford1Q::h(0));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::hadamard(0));
     let out = propagate(&circuit, input.clone(), &NoTruncation, Direction::Forward);
     assert_eq!(out.len(), 1);
     assert_eq!(bucket(&out, 0).0[0], PauliString::<1>::z(0).x);
@@ -339,11 +339,11 @@ fn propagate_pauli_rotation_round_trip_via_heisenberg() {
 #[test]
 fn propagate_clifford_s_round_trip_via_heisenberg() {
     // Forward applies S (X → Y); Heisenberg applies S† (Y → X). Net
-    // identity on X. This exercises the non-trivial Clifford1Q::adjoint
+    // identity on X. This exercises the transposed PTM of S
     // table — if apply_adjoint defaulted to apply, we'd land on Y.
     let input = sum1(1, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(Clifford1Q::s(0));
+    circuit.push(PtmChannel::phase_gate(0));
     let after_fwd = propagate(&circuit, input.clone(), &NoTruncation, Direction::Forward);
     // sanity: after forward, the term is Y.
     assert_eq!(bucket(&after_fwd, 0).0[0], PauliString::<1>::y(0).x);
@@ -374,8 +374,8 @@ fn propagate_heisenberg_reverses_channel_order() {
     // Distinct outputs prove the reversal is happening.
     let input = sum1(1, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
     let mut circuit = Circuit::<1>::new(1);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford1Q::s(0));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::phase_gate(0));
     let fwd = propagate(&circuit, input.clone(), &NoTruncation, Direction::Forward);
     let heis = propagate(&circuit, input, &NoTruncation, Direction::Heisenberg);
     assert_eq!(bucket(&fwd, 0).0[0], PauliString::<1>::y(0).x);
@@ -472,7 +472,7 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
             (PauliString::<1>::y(0), Complex64::new(2.0, 0.0)),
         ],
     );
-    let out = layer1(&input, 1, Clifford1Q::s(0), &NoTruncation);
+    let out = layer1(&input, 1, PtmChannel::phase_gate(0), &NoTruncation);
     assert_eq!(out.len(), 2);
     let x = PauliString::<1>::x(0);
     let y = PauliString::<1>::y(0);

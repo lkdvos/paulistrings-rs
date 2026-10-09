@@ -16,7 +16,7 @@ This crate is the pure-Rust core. Python bindings live in the
 
 ```rust
 use paulistrings::{
-    Clifford1Q, BuildAccumulator, Circuit, Direction, PauliString,
+    BuildAccumulator, Circuit, Direction, PauliString, PtmChannel,
     TruncationPolicy, propagate,
 };
 use num_complex::Complex64;
@@ -29,7 +29,7 @@ let observable = acc.finalize();
 
 // Heisenberg-evolve through a one-gate circuit: H on qubit 0.
 let mut circuit = Circuit::<1>::new(2);
-circuit.push(Clifford1Q::h(0));
+circuit.push(PtmChannel::hadamard(0));
 
 struct KeepAll;
 impl<const W: usize> TruncationPolicy<W> for KeepAll {}

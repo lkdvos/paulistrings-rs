@@ -20,9 +20,7 @@ use paulistrings::LayerScratch;
 use paulistrings::PauliString;
 use paulistrings::PauliSum;
 use paulistrings::{propagate, Direction};
-use paulistrings::{
-    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
+use paulistrings::{Channel, PauliRotation, PtmChannel};
 // `rand_sum_unmasked` / `tie_heavy_sum_unmasked` are a different draw order from `rand_sum`;
 // the committed criterion baselines are pinned to them specifically.
 use paulistrings::test_support::{
@@ -72,12 +70,12 @@ fn wide_rotation<const W: usize>(qubits: [usize; 4], theta: f64) -> PauliRotatio
 
 /// sqrt(SWAP) on `(q0, q1)`, a fixed non-Clifford two-qubit unitary: the prepared delta set is
 /// wide (up to 16), the maximum bucket fan-in the engine ever sees.
-fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
+fn sqrt_swap(q0: usize, q1: usize) -> PtmChannel {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
     let zero = Complex64::new(0.0, 0.0);
-    GeneralUnitary2Q::from_matrix(
+    PtmChannel::unitary_2q(
         q0,
         q1,
         [
@@ -242,12 +240,9 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_layer_bucketed");
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
 
-    let h = Clifford1Q::h(0);
-    let cnot = Clifford2Q::cnot(0, 1);
-    let depol = Depolarizing {
-        support: [0],
-        p: 0.05,
-    };
+    let h = PtmChannel::hadamard(0);
+    let cnot = PtmChannel::cnot(0, 1);
+    let depol = PtmChannel::depolarizing(0, 0.05);
     let rot = zz_rotation::<2>(0, 1, 0.1);
     let gu2q = sqrt_swap(0, 1);
     let rot_w4 = wide_rotation::<2>([0, 1, 2, 3], 0.1);
@@ -325,7 +320,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     group.finish();
 }
 
-/// Thread scaling on the widest delta set the engine has: `GeneralUnitary2Q` reads 16 input
+/// Thread scaling on the widest delta set the engine has: a dense `PtmChannel::unitary_2q` reads 16 input
 /// buckets per output vs. a rotation's 2 (`ARCHITECTURE.md §Bucketing`). Threads are {1, 8, 32}
 /// rather than the full sweep: three points fix the curve's ends and knee.
 fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {

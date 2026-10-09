@@ -69,13 +69,13 @@ The same idea, directly against the core:
 
 ```rust
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, propagate};
-use paulistrings::{Clifford1Q, TopN};
+use paulistrings::{PtmChannel, TopN};
 use num_complex::Complex64;
 
 let mut acc = BuildAccumulator::<1>::new(1);
 acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
 let mut circuit = Circuit::<1>::new(1);
-circuit.push(Clifford1Q::h(0));
+circuit.push(PtmChannel::hadamard(0));
 let evolved = propagate(&circuit, acc.finalize(), &TopN(10), Direction::Heisenberg);
 ```
 

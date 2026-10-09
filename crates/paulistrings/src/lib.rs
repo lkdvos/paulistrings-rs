@@ -8,7 +8,7 @@
 //!
 //! ```
 //! use paulistrings::{
-//!     BuildAccumulator, Circuit, Clifford1Q, Direction, PauliString, TruncationPolicy,
+//!     BuildAccumulator, Circuit, Direction, PauliString, PtmChannel, TruncationPolicy,
 //!     propagate,
 //! };
 //! use num_complex::Complex64;
@@ -19,7 +19,7 @@
 //! let observable = accumulator.finalize();
 //!
 //! let mut circuit = Circuit::<1>::new(2);
-//! circuit.push(Clifford1Q::h(0));
+//! circuit.push(PtmChannel::hadamard(0));
 //!
 //! struct KeepAll;
 //! impl<const W: usize> TruncationPolicy<W> for KeepAll {}
@@ -49,9 +49,7 @@ pub mod test_support;
 mod truncation;
 
 pub use channel::{
-    support_mask, AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing,
-    Depolarizing2Q, GeneralUnitary1Q, GeneralUnitary2Q, IdentityChannel, OutputBuffer,
-    PauliChannel, PauliRotation,
+    support_mask, Channel, IdentityChannel, OutputBuffer, PauliRotation, PtmChannel,
 };
 pub use circuit::Circuit;
 pub use collectives::Collectives;

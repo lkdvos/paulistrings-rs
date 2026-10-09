@@ -1,10 +1,9 @@
 use super::coset_fill::{gather_local_input_major, gather_local_output_major, nonzero, GatherRun};
 use super::*;
-use crate::channel::clifford::{Clifford1Q, Clifford2Q};
 use crate::channel::identity::IdentityChannel;
-use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
+use crate::channel::PtmChannel;
 use crate::engine::merge::{merge2_into, sort_rows_with_scratch, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
@@ -65,8 +64,8 @@ pub(super) struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
 /// A Haar-random SU(4), the dense-PTM two-qubit gate.
-pub(super) fn haar_su4(q0: usize, q1: usize) -> crate::channel::GeneralUnitary2Q {
-    crate::channel::GeneralUnitary2Q::from_matrix(q0, q1, crate::test_support::haar_su4_matrix())
+pub(super) fn haar_su4(q0: usize, q1: usize) -> PtmChannel {
+    PtmChannel::unitary_2q(q0, q1, crate::test_support::haar_su4_matrix())
 }
 
 /// The term trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
@@ -165,7 +164,7 @@ fn h_conjugates_z_to_x() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
     accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     let input = accumulator.finalize();
-    let out = bucketed_layer(&input, &Clifford1Q::h(0), &AlwaysKeep, false, 4, 0x1);
+    let out = bucketed_layer(&input, &PtmChannel::hadamard(0), &AlwaysKeep, false, 4, 0x1);
     assert_eq!(out.len(), 1);
     let (x, z, c) = out.iter().next().unwrap();
     assert_eq!(*x, [1]);
@@ -179,7 +178,7 @@ fn cnot_propagates_z_on_the_control() {
     accumulator.add_term(PauliString::<1>::z(1), Complex64::new(1.0, 0.0));
     let input = accumulator.finalize();
     // I⊗Z under CNOT(0 -> 1) becomes Z⊗Z.
-    let out = bucketed_layer(&input, &Clifford2Q::cnot(0, 1), &AlwaysKeep, false, 4, 0x1);
+    let out = bucketed_layer(&input, &PtmChannel::cnot(0, 1), &AlwaysKeep, false, 4, 0x1);
     assert_eq!(out.len(), 1);
     let (x, z, _) = out.iter().next().unwrap();
     assert_eq!(*z, [0b11]);
@@ -252,7 +251,7 @@ fn differential_with_truncation_policies() {
     let input = rand_sum::<1>(1500, 8, 0xF00D);
     // Thresholds far from the coefficient scale, so rounding cannot cross a cutoff.
     let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-    let cnot = Clifford2Q::cnot(1, 5);
+    let cnot = PtmChannel::cnot(1, 5);
 
     for bits in [0u8, 4, 9] {
         let got = bucketed_layer(&input, &rot, &CoefficientThreshold(1e-9), false, bits, 0x11);
@@ -294,21 +293,9 @@ fn rescale_fast_path_agrees_with_the_general_path() {
     let input = rand_sum::<1>(1500, 8, 0x5A5A);
     let chans: Vec<(&str, Box<dyn Channel<1>>)> = vec![
         ("identity", Box::new(IdentityChannel::new())),
-        (
-            "depolarizing",
-            Box::new(Depolarizing {
-                support: [3],
-                p: 0.11,
-            }),
-        ),
-        (
-            "dephasing",
-            Box::new(Dephasing {
-                support: [3],
-                p: 0.11,
-            }),
-        ),
-        ("pauli_z", Box::new(Clifford1Q::z(3))),
+        ("depolarizing", Box::new(PtmChannel::depolarizing(3, 0.11))),
+        ("dephasing", Box::new(PtmChannel::dephasing(3, 0.11))),
+        ("pauli_z", Box::new(PtmChannel::pauli_z(3))),
     ];
     for (name, channel) in &chans {
         let channel_ref: &dyn Channel<1> = channel.as_ref();
@@ -323,10 +310,7 @@ fn rescale_fast_path_agrees_with_the_general_path() {
 #[test]
 fn rescale_fast_path_still_applies_truncation() {
     let input = rand_sum::<1>(1500, 8, 0x5A5B);
-    let depol = Depolarizing {
-        support: [3],
-        p: 0.11,
-    };
+    let depol = PtmChannel::depolarizing(3, 0.11);
     for bits in [0u8, 5] {
         let policy = And(CoefficientThreshold(0.3), WeightCutoff(4));
         let got = bucketed_layer(&input, &depol, &policy, false, bits, 0x41);
@@ -339,12 +323,12 @@ fn rescale_fast_path_still_applies_truncation() {
 // ---- determinism ----
 
 /// sqrt(SWAP): a wide delta set merging three or more contributions per key, the only regime where summation order is observable.
-fn sqrt_swap_w1(a: usize, b: usize) -> crate::channel::GeneralUnitary2Q {
+fn sqrt_swap_w1(a: usize, b: usize) -> PtmChannel {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
     let zero = Complex64::new(0.0, 0.0);
-    crate::channel::GeneralUnitary2Q::from_matrix(
+    PtmChannel::unitary_2q(
         a,
         b,
         [
@@ -358,10 +342,10 @@ fn sqrt_swap_w1(a: usize, b: usize) -> crate::channel::GeneralUnitary2Q {
 
 #[test]
 fn output_agrees_across_bucket_counts_to_fp_tolerance() {
-    // A different bucket count can reorder a key's summands, so agreement is to tolerance; GeneralUnitary2Q is the channel that exercises it.
+    // A different bucket count can reorder a key's summands, so agreement is to tolerance; a dense two-qubit unitary is the channel that exercises it.
     let input = rand_sum::<1>(2000, 8, 0x9001);
     let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-    let cnot = Clifford2Q::cnot(1, 5);
+    let cnot = PtmChannel::cnot(1, 5);
     let gu2q = sqrt_swap_w1(1, 5);
     for channel in [
         &rot as &dyn Channel<1>,
@@ -528,16 +512,13 @@ fn identity_density_classification() {
         "rot_z",
     );
     check(
-        &AmplitudeDamping {
-            support: [5],
-            gamma: 0.3,
-        },
+        &PtmChannel::amplitude_damping(5, 0.3),
         true,
         "amplitude_damping",
     );
     // Sparse: the id amplitude vanishes on some patterns (CNOT: 12 of 16; H: 2 of 4).
-    check(&Clifford2Q::cnot(1, 4), false, "cnot");
-    check(&Clifford1Q::h(3), false, "h");
+    check(&PtmChannel::cnot(1, 4), false, "cnot");
+    check(&PtmChannel::hadamard(3), false, "h");
 }
 
 /// Pins per built-in which sort kernel its layer gets and the two quantities that decide it.
@@ -584,11 +565,11 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
     let cases: Vec<(&str, Box<dyn Channel<1>>)> = vec![
         ("haar_su4", Box::new(haar_su4(1, 5))),
         ("gu2q_sqrt_swap", Box::new(sqrt_swap_w1(1, 5))),
-        ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
-        ("cz", Box::new(Clifford2Q::cz(1, 5))),
-        ("swap", Box::new(Clifford2Q::swap(1, 5))),
-        ("h", Box::new(Clifford1Q::h(3))),
-        ("s", Box::new(Clifford1Q::s(3))),
+        ("cnot", Box::new(PtmChannel::cnot(1, 5))),
+        ("cz", Box::new(PtmChannel::cz(1, 5))),
+        ("swap", Box::new(PtmChannel::swap(1, 5))),
+        ("h", Box::new(PtmChannel::hadamard(3))),
+        ("s", Box::new(PtmChannel::phase_gate(3))),
         (
             "rot_zz",
             Box::new(PauliRotation::new(
@@ -600,13 +581,7 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
                 0.3,
             )),
         ),
-        (
-            "depolarizing",
-            Box::new(Depolarizing {
-                support: [3],
-                p: 0.05,
-            }),
-        ),
+        ("depolarizing", Box::new(PtmChannel::depolarizing(3, 0.05))),
     ];
     assert_eq!(cases.len(), expect.len());
     for ((label, channel), &(want_label, want_streams, want_rpk, want_radix)) in
@@ -693,14 +668,11 @@ fn many_layers_without_converting_out() {
     // Convert in once, run many layers, convert out once, against the oracle.
     let input = rand_sum::<1>(800, 8, 0x7001);
     let chans: Vec<Box<dyn Channel<1>>> = vec![
-        Box::new(Clifford1Q::h(0)),
+        Box::new(PtmChannel::hadamard(0)),
         Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.3)),
-        Box::new(Clifford2Q::cnot(1, 5)),
-        Box::new(Depolarizing {
-            support: [3],
-            p: 0.05,
-        }),
-        Box::new(Clifford1Q::s(6)),
+        Box::new(PtmChannel::cnot(1, 5)),
+        Box::new(PtmChannel::depolarizing(3, 0.05)),
+        Box::new(PtmChannel::phase_gate(6)),
         Box::new(PauliRotation::new(
             {
                 let mut g = PauliString::<1>::z(1);
@@ -730,7 +702,7 @@ fn many_layers_without_converting_out() {
 #[test]
 fn layers_survive_a_rebucket_in_between() {
     let input = rand_sum::<1>(800, 8, 0x7002);
-    let h = Clifford1Q::h(0);
+    let h = PtmChannel::hadamard(0);
     let rot = PauliRotation::new(PauliString::<1>::z(2), 0.3);
 
     let want = naive_apply_layer(
@@ -782,9 +754,9 @@ fn layer_fingerprint<const W: usize>(s: &PauliSum<W>) -> u64 {
 /// The channels in the fingerprint net: one per prepared-path shape (Cliffords, a dense two-qubit unitary, weight-2 and weight-4 rotations, the key-preserving rescale path, and amplitude damping).
 fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
     vec![
-        ("clifford1q_h", Box::new(Clifford1Q::h(3))),
-        ("clifford2q_cnot", Box::new(Clifford2Q::cnot(1, 5))),
-        ("clifford2q_swap", Box::new(Clifford2Q::swap(1, 5))),
+        ("clifford1q_h", Box::new(PtmChannel::hadamard(3))),
+        ("clifford2q_cnot", Box::new(PtmChannel::cnot(1, 5))),
+        ("clifford2q_swap", Box::new(PtmChannel::swap(1, 5))),
         (
             // sqrt(SWAP): non-Clifford with a wide delta set.
             "general_unitary2q",
@@ -793,7 +765,7 @@ fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
                 let hc = Complex64::new(0.5, -0.5);
                 let one = Complex64::new(1.0, 0.0);
                 let zero = Complex64::new(0.0, 0.0);
-                crate::channel::GeneralUnitary2Q::from_matrix(
+                PtmChannel::unitary_2q(
                     1,
                     5,
                     [
@@ -830,19 +802,10 @@ fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
                 0.41,
             )),
         ),
-        (
-            "depolarizing",
-            Box::new(Depolarizing {
-                support: [2],
-                p: 0.07,
-            }),
-        ),
+        ("depolarizing", Box::new(PtmChannel::depolarizing(2, 0.07))),
         (
             "amp_damping",
-            Box::new(AmplitudeDamping {
-                support: [2],
-                gamma: 0.3,
-            }),
+            Box::new(PtmChannel::amplitude_damping(2, 0.3)),
         ),
     ]
 }
@@ -944,7 +907,7 @@ fn single_bucket_sum_is_one_serial_coset() {
             },
             0.37,
         )) as Box<dyn Channel<1>>,
-        Box::new(Clifford2Q::cnot(2, 6)),
+        Box::new(PtmChannel::cnot(2, 6)),
     ] {
         let got = bucketed_layer(&input, channel.as_ref(), &AlwaysKeep, false, 0, 0xEE);
         assert_eq!(got.num_buckets(), 1);
@@ -1009,12 +972,12 @@ fn in_place_layers_share_one_scratch_across_channel_types() {
         },
         0.29,
     );
-    let cnot = Clifford2Q::cnot(3, 8);
+    let cnot = PtmChannel::cnot(3, 8);
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
     let zero = Complex64::new(0.0, 0.0);
-    let gu2q = crate::channel::GeneralUnitary2Q::from_matrix(
+    let gu2q = PtmChannel::unitary_2q(
         2,
         6,
         [
@@ -1045,7 +1008,7 @@ fn capacity_stabilizes_across_repeated_layers() {
     let input = rand_sum::<1>(2000, 10, 0xCAFE);
     let hash = Gf2Hash::<1>::new(10, 4, 0xF00);
     let mut b = input.with_hash(hash);
-    let hgate = Clifford1Q::h(3);
+    let hgate = PtmChannel::hadamard(3);
     let prepared = hgate.prepare(b.hash(), false).unwrap();
     let mut scratch = LayerScratch::<1>::new();
 
@@ -1127,9 +1090,9 @@ fn coset_path_is_correct_for_a_non_subspace_delta_set() {
 mod extra_rows_tests {
     use super::*;
     use super::{assert_terms_close, bucketed_layer, AlwaysKeep};
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
+    use crate::channel::PtmChannel;
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::pauli_sum::hash::Gf2Hash;
@@ -1269,7 +1232,7 @@ mod extra_rows_tests {
     fn injected_rows_land_in_their_original_bucket_and_are_summed() {
         let input = rand_sum::<1>(600, 8, 0xE47A);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let cnot = Clifford2Q::cnot(1, 5);
+        let cnot = PtmChannel::cnot(1, 5);
         // At `bits = 5` both channels permute non-trivially and run the parallel chunk loop (16 and 8 cosets).
         let cases: [(&str, &dyn Channel<1>, u8, usize); 4] = [
             ("rot bits=5", &rot, 5, 1),
@@ -1318,7 +1281,7 @@ mod extra_rows_tests {
     fn an_empty_injection_changes_nothing() {
         let input = rand_sum::<1>(600, 8, 0xE47B);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let cnot = Clifford2Q::cnot(1, 5);
+        let cnot = PtmChannel::cnot(1, 5);
         for channel in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
             for bits in [0u8, 2, 5] {
                 let empty = Injected::<1>::default();
@@ -1341,7 +1304,7 @@ mod extra_rows_tests {
         accumulator.add_term(PauliString::<1>::z(1), Complex64::new(1.0, 0.0));
         let input = accumulator.finalize();
         // H on qubit 0 sends Z₀ → X₀ with amplitude 1 and leaves Z₁ alone.
-        let h = Clifford1Q::h(0);
+        let h = PtmChannel::hadamard(0);
         let x0 = PauliString::<1>::x(0);
         let z1 = PauliString::<1>::z(1);
 
@@ -1380,9 +1343,9 @@ mod extra_rows_tests {
 mod finalize_tests {
     use super::*;
     use super::{assert_same_terms, assert_terms_close, naive_apply_layer, rand_sum};
-    use crate::channel::clifford::Clifford1Q;
     use crate::channel::rotation::PauliRotation;
     use crate::channel::Channel;
+    use crate::channel::PtmChannel;
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
@@ -1518,7 +1481,7 @@ mod finalize_tests {
         let policy = And(CoefficientThreshold(1e-9), TopN(300));
         let chans: Vec<Box<dyn Channel<1>>> = vec![
             Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.37)),
-            Box::new(Clifford1Q::h(0)),
+            Box::new(PtmChannel::hadamard(0)),
             Box::new(PauliRotation::new(PauliString::<1>::x(5), 0.21)),
         ];
 
@@ -1552,7 +1515,7 @@ mod tie_tests {
 
         let input = rand_sum::<1>(4000, 10, 0xC1C1);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.37);
-        let cnot = crate::channel::clifford::Clifford2Q::cnot(1, 5);
+        let cnot = crate::channel::PtmChannel::cnot(1, 5);
 
         for channel in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
             // 64 buckets, well above MIN_COSETS_FOR_PARALLEL.
@@ -1592,14 +1555,11 @@ mod tie_tests {
     /// The in-place rescale path is parallel too, and must give the same answer.
     #[test]
     fn parallel_rescale_is_byte_identical_across_thread_counts() {
-        use crate::channel::noise::Depolarizing;
         use crate::channel::Channel;
+        use crate::channel::PtmChannel;
 
         let input = rand_sum::<1>(4000, 10, 0xC1C2);
-        let depol = Depolarizing {
-            support: [3],
-            p: 0.11,
-        };
+        let depol = PtmChannel::depolarizing(3, 0.11);
         let run = |threads: usize| {
             rayon::ThreadPoolBuilder::new()
                 .num_threads(threads)

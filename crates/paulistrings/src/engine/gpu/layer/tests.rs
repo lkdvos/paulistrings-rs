@@ -1,7 +1,7 @@
 use super::fast_paths::perm_threads;
 use super::options::parse_bytes;
 use super::*;
-use crate::channel::{Channel, GeneralUnitary2Q};
+use crate::channel::{Channel, PtmChannel};
 use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::{
@@ -10,13 +10,13 @@ use crate::test_support::{
 use num_complex::Complex64;
 
 /// `SWAP·CNOT` as a matrix: its symplectic map has no fixed nonzero vector, so all 16 deltas are realized and every row emits exactly one record.
-fn sixteen_delta_permutation() -> GeneralUnitary2Q {
+fn sixteen_delta_permutation() -> PtmChannel {
     let e = |i: usize| -> [Complex64; 4] {
         let mut r = [Complex64::new(0.0, 0.0); 4];
         r[i] = Complex64::new(1.0, 0.0);
         r
     };
-    GeneralUnitary2Q::from_matrix(0, 1, [e(0), e(3), e(1), e(2)])
+    PtmChannel::unitary_2q(0, 1, [e(0), e(3), e(1), e(2)])
 }
 
 /// One layer on a single-bucket device sum under `opts`, against the naive oracle; returns the counters.
@@ -82,7 +82,7 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
     assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
 
     // A Haar SU(4) row with a non-identity pattern emits 15 records: the one entry mapping it onto `I⊗I` is exactly zero.
-    let su4 = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
+    let su4 = PtmChannel::unitary_2q(0, 1, haar_su4_matrix());
     let record_cap = crate::engine::gpu::module::kernel_set(0, 2)
         .unwrap()
         .layer_cap();

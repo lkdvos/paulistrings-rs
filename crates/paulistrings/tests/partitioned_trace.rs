@@ -5,8 +5,8 @@ use paulistrings::test_support::{
     low_weight_sum, partition_rows, rand_sum, unpinned_partitions, KeepAll,
 };
 use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
-use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
+use paulistrings::{PauliRotation, PtmChannel};
 use paulistrings::{ScatterOptions, ScatterRows};
 
 const NQ: usize = 16;
@@ -19,8 +19,8 @@ fn config(partitions: usize) -> PartitionConfig {
 /// cross), a weight-2 rotation and a weight-4 one.
 fn circuit() -> Circuit<1> {
     let mut c = Circuit::<1>::new(NQ);
-    c.push(Clifford1Q::h(0));
-    c.push(Clifford2Q::cnot(1, 2));
+    c.push(PtmChannel::hadamard(0));
+    c.push(PtmChannel::cnot(1, 2));
     c.push(PauliRotation::new(
         PauliString::<1> {
             x: [0],
@@ -147,13 +147,10 @@ fn total_rows_exchanged_counts_the_anticommuting_terms() {
 /// A key-preserving layer crosses nothing and makes no transport call.
 #[test]
 fn a_key_preserving_layer_is_local() {
-    use paulistrings::Depolarizing;
+    use paulistrings::PtmChannel;
 
     let mut circuit = Circuit::<1>::new(NQ);
-    circuit.push(Depolarizing {
-        support: [3],
-        p: 0.1,
-    });
+    circuit.push(PtmChannel::depolarizing(3, 0.1));
     let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x4), &config(2))
         .expect("topology resolves");
     ps.enable_trace();

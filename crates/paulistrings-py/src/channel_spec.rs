@@ -2,13 +2,9 @@
 //! Free-function factories like `gates.h(qubit)` return one; width is fixed when it is appended to a `Circuit`, materializing the monomorphized core channel onto `Circuit<W>`.
 
 use num_complex::Complex64;
-// Aliased: `ChannelSpec` has a variant of the same name, which would otherwise silently collide in `push_into`.
 use paulistrings::Circuit as CoreCircuit;
 use paulistrings::PauliString;
-use paulistrings::{
-    AmplitudeDamping, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, Depolarizing2Q,
-    GeneralUnitary1Q, GeneralUnitary2Q, PauliChannel as CorePauliChannel, PauliRotation,
-};
+use paulistrings::{PauliRotation, PtmChannel};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -62,7 +58,7 @@ pub enum ChannelSpec {
     S {
         qubit: usize,
     },
-    /// `S^dagger`. Its own variant rather than a `Unitary1Q` holding `diag(1, -i)`, so `adjoint()` has a named spelling and the key-preserving Clifford fast path stays instead of routing through a PTM.
+    /// `S^dagger`. Its own variant rather than a `Unitary1Q` holding `diag(1, -i)`, so `adjoint()` has a named spelling and it stays a signed permutation rather than a general unitary.
     Sdg {
         qubit: usize,
     },
@@ -309,15 +305,15 @@ impl ChannelSpec {
     /// Materialize the spec at width `W` and push it onto `circuit`. Qubit indices must already have been checked against `W` — `CircuitImpl::push_spec`'s job, and its only caller.
     pub fn push_into<const W: usize>(&self, circuit: &mut CoreCircuit<W>) {
         match self {
-            Self::H { qubit } => circuit.push(Clifford1Q::h(*qubit)),
-            Self::S { qubit } => circuit.push(Clifford1Q::s(*qubit)),
-            Self::Sdg { qubit } => circuit.push(Clifford1Q::s(*qubit).adjoint()),
-            Self::X { qubit } => circuit.push(Clifford1Q::x(*qubit)),
-            Self::Y { qubit } => circuit.push(Clifford1Q::y(*qubit)),
-            Self::Z { qubit } => circuit.push(Clifford1Q::z(*qubit)),
-            Self::Cnot { control, target } => circuit.push(Clifford2Q::cnot(*control, *target)),
-            Self::Cz { q0, q1 } => circuit.push(Clifford2Q::cz(*q0, *q1)),
-            Self::Swap { q0, q1 } => circuit.push(Clifford2Q::swap(*q0, *q1)),
+            Self::H { qubit } => circuit.push(PtmChannel::hadamard(*qubit)),
+            Self::S { qubit } => circuit.push(PtmChannel::phase_gate(*qubit)),
+            Self::Sdg { qubit } => circuit.push(PtmChannel::phase_gate(*qubit).adjoint()),
+            Self::X { qubit } => circuit.push(PtmChannel::pauli_x(*qubit)),
+            Self::Y { qubit } => circuit.push(PtmChannel::pauli_y(*qubit)),
+            Self::Z { qubit } => circuit.push(PtmChannel::pauli_z(*qubit)),
+            Self::Cnot { control, target } => circuit.push(PtmChannel::cnot(*control, *target)),
+            Self::Cz { q0, q1 } => circuit.push(PtmChannel::cz(*q0, *q1)),
+            Self::Swap { q0, q1 } => circuit.push(PtmChannel::swap(*q0, *q1)),
             Self::Rz { theta, qubit } => {
                 let p = PauliString::<W>::z(*qubit);
                 circuit.push(PauliRotation::new(p, *theta));
@@ -347,44 +343,23 @@ impl ChannelSpec {
                 }
                 circuit.push(PauliRotation::new(gen, *theta));
             }
-            Self::Depolarize { p, qubit } => {
-                circuit.push(Depolarizing {
-                    support: [*qubit],
-                    p: *p,
-                });
-            }
-            Self::Dephase { p, qubit } => {
-                circuit.push(Dephasing {
-                    support: [*qubit],
-                    p: *p,
-                });
-            }
+            Self::Depolarize { p, qubit } => circuit.push(PtmChannel::depolarizing(*qubit, *p)),
+            Self::Dephase { p, qubit } => circuit.push(PtmChannel::dephasing(*qubit, *p)),
             Self::AmplitudeDamping { gamma, qubit } => {
-                circuit.push(AmplitudeDamping {
-                    support: [*qubit],
-                    gamma: *gamma,
-                });
+                circuit.push(PtmChannel::amplitude_damping(*qubit, *gamma));
             }
             Self::PauliChannel { px, py, pz, qubit } => {
-                circuit.push(CorePauliChannel {
-                    support: [*qubit],
-                    px: *px,
-                    py: *py,
-                    pz: *pz,
-                });
+                circuit.push(PtmChannel::pauli_channel(*qubit, *px, *py, *pz));
             }
             Self::Depolarize2 { p, q0, q1 } => {
-                circuit.push(Depolarizing2Q {
-                    support: [*q0, *q1],
-                    p: *p,
-                });
+                circuit.push(PtmChannel::depolarizing_2q(*q0, *q1, *p))
             }
             // Converted to a PTM here, once per circuit push, rather than stored as one in the spec (which would make it 4 KB).
             Self::Unitary1Q { qubit, matrix } => {
-                circuit.push(GeneralUnitary1Q::from_matrix(*qubit, *matrix));
+                circuit.push(PtmChannel::unitary_1q(*qubit, *matrix));
             }
             Self::Unitary2Q { q0, q1, matrix } => {
-                circuit.push(GeneralUnitary2Q::from_matrix(*q0, *q1, *matrix));
+                circuit.push(PtmChannel::unitary_2q(*q0, *q1, *matrix));
             }
         }
     }

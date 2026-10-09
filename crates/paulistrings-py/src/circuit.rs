@@ -253,21 +253,21 @@ impl Circuit {
 
     fn depolarize(&mut self, p: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
-            self.push(ChannelSpec::Depolarize { p, qubit })?;
+            self.push(crate::noise::depolarize_spec(p, qubit)?)?;
         }
         Ok(())
     }
 
     fn dephase(&mut self, p: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
-            self.push(ChannelSpec::Dephase { p, qubit })?;
+            self.push(crate::noise::dephase_spec(p, qubit)?)?;
         }
         Ok(())
     }
 
     fn amplitude_damping(&mut self, gamma: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
-            self.push(ChannelSpec::AmplitudeDamping { gamma, qubit })?;
+            self.push(crate::noise::amplitude_damping_spec(gamma, qubit)?)?;
         }
         Ok(())
     }

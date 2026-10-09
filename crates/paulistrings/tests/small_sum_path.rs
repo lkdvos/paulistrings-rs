@@ -198,11 +198,7 @@ fn assert_engines_agree<const W: usize, T>(
         "{what}: gate trace nanos length",
     );
     assert_terms_close(&got, &want, 1e-9, what);
-    // `assert_invariants` is debug-only and this file is also built by
-    // `cargo test --release`, so the call has to be gated (see
-    // `tests/propagate.rs`).
-    #[cfg(debug_assertions)]
-    got.assert_invariants();
+    paulistrings::test_support::assert_invariants(&got);
 }
 
 // ---- defaults are untouched ----

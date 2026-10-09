@@ -4,7 +4,6 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
-use crate::pauli_string::PauliString;
 
 /// Default seed for the partitioning hash.
 pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -608,8 +607,8 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Assert the structural invariant: every term in its hash bucket, each bucket strictly ascending in `(x, z)`, every key within `num_qubits`.
-    #[cfg(any(test, debug_assertions))]
-    pub fn assert_invariants(&self) {
+    #[cfg(any(test, debug_assertions, feature = "test-utils"))]
+    pub(crate) fn assert_invariants(&self) {
         assert_eq!(
             self.buckets.len(),
             self.hash.num_buckets(),
@@ -626,7 +625,7 @@ impl<const W: usize> PauliSum<W> {
                     got as usize, b,
                     "PauliSum: term {i} of bucket {b} hashes to {got}",
                 );
-                let term = PauliString::<W> {
+                let term = crate::pauli_string::PauliString::<W> {
                     x: columns.x[i],
                     z: columns.z[i],
                 };

@@ -515,6 +515,11 @@ pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, 
     }
 }
 
+/// Panics unless `sum` holds [`PauliSum`]'s structural invariant: every term in its hash bucket, each bucket strictly ascending in `(x, z)`, every key within `num_qubits`.
+pub fn assert_invariants<const W: usize>(sum: &PauliSum<W>) {
+    sum.assert_invariants();
+}
+
 /// Same keys; coefficients within `tol`, since two implementations can sum duplicate keys in different orders and floating-point addition is not associative — the correctness bar per the crate's determinism policy.
 pub fn assert_terms_close<const W: usize>(
     got: &PauliSum<W>,

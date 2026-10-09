@@ -338,7 +338,7 @@ impl<const W: usize> GpuSum<W> {
         Ok(())
     }
 
-    /// Check the device-side analogue of [`PauliSum::assert_invariants`], with order within a bucket free; the error describes the first class of violation, or the device error that stopped the check.
+    /// Check the device-side analogue of the [`PauliSum`] structural invariant, with order within a bucket free; the error describes the first class of violation, or the device error that stopped the check.
     pub fn assert_invariants_device(&self) -> Result<(), String> {
         self.check_invariants().map_err(|e| e.to_string())?
     }

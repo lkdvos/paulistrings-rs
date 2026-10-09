@@ -45,6 +45,7 @@ fn bucketed_expectation_of_an_empty_sum_is_zero() {
 }
 
 use super::*;
+use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PartitionRows;
 use crate::phase::Phase;

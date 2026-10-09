@@ -105,10 +105,30 @@ Follow-ups folded into stage B: `PartitionedSum::scatter_with_rows` and the GPU 
 `538b7b0` CLAUDE.md 232 → 189 lines (new "Code organisation" section, testing policy for sibling `tests.rs`, repo layout current; dropped architecture detail, uv version facts, some MPI/CUDA recipe variants, perf numbers now pointing at HARDWARE.md), `9a7b417` FINDINGS.md 487 → 300 (all headings kept; shipped/superseded GPU items relabelled), `2060f53` HARDWARE.md 299 → 284 (tables kept; host-staged GPU numbers labelled as such).
 Found: Python-side code cites `FINDINGS.md §A3/§A5/§A7/§A8-ii`, labels that match no heading (pre-existing). SIMD entry's "build is SSE2" still holds (no `target-cpu` in `.cargo/config.toml`).
 
+### As applied, stage B (D1–D3, D7, D10, D14 follow-up)
+
+Per-folder passes cherry-picked from parallel worktrees: B7 `52b7c21`..`8b6ab4f`, B5 `44897f8`..`f7bcb04`, B4 `23120de`..`8d56e04`, B1 `4759caa`..`0fa3596`, B2 `01d9ae6`..`79ab14f`, B6 `5d92df1`..`1b44d22`, B3 ..`ddfbd09`; then B8 `cd9e950`..`2489250` (cross-folder renames, every `scatter` in `scatter`/`scatter_with` shape via `ScatterOptions`/`ScatterRows::resolve`, `assert_invariants` via `test_support`, `RemoteDelta::partition_delta` dropped).
+Totals vs `89bdcca`: production 22.9k → 20.5k lines, production comment lines 5036 → 2340, tests + `test_support` 19.9k → 19.6k; 41 doc examples removed (each checked covered elsewhere; workspace 799 → 758 tests); non-comment production lines roughly flat (renames rewrap, split files add headers).
+Doc bugs fixed: `Gf2Hash::coarsen` merges `(b, b+B/2)` not `(2i, 2i+1)`; pipeline early-slot tag; `ExchangeBlock::header` `num_buckets` meaning; in-process collectives use atomics not channels; `ExportScratch` derives `Default`.
+Python: `Truncation.__repr__` kept `Coeff(...)` via a `tree_repr` in the bindings.
+Verified at `2489250`: fmt/clippy (default, `cuda,phase-timing,test-utils`, py `cuda`, `cuda,mpi`), rustdoc `-D warnings`, 758 workspace tests, `cuda` 888 passed on the A6000 (device tests ran), pytest 523/101, `mpi-test.sh --ranks 2,4` Rust and `--python`, `cuda,mpi` `mpi_ranks` one rank 33 ok (two ranks on one GPU unsupported by NCCL).
+Not yet measured: code A/B against `89bdcca` (D8).
+
 ## Possible improvements
 
 ## Open items
 
+- Release-mode guard: `Depolarizing2Q` with equal qubits is only `debug_assert`ed (chunk 5).
+- `PAULISTRINGS_NCCL_TIMEOUT_S` also bounds the in-process `PeerWire` (misleading env-var name; chunk 19).
+- `GpuDistributedSum::propagate_with` only `debug_assert!`s a stale device error, `GpuPartitionedSum` returns it (chunk 20).
+- `Prepared` is the public return type of `Channel::prepare` but unnameable outside `test_support`, so custom `prepare` overrides cannot be written (chunk 5/9).
+- Fold `phase-timing` cfg blocks in the layer loop and coset kernel behind a no-op stamp; split partitioned/device-only `PhaseStats` fields (chunk 8, needs A/B).
+- Shared two-pointer merge skeleton (`merge_two`, `merge_two_adding`, `PauliSum::overlap`) (chunk 3).
+- ARCHITECTURE.md contradictions: §Truncation "TopN remains the default" vs ApproxTopN partitioned default; §Channels PTM constructor that doesn't exist, missing `PauliChannel`/`Depolarizing2Q`; §Truncation sketch missing `finalizes_layer`/`CollapseSample`.
+- Python code cites `FINDINGS.md §A3/§A5/§A7/§A8-ii`, which match no heading.
+- `arch_static` leaks one string per unknown compute arch (bounded).
+- Files still over the soft cap: `mpi.rs`, `gpu/layer.rs`, `distributed.rs`, `test_support.rs`.
+
 ## Resume here
 
-Stages A and B0 done. B1–B7 running in parallel worktrees under `/home/ldevos/review-worktrees/b{1..7}` (branches `review-b1`..`review-b7`), then B8 applies the collected cross-folder renames; then stage C. B1–B7 (comments/naming/mechanical cuts per folder, parallel worktrees). Preparatory pass: (stage A: organisation, test extraction, pub surface; stage B: comments, naming, mechanical cuts by folder; stage C: CLAUDE.md and research docs). Chunk 0 tour after it lands.
+Preparatory pass (stages A, B0, B1–B8, C) complete and verified at `2489250`; code A/B vs `89bdcca` handed to the user. Next: chunk 0 tour on the reorganised tree (update the global map paths first).

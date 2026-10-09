@@ -5,6 +5,7 @@ use super::plan::PartitionPlan;
 use super::transport::{Collectives, Transport};
 use super::truncation::PartitionedTruncation;
 use crate::channel::prepared::Prepared;
+use crate::engine::bucketed::LayerScratch;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
@@ -25,6 +26,11 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
         let _ = prepared;
         crate::pauli_sum::storage::desired_bits(self.len(), target_bucket_len, min_buckets)
             .max(self.hash().bits())
+    }
+    /// Refine to the host bucket policy without the prepared channel and return `true`, or return `false` for a backend whose proposal needs it.
+    fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {
+        let _ = (target_bucket_len, min_buckets);
+        false
     }
     /// Move the partition out, leaving an empty one under the same hash so the driver stays consistent if the work is never handed back.
     fn detach(&mut self) -> Self;
@@ -54,10 +60,21 @@ pub struct HostPartition<const W: usize> {
 
 impl<const W: usize> HostPartition<W> {
     pub(crate) fn new(sum: PauliSum<W>) -> Self {
+        Self::with_layer_scratch(sum, LayerScratch::default())
+    }
+
+    pub(crate) fn with_layer_scratch(sum: PauliSum<W>, layer: LayerScratch<W>) -> Self {
         Self {
             sum,
-            state: PartitionState::default(),
+            state: PartitionState {
+                layer,
+                ..PartitionState::default()
+            },
         }
+    }
+
+    pub(crate) fn into_parts(self) -> (PauliSum<W>, LayerScratch<W>) {
+        (self.sum, self.state.layer)
     }
 }
 
@@ -75,6 +92,12 @@ impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
     #[inline]
     fn refine(&mut self) {
         self.sum.refine();
+    }
+
+    #[inline]
+    fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {
+        self.sum.rebucket(target_bucket_len, min_buckets);
+        true
     }
 
     fn detach(&mut self) -> Self {

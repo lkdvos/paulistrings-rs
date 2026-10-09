@@ -21,8 +21,7 @@ use crate::pauli_sum::PauliSum;
 
 use super::sum::PartitionedSum;
 
-/// The unpartitioned engine's `log` target, so one filter covers both.
-pub(super) const LOG_TARGET: &str = "paulistrings::propagate";
+pub(super) use crate::engine::LOG_TARGET;
 
 /// Layers between two bucket-count agreements, and the length of the opening ramp that precedes them (ARCHITECTURE.md §Partitioning).
 pub const BITS_AGREE_EVERY: usize = 16;
@@ -67,10 +66,10 @@ impl Collectives for CountingCollectives<'_> {
 }
 
 /// One partition's payload, moved into its thread for the duration of a call and handed back.
-pub(super) struct PartitionWork<B> {
-    pub(super) local: B,
+pub(crate) struct PartitionWork<B> {
+    pub(crate) local: B,
     /// One row per layer, empty unless tracing is on.
-    pub(super) rows: Vec<PartitionLayerRow>,
+    pub(crate) rows: Vec<PartitionLayerRow>,
 }
 
 impl<B> PartitionWork<B> {
@@ -105,11 +104,11 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
 }
 
 /// What a partition knows about itself while it walks the layers.
-pub(super) struct PartitionContext<'a, const W: usize> {
-    pub(super) rows: &'a PartitionRows<W>,
-    pub(super) rank: usize,
-    pub(super) size: usize,
-    pub(super) tracing: bool,
+pub(crate) struct PartitionContext<'a, const W: usize> {
+    pub(crate) rows: &'a PartitionRows<W>,
+    pub(crate) rank: usize,
+    pub(crate) size: usize,
+    pub(crate) tracing: bool,
 }
 
 /// [`Channel::prepare`], or the unpartitioned engine's hard error naming the partition and layer.
@@ -133,7 +132,7 @@ fn prepare_or_panic<const W: usize>(
 }
 
 /// One partition's layer loop, run in lock-step with its peers inside its own pool (ARCHITECTURE.md §Partitioning).
-pub(super) fn run_layers<const W: usize, T, X, B>(
+pub(crate) fn run_layers<const W: usize, T, X, B>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,
@@ -158,7 +157,10 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
     // `finalizes_layer` is a property of the policy type, so skipping the collective call is safe on every partition alike.
     let finalizes = policy.finalizes_layer();
     let policy_calls = AtomicU32::new(0);
+    // At `P = 1` the local answer is the agreed one, so the loop rebuckets every layer exactly as an unpartitioned run would.
+    let solo = group_size == 1;
     let local = &mut work.local;
+    let mut plan = PartitionPlan::default();
 
     for k in 0..n {
         let index = match direction {
@@ -181,16 +183,22 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
             stats.terms_in += terms_before as u64;
         }
 
-        // Prepared before the bucket count is settled, since the plan decides whether this layer agrees it; only `bucket_delta` depends on the count, so a refining layer prepares again.
+        // Alone, a backend that sizes its buckets without the prepared channel settles the count first, so a growing layer prepares once.
+        let refined_early =
+            solo && local.refine_unprepared(options.target_bucket_len, options.min_buckets);
+        #[cfg(feature = "phase-timing")]
+        if refined_early {
+            stamp.lap(&mut local.stats().rebucket_ns);
+        }
+
+        // Otherwise prepared before the bucket count is settled, since the plan decides whether this layer agrees it; only `bucket_delta` depends on the count, so a refining layer prepares again.
         let mut prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
-        let mut plan = PartitionPlan::new(&prepared, rows, rank as u32);
+        plan.rebuild(&prepared, rows, rank as u32);
         #[cfg(feature = "phase-timing")]
         stamp.lap(&mut local.stats().prepare_ns);
 
         let mut collectives = 0u32;
-        // At `P = 1` the local answer is the agreed one, so the loop rebuckets every layer exactly as `propagate` does.
-        let solo = group_size == 1;
-        if solo || plan.has_remote() || agrees_bucket_bits(k) {
+        if !refined_early && (solo || plan.has_remote() || agrees_bucket_bits(k)) {
             let mut want =
                 local.proposed_bits(&prepared, options.target_bucket_len, options.min_buckets);
             if !solo {
@@ -206,7 +214,7 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
                 #[cfg(feature = "phase-timing")]
                 stamp.lap(&mut local.stats().rebucket_ns);
                 prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
-                plan = PartitionPlan::new(&prepared, rows, rank as u32);
+                plan.rebuild(&prepared, rows, rank as u32);
                 #[cfg(feature = "phase-timing")]
                 stamp.lap(&mut local.stats().prepare_ns);
             }
@@ -239,6 +247,7 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
         if tracing {
             record_layer_row(
                 &mut work.rows,
+                size,
                 local.hash().bits(),
                 collectives,
                 index as u32,
@@ -252,7 +261,19 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
         }
 
         if debug_on {
-            if let Some(elapsed) = elapsed {
+            let Some(elapsed) = elapsed else { continue };
+            if solo {
+                log::debug!(
+                    target: LOG_TARGET,
+                    "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
+                    k + 1,
+                    n,
+                    channel.debug_name(),
+                    terms_before,
+                    local.len(),
+                    elapsed.as_secs_f64() * 1e3,
+                );
+            } else {
                 log::debug!(
                     target: LOG_TARGET,
                     "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {} remote deltas, \

@@ -91,7 +91,7 @@ impl PartitionTrace {
 
 /// One layer as a single partition saw it, before [`assemble`] transposes it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct PartitionLayerRow {
+pub(crate) struct PartitionLayerRow {
     pub bits: u8,
     pub remote_deltas: u32,
     pub collectives: u32,
@@ -112,6 +112,7 @@ pub(super) struct PartitionLayerRow {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn record_layer_row(
     rows: &mut Vec<PartitionLayerRow>,
+    size: usize,
     bits: u8,
     collectives: u32,
     circuit_index: u32,
@@ -119,9 +120,12 @@ pub(super) fn record_layer_row(
     gate_name: &'static str,
     terms_in: usize,
     terms_out: usize,
-    counts: LayerExchangeCounts,
+    mut counts: LayerExchangeCounts,
     nanos: u64,
 ) {
+    // A layer without an exchange reports empty per-partner vectors.
+    counts.rows_sent.resize(size, 0);
+    counts.bytes_sent.resize(size, 0);
     rows.push(PartitionLayerRow {
         bits,
         remote_deltas: counts.remote_deltas as u32,

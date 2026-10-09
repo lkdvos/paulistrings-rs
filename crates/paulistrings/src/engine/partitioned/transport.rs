@@ -167,7 +167,7 @@ impl ChunkWait for AlreadyHere {
 /// The group operations a partition needs besides the exchange: its rank, the reductions, and a barrier.
 ///
 /// Every partition must issue the identical sequence of collective and transport calls, and every reduction must return the identical value on every partition.
-/// Sealed: implemented only by the in-process transport and `mpi::MpiTransport`.
+/// Sealed: implemented only by the in-process, solo and `mpi::MpiTransport` transports.
 pub trait Collectives: sealed::Sealed + Send + Sync {
     /// This partition's index in the group, `0 <= rank < size`.
     fn rank(&self) -> u32;
@@ -271,6 +271,47 @@ pub trait Transport: Collectives {
                 })
                 .collect(),
         )
+    }
+}
+
+/// The group of one that unpartitioned propagation runs on: no reduction or exchange has anyone to talk to.
+pub(crate) struct SoloTransport;
+
+impl sealed::Sealed for SoloTransport {}
+
+impl Collectives for SoloTransport {
+    fn rank(&self) -> u32 {
+        0
+    }
+    fn size(&self) -> u32 {
+        1
+    }
+    fn allreduce_max_u8(&self, v: u8) -> u8 {
+        v
+    }
+    fn allreduce_sum_u64(&self, _buffer: &mut [u64]) {}
+    fn allreduce_sum_f64(&self, _buffer: &mut [f64]) {}
+    fn barrier(&self) {}
+}
+
+impl Transport for SoloTransport {
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        _spare: &mut Vec<P>,
+        _map: &ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+    {
+        debug_assert!(
+            send.iter().all(Option::is_none),
+            "a group of one sends to no one"
+        );
+        let result = body(&send, &AlreadyHere);
+        (send, result)
     }
 }
 

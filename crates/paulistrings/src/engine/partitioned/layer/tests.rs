@@ -284,7 +284,7 @@ fn no_remote_deltas_means_no_exchange() {
     let mut got_parts = Vec::new();
     for (part, counts, exchanges) in results {
         assert_eq!(exchanges, 0, "a local-only layer called the transport");
-        assert_eq!(counts, LayerExchangeCounts::none(2));
+        assert_eq!(counts, LayerExchangeCounts::default());
         got_parts.push(part);
     }
     let got = PauliSum::merge_partitions(got_parts);

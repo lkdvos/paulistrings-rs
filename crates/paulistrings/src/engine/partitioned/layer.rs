@@ -135,13 +135,13 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
 
 /// One partition's reusable per-layer scratch.
 #[derive(Debug, Default)]
-pub(super) struct PartitionState<const W: usize> {
+pub(crate) struct PartitionState<const W: usize> {
     pub layer: LayerScratch<W>,
     pub export: ExportScratch<W>,
     pub chunks: ChunkMap,
 }
 
-/// What one layer's exchange moved, from this partition's point of view.
+/// What one layer's exchange moved, from this partition's point of view; the per-partner vectors are empty after a layer without an exchange.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct LayerExchangeCounts {
     pub remote_deltas: usize,
@@ -154,6 +154,7 @@ pub(crate) struct LayerExchangeCounts {
 }
 
 impl LayerExchangeCounts {
+    #[cfg(feature = "cuda")]
     pub(crate) fn none(size: u32) -> Self {
         Self {
             remote_deltas: 0,
@@ -183,7 +184,7 @@ where
     // No transport call at all: every partition takes this branch, since `part(d)` depends on the delta alone.
     if !plan.has_remote() {
         apply_layer_bucketed(local, prepared, policy, &mut state.layer);
-        return LayerExchangeCounts::none(size);
+        return LayerExchangeCounts::default();
     }
 
     #[cfg(feature = "phase-timing")]

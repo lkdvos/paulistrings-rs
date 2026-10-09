@@ -311,12 +311,14 @@ Traffic-minimizing rows are cut-like, reading the qubits on the boundary of a sp
 
 The engine's *partition* is not a thread and not a process: it is whatever a `Transport` says a peer is, and `run_layers` is one function generic over the transport, with `scatter_local`, `PartitionWork` and `apply_layer_partitioned` shared below it.
 
+Unpartitioned `propagate` is the third caller: one `HostPartition` on the caller's own Rayon pool over a no-op `SoloTransport`, with the policy wrapped so its plain `finalize_layer` is the collective one; alone, the host backend rebuckets before `prepare` (`PartitionStorage::refine_unprepared`), so a growing layer prepares once.
+
 **Two drivers, because three things above the layer loop do not reconcile.**
 `PartitionedSum` holds `P` partitions inside one process and fans out to them per call; `DistributedSum` *is* one partition, and its peers are other processes (`MpiTransport`, behind the off-by-default `mpi` feature — or the in-process transport, which is how the distributed shape is tested with no MPI in the picture).
 They differ in the transport group's lifetime (per call, against one endpoint for the process's whole life, because an `MPI_Comm` is not something to duplicate per layer), in scatter and gather (one sum split locally and merged back bitwise, against a replicated input and a byte-framed gather to rank 0), and in the consistency check (one process cannot hand its own partitions different circuits, so only the distributed driver pays for it).
 
 **Backend composition.**
-Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
+Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `refine_unprepared`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
 Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
 The loop keeps the `PartitionedTruncation` bound, so a backend cannot widen what a partitioned run accepts, and exact `TopN` stays a compile-time rejection.
 `HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum<W, B = HostPartition<W>>` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.

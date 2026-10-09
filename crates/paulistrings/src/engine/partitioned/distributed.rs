@@ -34,15 +34,15 @@ pub enum PartitionRowPolicy {
     /// [`PartitionRows::from_seed`] with this seed, or the sum's own hash seed at `None`; the default.
     Seeded(Option<u64>),
     /// [`PartitionRows::cut`]: one disjoint qubit block per rank, in rank order; the rows are z-only.
-    Cut(Vec<Vec<u32>>),
+    Cut(Vec<Vec<usize>>),
     /// [`PartitionRows::from_seed_excluding`]: a seeded draw whose rows read neither the x-bits of `exclude_x` nor the z-bits of `exclude_z`, as [`DistributedSum::rotated_overlap`] needs.
     SeededExcluding {
         /// As in [`Seeded`](Self::Seeded).
         seed: Option<u64>,
         /// Qubits whose x-bit no row reads.
-        exclude_x: Vec<u32>,
+        exclude_x: Vec<usize>,
         /// Qubits whose z-bit no row reads.
-        exclude_z: Vec<u32>,
+        exclude_z: Vec<usize>,
     },
 }
 
@@ -58,7 +58,7 @@ impl PartitionRowPolicy {
         bits: u8,
         default_seed: u64,
     ) -> PartitionRows<W> {
-        let mask = |qubits: &[u32]| qubit_mask(qubits.iter().map(|&q| q as usize), num_qubits);
+        let mask = |qubits: &[usize]| qubit_mask(qubits.iter().copied(), num_qubits);
         match self {
             Self::Seeded(seed) => {
                 PartitionRows::from_seed(num_qubits, bits, seed.unwrap_or(default_seed))

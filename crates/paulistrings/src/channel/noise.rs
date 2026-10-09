@@ -6,7 +6,7 @@ use num_complex::Complex64;
 /// Multiply the coefficient by `scale` when the support qubit's Pauli index is `affected`.
 #[inline]
 fn rescale_on_support<const W: usize>(
-    support: u32,
+    support: usize,
     scale: f64,
     affected: impl FnOnce(usize) -> bool,
     input_x: &[u64; W],
@@ -14,7 +14,7 @@ fn rescale_on_support<const W: usize>(
     coeff: Complex64,
     out: &mut OutputBuffer<'_, W>,
 ) {
-    let q = support as usize;
+    let q = support;
     debug_assert!(q < 64 * W);
     let (word, bit, _mask) = qubit_loc(q);
     let index = read_pauli(input_x, input_z, word, bit);
@@ -25,7 +25,7 @@ fn rescale_on_support<const W: usize>(
 /// Single-qubit depolarizing noise with error probability `p`: every non-identity Pauli on the support is scaled by `1 - 4p/3`.
 pub struct Depolarizing {
     /// The single qubit this channel acts on.
-    pub support: [u32; 1],
+    pub support: [usize; 1],
     /// Error probability `p ∈ [0, 1]`.
     pub p: f64,
 }
@@ -64,7 +64,7 @@ impl<const W: usize> Channel<W> for Depolarizing {
 /// Single-qubit dephasing noise with error probability `p`: `X` and `Y` on the support are scaled by `1 - 2p`.
 pub struct Dephasing {
     /// The single qubit this channel acts on.
-    pub support: [u32; 1],
+    pub support: [usize; 1],
     /// Error probability `p ∈ [0, 1]`.
     pub p: f64,
 }
@@ -105,7 +105,7 @@ impl<const W: usize> Channel<W> for Dephasing {
 /// It scales `X` by `1 - 2(py + pz)`, `Y` by `1 - 2(px + pz)` and `Z` by `1 - 2(px + py)`, so `(p/3, p/3, p/3)` is [`Depolarizing`] and `(0, 0, p)` is [`Dephasing`].
 pub struct PauliChannel {
     /// The single qubit this channel acts on.
-    pub support: [u32; 1],
+    pub support: [usize; 1],
     /// Probability of an `X` error.
     pub px: f64,
     /// Probability of a `Y` error.
@@ -133,7 +133,7 @@ impl<const W: usize> Channel<W> for PauliChannel {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
+        let q = self.support[0];
         debug_assert!(q < 64 * W);
         let (word, bit, _mask) = qubit_loc(q);
         let index = read_pauli(input_x, input_z, word, bit);
@@ -153,7 +153,7 @@ impl<const W: usize> Channel<W> for PauliChannel {
 /// Every Pauli that is non-identity on the support is scaled by `1 - 16p/15`.
 pub struct Depolarizing2Q {
     /// The two qubits this channel acts on, which must differ.
-    pub support: [u32; 2],
+    pub support: [usize; 2],
     /// Error probability `p ∈ [0, 1]`.
     pub p: f64,
 }
@@ -184,7 +184,6 @@ impl<const W: usize> Channel<W> for Depolarizing2Q {
         );
         let mut touches_pair = false;
         for &q in &self.support {
-            let q = q as usize;
             debug_assert!(q < 64 * W);
             let (word, bit, _mask) = qubit_loc(q);
             touches_pair |= read_pauli(input_x, input_z, word, bit) != 0;
@@ -203,7 +202,7 @@ impl<const W: usize> Channel<W> for Depolarizing2Q {
 /// Not self-adjoint: `apply` is the Schrödinger map (`I → I + γZ`, `Z → (1-γ)Z`) and `apply_adjoint` its Heisenberg dual (`I → I`, `Z → (1-γ)Z + γI`); both scale `X` and `Y` by `√(1-γ)`.
 pub struct AmplitudeDamping {
     /// The single qubit this channel acts on.
-    pub support: [u32; 1],
+    pub support: [usize; 1],
     /// Damping parameter `γ ∈ [0, 1]`.
     pub gamma: f64,
 }
@@ -226,7 +225,7 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
+        let q = self.support[0];
         debug_assert!(q < 64 * W);
         let (word, bit, mask) = qubit_loc(q);
         let index = read_pauli(input_x, input_z, word, bit);
@@ -255,7 +254,7 @@ impl<const W: usize> Channel<W> for AmplitudeDamping {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
+        let q = self.support[0];
         debug_assert!(q < 64 * W);
         let (word, bit, mask) = qubit_loc(q);
         let index = read_pauli(input_x, input_z, word, bit);

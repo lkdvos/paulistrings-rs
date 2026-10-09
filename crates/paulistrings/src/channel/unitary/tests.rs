@@ -266,7 +266,7 @@ fn derive_local_recovers_the_table() {
     let Prepared::Local(ptm) = prepared else {
         panic!("expected a Local preparation")
     };
-    assert_eq!(ptm.qubits(), &[3]);
+    assert_eq!(ptm.qubits().collect::<Vec<_>>(), [3]);
     for d in ptm.deltas() {
         for s in 0..4usize {
             let t = s ^ d.local_delta as usize;

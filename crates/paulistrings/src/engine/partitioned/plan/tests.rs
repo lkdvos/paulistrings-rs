@@ -13,9 +13,9 @@ fn hash() -> Gf2Hash<2> {
 }
 
 /// One partition row that is `Z` on `qubit`: `part(v)` is the z-bit of `v` there.
-fn z_row(qubit: u32) -> PartitionRows<2> {
+fn z_row(qubit: usize) -> PartitionRows<2> {
     let mut rz = [0u64; 2];
-    rz[qubit as usize / 64] = 1u64 << (qubit % 64);
+    rz[qubit / 64] = 1u64 << (qubit % 64);
     PartitionRows::<2>::from_rows(NQ, vec![[0u64; 2]], vec![rz])
 }
 
@@ -55,7 +55,7 @@ fn without_partition_rows_nothing_is_remote() {
 #[test]
 fn a_wide_rotation_without_partition_rows_is_all_local() {
     let mut gen = PauliString::<2>::z(1);
-    for q in [5u32, 66, 100] {
+    for q in [5, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
     let prepared = prep_of(&PauliRotation::new(gen, 0.41));
@@ -112,7 +112,7 @@ fn a_delta_whose_mask_sets_the_partition_bit_is_remote() {
 #[test]
 fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
     let mut gen = PauliString::<2>::z(1);
-    for q in [5u32, 66, 100] {
+    for q in [5, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
     // A Z row on qubit 1 reads the generator's z-bit there, which is set.

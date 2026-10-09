@@ -27,8 +27,8 @@ fn materialized<const W: usize>(
     let mut circuit = Circuit::<W>::new(a.num_qubits());
     for &q in sites {
         let g = match axis {
-            RotationAxis::Z => PauliString::<W>::z(q as u32),
-            RotationAxis::X => PauliString::<W>::x(q as u32),
+            RotationAxis::Z => PauliString::<W>::z(q),
+            RotationAxis::X => PauliString::<W>::x(q),
         };
         circuit.push(PauliRotation::new(g, 2.0 * delta));
     }
@@ -83,11 +83,11 @@ fn two_qubit_class_hand_values() {
 }
 
 /// Complex coefficients so the sign convention of every off-diagonal entry shows in the imaginary part too.
-fn check_against_materialized<const W: usize>(num_qubits: usize, window: &[u32]) {
+fn check_against_materialized<const W: usize>(num_qubits: usize, window: &[usize]) {
     for (seed, sites) in [
-        (1u64, vec![window[0] as usize, window[2] as usize]),
-        (2, window.iter().map(|&q| q as usize).collect::<Vec<_>>()),
-        (3, vec![window[1] as usize]),
+        (1u64, vec![window[0], window[2]]),
+        (2, window.to_vec()),
+        (3, vec![window[1]]),
     ] {
         let a = rand_sum_on::<W>(300, num_qubits, window, seed);
         for axis in [RotationAxis::Z, RotationAxis::X] {

@@ -46,9 +46,9 @@ impl PauliStringImpl {
     /// Single-site `X`/`Y`/`Z`. Caller has already checked `qubit < num_qubits`.
     fn single(axis: Axis, qubit: usize, num_qubits: usize) -> Option<Self> {
         for_num_qubits!(num_qubits, |W| match axis {
-            Axis::X => CorePauliString::<W>::x(qubit as u32),
-            Axis::Y => CorePauliString::<W>::y(qubit as u32),
-            Axis::Z => CorePauliString::<W>::z(qubit as u32),
+            Axis::X => CorePauliString::<W>::x(qubit),
+            Axis::Y => CorePauliString::<W>::y(qubit),
+            Axis::Z => CorePauliString::<W>::z(qubit),
         })
     }
 

@@ -92,14 +92,14 @@ fn effective_row<const N: usize>(
 #[derive(Clone, Debug)]
 pub struct GeneralUnitary1Q {
     /// The single qubit this gate acts on.
-    pub support: [u32; 1],
+    pub support: [usize; 1],
     /// `table[s][t]`: coefficient of output Pauli `t` for input Pauli `s`.
     pub table: [[Complex64; 4]; 4],
 }
 
 impl GeneralUnitary1Q {
     /// From a 2x2 unitary `u`: `table[s][t] = tr(P_t · U P_s U†) / 2`.
-    pub fn from_matrix(qubit: u32, u: [[Complex64; 2]; 2]) -> Self {
+    pub fn from_matrix(qubit: usize, u: [[Complex64; 2]; 2]) -> Self {
         let u_dagger = dagger(&u);
         let mut table = [[ZERO; 4]; 4];
         for (s, row) in table.iter_mut().enumerate() {
@@ -121,7 +121,7 @@ impl GeneralUnitary1Q {
 /// Body of the one-qubit `apply` and `apply_adjoint`.
 #[inline]
 fn apply_1q<const W: usize>(
-    qubit: u32,
+    qubit: usize,
     table: &[[Complex64; 4]; 4],
     transpose: bool,
     input_x: &[u64; W],
@@ -129,7 +129,7 @@ fn apply_1q<const W: usize>(
     coeff: Complex64,
     out: &mut OutputBuffer<'_, W>,
 ) {
-    let q = qubit as usize;
+    let q = qubit;
     debug_assert!(q < 64 * W);
     let (word, bit, mask) = qubit_loc(q);
     let s = read_pauli(input_x, input_z, word, bit);
@@ -201,14 +201,14 @@ impl<const W: usize> Channel<W> for GeneralUnitary1Q {
 #[derive(Clone, Debug)]
 pub struct GeneralUnitary2Q {
     /// The two qubits this gate acts on.
-    pub support: [u32; 2],
+    pub support: [usize; 2],
     /// `table[s][t]`: coefficient of output Pauli `t` for input Pauli `s`.
     pub table: Box<[[Complex64; 16]; 16]>,
 }
 
 impl GeneralUnitary2Q {
     /// From a 4x4 unitary `u` on `|q0 q1⟩`: `table[s][t] = tr(P_t · U P_s U†) / 4`.
-    pub fn from_matrix(q0: u32, q1: u32, u: [[Complex64; 4]; 4]) -> Self {
+    pub fn from_matrix(q0: usize, q1: usize, u: [[Complex64; 4]; 4]) -> Self {
         let u_dagger = dagger(&u);
         let two_qubit_pauli = |s: usize| -> [[Complex64; 4]; 4] {
             let a = pauli_matrix((s & 1) | ((s >> 1) & 1) << 1);
@@ -236,7 +236,7 @@ impl GeneralUnitary2Q {
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn apply_2q<const W: usize>(
-    support: &[u32; 2],
+    support: &[usize; 2],
     table: &[[Complex64; 16]; 16],
     transpose: bool,
     input_x: &[u64; W],
@@ -244,8 +244,8 @@ fn apply_2q<const W: usize>(
     coeff: Complex64,
     out: &mut OutputBuffer<'_, W>,
 ) {
-    let q0 = support[0] as usize;
-    let q1 = support[1] as usize;
+    let q0 = support[0];
+    let q1 = support[1];
     debug_assert!(q0 < 64 * W && q1 < 64 * W);
     let (word0, bit0, mask0) = qubit_loc(q0);
     let (word1, bit1, mask1) = qubit_loc(q1);

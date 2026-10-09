@@ -224,7 +224,7 @@ fn a_bell_pair_across_the_word_boundary() {
     yy.mul_assign(&PauliString::<2>::y(64));
 
     let mut gens: Vec<(PauliString<2>, bool)> = Vec::with_capacity(n);
-    for q in 0..n as u32 {
+    for q in 0..n {
         match q {
             63 => gens.push((xx, false)),
             64 => gens.push((zz, false)),
@@ -252,7 +252,7 @@ fn a_bell_pair_across_the_word_boundary() {
 fn a_minus_generator_in_the_second_word() {
     let n = 70;
     let mut gens: Vec<(PauliString<2>, bool)> = Vec::with_capacity(n);
-    for q in 0..n as u32 {
+    for q in 0..n {
         gens.push((PauliString::<2>::z(q), q == 64));
     }
     let stabilizer = StabilizerState::<2>::from_generators(n, &gens).unwrap();
@@ -265,7 +265,7 @@ fn a_minus_generator_in_the_second_word() {
 
 /// Diagonal generators `+Z_q` describe `|0…0⟩`, whose expectation the existing product-state scan already computes — an independent oracle.
 fn product_generators<const W: usize>(num_qubits: usize, axis: char) -> StabilizerState<W> {
-    let gens: Vec<(PauliString<W>, bool)> = (0..num_qubits as u32)
+    let gens: Vec<(PauliString<W>, bool)> = (0..num_qubits)
         .map(|q| {
             let p = match axis {
                 'X' => PauliString::<W>::x(q),
@@ -408,12 +408,12 @@ fn cluster_generators<const W: usize>(
 ) -> Vec<(PauliString<W>, bool)> {
     (0..num_qubits)
         .map(|q| {
-            let mut p = PauliString::<W>::x(q as u32);
+            let mut p = PauliString::<W>::x(q);
             if q > 0 {
-                p.mul_assign(&PauliString::<W>::z(q as u32 - 1));
+                p.mul_assign(&PauliString::<W>::z(q - 1));
             }
             if q + 1 < num_qubits {
-                p.mul_assign(&PauliString::<W>::z(q as u32 + 1));
+                p.mul_assign(&PauliString::<W>::z(q + 1));
             }
             (p, signs[q])
         })
@@ -455,11 +455,11 @@ fn ghz_contraction_matches_the_brute_force_group() {
     let n = 7;
     let mut gens: Vec<(PauliString<1>, bool)> = Vec::with_capacity(n);
     let mut all_x = PauliString::<1>::identity();
-    for q in 0..n as u32 {
+    for q in 0..n {
         all_x.mul_assign(&PauliString::<1>::x(q));
     }
     gens.push((all_x, true));
-    for q in 1..n as u32 {
+    for q in 1..n {
         let mut zz = PauliString::<1>::z(q - 1);
         zz.mul_assign(&PauliString::<1>::z(q));
         gens.push((zz, q % 3 == 0));

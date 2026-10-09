@@ -371,7 +371,7 @@ pub fn low_weight_sum<const W: usize>(
 pub fn rand_sum_on<const W: usize>(
     n: usize,
     num_qubits: usize,
-    qubits: &[u32],
+    qubits: &[usize],
     seed: u64,
 ) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
@@ -380,7 +380,7 @@ pub fn rand_sum_on<const W: usize>(
         let mut p = PauliString::<W>::identity();
         for &q in qubits {
             let r = rng.next_u64();
-            let (word, bit) = (q as usize / 64, 1u64 << (q % 64));
+            let (word, bit) = (q / 64, 1u64 << (q % 64));
             if r & 1 == 1 {
                 p.x[word] |= bit;
             }
@@ -682,7 +682,7 @@ pub fn gf2_rank(vs: &[u32]) -> usize {
 /// Full rank means `h` separates every local delta; anything less means two distinct local deltas share one bucket delta.
 pub fn support_delta_rank<const W: usize>(
     h: &crate::pauli_sum::Gf2Hash<W>,
-    qubits: &[u32],
+    qubits: &[usize],
 ) -> usize {
     let mut imgs: Vec<u32> = Vec::with_capacity(2 * qubits.len());
     for &q in qubits {
@@ -779,7 +779,7 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
             Box::new(PauliRotation::new(
                 {
                     let mut g = PauliString::<1>::z(0);
-                    for q in [2u32, 4, 6] {
+                    for q in [2, 4, 6] {
                         g.mul_assign(&PauliString::<1>::x(q));
                     }
                     g
@@ -859,12 +859,12 @@ impl From<KeepAll> for crate::truncation::BuiltinTruncation {
 
 impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
 
-fn set_x<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.x[q as usize / 64] |= 1u64 << (q % 64);
+fn set_x<const W: usize>(p: &mut PauliString<W>, q: usize) {
+    p.x[q / 64] |= 1u64 << (q % 64);
 }
 
-fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.z[q as usize / 64] |= 1u64 << (q % 64);
+fn set_z<const W: usize>(p: &mut PauliString<W>, q: usize) {
+    p.z[q / 64] |= 1u64 << (q % 64);
 }
 
 /// A seeded circuit drawing from every built-in channel class.
@@ -889,9 +889,9 @@ pub fn random_circuit<const W: usize>(
     let kinds: u64 = if dense { 17 } else { 14 };
     let n = num_qubits as u64;
     for _ in 0..layers {
-        let q0 = (rng.next_u64() % n) as u32;
-        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
-        let wrap = |q: u32, d: u32| (q + d) % num_qubits as u32;
+        let q0 = (rng.next_u64() % n) as usize;
+        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as usize;
+        let wrap = |q: usize, d: usize| (q + d) % num_qubits;
         match rng.next_u64() % kinds {
             0 => circuit.push(Clifford1Q::h(q0)),
             1 => circuit.push(Clifford1Q::s(q0)),
@@ -960,8 +960,8 @@ pub fn random_clifford_circuit<const W: usize>(
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
     let n = num_qubits as u64;
     for _ in 0..layers {
-        let q0 = (rng.next_u64() % n) as u32;
-        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
+        let q0 = (rng.next_u64() % n) as usize;
+        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as usize;
         match rng.next_u64() % 6 {
             0 => circuit.push(Clifford1Q::h(q0)),
             1 => circuit.push(Clifford1Q::s(q0)),
@@ -1097,8 +1097,8 @@ pub fn su4_chain<const W: usize>(num_qubits: usize) -> crate::Circuit<W> {
 
 /// A weight-2 `ZZ` rotation — the TFIM bond term, the smallest layer whose generator can cross a partition boundary.
 pub fn zz_rotation<const W: usize>(
-    q0: u32,
-    q1: u32,
+    q0: usize,
+    q1: usize,
     theta: f64,
 ) -> crate::channel::rotation::PauliRotation<W> {
     let mut gen = PauliString::<W> {
@@ -1106,7 +1106,7 @@ pub fn zz_rotation<const W: usize>(
         z: [0u64; W],
     };
     for q in [q0, q1] {
-        gen.z[q as usize / 64] |= 1u64 << (q % 64);
+        gen.z[q / 64] |= 1u64 << (q % 64);
     }
     crate::channel::rotation::PauliRotation::new(gen, theta)
 }
@@ -1126,12 +1126,12 @@ pub fn trotter_steps<const W: usize>(
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
     for _ in 0..steps {
         for q in 0..num_qubits {
-            let q1 = ((q + 1) % num_qubits) as u32;
-            circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
+            let q1 = (q + 1) % num_qubits;
+            circuit.push(zz_rotation::<W>(q, q1, 2.0 * theta));
         }
         for q in 0..num_qubits {
             circuit.push(crate::channel::rotation::PauliRotation::new(
-                PauliString::<W>::x(q as u32),
+                PauliString::<W>::x(q),
                 2.0 * theta,
             ));
         }
@@ -1173,7 +1173,7 @@ pub fn unpinned_partitions(
 /// A verbatim copy of `examples/data/heavy_hex_127.edges`, kept here as a constant so Rust probes need no file I/O; `heavy_hex_127_edges_match_the_source_lattice` pins the transcription.
 /// Degree histogram: 2 qubits of degree 1, 89 of degree 2, 36 of degree 3.
 #[rustfmt::skip]
-pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
+pub const HEAVY_HEX_127_EDGES: [(usize, usize); 144] = [
     (0, 1), (0, 14), (1, 2), (2, 3), (3, 4), (4, 5),
     (4, 15), (5, 6), (6, 7), (7, 8), (8, 9), (8, 16),
     (9, 10), (10, 11), (11, 12), (12, 13), (12, 17), (14, 18),
@@ -1201,7 +1201,7 @@ pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
 ];
 
 /// [`HEAVY_HEX_127_EDGES`] as a `Vec`, for callers that want to own it.
-pub fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+pub fn heavy_hex_127_edges() -> Vec<(usize, usize)> {
     HEAVY_HEX_127_EDGES.to_vec()
 }
 

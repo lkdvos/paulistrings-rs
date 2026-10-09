@@ -64,7 +64,7 @@ fn round_trip<const W: usize>(sum: &PauliSum<W>, what: &str) {
 fn one_term<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     let mut accumulator = BuildAccumulator::<W>::new(num_qubits);
     accumulator.add_term(
-        PauliString::<W>::y(num_qubits as u32 - 1),
+        PauliString::<W>::y(num_qubits - 1),
         Phase::ONE,
         Complex64::new(0.5, -0.25),
     );

@@ -165,7 +165,7 @@ fn one_partition_matches_propagate_bitwise() {
 
     // And with no truncation at all, on a short prefix so the sum stays small.
     let mut short = Circuit::<1>::new(8);
-    for q in 0..6u32 {
+    for q in 0..6 {
         short.push(zz_rotation::<1>(q, (q + 1) % 8, 0.2));
     }
     let small = rand_sum::<1>(500, 8, 0x71A3);

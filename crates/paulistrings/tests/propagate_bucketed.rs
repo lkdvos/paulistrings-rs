@@ -171,7 +171,7 @@ fn mixed_channels() -> Vec<Box<dyn Channel<1>>> {
     let mut zz = PauliString::<1>::z(1);
     zz.mul_assign(&PauliString::<1>::z(4));
     let mut wide = PauliString::<1>::z(0);
-    for q in [2u32, 3, 6] {
+    for q in [2, 3, 6] {
         wide.mul_assign(&PauliString::<1>::x(q));
     }
     vec![
@@ -297,7 +297,7 @@ fn output_is_byte_identical_across_thread_counts() {
 /// `lx × ly` periodic lattice: ZZ bond rotations, then single-site X rotations.
 /// Mirrors `examples/ising_2d_quench.rs`.
 fn ising_step_channels(lx: usize, ly: usize, dt: f64) -> Vec<Box<dyn Channel<1>>> {
-    let idx = |x: usize, y: usize| (y * lx + x) as u32;
+    let idx = |x: usize, y: usize| y * lx + x;
     let mut chans: Vec<Box<dyn Channel<1>>> = Vec::new();
     for y in 0..ly {
         for x in 0..lx {
@@ -354,7 +354,7 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
 
     // Observable: uniform X magnetization.
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
-    for q in 0..n as u32 {
+    for q in 0..n {
         acc.add_term(
             PauliString::<1>::x(q),
             Phase::ONE,
@@ -403,7 +403,7 @@ fn ising_3x3_with_binding_top_n_matches_the_naive_oracle() {
     let policy = And(CoefficientThreshold(1e-12), TopN(1500));
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
-    for q in 0..n as u32 {
+    for q in 0..n {
         acc.add_term(
             PauliString::<1>::x(q),
             Phase::ONE,
@@ -449,7 +449,7 @@ fn ising_quench_with_top_n_matches_the_naive_oracle() {
     let policy = And(CoefficientThreshold(1e-13), TopN(300));
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
-    for q in 0..n as u32 {
+    for q in 0..n {
         acc.add_term(
             PauliString::<1>::x(q),
             Phase::ONE,

@@ -90,11 +90,11 @@ impl<const W: usize> DevicePrepared<W> {
                     }
                     masks.push((d.mask_x, d.mask_z));
                 }
-                let q = ptm.qubits();
+                let mut q = ptm.qubits().map(|q| q as u32);
                 mode = 0;
                 kq = ptm.k() as u32;
-                q0 = q.first().copied().unwrap_or(0);
-                q1 = q.get(1).copied().unwrap_or(0);
+                q0 = q.next().unwrap_or(0);
+                q1 = q.next().unwrap_or(0);
                 rot_cos = 0.0;
                 rot_sin = 0.0;
                 dense = rows as f64 / dim as f64 >= DENSE_ROWS_PER_PATTERN;

@@ -215,7 +215,7 @@ fn derived_table_matches_apply_rotation_weight_1_and_2() {
 fn functional_form_matches_apply_for_a_wide_rotation() {
     // Weight 4 > MAX_LOCAL_SUPPORT, so this takes the Rotation variant.
     let mut gen = PauliString::<2>::z(1);
-    for q in [5u32, 66, 100] {
+    for q in [5, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
     let rot = PauliRotation::new(gen, 0.41);
@@ -360,7 +360,7 @@ fn emit_matches_apply_for_rotations_at_every_width() {
     check_emit_agrees_on_random_inputs::<2, _>(&PauliRotation::new(zz, 0.37), 128, "rot_zz");
     // ...weight 4 takes `Prepared::Rotation`, so `emit_generator` is exercised.
     let mut gen = PauliString::<2>::z(1);
-    for q in [5u32, 66, 100] {
+    for q in [5, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
     let rot = PauliRotation::new(gen, 0.41);
@@ -412,7 +412,7 @@ fn mask_returns_the_entrys_lifted_delta() {
 #[test]
 fn rotation_gen_mask_is_the_generator() {
     let mut gen = PauliString::<2>::z(1);
-    for q in [5u32, 66, 100] {
+    for q in [5, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
     }
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
@@ -440,7 +440,7 @@ fn retain_entries_keeps_the_selected_entries_in_order() {
     let keep = [true, false, true, false];
     let sub = p.retain_entries(&keep);
     assert_eq!(sub.k(), p.k());
-    assert_eq!(sub.qubits(), p.qubits());
+    assert!(sub.qubits().eq(p.qubits()));
     assert_eq!(sub.num_deltas(), 2);
     assert_entry_eq(&sub.deltas()[0], &p.deltas()[0], "entry 0");
     assert_entry_eq(&sub.deltas()[1], &p.deltas()[2], "entry 1");
@@ -566,7 +566,7 @@ fn a_rotation_reads_two_buckets_at_any_generator_weight() {
     // The delta set {0, P} is 1-dimensional at every weight.
     for weight in 1..=6usize {
         let mut gen = PauliString::<2>::z(0);
-        for q in 1..weight as u32 {
+        for q in 1..weight {
             gen.mul_assign(&PauliString::<2>::z(q * 13));
         }
         let rot = PauliRotation::new(gen, 0.3);
@@ -667,7 +667,7 @@ fn support_bits_use_the_clifford2q_packing() {
     let Prepared::Local(p) = prepared else {
         panic!("expected Local")
     };
-    assert_eq!(p.qubits(), &[2, 7]);
+    assert_eq!(p.qubits().collect::<Vec<_>>(), [2, 7]);
     // x on q2 -> bit 0; z on q2 -> bit 1; x on q7 -> bit 2; z on q7 -> bit 3.
     let x2 = PauliString::<1>::x(2);
     assert_eq!(p.support_bits(&x2.x, &x2.z), 0b0001);

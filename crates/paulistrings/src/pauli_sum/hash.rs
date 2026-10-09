@@ -334,7 +334,7 @@ impl<const W: usize> PartitionRows<W> {
     /// # Panics
     ///
     /// Panics if `blocks.len()` is not a power of two or exceeds `2^P_MAX_BITS`, if a qubit is `>= num_qubits` or appears in two blocks, or if some row would be all-zero.
-    pub fn cut(num_qubits: usize, blocks: &[Vec<u32>]) -> Self {
+    pub fn cut(num_qubits: usize, blocks: &[Vec<usize>]) -> Self {
         assert!(
             blocks.len().is_power_of_two(),
             "PartitionRows::cut: block count {} is not a power of two",
@@ -351,19 +351,18 @@ impl<const W: usize> PartitionRows<W> {
         let mut rows_z = vec![[0u64; W]; bits as usize];
         for (b, qubits) in blocks.iter().enumerate() {
             for &q in qubits {
-                let qubit_index = q as usize;
                 assert!(
-                    qubit_index < num_qubits,
+                    q < num_qubits,
                     "PartitionRows::cut: qubit {q} in block {b} is outside 0..{num_qubits}",
                 );
                 assert!(
-                    !seen[qubit_index],
+                    !seen[q],
                     "PartitionRows::cut: blocks must be disjoint, qubit {q} appears twice",
                 );
-                seen[qubit_index] = true;
+                seen[q] = true;
                 for (i, row) in rows_z.iter_mut().enumerate() {
                     if (b >> i) & 1 == 1 {
-                        row[qubit_index / 64] |= 1u64 << (qubit_index % 64);
+                        row[q / 64] |= 1u64 << (q % 64);
                     }
                 }
             }

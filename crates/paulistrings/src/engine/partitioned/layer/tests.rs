@@ -166,7 +166,7 @@ where
 /// `Z₀X₂X₄X₆` — weight 4, so `prepare` gives the `Prepared::Rotation` arm.
 fn wide_gen() -> PauliString<1> {
     let mut g = PauliString::<1>::z(0);
-    for q in [2u32, 4, 6] {
+    for q in [2, 4, 6] {
         g.mul_assign(&PauliString::<1>::x(q));
     }
     g

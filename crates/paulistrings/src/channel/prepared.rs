@@ -79,9 +79,8 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// Support qubits, ascending.
-    #[inline]
-    pub fn qubits(&self) -> &[u32] {
-        &self.qubits[..self.k as usize]
+    pub fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.qubits[..self.k as usize].iter().map(|&q| q as usize)
     }
 
     /// The delta entries, ascending by `local_delta`.

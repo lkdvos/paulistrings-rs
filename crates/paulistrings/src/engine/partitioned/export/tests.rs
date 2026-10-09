@@ -177,7 +177,7 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
     // Generator Z₀X₂X₄X₆, weight 4 > MAX_LOCAL_SUPPORT (the Rotation arm).
     let gen = {
         let mut g = PauliString::<1>::z(0);
-        for q in [2u32, 4, 6] {
+        for q in [2, 4, 6] {
             g.mul_assign(&PauliString::<1>::x(q));
         }
         g

@@ -33,10 +33,10 @@ impl<const W: usize> PauliString<W> {
     ///
     /// Panics in debug builds if `qubit >= 64 · W`.
     #[inline]
-    pub fn x(qubit: u32) -> Self {
-        debug_assert!((qubit as usize) < 64 * W);
+    pub fn x(qubit: usize) -> Self {
+        debug_assert!(qubit < 64 * W);
         let mut p = Self::identity();
-        p.x[(qubit / 64) as usize] = 1u64 << (qubit % 64);
+        p.x[qubit / 64] = 1u64 << (qubit % 64);
         p
     }
 
@@ -46,10 +46,10 @@ impl<const W: usize> PauliString<W> {
     ///
     /// Panics in debug builds if `qubit >= 64 · W`.
     #[inline]
-    pub fn y(qubit: u32) -> Self {
-        debug_assert!((qubit as usize) < 64 * W);
+    pub fn y(qubit: usize) -> Self {
+        debug_assert!(qubit < 64 * W);
         let mut p = Self::identity();
-        let word = (qubit / 64) as usize;
+        let word = qubit / 64;
         let bit = 1u64 << (qubit % 64);
         p.x[word] = bit;
         p.z[word] = bit;
@@ -62,10 +62,10 @@ impl<const W: usize> PauliString<W> {
     ///
     /// Panics in debug builds if `qubit >= 64 · W`.
     #[inline]
-    pub fn z(qubit: u32) -> Self {
-        debug_assert!((qubit as usize) < 64 * W);
+    pub fn z(qubit: usize) -> Self {
+        debug_assert!(qubit < 64 * W);
         let mut p = Self::identity();
-        p.z[(qubit / 64) as usize] = 1u64 << (qubit % 64);
+        p.z[qubit / 64] = 1u64 << (qubit % 64);
         p
     }
 

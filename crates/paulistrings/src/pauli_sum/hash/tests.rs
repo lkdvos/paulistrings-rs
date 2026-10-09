@@ -469,8 +469,8 @@ fn support_delta_rank_is_usually_full_but_not_always() {
     let h = Gf2Hash::<2>::new(128, 7, crate::pauli_sum::storage::DEFAULT_HASH_SEED);
     let mut deficient = 0usize;
     let mut total = 0usize;
-    for i in 0..128u32 {
-        for j in (i + 1)..128u32 {
+    for i in 0..128 {
+        for j in (i + 1)..128 {
             total += 1;
             if crate::test_support::support_delta_rank(&h, &[i, j]) < 4 {
                 deficient += 1;
@@ -533,7 +533,7 @@ fn support_delta_preserves_bucket_order_iff_the_delta_span_is_full_rank() {
 fn order_broken_by_some_delta<const W: usize>(
     num_qubits: usize,
     bits: u8,
-    support: &[u32],
+    support: &[usize],
 ) -> bool {
     let h = Gf2Hash::<W>::new(
         num_qubits,
@@ -563,7 +563,7 @@ fn order_broken_by_some_delta<const W: usize>(
         // A random off-support pattern, then its whole local orbit.
         let mut rest = rand_key::<W>(&mut rng, num_qubits);
         for &q in support {
-            let (w, bit) = ((q / 64) as usize, 1u64 << (q % 64));
+            let (w, bit) = (q / 64, 1u64 << (q % 64));
             rest.x[w] &= !bit;
             rest.z[w] &= !bit;
         }
@@ -825,7 +825,7 @@ fn cut_four_blocks_labels_each_block_by_its_index() {
     assert_eq!(rx, [[0u64], [0u64]]);
     assert_eq!(rz, [[0b1100_1100u64], [0b1111_0000u64]]);
     for (q, want) in [
-        (0u32, 0u32),
+        (0usize, 0u32),
         (1, 0),
         (2, 1),
         (3, 1),
@@ -864,8 +864,8 @@ fn cut_of_one_block_is_the_trivial_partitioning() {
 
 #[test]
 fn cut_rows_round_trip_across_the_word_boundary() {
-    let lo: Vec<u32> = (0..64).collect();
-    let hi: Vec<u32> = (64..70).collect();
+    let lo: Vec<usize> = (0..64).collect();
+    let hi: Vec<usize> = (64..70).collect();
     let p = PartitionRows::<2>::cut(70, &[lo, hi]);
     assert_eq!(p.rows().0, [[0u64, 0]]);
     assert_eq!(p.rows().1, [[0u64, 0b11_1111]]);

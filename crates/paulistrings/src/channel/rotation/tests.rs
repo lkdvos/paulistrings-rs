@@ -70,7 +70,7 @@ fn rotation_support_is_generator_mask() {
 /// `weight()` is the popcount of the generator's support mask, at any generator weight (including above `MAX_LOCAL_SUPPORT`).
 #[test]
 fn rotation_weight_is_popcount() {
-    for n in 0..=5u32 {
+    for n in 0..=5 {
         let mut gen = PauliString::<1>::identity();
         for q in 0..n {
             gen.mul_assign(&PauliString::<1>::z(q * 10));
@@ -79,7 +79,7 @@ fn rotation_weight_is_popcount() {
         let mask = Channel::<1>::support(&rot);
         let popcount: u32 = mask.iter().map(|w| w.count_ones()).sum();
         assert_eq!(rot.weight(), popcount as usize, "n={n}");
-        assert_eq!(rot.weight(), n as usize, "n={n}");
+        assert_eq!(rot.weight(), n, "n={n}");
     }
 }
 

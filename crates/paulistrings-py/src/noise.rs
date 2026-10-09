@@ -5,22 +5,22 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 #[pyfunction]
-fn depolarize(p: f64, qubit: u32) -> PyChannel {
+fn depolarize(p: f64, qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Depolarize { p, qubit })
 }
 
 #[pyfunction]
-fn dephase(p: f64, qubit: u32) -> PyChannel {
+fn dephase(p: f64, qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Dephase { p, qubit })
 }
 
 #[pyfunction]
-fn amplitude_damping(gamma: f64, qubit: u32) -> PyChannel {
+fn amplitude_damping(gamma: f64, qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::AmplitudeDamping { gamma, qubit })
 }
 
 /// Shared by `noise.pauli_channel` and `Circuit.pauli_channel`. The three probabilities must be a sub-probability distribution (fourth weight `1 - px - py - pz` is the "no error" branch); otherwise the channel is non-physical and coefficients would grow layer over layer unflagged.
-pub(crate) fn pauli_channel_spec(px: f64, py: f64, pz: f64, qubit: u32) -> PyResult<ChannelSpec> {
+pub(crate) fn pauli_channel_spec(px: f64, py: f64, pz: f64, qubit: usize) -> PyResult<ChannelSpec> {
     for (name, p) in [("px", px), ("py", py), ("pz", pz)] {
         if p < 0.0 {
             return Err(PyValueError::new_err(format!(
@@ -38,7 +38,7 @@ pub(crate) fn pauli_channel_spec(px: f64, py: f64, pz: f64, qubit: u32) -> PyRes
 }
 
 /// Shared by `noise.depolarize2` and `Circuit.depolarize2`.
-pub(crate) fn depolarize2_spec(p: f64, q0: u32, q1: u32) -> PyResult<ChannelSpec> {
+pub(crate) fn depolarize2_spec(p: f64, q0: usize, q1: usize) -> PyResult<ChannelSpec> {
     if !(0.0..=1.0).contains(&p) {
         return Err(PyValueError::new_err(format!(
             "depolarize2: p must be between 0 and 1 (got {p})"
@@ -63,7 +63,7 @@ pub(crate) fn depolarize2_spec(p: f64, q0: u32, q1: u32) -> PyResult<ChannelSpec
 /// `pauli_channel(p/3, p/3, p/3, q)` is `depolarize(p, q)` and
 /// `pauli_channel(0, 0, p, q)` is `dephase(p, q)`.
 #[pyfunction]
-fn pauli_channel(px: f64, py: f64, pz: f64, qubit: u32) -> PyResult<PyChannel> {
+fn pauli_channel(px: f64, py: f64, pz: f64, qubit: usize) -> PyResult<PyChannel> {
     Ok(PyChannel::new(pauli_channel_spec(px, py, pz, qubit)?))
 }
 
@@ -74,7 +74,7 @@ fn pauli_channel(px: f64, py: f64, pz: f64, qubit: u32) -> PyResult<PyChannel> {
 /// by `1 - 16p/15` — the same factor whether the Pauli is non-identity on one of
 /// the pair or on both. Self-adjoint.
 #[pyfunction]
-fn depolarize2(p: f64, q0: u32, q1: u32) -> PyResult<PyChannel> {
+fn depolarize2(p: f64, q0: usize, q1: usize) -> PyResult<PyChannel> {
     Ok(PyChannel::new(depolarize2_spec(p, q0, q1)?))
 }
 

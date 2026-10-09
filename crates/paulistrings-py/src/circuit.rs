@@ -32,7 +32,7 @@ impl CircuitImpl {
     pub fn push_spec(&mut self, spec: &ChannelSpec) -> PyResult<()> {
         let n = self.num_qubits();
         let max_qubit = spec.max_qubit();
-        if (max_qubit as usize) >= n {
+        if max_qubit >= n {
             return Err(PyValueError::new_err(format!(
                 "qubit index {max_qubit} is out of range for a {n}-qubit circuit"
             )));
@@ -195,77 +195,77 @@ impl Circuit {
         self.push(channel.spec.clone())
     }
 
-    fn h(&mut self, qubit: u32) -> PyResult<()> {
+    fn h(&mut self, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::H { qubit })
     }
 
-    fn s(&mut self, qubit: u32) -> PyResult<()> {
+    fn s(&mut self, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::S { qubit })
     }
 
     /// `S^dagger`; see `gates.sdg`.
-    fn sdg(&mut self, qubit: u32) -> PyResult<()> {
+    fn sdg(&mut self, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::Sdg { qubit })
     }
 
-    fn x(&mut self, qubit: u32) -> PyResult<()> {
+    fn x(&mut self, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::X { qubit })
     }
 
-    fn y(&mut self, qubit: u32) -> PyResult<()> {
+    fn y(&mut self, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::Y { qubit })
     }
 
-    fn z(&mut self, qubit: u32) -> PyResult<()> {
+    fn z(&mut self, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::Z { qubit })
     }
 
-    fn cnot(&mut self, control: u32, target: u32) -> PyResult<()> {
+    fn cnot(&mut self, control: usize, target: usize) -> PyResult<()> {
         self.push(crate::gates::cnot_spec(control, target)?)
     }
 
-    fn cz(&mut self, q0: u32, q1: u32) -> PyResult<()> {
+    fn cz(&mut self, q0: usize, q1: usize) -> PyResult<()> {
         self.push(crate::gates::cz_spec(q0, q1)?)
     }
 
-    fn swap(&mut self, q0: u32, q1: u32) -> PyResult<()> {
+    fn swap(&mut self, q0: usize, q1: usize) -> PyResult<()> {
         self.push(crate::gates::swap_spec(q0, q1)?)
     }
 
-    fn rz(&mut self, theta: f64, qubit: u32) -> PyResult<()> {
+    fn rz(&mut self, theta: f64, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::Rz { theta, qubit })
     }
 
-    fn rx(&mut self, theta: f64, qubit: u32) -> PyResult<()> {
+    fn rx(&mut self, theta: f64, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::Rx { theta, qubit })
     }
 
-    fn ry(&mut self, theta: f64, qubit: u32) -> PyResult<()> {
+    fn ry(&mut self, theta: f64, qubit: usize) -> PyResult<()> {
         self.push(ChannelSpec::Ry { theta, qubit })
     }
 
     /// A rotation `exp(-i·θ·P/2)` about a Pauli string of any weight; see
     /// `gates.pauli_rotation` for the argument convention.
-    fn pauli_rotation(&mut self, pauli: &str, qubits: Vec<u32>, theta: f64) -> PyResult<()> {
+    fn pauli_rotation(&mut self, pauli: &str, qubits: Vec<usize>, theta: f64) -> PyResult<()> {
         let spec = crate::gates::pauli_rotation_spec(pauli, &qubits, theta)?;
         self.push(spec)
     }
 
-    fn depolarize(&mut self, p: f64, qubits: Vec<u32>) -> PyResult<()> {
+    fn depolarize(&mut self, p: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
             self.push(ChannelSpec::Depolarize { p, qubit })?;
         }
         Ok(())
     }
 
-    fn dephase(&mut self, p: f64, qubits: Vec<u32>) -> PyResult<()> {
+    fn dephase(&mut self, p: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
             self.push(ChannelSpec::Dephase { p, qubit })?;
         }
         Ok(())
     }
 
-    fn amplitude_damping(&mut self, gamma: f64, qubits: Vec<u32>) -> PyResult<()> {
+    fn amplitude_damping(&mut self, gamma: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
             self.push(ChannelSpec::AmplitudeDamping { gamma, qubit })?;
         }
@@ -274,7 +274,7 @@ impl Circuit {
 
     /// A general single-qubit Pauli channel on each of `qubits`; see
     /// `noise.pauli_channel` for the semantics.
-    fn pauli_channel(&mut self, px: f64, py: f64, pz: f64, qubits: Vec<u32>) -> PyResult<()> {
+    fn pauli_channel(&mut self, px: f64, py: f64, pz: f64, qubits: Vec<usize>) -> PyResult<()> {
         for qubit in qubits {
             let spec = crate::noise::pauli_channel_spec(px, py, pz, qubit)?;
             self.push(spec)?;
@@ -284,7 +284,7 @@ impl Circuit {
 
     /// Uniform two-qubit depolarizing noise on each `(q0, q1)` pair; see
     /// `noise.depolarize2` for the semantics.
-    fn depolarize2(&mut self, p: f64, pairs: Vec<(u32, u32)>) -> PyResult<()> {
+    fn depolarize2(&mut self, p: f64, pairs: Vec<(usize, usize)>) -> PyResult<()> {
         for (q0, q1) in pairs {
             let spec = crate::noise::depolarize2_spec(p, q0, q1)?;
             self.push(spec)?;
@@ -294,7 +294,7 @@ impl Circuit {
 
     fn unitary_1q(
         &mut self,
-        qubit: u32,
+        qubit: usize,
         matrix: numpy::PyReadonlyArray2<'_, num_complex::Complex64>,
     ) -> PyResult<()> {
         let ch = crate::gates::unitary_1q_spec(qubit, matrix)?;
@@ -303,8 +303,8 @@ impl Circuit {
 
     fn unitary_2q(
         &mut self,
-        q0: u32,
-        q1: u32,
+        q0: usize,
+        q1: usize,
         matrix: numpy::PyReadonlyArray2<'_, num_complex::Complex64>,
     ) -> PyResult<()> {
         let ch = crate::gates::unitary_2q_spec(q0, q1, matrix)?;

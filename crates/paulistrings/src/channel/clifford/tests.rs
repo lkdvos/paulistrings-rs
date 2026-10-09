@@ -43,7 +43,7 @@ fn apply_2q<const W: usize>(
     (out, c[0])
 }
 
-fn pauli_y<const W: usize>(qubit: u32) -> PauliString<W> {
+fn pauli_y<const W: usize>(qubit: usize) -> PauliString<W> {
     PauliString::<W>::y(qubit)
 }
 
@@ -232,9 +232,9 @@ fn s_apply_then_apply_adjoint_round_trips() {
 }
 
 /// Build `P_a ⊗ P_b` on qubits `(q0, q1)` of a `PauliString<W>` using `mul_assign`, where `pa` and `pb` are 2-bit single-qubit Pauli codes (`I=0, X=1, Z=2, Y=3`).
-fn tensor<const W: usize>(q0: u32, q1: u32, pa: u8, pb: u8) -> PauliString<W> {
+fn tensor<const W: usize>(q0: usize, q1: usize, pa: u8, pb: u8) -> PauliString<W> {
     let mut p = PauliString::<W>::identity();
-    let put = |p: &mut PauliString<W>, q: u32, code: u8| {
+    let put = |p: &mut PauliString<W>, q: usize, code: u8| {
         let g = match code {
             0 => return,
             1 => PauliString::<W>::x(q),
@@ -276,8 +276,8 @@ fn cnot_generator_rules_w1() {
 ///   qubit 1:  I→I,  X→I⊗X,  Z→Z⊗Z,  Y→i·X·Z → Z⊗Y
 /// The image is the product of these two qubit images, folding in any phase the multiplication picks up.
 fn cnot_reference<const W: usize>(
-    control: u32,
-    target: u32,
+    control: usize,
+    target: usize,
     pa: u8,
     pb: u8,
 ) -> (PauliString<W>, Phase) {

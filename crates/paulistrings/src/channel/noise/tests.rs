@@ -22,7 +22,7 @@ fn outputs<const W: usize>(
 }
 
 /// Build the 4x4 single-qubit PTM on the support, `t[out][in]`, using the `I=0, X=1, Z=2, Y=3` packing.
-fn ptm4(channel: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
+fn ptm4(channel: &AmplitudeDamping, adjoint: bool, q: usize) -> [[f64; 4]; 4] {
     let basis = |index: usize| -> PauliString<1> {
         match index {
             0 => PauliString::<1>::identity(),
@@ -48,7 +48,7 @@ fn ptm4(channel: &AmplitudeDamping, adjoint: bool, q: u32) -> [[f64; 4]; 4] {
 }
 
 /// Both maps of a damping channel on qubit `q`, row by row.
-fn check_both_maps<const W: usize>(q: u32, g: f64) {
+fn check_both_maps<const W: usize>(q: usize, g: f64) {
     let channel = AmplitudeDamping {
         support: [q],
         gamma: g,
@@ -638,7 +638,7 @@ fn depolarize2_scale_is_hand_computed_w1() {
         support: [0, 1],
         p: 0.3,
     };
-    let local = |q: u32, index: usize| -> PauliString<1> {
+    let local = |q: usize, index: usize| -> PauliString<1> {
         match index {
             0 => PauliString::<1>::identity(),
             1 => PauliString::<1>::x(q),

@@ -40,27 +40,27 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 /// A weight-2 `ZZ` rotation on qubits `(q0, q1)`, the bond term of a transverse-field Ising
 /// Trotter step. Fanout is data-dependent (1 or 2), so on random input the realized fanout is
 /// ~1.5 and the merge phase has duplicates to combine.
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
+fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
-    gen.z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
-    gen.z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
+    gen.z[q0 / 64] |= 1u64 << (q0 % 64);
+    gen.z[q1 / 64] |= 1u64 << (q1 % 64);
     PauliRotation::new(gen, theta)
 }
 
 /// A Pauli generator of weight 4 on `qubits`, for a rotation whose support exceeds
 /// `MAX_LOCAL_SUPPORT`: the delta set is still `{0, gen}`, but the `i^k` phase is computed
 /// per term rather than looked up.
-fn wide_rotation<const W: usize>(qubits: [u32; 4], theta: f64) -> PauliRotation<W> {
+fn wide_rotation<const W: usize>(qubits: [usize; 4], theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
     // Mixed X/Z letters so the generator is not a product of commuting Zs.
     for (i, &q) in qubits.iter().enumerate() {
-        let word = (q as usize) / 64;
+        let word = q / 64;
         let bit = 1u64 << (q % 64);
         if i % 2 == 0 {
             gen.z[word] |= bit;
@@ -73,7 +73,7 @@ fn wide_rotation<const W: usize>(qubits: [u32; 4], theta: f64) -> PauliRotation<
 
 /// sqrt(SWAP) on `(q0, q1)`, a fixed non-Clifford two-qubit unitary: the prepared delta set is
 /// wide (up to 16), the maximum bucket fan-in the engine ever sees.
-fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
+fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
@@ -164,12 +164,12 @@ fn bench_propagate_trotter(c: &mut Criterion) {
 
     let mut circuit = Circuit::<1>::new(num_qubits);
     for q in 0..num_qubits {
-        let q0 = q as u32;
-        let q1 = ((q + 1) % num_qubits) as u32;
+        let q0 = q;
+        let q1 = (q + 1) % num_qubits;
         circuit.push(zz_rotation::<1>(q0, q1, 2.0 * theta));
     }
     for q in 0..num_qubits {
-        let qq = q as u32;
+        let qq = q;
         let gen = PauliString::<1>::x(qq);
         circuit.push(PauliRotation::new(gen, 2.0 * theta));
     }

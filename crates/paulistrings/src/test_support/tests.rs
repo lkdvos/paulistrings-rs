@@ -5,7 +5,7 @@ use super::HEAVY_HEX_127_EDGES;
 fn heavy_hex_127_edges_match_the_source_lattice() {
     assert_eq!(HEAVY_HEX_127_EDGES.len(), 144);
     let mut degree = [0usize; 127];
-    let mut prev = (0u32, 0u32);
+    let mut prev = (0usize, 0usize);
     for (i, &(a, b)) in HEAVY_HEX_127_EDGES.iter().enumerate() {
         assert!(a < b, "edge {i} is not (lo, hi): ({a}, {b})");
         assert!(b < 127, "edge {i} names qubit {b} outside 0..126");
@@ -13,8 +13,8 @@ fn heavy_hex_127_edges_match_the_source_lattice() {
             assert!(prev < (a, b), "edge {i} breaks the sorted-unique order");
         }
         prev = (a, b);
-        degree[a as usize] += 1;
-        degree[b as usize] += 1;
+        degree[a] += 1;
+        degree[b] += 1;
     }
     let mut histogram = [0usize; 4];
     for d in degree {

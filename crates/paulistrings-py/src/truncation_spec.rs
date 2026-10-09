@@ -110,7 +110,7 @@ mod tests {
         let mut acc = BuildAccumulator::<1>::new(n);
         for q in 0..n {
             acc.add_term(
-                PauliString::<1>::x(q as u32),
+                PauliString::<1>::x(q),
                 Phase::ONE,
                 num_complex::Complex64::new(1.0, 0.0),
             );

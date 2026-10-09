@@ -60,11 +60,11 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
 
 /// Pack qubit indices into a [`Channel::support`] bitmask; order and duplicates do not matter.
 #[inline]
-pub fn support_mask<const W: usize>(qubits: &[u32]) -> [u64; W] {
+pub fn support_mask<const W: usize>(qubits: &[usize]) -> [u64; W] {
     let mut mask = [0u64; W];
     for &q in qubits {
-        debug_assert!((q as usize) < 64 * W, "qubit {q} out of range for W={W}");
-        mask[q as usize / 64] |= 1u64 << (q % 64);
+        debug_assert!(q < 64 * W, "qubit {q} out of range for W={W}");
+        mask[q / 64] |= 1u64 << (q % 64);
     }
     mask
 }

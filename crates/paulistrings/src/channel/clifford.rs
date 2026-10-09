@@ -10,7 +10,7 @@ use num_complex::Complex64;
 #[derive(Clone, Copy, Debug)]
 pub struct Clifford1Q {
     /// The qubit this gate acts on.
-    pub support: [u32; 1],
+    pub support: [usize; 1],
     /// Output Pauli index per input Pauli index; `out_pauli[0]` is `0`.
     pub out_pauli: [u8; 4],
     /// Phase per input Pauli index; `phase[0]` is [`Phase::ONE`].
@@ -19,7 +19,7 @@ pub struct Clifford1Q {
 
 impl Clifford1Q {
     /// Hadamard. Conjugation: `I → I, X → Z, Z → X, Y → −Y`.
-    pub fn h(qubit: u32) -> Self {
+    pub fn h(qubit: usize) -> Self {
         Self {
             support: [qubit],
             out_pauli: [0, 2, 1, 3],
@@ -28,7 +28,7 @@ impl Clifford1Q {
     }
 
     /// Phase gate `S = diag(1, i)`. Conjugation: `I → I, X → Y, Z → Z, Y → −X`.
-    pub fn s(qubit: u32) -> Self {
+    pub fn s(qubit: usize) -> Self {
         Self {
             support: [qubit],
             out_pauli: [0, 3, 2, 1],
@@ -37,7 +37,7 @@ impl Clifford1Q {
     }
 
     /// Pauli-X gate. Conjugation: `I → I, X → X, Z → −Z, Y → −Y`.
-    pub fn x(qubit: u32) -> Self {
+    pub fn x(qubit: usize) -> Self {
         Self {
             support: [qubit],
             out_pauli: [0, 1, 2, 3],
@@ -46,7 +46,7 @@ impl Clifford1Q {
     }
 
     /// Pauli-Y gate. Conjugation: `I → I, X → −X, Z → −Z, Y → Y`.
-    pub fn y(qubit: u32) -> Self {
+    pub fn y(qubit: usize) -> Self {
         Self {
             support: [qubit],
             out_pauli: [0, 1, 2, 3],
@@ -55,7 +55,7 @@ impl Clifford1Q {
     }
 
     /// Pauli-Z gate. Conjugation: `I → I, X → −X, Z → Z, Y → −Y`.
-    pub fn z(qubit: u32) -> Self {
+    pub fn z(qubit: usize) -> Self {
         Self {
             support: [qubit],
             out_pauli: [0, 1, 2, 3],
@@ -93,7 +93,7 @@ impl Clifford1Q {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q = self.support[0] as usize;
+        let q = self.support[0];
         debug_assert!(q < 64 * W);
         let (word, bit, mask) = qubit_loc(q);
         let index = read_pauli(input_x, input_z, word, bit);
@@ -153,7 +153,7 @@ impl<const W: usize> Channel<W> for Clifford1Q {
 #[derive(Clone, Copy, Debug)]
 pub struct Clifford2Q {
     /// The two qubits this gate acts on, control first for CNOT.
-    pub support: [u32; 2],
+    pub support: [usize; 2],
     /// Output Pauli index per input Pauli index; `out_pauli[0]` is `0`.
     pub out_pauli: [u8; 16],
     /// Phase per input Pauli index; `phase[0]` is [`Phase::ONE`].
@@ -162,7 +162,7 @@ pub struct Clifford2Q {
 
 impl Clifford2Q {
     /// CNOT with `control` and `target`: `X⊗I → X⊗X, I⊗X → I⊗X, Z⊗I → Z⊗I, I⊗Z → Z⊗Z`.
-    pub fn cnot(control: u32, target: u32) -> Self {
+    pub fn cnot(control: usize, target: usize) -> Self {
         Self::from_2q_generators(
             [control, target],
             (pack4(1, 0, 1, 0), Phase::ONE),
@@ -173,7 +173,7 @@ impl Clifford2Q {
     }
 
     /// CZ on `q0` and `q1`: `X⊗I → X⊗Z, I⊗X → Z⊗X, Z⊗I → Z⊗I, I⊗Z → I⊗Z`.
-    pub fn cz(q0: u32, q1: u32) -> Self {
+    pub fn cz(q0: usize, q1: usize) -> Self {
         Self::from_2q_generators(
             [q0, q1],
             (pack4(1, 0, 0, 1), Phase::ONE),
@@ -184,7 +184,7 @@ impl Clifford2Q {
     }
 
     /// SWAP on `q0` and `q1`: `P⊗Q → Q⊗P`.
-    pub fn swap(q0: u32, q1: u32) -> Self {
+    pub fn swap(q0: usize, q1: usize) -> Self {
         Self::from_2q_generators(
             [q0, q1],
             (pack4(0, 0, 1, 0), Phase::ONE),
@@ -196,7 +196,7 @@ impl Clifford2Q {
 
     /// The 16-entry table from the images of `X₀, Z₀, X₁, Z₁`, multiplied out per input.
     fn from_2q_generators(
-        support: [u32; 2],
+        support: [usize; 2],
         x0_image: (u8, Phase),
         z0_image: (u8, Phase),
         x1_image: (u8, Phase),
@@ -287,8 +287,8 @@ impl<const W: usize> Channel<W> for Clifford2Q {
         coeff: Complex64,
         out: &mut OutputBuffer<'_, W>,
     ) {
-        let q0 = self.support[0] as usize;
-        let q1 = self.support[1] as usize;
+        let q0 = self.support[0];
+        let q1 = self.support[1];
         debug_assert!(q0 < 64 * W);
         debug_assert!(q1 < 64 * W);
         debug_assert!(q0 != q1);

@@ -581,7 +581,7 @@ fn get_hits_and_misses_across_bucket_counts() {
 fn get_w2_word_boundary() {
     // Keys live entirely in word 1, so a lookup that only compared word 0 would confuse them.
     let mut accumulator = BuildAccumulator::<2>::new(128);
-    for q in [64u32, 65, 100, 127] {
+    for q in [64, 65, 100, 127] {
         accumulator.add_term(
             PauliString::<2>::x(q),
             Phase::ONE,
@@ -597,7 +597,7 @@ fn get_w2_word_boundary() {
     for bits in [0u8, 4] {
         let h = Gf2Hash::<2>::new(128, bits, 0xFA);
         let b = sum.clone().with_hash(h);
-        for q in [64u32, 65, 100, 127] {
+        for q in [64, 65, 100, 127] {
             let px = PauliString::<2>::x(q);
             let pz = PauliString::<2>::z(q);
             assert_eq!(

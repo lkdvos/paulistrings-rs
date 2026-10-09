@@ -59,7 +59,7 @@ fn scatter_by_policy<const W: usize>(
 /// channel (which is key-preserving, so it never exchanges).
 fn mixed_circuit<const W: usize>(num_qubits: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(num_qubits);
-    let n = num_qubits as u32;
+    let n = num_qubits;
     for q in 0..n {
         circuit.push(Clifford2Q::cnot(q, (q + 1) % n));
     }
@@ -356,11 +356,11 @@ fn len_is_collective_and_the_shares_add_up() {
 /// single-`Z` key has odd z-weight in exactly the block holding that qubit.
 fn single_z_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::new(num_qubits);
-    for q in 0..num_qubits as u32 {
+    for q in 0..num_qubits {
         acc.add_term(
             PauliString::<W>::z(q),
             Phase::ONE,
-            Complex64::new(1.0 + f64::from(q), 0.0),
+            Complex64::new(1.0 + q as f64, 0.0),
         );
     }
     acc.finalize()
@@ -369,9 +369,12 @@ fn single_z_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
 /// The qubits this rank's share names, one per single-`Z` term, ascending.
 fn local_z_qubits<const W: usize, X: paulistrings::Transport>(
     split: &DistributedSum<W, X>,
-) -> Vec<u32> {
+) -> Vec<usize> {
     let (_, z, _) = split.local().to_arrays();
-    let mut qubits: Vec<u32> = z.iter().map(|row| row[0].trailing_zeros()).collect();
+    let mut qubits: Vec<usize> = z
+        .iter()
+        .map(|row| row[0].trailing_zeros() as usize)
+        .collect();
     qubits.sort_unstable();
     qubits
 }
@@ -384,7 +387,7 @@ fn a_cut_row_policy_lands_each_block_on_its_own_rank() {
     let sum = single_z_sum::<1>(NQ);
     let policy = PartitionRowPolicy::Cut(vec![(0..4).collect(), (4..8).collect()]);
 
-    let held: Vec<Vec<u32>> = on_ranks(2, |transport| {
+    let held: Vec<Vec<usize>> = on_ranks(2, |transport| {
         let split = scatter_by_policy(sum.clone(), transport, policy.clone());
         split.assert_invariants();
         local_z_qubits(&split)
@@ -567,7 +570,7 @@ fn distributed_echo<const W: usize>(
 }
 
 /// With rows excluding the coordinates `V` flips, the gather-free echo equals the single-process one on every rank, for both axes and both widths.
-fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[u32], sites: &[usize]) {
+fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[usize], sites: &[usize]) {
     let sum = rand_sum_on::<W>(400, num_qubits, window, 0xEC40);
     let mut circuit = Circuit::<W>::new(num_qubits);
     for pair in window.windows(2) {
@@ -580,7 +583,7 @@ fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[u32], sit
     ));
     circuit.push(zz_rotation::<W>(window[1], window[3], 0.31));
     let evolved = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
-    let flipped: Vec<u32> = sites.iter().map(|&q| q as u32).collect();
+    let flipped = sites.to_vec();
 
     for axis in [RotationAxis::Z, RotationAxis::X] {
         let want = evolved.rotated_overlap(sites, 0.3, axis);

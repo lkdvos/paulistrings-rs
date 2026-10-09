@@ -249,7 +249,7 @@ impl LayerKind {
     }
 
     /// The layer's two-qubit generator graph for `--partition-rows cut`; empty when it has none.
-    fn cut_edges(self, num_qubits: usize) -> Vec<(u32, u32)> {
+    fn cut_edges(self, num_qubits: usize) -> Vec<(usize, usize)> {
         match self {
             LayerKind::TfimStep => chain_edges(num_qubits),
             LayerKind::HeavyHexStep => heavy_hex_127_edges(),
@@ -871,18 +871,18 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 }
 
 /// A weight-2 `ZZ` rotation, verbatim from `benches/pauli_ops.rs::zz_rotation`.
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
+fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
-    gen.z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
-    gen.z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
+    gen.z[q0 / 64] |= 1u64 << (q0 % 64);
+    gen.z[q1 / 64] |= 1u64 << (q1 % 64);
     PauliRotation::new(gen, theta)
 }
 
 /// sqrt(SWAP) on `(q0, q1)`, verbatim from `benches/pauli_ops.rs::sqrt_swap`.
-fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
+fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
@@ -902,7 +902,7 @@ fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
 /// One fixed Haar-random SU(4) block on `(q0, q1)`, the probe's stand-in for the general matrix-gate path.
 ///
 /// Unlike [`sqrt_swap`], a generic SU(4) keeps a dense PTM under repeated application rather than cycling.
-fn haar_su4_block(q0: u32, q1: u32) -> GeneralUnitary2Q {
+fn haar_su4_block(q0: usize, q1: usize) -> GeneralUnitary2Q {
     GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
 }
 
@@ -921,13 +921,10 @@ fn trotter_circuit<const W: usize>() -> Circuit<W> {
     let theta = 0.1;
     let mut circuit = Circuit::<W>::new(num_qubits);
     for q in 0..num_qubits {
-        let q0 = q as u32;
-        let q1 = ((q + 1) % num_qubits) as u32;
-        circuit.push(zz_rotation::<W>(q0, q1, 2.0 * theta));
+        circuit.push(zz_rotation::<W>(q, (q + 1) % num_qubits, 2.0 * theta));
     }
     for q in 0..num_qubits {
-        let qq = q as u32;
-        let gen = PauliString::<W>::x(qq);
+        let gen = PauliString::<W>::x(q);
         circuit.push(PauliRotation::new(gen, 2.0 * theta));
     }
     circuit
@@ -943,44 +940,40 @@ const THETA_ZZ: f64 = -std::f64::consts::FRAC_PI_2;
 const THETA_H: f64 = 5.0 * std::f64::consts::PI / 16.0;
 
 /// The bonds of a 1D **open** chain: `n - 1` edges `(i, i+1)`.
-fn chain_edges(num_qubits: usize) -> Vec<(u32, u32)> {
+fn chain_edges(num_qubits: usize) -> Vec<(usize, usize)> {
     (0..num_qubits.saturating_sub(1))
-        .map(|i| (i as u32, i as u32 + 1))
+        .map(|i| (i, i + 1))
         .collect()
 }
 
 /// The 127-qubit heavy-hex coupling map, from `test_support`.
-fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+fn heavy_hex_127_edges() -> Vec<(usize, usize)> {
     paulistrings::test_support::heavy_hex_127_edges()
 }
 
 /// Greedy first-fit edge coloring in sorted edge order; a color is a set of disjoint-support
 /// edges, i.e. one hardware layer.
-fn edge_coloring(edges: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
-    let n = edges
-        .iter()
-        .map(|&(a, b)| a.max(b) as usize + 1)
-        .max()
-        .unwrap_or(0);
+fn edge_coloring(edges: &[(usize, usize)]) -> Vec<Vec<(usize, usize)>> {
+    let n = edges.iter().map(|&(a, b)| a.max(b) + 1).max().unwrap_or(0);
     let mut used: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut classes: Vec<Vec<(u32, u32)>> = Vec::new();
+    let mut classes: Vec<Vec<(usize, usize)>> = Vec::new();
     for &(a, b) in edges {
         let mut color = 0usize;
-        while used[a as usize].contains(&color) || used[b as usize].contains(&color) {
+        while used[a].contains(&color) || used[b].contains(&color) {
             color += 1;
         }
         while classes.len() <= color {
             classes.push(Vec::new());
         }
         classes[color].push((a, b));
-        used[a as usize].push(color);
-        used[b as usize].push(color);
+        used[a].push(color);
+        used[b].push(color);
     }
     classes
 }
 
 /// A `PauliRotation` about `X_q`.
-fn x_rotation<const W: usize>(q: u32, theta: f64) -> PauliRotation<W> {
+fn x_rotation<const W: usize>(q: usize, theta: f64) -> PauliRotation<W> {
     PauliRotation::new(PauliString::<W>::x(q), theta)
 }
 
@@ -994,7 +987,7 @@ fn tfim_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit
         for (a, b) in chain_edges(num_qubits) {
             c.push(zz_rotation::<W>(a, b, THETA_ZZ));
         }
-        for q in 0..num_qubits as u32 {
+        for q in 0..num_qubits {
             c.push(x_rotation::<W>(q, THETA_H));
         }
     }
@@ -1009,13 +1002,13 @@ fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Ci
         num_qubits >= HEAVY_HEX_QUBITS,
         "heavy_hex_step_circuit: the lattice needs {HEAVY_HEX_QUBITS} qubits, got {num_qubits}",
     );
-    let zz_order: Vec<(u32, u32)> = edge_coloring(&heavy_hex_127_edges())
+    let zz_order: Vec<(usize, usize)> = edge_coloring(&heavy_hex_127_edges())
         .into_iter()
         .flatten()
         .collect();
     let mut c = Circuit::<W>::new(num_qubits);
     for _ in 0..steps {
-        for q in 0..HEAVY_HEX_QUBITS as u32 {
+        for q in 0..HEAVY_HEX_QUBITS {
             c.push(x_rotation::<W>(q, THETA_H));
         }
         for &(a, b) in &zz_order {
@@ -1026,7 +1019,7 @@ fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Ci
 }
 
 /// The single-term observable `Z_q` on `num_qubits` qubits, coefficient 1.
-fn z_observable<const W: usize>(num_qubits: usize, q: u32) -> PauliSum<W> {
+fn z_observable<const W: usize>(num_qubits: usize, q: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
     acc.add_term(PauliString::<W>::z(q), Phase::ONE, Complex64::new(1.0, 0.0));
     acc.finalize()
@@ -1050,7 +1043,7 @@ fn build_circuit<const W: usize>(
     layer: LayerKind,
     qubits: usize,
     reps: usize,
-    gen_qubits: (u32, u32),
+    gen_qubits: (usize, usize),
 ) -> Circuit<W> {
     let theta = 0.1;
     match layer {
@@ -1124,7 +1117,7 @@ struct CellResult {
     /// `--bind-memory`, as the `pin_memory` field of the sidecar.
     pin_memory: bool,
     /// The `(q0, q1)` the `rotation_*` layers rotated about.
-    gen_qubits: (u32, u32),
+    gen_qubits: (usize, usize),
     /// `--initial` as it applied to this layer (each layer has its own default).
     initial: &'static str,
     /// `--partition-rows` echoed back; written on every row for a single schema.
@@ -1274,7 +1267,7 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
         // Everything else takes `--initial`, defaulting per layer.
         _ => match cfg.initial.unwrap_or_else(|| Initial::default_for(layer)) {
             Initial::Random => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
-            Initial::Z0 => z_observable::<W>(cfg.qubits, (cfg.qubits / 2) as u32),
+            Initial::Z0 => z_observable::<W>(cfg.qubits, cfg.qubits / 2),
         },
     };
     // `--hash-seed` re-draws H's rows, which changes the coset dimension `r` (research/FINDINGS.md).
@@ -1302,7 +1295,7 @@ where
 {
     let base = build_base_sum::<W>(layer, cfg);
     // Nothing is remote without partitions, so `rotation_local`/`rotation_remote` are `rotation_zz` here.
-    let gen_qubits = (0u32, 1u32);
+    let gen_qubits = (0, 1);
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -1527,7 +1520,7 @@ struct DeviceRun {
     hash_seed: u64,
     wall_ns: u64,
     partitions: usize,
-    gen_qubits: (u32, u32),
+    gen_qubits: (usize, usize),
     row_stats: RowChoiceStats,
     mpi: Option<(u32, u32)>,
     device: DeviceCellStats,
@@ -1601,18 +1594,18 @@ fn choose_generator<const W: usize>(
     qubits: usize,
     base: &PauliSum<W>,
     rows: &PartitionRows<W>,
-) -> (u32, u32) {
+) -> (usize, usize) {
     if !layer.picks_generator() {
         return (0, 1);
     }
     let want_remote = layer == LayerKind::RotationRemote;
     // A dense SU(4) needs all 15 deltas local, so it scans every pair, not just those touching 0.
-    let pairs: Vec<(u32, u32)> = if layer == LayerKind::Su4Local {
-        (0..qubits as u32)
-            .flat_map(|q0| ((q0 + 1)..qubits as u32).map(move |q1| (q0, q1)))
+    let pairs: Vec<(usize, usize)> = if layer == LayerKind::Su4Local {
+        (0..qubits)
+            .flat_map(|q0| ((q0 + 1)..qubits).map(move |q1| (q0, q1)))
             .collect()
     } else {
-        (1..qubits as u32).map(|q| (0, q)).collect()
+        (1..qubits).map(|q| (0, q)).collect()
     };
     for (q0, q1) in pairs {
         let mut probe = Circuit::<W>::new(qubits);
@@ -1644,7 +1637,7 @@ fn choose_generator<const W: usize>(
 /// Exact by dynamic program, minimizing cut edges first and then size imbalance, with block
 /// sizes additionally held within ±25% of `num_qubits / partitions` (without that bound, the
 /// heavy-hex lattice's minimum is a 4/123 split whose smaller half holds almost nothing).
-fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec<usize> {
+fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(usize, usize)]) -> Vec<usize> {
     let n = num_qubits;
     assert!(partitions >= 1 && partitions <= n);
 
@@ -1654,8 +1647,8 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
     for l in (0..n).rev() {
         row.iter_mut().for_each(|v| *v = 0);
         for &(a, b) in edges {
-            if a as usize == l && (b as usize) < n {
-                row[b as usize + 1] += 1;
+            if a == l && b < n {
+                row[b + 1] += 1;
             }
         }
         let mut running = 0i64;
@@ -1715,27 +1708,23 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
 fn cut_rows<const W: usize>(
     num_qubits: usize,
     partitions: usize,
-    edges: &[(u32, u32)],
+    edges: &[(usize, usize)],
 ) -> (PartitionRows<W>, Vec<usize>, usize) {
     let ends = cut_blocks(num_qubits, partitions, edges);
 
     // label[q] = the partition label of q's block.
     let mut label = vec![0u32; num_qubits];
-    let mut blocks: Vec<Vec<u32>> = Vec::with_capacity(partitions);
+    let mut blocks: Vec<Vec<usize>> = Vec::with_capacity(partitions);
     let mut start = 0usize;
     for (block, &end) in ends.iter().enumerate() {
         label[start..end].iter_mut().for_each(|l| *l = block as u32);
-        blocks.push((start as u32..end as u32).collect());
+        blocks.push((start..end).collect());
         start = end;
     }
 
     let crossed = edges
         .iter()
-        .filter(|&&(a, b)| {
-            (a as usize) < num_qubits
-                && (b as usize) < num_qubits
-                && label[a as usize] != label[b as usize]
-        })
+        .filter(|&&(a, b)| a < num_qubits && b < num_qubits && label[a] != label[b])
         .count();
     (PartitionRows::cut(num_qubits, &blocks), ends, crossed)
 }

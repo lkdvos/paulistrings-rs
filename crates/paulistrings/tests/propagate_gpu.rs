@@ -352,7 +352,7 @@ fn short_fingerprints_still_agree() {
     }
 }
 
-fn su4_layer<const W: usize>(num_qubits: usize, q0: u32, q1: u32) -> Circuit<W> {
+fn su4_layer<const W: usize>(num_qubits: usize, q0: usize, q1: usize) -> Circuit<W> {
     one_layer(
         num_qubits,
         Box::new(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())),
@@ -601,12 +601,12 @@ fn output_is_bitwise_reproducible_run_to_run() {
 }
 
 /// A CNOT, a rotation with a generator in several words and an SU(4) across words, at `nq` qubits.
-fn wide_words<const W: usize>(nq: u32, seed: u64) {
-    let input = rand_sum::<W>(500, nq as usize, seed);
+fn wide_words<const W: usize>(nq: usize, seed: u64) {
+    let input = rand_sum::<W>(500, nq, seed);
     let mut gen = PauliString::<W>::x(nq - 1);
     gen.z[W / 2] |= 1 << 7;
     gen.x[W - 2] |= 1 << 60;
-    let mut c = Circuit::<W>::new(nq as usize);
+    let mut c = Circuit::<W>::new(nq);
     c.push(Clifford2Q::cnot(3, nq - 100));
     c.push(PauliRotation::new(gen, 0.3));
     c.push(GeneralUnitary2Q::from_matrix(5, nq - 60, haar_su4_matrix()));
@@ -645,7 +645,7 @@ fn propagate_gpu_front_door_and_options() {
 }
 
 /// Every Clifford runs on the permutation path (K12–K14) and agrees with the host under every policy shape, on an input holding exact-zero coefficients too; the knob returns it to the fused layer with the same result, and a rotation, a dense unitary and a key-preserving channel never take it.
-fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
+fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64) {
     use paulistrings::test_support::{random_clifford_circuit, with_zero_coefficients};
     let input = with_zero_coefficients(&rand_sum::<W>(3000, nq, 0xC11F), 7);
     assert!(input

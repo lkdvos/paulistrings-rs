@@ -177,7 +177,7 @@ fn a_rotation_crossing_the_partition_agrees() {
     let sum = rand_sum::<1>(2_000, nq, 0xC2055);
     for p in [2usize, 4] {
         let rows = PartitionRows::<1>::from_seed(nq, p.trailing_zeros() as u8, ROW_SEED);
-        let q1 = (1..nq as u32)
+        let q1 = (1..nq)
             .find(|&q1| {
                 let mut c = Circuit::<1>::new(nq);
                 c.push(zz_rotation::<1>(0, q1, 0.3));
@@ -187,7 +187,7 @@ fn a_rotation_crossing_the_partition_agrees() {
         let mut circuit = Circuit::<1>::new(nq);
         for k in 0..4 {
             circuit.push(zz_rotation::<1>(0, q1, 0.3 + 0.1 * k as f64));
-            circuit.push(paulistrings::Clifford1Q::h((k as u32 + 3) % nq as u32));
+            circuit.push(paulistrings::Clifford1Q::h((k + 3) % nq));
         }
         check(&circuit, &sum, &KeepAll, "crossing zz", &[p]);
         check(
@@ -208,8 +208,8 @@ fn cut_rows_agree() {
     let sum = rand_sum_real::<1>(1_500, nq, 0xC077);
     let circuit = trotter_circuit::<1>(nq, THETA);
     for p in [2usize, 4] {
-        let blocks: Vec<Vec<u32>> = (0..p)
-            .map(|k| ((k * nq / p) as u32..((k + 1) * nq / p) as u32).collect())
+        let blocks: Vec<Vec<usize>> = (0..p)
+            .map(|k| (k * nq / p..(k + 1) * nq / p).collect())
             .collect();
         let rows = PartitionRows::<1>::cut(nq, &blocks);
         for direction in [Direction::Forward, Direction::Heisenberg] {
@@ -635,7 +635,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     use paulistrings::{Clifford1Q, Clifford2Q, GeneralUnitary2Q};
     let nq = 16;
     let sum = rand_sum::<1>(1_500, nq, 0x1F06);
-    let blocks: Vec<Vec<u32>> = (0..4).map(|k| (4 * k..4 * k + 4).collect()).collect();
+    let blocks: Vec<Vec<usize>> = (0..4).map(|k| (4 * k..4 * k + 4).collect()).collect();
     let rows = PartitionRows::<1>::cut(nq, &blocks);
     let mut circuit = Circuit::<1>::new(nq);
     circuit.push(Clifford2Q::cnot(0, 4));
@@ -825,7 +825,7 @@ fn capped_split<const W: usize>(
 fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
     let sum = rand_sum::<W>(n, nq, seed);
     let circuit = su4_chain::<W>(nq);
-    let layers: Vec<Circuit<W>> = [(0u32, 1u32), (1, 2), (0, 1), (2, 3)]
+    let layers: Vec<Circuit<W>> = [(0, 1), (1, 2), (0, 1), (2, 3)]
         .iter()
         .map(|&(a, b)| {
             let mut c = Circuit::<W>::new(nq);
@@ -941,11 +941,9 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
     for p in [2usize, 4] {
         let mut split = split_of(&sum, p);
         // `H` on `q` has the one delta `X_q Z_q`; local when the partition rows read it as zero.
-        let delta_local = |q: u32| split.rows().partition_of(&[1u64 << q], &[1u64 << q]) == 0;
-        let local = (0..nq as u32).find(|&q| delta_local(q)).expect("a local H");
-        let remote = (0..nq as u32)
-            .find(|&q| !delta_local(q))
-            .expect("a crossing H");
+        let delta_local = |q: usize| split.rows().partition_of(&[1u64 << q], &[1u64 << q]) == 0;
+        let local = (0..nq).find(|&q| delta_local(q)).expect("a local H");
+        let remote = (0..nq).find(|&q| !delta_local(q)).expect("a crossing H");
         let mut c = Circuit::<1>::new(nq);
         c.push(Clifford1Q::h(local));
         split

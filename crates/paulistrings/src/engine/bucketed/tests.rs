@@ -66,7 +66,7 @@ pub(super) struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
 /// A Haar-random SU(4), the dense-PTM two-qubit gate.
-pub(super) fn haar_su4(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
+pub(super) fn haar_su4(q0: usize, q1: usize) -> crate::channel::GeneralUnitary2Q {
     crate::channel::GeneralUnitary2Q::from_matrix(q0, q1, crate::test_support::haar_su4_matrix())
 }
 
@@ -344,7 +344,7 @@ fn rescale_fast_path_still_applies_truncation() {
 // ---- determinism ----
 
 /// sqrt(SWAP): a wide delta set merging three or more contributions per key, the only regime where summation order is observable.
-fn sqrt_swap_w1(a: u32, b: u32) -> crate::channel::GeneralUnitary2Q {
+fn sqrt_swap_w1(a: usize, b: usize) -> crate::channel::GeneralUnitary2Q {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
@@ -827,7 +827,7 @@ fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
             Box::new(PauliRotation::new(
                 {
                     let mut g = PauliString::<2>::z(0);
-                    for q in [2u32, 4, 7] {
+                    for q in [2, 4, 7] {
                         g.mul_assign(&PauliString::<2>::x(q));
                     }
                     g
@@ -964,7 +964,7 @@ fn single_bucket_sum_is_one_serial_coset() {
 fn wide_rotation_with_colliding_bucket_delta() {
     // Weight 4 > MAX_LOCAL_SUPPORT, so it prepares as `Prepared::Rotation`.
     let mut gen = PauliString::<1>::z(0);
-    for q in [2u32, 4, 6] {
+    for q in [2, 4, 6] {
         gen.mul_assign(&PauliString::<1>::x(q));
     }
     let rot = PauliRotation::new(gen, 0.53);

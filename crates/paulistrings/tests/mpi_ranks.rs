@@ -58,7 +58,7 @@ const THETA: f64 = 0.1;
 /// One weight-2 `ZZ` rotation: the smallest layer that can cross a boundary.
 fn single_rotation<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    circuit.push(zz_rotation::<W>(0, (nq / 2) as u32, 0.37));
+    circuit.push(zz_rotation::<W>(0, nq / 2, 0.37));
     circuit
 }
 
@@ -66,8 +66,8 @@ fn single_rotation<const W: usize>(nq: usize) -> Circuit<W> {
 /// a pure relabelling.
 fn cnot_ring<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    for q in 0..nq as u32 {
-        circuit.push(Clifford2Q::cnot(q, (q + 1) % nq as u32));
+    for q in 0..nq {
+        circuit.push(Clifford2Q::cnot(q, (q + 1) % nq));
     }
     circuit
 }
@@ -91,14 +91,14 @@ fn haar_su4<const W: usize>(nq: usize) -> Circuit<W> {
 fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
     for round in 0..3 {
-        for q in 0..nq as u32 {
+        for q in 0..nq {
             circuit.push(PauliRotation::new(
                 PauliString::<W>::x(q),
                 0.21 + 0.01 * f64::from(round),
             ));
         }
     }
-    circuit.push(zz_rotation::<W>(nq as u32 / 2 - 1, nq as u32 / 2, 0.33));
+    circuit.push(zz_rotation::<W>(nq / 2 - 1, nq / 2, 0.33));
     circuit
 }
 
@@ -106,8 +106,8 @@ fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
 /// [`local_run_then_one_crossing`] one remote layer at any rank count.
 fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
     let per = nq / size;
-    let blocks: Vec<Vec<u32>> = (0..size)
-        .map(|b| ((b * per) as u32..((b + 1) * per) as u32).collect())
+    let blocks: Vec<Vec<usize>> = (0..size)
+        .map(|b| (b * per..(b + 1) * per).collect())
         .collect();
     PartitionRows::<W>::cut(nq, &blocks)
 }
@@ -116,7 +116,7 @@ fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
 /// **no** transport call at all.
 fn depolarizing_only<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    for q in 0..nq as u32 {
+    for q in 0..nq {
         circuit.push(Depolarizing {
             support: [q],
             p: 0.05,
@@ -698,18 +698,18 @@ fn run_host_cases(r: &mut Runner) {
         const NQ: usize = 16;
         let size = r.size as usize;
         let per = NQ / size;
-        let blocks: Vec<Vec<u32>> = (0..size)
-            .map(|b| ((b * per) as u32..((b + 1) * per) as u32).collect())
+        let blocks: Vec<Vec<usize>> = (0..size)
+            .map(|b| (b * per..(b + 1) * per).collect())
             .collect();
 
         // One `Z` per qubit: a single-`Z` key has odd z-weight in exactly the
         // block holding that qubit, so its rank is that block's index.
         let mut acc = BuildAccumulator::<1>::new(NQ);
-        for q in 0..NQ as u32 {
+        for q in 0..NQ {
             acc.add_term(
                 PauliString::<1>::z(q),
                 Phase::ONE,
-                Complex64::new(1.0 + f64::from(q), 0.0),
+                Complex64::new(1.0 + q as f64, 0.0),
             );
         }
         let sum = acc.finalize();
@@ -723,7 +723,10 @@ fn run_host_cases(r: &mut Runner) {
         split.assert_invariants();
 
         let (_, z, _) = split.local().to_arrays();
-        let mut held: Vec<u32> = z.iter().map(|row| row[0].trailing_zeros()).collect();
+        let mut held: Vec<usize> = z
+            .iter()
+            .map(|row| row[0].trailing_zeros() as usize)
+            .collect();
         held.sort_unstable();
         assert_eq!(held, blocks[r.rank as usize], "rank {}'s block", r.rank);
 
@@ -1008,7 +1011,7 @@ mod device {
         // Four disjoint dense two-qubit layers: a rank sends each partner several blocks whose row counts differ across layers, so an out-of-order per-partner match would not silently agree.
         r.case("device several distinct-size blocks per partner", |r| {
             let mut circuit = Circuit::<1>::new(12);
-            for (q0, q1) in [(0u32, 1u32), (2, 5), (3, 9), (4, 11)] {
+            for (q0, q1) in [(0, 1), (2, 5), (3, 9), (4, 11)] {
                 circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
             }
             let sum = rand_sum::<1>(2_000, 12, 0xB031);

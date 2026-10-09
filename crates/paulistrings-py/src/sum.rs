@@ -673,14 +673,14 @@ fn parse_partitions(
 
 /// `partition_row_blocks=` → an explicit "cut" policy, one disjoint qubit block per partition, fed straight to the core [`PartitionRows::cut`](paulistrings::PartitionRows::cut).
 /// `None` (the default) means no override — the caller's `partition_row_seed`/the sum's own hash seed picks GF(2)-random rows instead, unchanged from before this knob existed.
-fn parse_partition_row_blocks(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Vec<u32>>>> {
+fn parse_partition_row_blocks(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<Vec<usize>>>> {
     let Some(obj) = obj else {
         return Ok(None);
     };
     if obj.is_none() {
         return Ok(None);
     }
-    let blocks: Vec<Vec<u32>> = obj.extract().map_err(|_| {
+    let blocks: Vec<Vec<usize>> = obj.extract().map_err(|_| {
         PyTypeError::new_err(
             "partition_row_blocks must be None or a list of disjoint qubit-index lists, one \
              per partition, e.g. [[0, 1, ..., 63], [64, ..., 126]] for a 2-partition cut",
@@ -699,7 +699,7 @@ fn parse_partition_row_blocks(obj: Option<&Bound<'_, PyAny>>) -> PyResult<Option
 /// Plain Rust (`Result<(), String>`), not `PyResult`, so it — and its `#[cfg(test)]` coverage — never touch the Python C API: this crate is `extension-module`-only (see the `partition_row_knob_tests` module comment), so a test that formats a `PyErr` fails to link.
 /// `validate_partition_row_blocks` (below) is the `PyResult` wrapper `parse_run_mode` actually calls.
 fn validate_partition_row_blocks_impl(
-    blocks: &[Vec<u32>],
+    blocks: &[Vec<usize>],
     num_qubits: usize,
     num_partitions: usize,
     what: &str,
@@ -714,20 +714,19 @@ fn validate_partition_row_blocks_impl(
     let mut seen = vec![false; num_qubits];
     for (b, qubits) in blocks.iter().enumerate() {
         for &q in qubits {
-            let qi = q as usize;
-            if qi >= num_qubits {
+            if q >= num_qubits {
                 return Err(format!(
                     "partition_row_blocks[{b}] names qubit {q}, out of range for \
                      num_qubits={num_qubits}"
                 ));
             }
-            if seen[qi] {
+            if seen[q] {
                 return Err(format!(
                     "partition_row_blocks: qubit {q} appears in more than one block; \
                      blocks must be disjoint"
                 ));
             }
-            seen[qi] = true;
+            seen[q] = true;
         }
     }
     if !num_partitions.is_power_of_two() {
@@ -756,7 +755,7 @@ fn validate_partition_row_blocks_impl(
 
 /// Validates `partition_row_blocks` against the resolved partition count and qubit count, with the GIL held — mirrors `parse_run_mode`'s "raise before the GIL is released" discipline, so a caller mistake surfaces as a `ValueError` rather than a panic inside `allow_threads` (`PartitionRows::cut` itself panics on a malformed block set).
 fn validate_partition_row_blocks(
-    blocks: &[Vec<u32>],
+    blocks: &[Vec<usize>],
     num_qubits: usize,
     num_partitions: usize,
     what: &str,
@@ -769,7 +768,7 @@ fn validate_partition_row_blocks(
 fn parse_partition_row_exclude(
     obj: Option<&Bound<'_, PyAny>>,
     num_qubits: usize,
-) -> PyResult<Option<(Vec<u32>, Vec<u32>)>> {
+) -> PyResult<Option<(Vec<usize>, Vec<usize>)>> {
     let Some(obj) = obj.filter(|obj| !obj.is_none()) else {
         return Ok(None);
     };
@@ -781,8 +780,8 @@ fn parse_partition_row_exclude(
     let (mut exclude_x, mut exclude_z) = (Vec::new(), Vec::new());
     for (key, value) in dict.iter() {
         let key: String = key.extract().map_err(|_| PyTypeError::new_err(shape))?;
-        let qubits: Vec<u32> = value.extract().map_err(|_| PyTypeError::new_err(shape))?;
-        if let Some(q) = qubits.iter().find(|&&q| q as usize >= num_qubits) {
+        let qubits: Vec<usize> = value.extract().map_err(|_| PyTypeError::new_err(shape))?;
+        if let Some(q) = qubits.iter().find(|&&q| q >= num_qubits) {
             return Err(PyValueError::new_err(format!(
                 "partition_row_exclude[{key:?}] names qubit {q}, out of range for \
                  num_qubits={num_qubits}"
@@ -798,7 +797,7 @@ fn parse_partition_row_exclude(
             }
         }
     }
-    let covers = |qubits: &[u32]| qubits.iter().collect::<HashSet<_>>().len() == num_qubits;
+    let covers = |qubits: &[usize]| qubits.iter().collect::<HashSet<_>>().len() == num_qubits;
     if num_qubits > 0 && covers(&exclude_x) && covers(&exclude_z) {
         return Err(PyValueError::new_err(
             "partition_row_exclude excludes every coordinate of the register, leaving no row to \
@@ -1151,8 +1150,8 @@ fn run_devices<const W: usize>(
 
 /// The rows a partitioned run splits by: a cut, the seeded draw minus the excluded coordinates, or the plain seeded draw.
 fn row_policy(
-    row_blocks: Option<Vec<Vec<u32>>>,
-    exclude: Option<(Vec<u32>, Vec<u32>)>,
+    row_blocks: Option<Vec<Vec<usize>>>,
+    exclude: Option<(Vec<usize>, Vec<usize>)>,
     seed: Option<u64>,
 ) -> PartitionRowPolicy {
     match (row_blocks, exclude) {
@@ -1422,8 +1421,8 @@ fn parse_distributed_device_mode(
     shown: &str,
     gather: bool,
     partition_row_seed: Option<u64>,
-    row_blocks: Option<Vec<Vec<u32>>>,
-    exclude: Option<(Vec<u32>, Vec<u32>)>,
+    row_blocks: Option<Vec<Vec<usize>>>,
+    exclude: Option<(Vec<usize>, Vec<usize>)>,
     num_qubits: usize,
 ) -> PyResult<RunMode> {
     #[cfg(feature = "mpi")]
@@ -2495,12 +2494,12 @@ mod partition_row_knob_tests {
         let num_qubits = 4;
         let num_partitions = 2;
 
-        let half_low = vec![vec![0u32, 1], vec![2u32, 3]];
+        let half_low = vec![vec![0usize, 1], vec![2usize, 3]];
         validate_partition_row_blocks_impl(&half_low, num_qubits, num_partitions, "partitions=2")
             .expect("two disjoint blocks covering all 4 qubits validate cleanly");
         let rows_low = PartitionRows::<1>::cut(num_qubits, &half_low);
 
-        let half_alt = vec![vec![0u32, 2], vec![1u32, 3]];
+        let half_alt = vec![vec![0usize, 2], vec![1usize, 3]];
         validate_partition_row_blocks_impl(&half_alt, num_qubits, num_partitions, "partitions=2")
             .expect("an alternative disjoint cut also validates cleanly");
         let rows_alt = PartitionRows::<1>::cut(num_qubits, &half_alt);
@@ -2522,7 +2521,7 @@ mod partition_row_knob_tests {
     /// the whole point of validating before `allow_threads` releases the GIL.
     #[test]
     fn mismatched_block_count_is_a_value_error_not_a_panic() {
-        let one_block = vec![vec![0u32, 1, 2, 3]];
+        let one_block = vec![vec![0usize, 1, 2, 3]];
         let err = validate_partition_row_blocks_impl(&one_block, 4, 2, "partitions=2")
             .expect_err("1 block for 2 partitions must be rejected");
         assert!(err.contains("partition_row_blocks"));
@@ -2533,13 +2532,13 @@ mod partition_row_knob_tests {
     /// a partition bit no qubit can set leaves half the partitions empty.
     #[test]
     fn a_block_set_that_cannot_name_every_partition_is_a_value_error() {
-        let empty_second = vec![vec![0u32, 1, 2, 3], Vec::new()];
+        let empty_second = vec![vec![0usize, 1, 2, 3], Vec::new()];
         let err = validate_partition_row_blocks_impl(&empty_second, 4, 2, "partitions=2")
             .expect_err("an empty block 1 leaves partition bit 0 constant");
         assert!(err.contains("bit 0"), "{err}");
 
         // Block 1 empty out of four is fine — block 3 still sets bit 0.
-        let one_empty = vec![vec![0u32], Vec::new(), vec![1u32], vec![2u32]];
+        let one_empty = vec![vec![0usize], Vec::new(), vec![1usize], vec![2usize]];
         validate_partition_row_blocks_impl(&one_empty, 4, 4, "partitions=4")
             .expect("every bit is set by some non-empty block");
     }
@@ -2548,7 +2547,7 @@ mod partition_row_knob_tests {
     /// `log2(P)` rows at all.
     #[test]
     fn a_partition_count_that_is_not_a_power_of_two_is_a_value_error() {
-        let three = vec![vec![0u32], vec![1u32], vec![2u32]];
+        let three = vec![vec![0usize], vec![1usize], vec![2usize]];
         let err = validate_partition_row_blocks_impl(&three, 3, 3, "partitions=3")
             .expect_err("three partitions cannot be named by GF(2) rows");
         assert!(err.contains("power of two"), "{err}");
@@ -2559,7 +2558,7 @@ mod partition_row_knob_tests {
     /// passed.
     #[test]
     fn a_mismatched_block_count_names_the_group_under_comm() {
-        let two_blocks = vec![vec![0u32, 1], vec![2u32, 3]];
+        let two_blocks = vec![vec![0usize, 1], vec![2usize, 3]];
         let err = validate_partition_row_blocks_impl(&two_blocks, 4, 4, "comm= with 4 rank(s)")
             .expect_err("2 blocks for a 4-rank group must be rejected");
         assert!(err.contains("comm= with 4 rank(s)"), "{err}");
@@ -2569,7 +2568,7 @@ mod partition_row_knob_tests {
     /// (which would otherwise panic on the same condition).
     #[test]
     fn overlapping_blocks_are_a_value_error() {
-        let overlapping = vec![vec![0u32, 1], vec![1u32, 2]];
+        let overlapping = vec![vec![0usize, 1], vec![1usize, 2]];
         let err = validate_partition_row_blocks_impl(&overlapping, 3, 2, "partitions=2")
             .expect_err("qubit 1 in two blocks must be rejected");
         assert!(err.contains("more than one block"));

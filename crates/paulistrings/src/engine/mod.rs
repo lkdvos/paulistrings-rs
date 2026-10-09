@@ -185,17 +185,14 @@ where
 struct SoloPolicy<'a, T: ?Sized>(&'a T);
 
 impl<const W: usize, T: TruncationPolicy<W> + ?Sized> TruncationPolicy<W> for SoloPolicy<'_, T> {
-    #[inline]
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: num_complex::Complex64) -> bool {
         self.0.keep_term(x, z, c)
     }
 
-    #[inline]
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {
         self.0.finalize_layer(sum);
     }
 
-    #[inline]
     fn finalizes_layer(&self) -> bool {
         self.0.finalizes_layer()
     }
@@ -210,8 +207,6 @@ impl<const W: usize, T: TruncationPolicy<W> + ?Sized> PartitionedTruncation<W>
 }
 
 /// Append a solo run's per-layer rows to the scratch's enabled traces.
-#[cold]
-#[inline(never)]
 fn record_traces<const W: usize>(scratch: &mut LayerScratch<W>, rows: &[PartitionLayerRow]) {
     if let Some(trace) = scratch.term_trace.as_mut() {
         trace.terms_in.extend(rows.iter().map(|row| row.terms_in));

@@ -66,7 +66,6 @@ impl ChunkMap {
     }
 
     /// Bucket `beta`'s destination position.
-    #[inline]
     pub(crate) fn position_of(&self, beta: u32) -> u32 {
         if self.perm.is_empty() {
             beta
@@ -76,7 +75,6 @@ impl ChunkMap {
     }
 
     /// The bucket at destination position `p`, the inverse of `position_of`.
-    #[inline]
     pub(crate) fn bucket_at(&self, p: u32) -> u32 {
         if self.inv.is_empty() {
             p
@@ -102,7 +100,6 @@ impl ChunkMap {
     }
 
     /// The `k` with `bound(k) <= p < bound(k + 1)`.
-    #[inline]
     pub(crate) fn chunk_of_position(&self, p: u32) -> usize {
         let coset = u64::from(p >> self.r);
         ((coset * u64::from(self.chunks)) / u64::from(self.cosets)) as usize

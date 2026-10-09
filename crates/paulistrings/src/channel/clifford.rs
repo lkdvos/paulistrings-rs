@@ -83,7 +83,6 @@ impl Clifford1Q {
 
 impl Clifford1Q {
     /// Body of `apply` and `apply_adjoint`, which differ only in the table.
-    #[inline]
     fn apply_table<const W: usize>(
         &self,
         out_pauli: &[u8; 4],
@@ -106,17 +105,14 @@ impl Clifford1Q {
 }
 
 impl<const W: usize> Channel<W> for Clifford1Q {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -127,7 +123,6 @@ impl<const W: usize> Channel<W> for Clifford1Q {
         self.apply_table(&self.out_pauli, &self.phase, input_x, input_z, coeff, out);
     }
 
-    #[inline]
     fn apply_adjoint(
         &self,
         input_x: &[u64; W],
@@ -269,17 +264,14 @@ fn pack4_from_word(x: [u64; 1], z: [u64; 1]) -> u8 {
 }
 
 impl<const W: usize> Channel<W> for Clifford2Q {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],

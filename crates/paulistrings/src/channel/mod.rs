@@ -36,7 +36,6 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
     /// Append one term.
     ///
     /// Panics if the buffer is full; an `apply` body must not push more than its declared `max_fanout`.
-    #[inline]
     pub fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         debug_assert!(
             *self.len < self.x.len(),
@@ -52,14 +51,12 @@ impl<'a, const W: usize> OutputBuffer<'a, W> {
     }
 
     /// Reset the length to zero, keeping the storage.
-    #[inline]
     pub fn clear(&mut self) {
         *self.len = 0;
     }
 }
 
 /// Pack qubit indices into a [`Channel::support`] bitmask; order and duplicates do not matter.
-#[inline]
 pub fn support_mask<const W: usize>(qubits: &[usize]) -> [u64; W] {
     let mut mask = [0u64; W];
     for &q in qubits {
@@ -70,7 +67,6 @@ pub fn support_mask<const W: usize>(qubits: &[usize]) -> [u64; W] {
 }
 
 /// `(word, bit, 1 << bit)` of qubit `q`.
-#[inline(always)]
 fn qubit_loc(q: usize) -> (usize, usize, u64) {
     let word = q / 64;
     let bit = q % 64;
@@ -78,7 +74,6 @@ fn qubit_loc(q: usize) -> (usize, usize, u64) {
 }
 
 /// The packed single-qubit Pauli index `x | (z << 1)` (`I=0, X=1, Z=2, Y=3`) at `(word, bit)`.
-#[inline(always)]
 fn read_pauli<const W: usize>(x: &[u64; W], z: &[u64; W], word: usize, bit: usize) -> usize {
     let x_bit = (x[word] >> bit) & 1;
     let z_bit = (z[word] >> bit) & 1;
@@ -86,7 +81,6 @@ fn read_pauli<const W: usize>(x: &[u64; W], z: &[u64; W], word: usize, bit: usiz
 }
 
 /// Overwrite the qubit at `(word, bit, mask)` with the packed Pauli index `p`.
-#[inline(always)]
 fn write_pauli<const W: usize>(
     x: &mut [u64; W],
     z: &mut [u64; W],
@@ -102,7 +96,6 @@ fn write_pauli<const W: usize>(
 }
 
 /// Set or clear the bit at `(word, mask)` of one bit-plane.
-#[inline(always)]
 fn set_bit<const W: usize>(plane: &mut [u64; W], word: usize, mask: u64, value: bool) {
     if value {
         plane[word] |= mask;

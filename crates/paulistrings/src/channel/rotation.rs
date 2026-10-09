@@ -31,7 +31,6 @@ impl<const W: usize> PauliRotation<W> {
     }
 
     /// The generator `P`.
-    #[inline]
     pub fn generator(&self) -> PauliString<W> {
         PauliString::<W> {
             x: self.generator_x,
@@ -40,19 +39,16 @@ impl<const W: usize> PauliRotation<W> {
     }
 
     /// The rotation angle in radians.
-    #[inline]
     pub fn theta(&self) -> f64 {
         self.theta
     }
 
     /// Number of qubits in the support, i.e. the generator's Pauli weight.
-    #[inline]
     pub fn weight(&self) -> usize {
         self.generator().weight() as usize
     }
 
     /// Body of `apply` and `apply_adjoint`, the adjoint being the rotation by `-θ`.
-    #[inline]
     fn apply_with_theta(
         &self,
         theta: f64,
@@ -95,17 +91,14 @@ fn sin_cos(theta: f64) -> (f64, f64) {
 }
 
 impl<const W: usize> Channel<W> for PauliRotation<W> {
-    #[inline]
     fn max_fanout(&self) -> usize {
         2
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         core::array::from_fn(|w| self.generator_x[w] | self.generator_z[w])
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -116,7 +109,6 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         self.apply_with_theta(self.theta, input_x, input_z, coeff, out);
     }
 
-    #[inline]
     fn apply_adjoint(
         &self,
         input_x: &[u64; W],

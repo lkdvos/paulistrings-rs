@@ -5,7 +5,6 @@
 pub(crate) const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
 
 /// splitmix64's output finalizer: a bijection on `u64` with full avalanche.
-#[inline]
 pub(crate) fn mix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -13,7 +12,6 @@ pub(crate) fn mix64(mut z: u64) -> u64 {
 }
 
 /// One splitmix64 step: advance `state` and return its mixed output.
-#[inline]
 pub(crate) fn splitmix64(state: &mut u64) -> u64 {
     *state = state.wrapping_add(SPLITMIX_GAMMA);
     mix64(*state)
@@ -44,7 +42,6 @@ impl Rng {
         Self { s }
     }
 
-    #[inline]
     pub(crate) fn next_u64(&mut self) -> u64 {
         let s = &mut self.s;
         let out = s[0].wrapping_add(s[3]).rotate_left(23).wrapping_add(s[0]);
@@ -59,7 +56,6 @@ impl Rng {
     }
 
     /// A uniform `f64` in `[0, 1)` on the 2^-53 grid.
-    #[inline]
     pub(crate) fn uniform(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
     }

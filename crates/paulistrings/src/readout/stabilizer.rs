@@ -90,7 +90,6 @@ struct Column {
 }
 
 impl Column {
-    #[inline]
     fn is_set<const W: usize>(self, p: &PauliString<W>) -> bool {
         let half = if self.is_z { &p.z } else { &p.x };
         half[self.word] & self.mask != 0
@@ -215,13 +214,11 @@ impl<const W: usize> StabilizerState<W> {
     }
 
     /// Number of qubits the state is defined on.
-    #[inline]
     pub fn num_qubits(&self) -> usize {
         self.num_qubits
     }
 
     /// The stabilizer sign of `key`: `None` when `±key` is outside the group (expectation `0`), else `Some(true)` iff `⟨ψ|key|ψ⟩ = -1`.
-    #[inline]
     pub fn sign_of(&self, key: &PauliString<W>) -> Option<bool> {
         let mut reduced = *key;
         let mut phase = Phase::ONE;
@@ -246,7 +243,6 @@ impl<const W: usize> StabilizerState<W> {
     }
 
     /// `⟨ψ|key|ψ⟩`: `0.0`, `1.0` or `-1.0`.
-    #[inline]
     pub fn expectation_of(&self, key: &PauliString<W>) -> f64 {
         match self.sign_of(key) {
             None => 0.0,

@@ -79,22 +79,18 @@ impl<const W: usize> HostPartition<W> {
 }
 
 impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
-    #[inline]
     fn len(&self) -> usize {
         self.sum.len()
     }
 
-    #[inline]
     fn hash(&self) -> &Gf2Hash<W> {
         self.sum.hash()
     }
 
-    #[inline]
     fn refine(&mut self) {
         self.sum.refine();
     }
 
-    #[inline]
     fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {
         self.sum.rebucket(target_bucket_len, min_buckets);
         true
@@ -109,7 +105,6 @@ impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
     }
 
     #[cfg(feature = "phase-timing")]
-    #[inline]
     fn stats(&mut self) -> &mut PhaseStats {
         &mut self.state.layer.stats
     }
@@ -119,7 +114,6 @@ impl<const W: usize, T> PartitionBackend<W, T> for HostPartition<W>
 where
     T: PartitionedTruncation<W> + ?Sized,
 {
-    #[inline]
     fn apply_layer<X: Transport>(
         &mut self,
         prepared: &Prepared<W>,
@@ -139,7 +133,6 @@ where
         )
     }
 
-    #[inline]
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
         policy.finalize_layer_partitioned(&mut self.sum, collectives);
     }

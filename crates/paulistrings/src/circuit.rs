@@ -27,13 +27,11 @@ impl<const W: usize> Circuit<W> {
     }
 
     /// Number of channels in the circuit.
-    #[inline]
     pub fn len(&self) -> usize {
         self.channels.len()
     }
 
     /// `true` iff no channels have been pushed.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.channels.is_empty()
     }

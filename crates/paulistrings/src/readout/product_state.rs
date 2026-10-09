@@ -29,7 +29,6 @@ pub enum PauliAxis {
 
 impl PauliAxis {
     /// The axis Pauli's symplectic bits `(x, z)`.
-    #[inline]
     const fn bits(self) -> (bool, bool) {
         match self {
             PauliAxis::X => (true, false),

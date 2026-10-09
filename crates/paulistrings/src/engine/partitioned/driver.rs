@@ -27,7 +27,6 @@ pub(super) use crate::engine::LOG_TARGET;
 pub const BITS_AGREE_EVERY: usize = 16;
 
 /// Whether layer `k` of a call agrees the bucket count; a pure function of `k`, so every partition answers alike.
-#[inline]
 fn agrees_bucket_bits(k: usize) -> bool {
     k < BITS_AGREE_EVERY || k.is_multiple_of(BITS_AGREE_EVERY)
 }

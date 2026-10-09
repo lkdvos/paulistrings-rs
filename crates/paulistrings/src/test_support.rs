@@ -230,7 +230,6 @@ impl Xs64 {
     }
 
     /// `W` consecutive draws, word 0 first.
-    #[inline]
     pub fn next_array<const W: usize>(&mut self) -> [u64; W] {
         let mut a = [0u64; W];
         for slot in a.iter_mut() {

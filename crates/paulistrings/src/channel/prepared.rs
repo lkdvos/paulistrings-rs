@@ -32,7 +32,6 @@ pub struct DeltaEntry<const W: usize> {
 
 impl<const W: usize> DeltaEntry<W> {
     /// The output row for support pattern `s`, computed operation for operation as the gather does; `None` for a zero amplitude.
-    #[inline]
     pub(crate) fn emit(
         &self,
         s: usize,
@@ -54,7 +53,6 @@ impl<const W: usize> DeltaEntry<W> {
     }
 
     /// `(mask_x, mask_z)`.
-    #[inline]
     pub(crate) fn mask(&self) -> ([u64; W], [u64; W]) {
         (self.mask_x, self.mask_z)
     }
@@ -73,7 +71,6 @@ pub struct LocalPtm<const W: usize> {
 
 impl<const W: usize> LocalPtm<W> {
     /// Number of support qubits.
-    #[inline]
     pub(crate) fn k(&self) -> usize {
         self.k as usize
     }
@@ -84,13 +81,11 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// The delta entries, ascending by `local_delta`.
-    #[inline]
     pub fn deltas(&self) -> &[DeltaEntry<W>] {
         &self.deltas
     }
 
     /// Number of key deltas.
-    #[inline]
     pub fn num_deltas(&self) -> usize {
         self.deltas.len()
     }
@@ -104,7 +99,6 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// The local support pattern of a key, packed like `local_delta`.
-    #[inline]
     pub(crate) fn support_bits(&self, x: &[u64; W], z: &[u64; W]) -> usize {
         let mut s = 0usize;
         for j in 0..self.k as usize {
@@ -178,7 +172,6 @@ pub struct PreparedRotation<const W: usize> {
 
 impl<const W: usize> PreparedRotation<W> {
     /// The generator-pass row, computed operation for operation as the gather does; `None` if the term commutes with the generator.
-    #[inline]
     pub(crate) fn emit_generator(
         &self,
         x: &[u64; W],

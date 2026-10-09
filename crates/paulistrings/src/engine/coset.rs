@@ -3,14 +3,12 @@
 use crate::pauli_sum::hash::B_MAX_BITS;
 
 /// Highest set bit of a nonzero word.
-#[inline]
 fn highest_bit(v: u32) -> u32 {
     debug_assert!(v != 0, "highest_bit: zero has no highest set bit");
     31 - v.leading_zeros()
 }
 
 /// Software `pext`, since BMI2 is not assumed and this runs off any inner loop.
-#[inline]
 fn pext(value: u32, mask: u32) -> u32 {
     let mut out = 0u32;
     let mut out_bit = 0u32;
@@ -91,32 +89,27 @@ impl Gf2Span {
     }
 
     /// Dimension `r` of the span.
-    #[inline]
     pub(crate) fn r(&self) -> usize {
         self.basis.len()
     }
 
     /// Buckets per coset, `2^r`.
-    #[inline]
     pub(crate) fn coset_size(&self) -> usize {
         1usize << self.basis.len()
     }
 
     /// Number of cosets, `2^bits / 2^r`.
-    #[inline]
     pub(crate) fn num_cosets(&self) -> usize {
         (1usize << self.bits) >> self.basis.len()
     }
 
     /// Whether `beta` is its coset's representative: the unique member with every pivot bit clear, which is also the coset's minimum.
-    #[inline]
     pub(crate) fn is_representative(&self, beta: u32) -> bool {
         beta & self.pivot_mask == 0
     }
 
     /// The representative of `beta`'s coset.
     // Not `beta & !pivot_mask`: basis vectors carry non-pivot bits too, so masking can leave the coset.
-    #[inline]
     pub(crate) fn representative_of(&self, beta: u32) -> u32 {
         debug_assert!(
             beta & !self.space_mask == 0,
@@ -132,7 +125,6 @@ impl Gf2Span {
     }
 
     /// The member index of `delta` in the span, read off its pivot bits since the basis is reduced.
-    #[inline]
     pub(crate) fn coord_of(&self, delta: u32) -> u32 {
         debug_assert!(
             self.representative_of(delta) == 0,
@@ -142,7 +134,6 @@ impl Gf2Span {
     }
 
     /// The position of `representative` among all representatives in ascending order.
-    #[inline]
     pub(crate) fn rank_of_representative(&self, representative: u32) -> u32 {
         debug_assert!(
             self.is_representative(representative),
@@ -152,7 +143,6 @@ impl Gf2Span {
     }
 
     /// `beta` renumbered so coset `c` owns `c << r .. (c + 1) << r`, with the member coordinate in the low `r` bits.
-    #[inline]
     pub(crate) fn permuted_index(&self, beta: u32) -> u32 {
         let representative = self.representative_of(beta);
         (self.rank_of_representative(representative) << self.basis.len())

@@ -24,7 +24,6 @@ pub struct CoefficientThreshold(
 );
 
 impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
-    #[inline]
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
         let eps = self.0;
         eps < 0.0 || c.norm_sqr() > eps * eps
@@ -43,7 +42,6 @@ pub struct WeightCutoff(
 );
 
 impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
-    #[inline]
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], _c: Complex64) -> bool {
         let weight: u32 = (0..W).map(|i| (x[i] | z[i]).count_ones()).sum();
         weight <= self.0
@@ -390,7 +388,6 @@ where
     A: TruncationPolicy<W>,
     B: TruncationPolicy<W>,
 {
-    #[inline]
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         self.0.keep_term(x, z, c) && self.1.keep_term(x, z, c)
     }
@@ -419,7 +416,6 @@ where
     A: TruncationPolicy<W>,
     B: TruncationPolicy<W>,
 {
-    #[inline]
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
     }

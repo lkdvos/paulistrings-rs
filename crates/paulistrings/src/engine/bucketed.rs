@@ -246,14 +246,12 @@ pub(crate) trait ExtraRows<const W: usize> {
     const NEEDS_BETA: bool = false;
 
     /// Rows destined for original bucket `beta`; must equal what [`append_into`](Self::append_into) pushes.
-    #[inline]
     fn count(&self, beta: u32) -> usize {
         let _ = beta;
         0
     }
 
     /// Append original bucket `beta`'s rows onto the run's rest columns.
-    #[inline]
     fn append_into(
         &self,
         beta: u32,

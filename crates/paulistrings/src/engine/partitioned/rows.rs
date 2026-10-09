@@ -69,7 +69,6 @@ pub fn circuit_generators<const W: usize>(
 /// `(x, z)` halves of a key delta.
 type Mask<const W: usize> = ([u64; W], [u64; W]);
 
-#[inline]
 fn mask_is_zero<const W: usize>(m: &Mask<W>) -> bool {
     m.0.iter().chain(m.1.iter()).all(|w| *w == 0)
 }

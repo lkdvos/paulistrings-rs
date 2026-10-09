@@ -30,7 +30,6 @@ impl RotationAxis {
     }
 
     /// `(selector, flip)` halves of a key: `G_q` anticommutes with the term iff the selector bit is set on `q`, and `V` then flips the other half's bit there.
-    #[inline]
     fn split<'a, const W: usize>(
         self,
         x: &'a [u64; W],
@@ -84,12 +83,10 @@ fn site_mask<const W: usize>(sites: &[usize], num_qubits: usize) -> [u64; W] {
     mask
 }
 
-#[inline]
 fn and<const W: usize>(a: &[u64; W], b: &[u64; W]) -> [u64; W] {
     std::array::from_fn(|w| a[w] & b[w])
 }
 
-#[inline]
 fn popcount<const W: usize>(a: &[u64; W]) -> usize {
     a.iter().map(|w| w.count_ones() as usize).sum()
 }

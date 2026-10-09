@@ -73,7 +73,6 @@ fn clean(v: Complex64, eps: f64) -> Complex64 {
 const PTM_EPS: f64 = 1e-12;
 
 /// Row `s` of `table`, or column `s` when `transpose` is set.
-#[inline]
 fn effective_row<const N: usize>(
     table: &[[Complex64; N]; N],
     transpose: bool,
@@ -119,7 +118,6 @@ impl GeneralUnitary1Q {
 }
 
 /// Body of the one-qubit `apply` and `apply_adjoint`.
-#[inline]
 fn apply_1q<const W: usize>(
     qubit: usize,
     table: &[[Complex64; 4]; 4],
@@ -148,12 +146,10 @@ fn apply_1q<const W: usize>(
 }
 
 impl<const W: usize> Channel<W> for GeneralUnitary1Q {
-    #[inline]
     fn max_fanout(&self) -> usize {
         4
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
@@ -233,7 +229,6 @@ impl GeneralUnitary2Q {
 }
 
 /// Body of the two-qubit `apply` and `apply_adjoint`.
-#[inline]
 #[allow(clippy::too_many_arguments)]
 fn apply_2q<const W: usize>(
     support: &[usize; 2],
@@ -268,12 +263,10 @@ fn apply_2q<const W: usize>(
 }
 
 impl<const W: usize> Channel<W> for GeneralUnitary2Q {
-    #[inline]
     fn max_fanout(&self) -> usize {
         16
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }

@@ -189,12 +189,10 @@ pub(crate) struct CosetStats {
 pub(crate) struct Stamp(Instant);
 
 impl Stamp {
-    #[inline]
     pub(crate) fn now() -> Self {
         Stamp(Instant::now())
     }
 
-    #[inline]
     pub(crate) fn lap(&mut self, slot: &mut u64) {
         let now = Instant::now();
         *slot += now.duration_since(self.0).as_nanos() as u64;
@@ -202,7 +200,6 @@ impl Stamp {
     }
 
     /// Re-arm without recording, skipping a region that times itself.
-    #[inline]
     pub(crate) fn rearm(&mut self) {
         self.0 = Instant::now();
     }

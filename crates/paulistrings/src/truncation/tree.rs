@@ -66,7 +66,6 @@ impl BuiltinTruncation {
 }
 
 impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
-    #[inline]
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         match self {
             Self::Keep => true,

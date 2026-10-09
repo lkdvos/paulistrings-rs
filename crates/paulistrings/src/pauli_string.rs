@@ -32,7 +32,6 @@ impl<const W: usize> PauliString<W> {
     /// # Panics
     ///
     /// Panics in debug builds if `qubit >= 64 · W`.
-    #[inline]
     pub fn x(qubit: usize) -> Self {
         debug_assert!(qubit < 64 * W);
         let mut p = Self::identity();
@@ -45,7 +44,6 @@ impl<const W: usize> PauliString<W> {
     /// # Panics
     ///
     /// Panics in debug builds if `qubit >= 64 · W`.
-    #[inline]
     pub fn y(qubit: usize) -> Self {
         debug_assert!(qubit < 64 * W);
         let mut p = Self::identity();
@@ -61,7 +59,6 @@ impl<const W: usize> PauliString<W> {
     /// # Panics
     ///
     /// Panics in debug builds if `qubit >= 64 · W`.
-    #[inline]
     pub fn z(qubit: usize) -> Self {
         debug_assert!(qubit < 64 * W);
         let mut p = Self::identity();
@@ -70,13 +67,11 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Number of non-identity qubits.
-    #[inline]
     pub fn weight(&self) -> u32 {
         (0..W).map(|i| (self.x[i] | self.z[i]).count_ones()).sum()
     }
 
     /// Multiply `self * other` in place, returning the phase `i^k` such that the true product is `phase · self`.
-    #[inline]
     pub fn mul_assign(&mut self, other: &Self) -> Phase {
         // Per qubit, P(a,b)·P(c,d) = i^δ·P(a⊕c, b⊕d) with δ = 2bc + ab + cd − (a⊕c)(b⊕d) mod 4, from P(a,b) = i^{ab}·X^a·Z^b.
         let mut delta: u32 = 0;
@@ -100,7 +95,6 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Value-returning multiply: `(self * other, phase)`.
-    #[inline]
     pub fn product(mut self, other: &Self) -> (Self, Phase) {
         let phase = self.mul_assign(other);
         (self, phase)
@@ -111,7 +105,6 @@ impl<const W: usize> PauliString<W> {
     /// # Panics
     ///
     /// Panics in debug builds if `num_qubits > 64 · W`.
-    #[inline]
     pub fn is_within(&self, num_qubits: usize) -> bool {
         debug_assert!(num_qubits <= 64 * W);
         let mut leak: u64 = 0;
@@ -122,7 +115,6 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// `true` iff `self` and `other` commute as Pauli operators.
-    #[inline]
     pub fn commutes_with(&self, other: &Self) -> bool {
         // Parity is GF(2)-linear, so XOR-fold the words and take one popcount.
         let mut folded: u64 = 0;
@@ -135,7 +127,6 @@ impl<const W: usize> PauliString<W> {
     /// Commutator `[self, other] = self·other − other·self`, as `(product, coefficient)`.
     ///
     /// The coefficient is `2·i^k` when the strings anticommute and exactly `0` when they commute; the returned string is [`Self::product`]'s result either way.
-    #[inline]
     pub fn commutator(self, other: &Self) -> (Self, Complex64) {
         let vanishes = self.commutes_with(other);
         let (product, phase) = self.product(other);
@@ -145,7 +136,6 @@ impl<const W: usize> PauliString<W> {
     /// Anticommutator `{self, other} = self·other + other·self`, as `(product, coefficient)`.
     ///
     /// The coefficient is `2·i^k` when the strings commute and exactly `0` when they anticommute.
-    #[inline]
     pub fn anticommutator(self, other: &Self) -> (Self, Complex64) {
         let vanishes = !self.commutes_with(other);
         let (product, phase) = self.product(other);
@@ -154,7 +144,6 @@ impl<const W: usize> PauliString<W> {
 }
 
 /// Mask of the live qubit bits in word `word`, given `num_qubits` total.
-#[inline]
 pub(crate) fn word_mask(num_qubits: usize, word: usize) -> u64 {
     let first_qubit = 64 * word;
     if num_qubits >= first_qubit + 64 {
@@ -167,7 +156,6 @@ pub(crate) fn word_mask(num_qubits: usize, word: usize) -> u64 {
 }
 
 /// `0` when the bracket vanishes, `2·i^k` otherwise.
-#[inline]
 fn scaled_phase(phase: Phase, vanishes: bool) -> Complex64 {
     if vanishes {
         Complex64::new(0.0, 0.0)

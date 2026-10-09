@@ -56,19 +56,16 @@ impl<const W: usize> BucketColumns<W> {
         }
     }
 
-    #[inline]
     pub(crate) fn len(&self) -> usize {
         self.coeff.len()
     }
 
-    #[inline]
     pub(crate) fn clear(&mut self) {
         self.x.clear();
         self.z.clear();
         self.coeff.clear();
     }
 
-    #[inline]
     pub(crate) fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.x.push(x);
         self.z.push(z);
@@ -340,44 +337,37 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Total number of terms.
-    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
     /// `true` if the sum has no terms.
-    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Number of qubits this sum acts on.
-    #[inline]
     pub fn num_qubits(&self) -> usize {
         self.num_qubits
     }
 
     /// Number of buckets, `1 << hash().bits()`.
-    #[inline]
     pub fn num_buckets(&self) -> usize {
         self.buckets.len()
     }
 
     /// The partitioning hash.
-    #[inline]
     pub fn hash(&self) -> &Gf2Hash<W> {
         &self.hash
     }
 
     /// Borrow bucket `b`'s columns as `(x, z, coeff)`.
-    #[inline]
     pub fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let columns = &self.buckets[b];
         (&columns.x, &columns.z, &columns.coeff)
     }
 
     /// Number of terms in bucket `b`.
-    #[inline]
     pub fn bucket_len(&self, b: usize) -> usize {
         self.buckets[b].len()
     }

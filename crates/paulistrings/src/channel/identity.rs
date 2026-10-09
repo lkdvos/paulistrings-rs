@@ -15,17 +15,14 @@ impl IdentityChannel {
 }
 
 impl<const W: usize> Channel<W> for IdentityChannel {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         [0; W]
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],

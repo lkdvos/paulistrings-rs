@@ -4,7 +4,6 @@ use super::{qubit_loc, read_pauli, set_bit, support_mask, Channel, OutputBuffer}
 use num_complex::Complex64;
 
 /// Multiply the coefficient by `scale` when the support qubit's Pauli index is `affected`.
-#[inline]
 fn rescale_on_support<const W: usize>(
     support: usize,
     scale: f64,
@@ -31,17 +30,14 @@ pub struct Depolarizing {
 }
 
 impl<const W: usize> Channel<W> for Depolarizing {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -70,17 +66,14 @@ pub struct Dephasing {
 }
 
 impl<const W: usize> Channel<W> for Dephasing {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -115,17 +108,14 @@ pub struct PauliChannel {
 }
 
 impl<const W: usize> Channel<W> for PauliChannel {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -159,17 +149,14 @@ pub struct Depolarizing2Q {
 }
 
 impl<const W: usize> Channel<W> for Depolarizing2Q {
-    #[inline]
     fn max_fanout(&self) -> usize {
         1
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }
 
-    #[inline]
     fn apply(
         &self,
         input_x: &[u64; W],
@@ -208,12 +195,10 @@ pub struct AmplitudeDamping {
 }
 
 impl<const W: usize> Channel<W> for AmplitudeDamping {
-    #[inline]
     fn max_fanout(&self) -> usize {
         2
     }
 
-    #[inline]
     fn support(&self) -> [u64; W] {
         support_mask(&self.support)
     }

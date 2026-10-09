@@ -57,7 +57,6 @@ impl<const W: usize> RowEmitter<'_, W> {
         }
     }
 
-    #[inline]
     fn emit(
         &self,
         x: &[u64; W],

@@ -22,7 +22,6 @@ pub(crate) struct SortScratch<const W: usize> {
 /// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
-#[inline]
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
     x: &mut Vec<[u64; W]>,
     z: &mut Vec<[u64; W]>,
@@ -78,7 +77,6 @@ const RADIX_BUCKETS: usize = 1 << RADIX_DIGIT_BITS;
 const RADIX_MIN_WINDOW_BITS: u32 = 8;
 
 /// Word `k` of the lex key `(x, z)`, word 0 the most significant.
-#[inline(always)]
 fn key_word<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], word: usize, row: usize) -> u64 {
     if word < W {
         x[row][word]

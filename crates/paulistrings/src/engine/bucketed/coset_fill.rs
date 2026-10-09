@@ -43,13 +43,11 @@ pub(in crate::engine) struct GatherRun<const W: usize> {
 }
 
 /// `value != ZERO`, without the `||` short-circuit — one flag, no branch.
-#[inline(always)]
 pub(super) fn nonzero(value: Complex64) -> bool {
     (value.re != 0.0) | (value.im != 0.0)
 }
 
 impl<const W: usize> GatherRun<W> {
-    #[inline]
     pub(super) fn reset(
         &mut self,
         id_key_capacity: usize,
@@ -76,7 +74,6 @@ impl<const W: usize> GatherRun<W> {
     /// # Safety
     ///
     /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`, which [`GatherRun::reset`] guarantees.
-    #[inline]
     unsafe fn append_if(
         xs: &mut Vec<[u64; W]>,
         zs: &mut Vec<[u64; W]>,
@@ -102,20 +99,17 @@ impl<const W: usize> GatherRun<W> {
     }
 
     /// Branchless filtered append to the rest stream.
-    #[inline]
     pub(super) fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
         // SAFETY: `reset` reserved `rest_capacity + 1` on all three columns, and `rest_capacity` bounds every row the plan's deltas can emit into this run.
         unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
     }
 
     /// Unconditional append to the rest stream.
-    #[inline]
     pub(super) fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
         self.push_if(true, x, z, c);
     }
 
     /// Branchless filtered append to the identity stream.
-    #[inline]
     pub(super) fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
         // SAFETY: as `push_if`, with `id_key_capacity` / `id_coeff_capacity` bounding the identity stream's rows.
         unsafe {
@@ -132,7 +126,6 @@ impl<const W: usize> GatherRun<W> {
     }
 
     /// Unchecked append to the identity coefficient column, the only one a dense identity materializes.
-    #[inline]
     pub(super) fn push_id_coeff(&mut self, c: Complex64) {
         let len = self.id_coeff.len();
         debug_assert!(len < self.id_coeff.capacity());
@@ -144,7 +137,6 @@ impl<const W: usize> GatherRun<W> {
     }
 
     #[cfg(any(test, feature = "phase-timing"))]
-    #[inline]
     pub(super) fn len(&self) -> usize {
         self.id_coeff.len() + self.coeff.len()
     }

@@ -238,13 +238,11 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
 
 impl Gf2Span {
     /// The reduced echelon basis, ascending by pivot bit.
-    #[inline]
     pub(crate) fn basis(&self) -> &[u32] {
         &self.basis
     }
 
     /// Member `i` of the coset with representative `rep`; bit `j` of `i` selects `basis[j]`.
-    #[inline]
     pub(crate) fn member(&self, rep: u32, i: u32) -> u32 {
         debug_assert!(
             (i as usize) < self.coset_size(),

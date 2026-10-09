@@ -199,7 +199,6 @@ pub(super) enum Transfer {
 }
 
 /// Run `f`, a synchronous host<->device copy on `stream`, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
-#[inline]
 pub(super) fn timed_transfer<T>(
     stream: &CudaStream,
     ns: &mut TransferNs,

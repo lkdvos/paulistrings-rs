@@ -14,7 +14,6 @@ const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
 
 /// Word `word` of the `half` (0 = x, 1 = z) of row `row`, draw `attempt`.
 // Not a GF(2)-linear generator such as xorshift: research/FINDINGS.md §`Gf2Hash` rows are splitmix64, not xorshift successors.
-#[inline]
 fn row_word(seed: u64, row: usize, attempt: u32, word: usize, half: u64) -> u64 {
     debug_assert!(row < 1 << 16 && word < 1 << 15);
     let position = ((attempt as u64) << 32) | ((row as u64) << 16) | ((word as u64) << 1) | half;
@@ -100,31 +99,26 @@ impl<const W: usize> Gf2Hash<W> {
     }
 
     /// Number of active bucket bits.
-    #[inline]
     pub fn bits(&self) -> u8 {
         self.bits
     }
 
     /// Number of buckets, `1 << bits()`.
-    #[inline]
     pub fn num_buckets(&self) -> usize {
         1usize << self.bits
     }
 
     /// The seed the rows were generated from.
-    #[inline]
     pub fn seed(&self) -> u64 {
         self.seed
     }
 
     /// The qubit count the rows were masked against.
-    #[inline]
     pub fn num_qubits(&self) -> usize {
         self.num_qubits
     }
 
     /// `h(v)` for a key given as separate `x` and `z` words.
-    #[inline]
     pub fn bucket_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
         let mut index: u32 = 0;
         for i in 0..self.bits as usize {
@@ -134,7 +128,6 @@ impl<const W: usize> Gf2Hash<W> {
     }
 
     /// Bit `row` of `H·v`, as `0` or `1`.
-    #[inline]
     pub(super) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
         let row_x = &self.rows_x[row as usize];
         let row_z = &self.rows_z[row as usize];
@@ -146,7 +139,6 @@ impl<const W: usize> Gf2Hash<W> {
     }
 
     /// `h(v)` for a [`PauliString`].
-    #[inline]
     pub fn bucket_of_pauli(&self, p: &PauliString<W>) -> u32 {
         self.bucket_of(&p.x, &p.z)
     }
@@ -156,7 +148,6 @@ impl<const W: usize> Gf2Hash<W> {
     /// # Panics
     ///
     /// Panics if already at `B_MAX_BITS`.
-    #[inline]
     pub fn refine(&mut self) {
         assert!(
             self.bits < B_MAX_BITS,
@@ -170,7 +161,6 @@ impl<const W: usize> Gf2Hash<W> {
     /// # Panics
     ///
     /// Panics if already at a single bucket.
-    #[inline]
     pub fn coarsen(&mut self) {
         assert!(
             self.bits > 0,
@@ -180,13 +170,11 @@ impl<const W: usize> Gf2Hash<W> {
     }
 
     /// `true` if `other` was generated with the same rows, so sums partitioned by the two can be combined (after matching `bits`).
-    #[inline]
     pub(crate) fn same_rows_as(&self, other: &Self) -> bool {
         self.seed == other.seed && self.num_qubits == other.num_qubits
     }
 
     /// Row `i < B_MAX_BITS` of `H`, which may lie beyond the active prefix.
-    #[inline]
     pub(crate) fn row(&self, i: usize) -> ([u64; W], [u64; W]) {
         (self.rows_x[i], self.rows_z[i])
     }
@@ -379,7 +367,6 @@ impl<const W: usize> PartitionRows<W> {
     }
 
     /// The trivial partitioning: one partition, no rows.
-    #[inline]
     pub fn none(num_qubits: usize) -> Self {
         Self {
             rows_x: Vec::new(),
@@ -390,25 +377,21 @@ impl<const W: usize> PartitionRows<W> {
     }
 
     /// Number of partition bits.
-    #[inline]
     pub fn bits(&self) -> u8 {
         self.bits
     }
 
     /// Number of partitions, `1 << bits()`.
-    #[inline]
     pub fn num_partitions(&self) -> usize {
         1usize << self.bits
     }
 
     /// The qubit count the rows were masked against.
-    #[inline]
     pub fn num_qubits(&self) -> usize {
         self.num_qubits
     }
 
     /// `part(v)` for a key given as separate `x` and `z` words.
-    #[inline]
     pub fn partition_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
         let mut index: u32 = 0;
         for i in 0..self.bits as usize {
@@ -424,13 +407,11 @@ impl<const W: usize> PartitionRows<W> {
     }
 
     /// `part(v)` for a [`PauliString`].
-    #[inline]
     pub fn partition_of_pauli(&self, p: &PauliString<W>) -> u32 {
         self.partition_of(&p.x, &p.z)
     }
 
     /// The rows as `(x-masks, z-masks)`, already masked to the live columns.
-    #[inline]
     pub fn rows(&self) -> (&[[u64; W]], &[[u64; W]]) {
         (&self.rows_x, &self.rows_z)
     }
@@ -485,7 +466,6 @@ fn gf2_rank_wide<const W: usize>(rows: &[KeyRow<W>]) -> usize {
 }
 
 /// Index of the highest set column of a key-space row, or `None` if it is zero.
-#[inline]
 fn leading_column<const W: usize>(row: &KeyRow<W>) -> Option<usize> {
     for w in (0..W).rev() {
         if row.1[w] != 0 {

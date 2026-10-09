@@ -2,14 +2,15 @@
 
 use super::layer::{apply_layer_partitioned_with_plan, LayerExchangeCounts, PartitionState};
 use super::plan::PartitionPlan;
-use super::transport::{Collectives, Transport};
-use super::truncation::PartitionedTruncation;
+use super::transport::Transport;
 use crate::channel::prepared::Prepared;
+use crate::collectives::Collectives;
 use crate::engine::bucketed::LayerScratch;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::PauliSum;
+use crate::truncation::TruncationPolicy;
 
 /// The policy-independent half of a partition; `pub` only so the drivers' `pub` methods can bound on it.
 pub trait PartitionStorage<const W: usize>: Send + Sized {
@@ -112,7 +113,7 @@ impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
 
 impl<const W: usize, T> PartitionBackend<W, T> for HostPartition<W>
 where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: TruncationPolicy<W> + ?Sized,
 {
     fn apply_layer<X: Transport>(
         &mut self,

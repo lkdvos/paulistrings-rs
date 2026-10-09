@@ -280,11 +280,12 @@ The schedule must be computable identically by every partition without communica
 `P = 1` has no group, so it skips the reduction and refines every layer, which is what keeps it bit for bit `propagate`.
 **A layer with no remote delta makes no transport call at all**, and with the bits agreement off its schedule it makes no call of any kind.
 
-Layer finalization is collective, so the policy bound is `PartitionedTruncation`, and `finalize_layer_partitioned` runs on every layer on every partition for a policy whose `finalizes_layer` is true — a collective is well defined only if nobody skips it, and `finalizes_layer` is a property of the policy *type*, so the group cannot split on it.
+Layer finalization is collective: `TruncationPolicy::finalize_layer_partitioned` runs on every layer on every partition for a policy whose `finalizes_layer` is true — a collective is well defined only if nobody skips it, and `finalizes_layer` is a property of the policy *type*, so the group cannot split on it.
+Its default is `finalize_layer` at one partition and nothing above it, which is correct only for a policy with no layer pass; a policy with a collective form overrides it and `supports_partitioned`, which every partitioned driver checks before the first layer.
 A policy with no layer pass costs nothing per layer; one that has a collective form must report `finalizes_layer`.
 `ApproxTopN` is **partition-exact**: the global octave histogram is the sum of the per-partition histograms, so one all-reduce has every partition choose the same edge and the union of the retained sets is the single-partition answer (§Truncation) — at the price of one collective per layer whatever the partition rows do.
 `And` runs both sides; `Or` runs neither, because its unpartitioned `finalize_layer` is the trait's no-op default rather than either child's, and the two must agree.
-Exact `TopN` is a distributed `k`-th selection, not a sum, and is **rejected at compile time** by the trait bound rather than approximated.
+Exact `TopN` is a distributed `k`-th selection, not a sum, and is **not yet supported** above one partition: `supports_partitioned` is `false`, so the driver panics before the first layer rather than approximate; exact selection by refining `ApproxTopN`'s all-reduced histogram is the open route.
 
 **The runtime is one pinned Rayon pool per partition, with work-stealing inside a partition only.**
 The split is static at the outer level because first touch needs a stable domain-level split, and stealing is untouched at the inner one because it is what beats a static assignment (§Parallelism).
@@ -320,7 +321,7 @@ They differ in the transport group's lifetime (per call, against one endpoint fo
 **Backend composition.**
 Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `refine_unprepared`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
 Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
-The loop keeps the `PartitionedTruncation` bound, so a backend cannot widen what a partitioned run accepts, and exact `TopN` stays a compile-time rejection.
+The drivers check `supports_partitioned` before the loop, so a backend cannot widen what a partitioned run accepts.
 `HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum<W, B = HostPartition<W>>` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
 `DevicePartition` (the `cuda` feature) is the device backend, and the device drivers are the same two types over it (`GpuPartitionedSum`, whose one-partition form is `GpuPauliSum`, and `GpuDistributedSum`), adding only the upload at scatter, the fallible gather and the poisoning of a failed group: its K10 export lays out the same CSR blocks in the receiver's position order, and its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`.
 Exchange rows never leave device memory, so a group is all device partitions or all host ones.
@@ -397,11 +398,14 @@ Truncation is what keeps Pauli propagation tractable, and it is a composable ext
 pub trait TruncationPolicy<const W: usize>: Send + Sync {
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool { true }
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {}
+    fn finalizes_layer(&self) -> bool { true }
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) { … }
+    fn supports_partitioned(&self) -> bool { !self.finalizes_layer() }
 }
 ```
 
 The split is performance-critical: `keep_term` runs on every merged output — potentially billions of times — and must inline to nanoseconds; it sees the **summed** coefficient, inside the merge.
-`finalize_layer` runs once per layer and may be non-local.
+`finalize_layer` runs once per layer and may be non-local; its partitioned form is §Partitioning's.
 
 Built-ins: `CoefficientThreshold(eps)` and `WeightCutoff(k)` are per-term filters; `TopN(n)` and `ApproxTopN(n)` are layer finalizations.
 Policies compose with `And` / `Or` (Python: `&` / `|`).
@@ -423,7 +427,7 @@ It keeps `≤ n` (so the memory bound is exact) and `> n - p`, where `p` is the 
 Tie groups need no rule here: equal magnitudes share an octave, so a multiplet is always kept or dropped whole — at the price of a wider degenerate case, a sum confined to a single octave of `|c|²` being wiped exactly as an all-tied sum is under `TopN`.
 `TopN` remains the default and the choice whenever the retained count itself matters.
 
-Under partitioning the two swap places: `ApproxTopN` is **partition-exact**, while exact `TopN` has no collective form and is rejected at compile time (§Partitioning).
+Under partitioning the two swap places: `ApproxTopN` is **partition-exact**, while exact `TopN` has no collective form yet and is rejected before the first layer (§Partitioning).
 
 ## Channels
 

@@ -17,11 +17,12 @@ use pipeline::{note_slot, ChunkPipeline, SLOT_EARLY, SLOT_SEND};
 
 use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
-use super::transport::{AlreadyHere, ChunkMap, ChunkWait, Collectives, Payload, Transport, ROOT};
-use super::truncation::PartitionedTruncation;
+use super::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT};
 use crate::circuit::Circuit;
+use crate::collectives::Collectives;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::PauliSum;
+use crate::truncation::TruncationPolicy;
 
 /// The `rsmpi` crate this transport is built against; create the `Universe` from it, since two copies of `mpi` in one binary would not share their statics.
 pub use ::mpi as rsmpi;
@@ -400,7 +401,7 @@ fn chunk_count(len: usize, chunk: usize) -> usize {
     len.div_ceil(chunk)
 }
 
-impl super::transport::sealed::Sealed for MpiTransport {}
+impl crate::collectives::sealed::Sealed for MpiTransport {}
 
 impl Collectives for MpiTransport {
     fn rank(&self) -> u32 {
@@ -693,7 +694,7 @@ pub fn propagate_mpi<const W: usize, T>(
     comm: &impl Communicator,
 ) -> Option<PauliSum<W>>
 where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: TruncationPolicy<W> + ?Sized,
 {
     let transport = MpiTransport::from_communicator(comm);
     let mut split = MpiSum::<W>::scatter(sum, transport, &default_config())

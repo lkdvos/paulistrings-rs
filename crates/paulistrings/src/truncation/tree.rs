@@ -4,6 +4,7 @@ use super::builtin::{
     And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
 };
 use super::TruncationPolicy;
+use crate::collectives::Collectives;
 use crate::pauli_sum::PauliSum;
 use num_complex::Complex64;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::sync::Arc;
 /// Any builtin policy or combinator as one runtime value, the form the device drivers take.
 ///
 /// Each variant truncates exactly as the builtin it names, and every builtin converts into one with [`From`]; a custom [`TruncationPolicy`] does not.
-/// An exact `TopN` whose layer pass would run panics in partitioned mode, where it has no collective form.
+/// An exact `TopN` outside an `Or` cannot run above one partition ([`supports_partitioned`](TruncationPolicy::supports_partitioned) is `false`).
 /// `Clone` shares a [`CollapseSample`] rather than copying it, so every clone continues the same trajectory.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BuiltinTruncation {
@@ -106,6 +107,51 @@ impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
                     || <Self as TruncationPolicy<W>>::finalizes_layer(b)
             }
             Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => false,
+        }
+    }
+
+    /// Arm for arm [`finalize_layer`](TruncationPolicy::finalize_layer), each leaf by its own collective form.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        match self {
+            Self::TopN(n) => <TopN as TruncationPolicy<W>>::finalize_layer_partitioned(
+                &TopN(*n),
+                local,
+                collectives,
+            ),
+            Self::ApproxTopN(n) => <ApproxTopN as TruncationPolicy<W>>::finalize_layer_partitioned(
+                &ApproxTopN(*n),
+                local,
+                collectives,
+            ),
+            Self::CollapseSample(s) => {
+                <CollapseSample as TruncationPolicy<W>>::finalize_layer_partitioned(
+                    s,
+                    local,
+                    collectives,
+                )
+            }
+            Self::And(a, b) => {
+                <Self as TruncationPolicy<W>>::finalize_layer_partitioned(a, local, collectives);
+                <Self as TruncationPolicy<W>>::finalize_layer_partitioned(b, local, collectives);
+            }
+            Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => {}
+        }
+    }
+
+    /// `false` exactly when an exact `TopN` sits outside every `Or`, whose layer pass never runs.
+    fn supports_partitioned(&self) -> bool {
+        match self {
+            Self::TopN(_) => false,
+            Self::And(a, b) => {
+                <Self as TruncationPolicy<W>>::supports_partitioned(a)
+                    && <Self as TruncationPolicy<W>>::supports_partitioned(b)
+            }
+            Self::Keep
+            | Self::Coefficient(_)
+            | Self::Weight(_)
+            | Self::ApproxTopN(_)
+            | Self::CollapseSample(_)
+            | Self::Or(_, _) => true,
         }
     }
 }

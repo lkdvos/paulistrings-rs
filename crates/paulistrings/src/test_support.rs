@@ -106,9 +106,9 @@ impl LoggingTransport {
     }
 }
 
-impl crate::engine::partitioned::transport::sealed::Sealed for LoggingTransport {}
+impl crate::collectives::sealed::Sealed for LoggingTransport {}
 
-impl crate::engine::partitioned::Collectives for LoggingTransport {
+impl crate::collectives::Collectives for LoggingTransport {
     fn rank(&self) -> u32 {
         self.inner.rank()
     }
@@ -833,9 +833,7 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
 
 /// Keep every term, with no layer finalization at all.
 ///
-/// [`TruncationPolicy::finalizes_layer`] defaults to `true`, which [`PartitionedTruncation`]'s default body rejects — a policy with no layer pass has to say so explicitly.
-///
-/// [`PartitionedTruncation`]: crate::PartitionedTruncation
+/// [`TruncationPolicy::finalizes_layer`] defaults to `true`, which a partitioned run rejects ([`TruncationPolicy::supports_partitioned`]) — a policy with no layer pass has to say so explicitly.
 #[derive(Clone, Copy, Debug)]
 pub struct KeepAll;
 
@@ -850,8 +848,6 @@ impl From<KeepAll> for crate::truncation::BuiltinTruncation {
         Self::Keep
     }
 }
-
-impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
 
 fn set_x<const W: usize>(p: &mut PauliString<W>, q: usize) {
     p.x[q / 64] |= 1u64 << (q % 64);

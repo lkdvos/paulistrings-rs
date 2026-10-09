@@ -13,12 +13,9 @@ use paulistrings::test_support::{
     assert_terms_close, rand_sum, rand_sum_real, random_circuit, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::{
-    propagate, Circuit, Direction, PartitionedTruncation, PauliSum, PropagateOptions,
-    TruncationPolicy,
-};
+use paulistrings::{propagate, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy};
 use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
-use paulistrings::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
@@ -40,7 +37,7 @@ fn check<const W: usize, T>(
     name: &str,
     partitions: &[usize],
 ) where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: TruncationPolicy<W> + ?Sized,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -285,12 +282,9 @@ fn auto_placement_agrees() {
     assert_terms_close(&got, &want, TOL, "auto placement");
 }
 
-/// A policy with a layer finalization and no collective form is a compile-time
-/// error for `TopN` and a panic for a user policy that lies about it — the
-/// `PartitionedTruncation` default body's assertion, reached through the
-/// driver.
+/// A policy with a layer pass and no collective form panics before the first layer.
 #[test]
-#[should_panic(expected = "has a layer finalization but no partitioned one")]
+#[should_panic(expected = "cannot run on 2 partitions")]
 fn a_finalizing_policy_without_a_collective_form_panics() {
     struct Liar;
     impl<const W: usize> TruncationPolicy<W> for Liar {
@@ -298,7 +292,6 @@ fn a_finalizing_policy_without_a_collective_form_panics() {
             true
         }
     }
-    impl<const W: usize> PartitionedTruncation<W> for Liar {}
 
     let circuit = random_circuit::<1>(6, 3, 0x9AA1, false);
     let sum = rand_sum::<1>(100, 6, 0x9AA2);
@@ -310,6 +303,73 @@ fn a_finalizing_policy_without_a_collective_form_panics() {
         &config(2),
         PropagateOptions::default(),
     );
+}
+
+/// Exact `TopN` runs at one partition, matching `propagate`.
+#[test]
+fn exact_top_n_runs_at_one_partition() {
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = rand_sum_real::<1>(2_000, 32, 0x70B1);
+    let want = propagate(&circuit, sum.clone(), &TopN(1_500), Direction::Forward);
+    let got = propagate_partitioned(
+        &circuit,
+        sum,
+        &TopN(1_500),
+        Direction::Forward,
+        &config(1),
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves");
+    assert_terms_close(&got, &want, TOL, "TopN at P = 1");
+}
+
+/// Exact `TopN` above one partition panics before the first layer, as the bare policy and inside a `BuiltinTruncation` tree.
+#[test]
+fn exact_top_n_above_one_partition_panics_before_the_first_layer() {
+    use paulistrings::BuiltinTruncation as T;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// `TopN` that counts the terms the engine shows it.
+    struct CountingTopN(AtomicUsize);
+    impl<const W: usize> TruncationPolicy<W> for CountingTopN {
+        fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], _c: num_complex::Complex64) -> bool {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+            TopN(10).finalize_layer(sum);
+        }
+    }
+
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = rand_sum_real::<1>(500, 32, 0x70B2);
+    let run = |policy: &dyn TruncationPolicy<1>| {
+        let sum = sum.clone();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            propagate_partitioned(
+                &circuit,
+                sum,
+                policy,
+                Direction::Forward,
+                &config(2),
+                PropagateOptions::default(),
+            )
+        }))
+        .expect_err("a partitioned exact TopN must panic");
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(
+            message.contains("not yet supported") && message.contains("ApproxTopN"),
+            "{message}"
+        );
+    };
+    run(&TopN(10));
+    run(&T::And(
+        Box::new(T::Coefficient(1e-9)),
+        Box::new(T::TopN(10)),
+    ));
+    let counting = CountingTopN(AtomicUsize::new(0));
+    run(&counting);
+    assert_eq!(counting.0.load(Ordering::Relaxed), 0, "no layer may run");
 }
 
 /// A partition that dies mid-run must not leave its partners blocked in a
@@ -326,8 +386,11 @@ fn partner_panic_does_not_hang() {
     struct PanicOnLayer {
         seen: Vec<AtomicUsize>,
     }
-    impl<const W: usize> TruncationPolicy<W> for PanicOnLayer {}
-    impl<const W: usize> PartitionedTruncation<W> for PanicOnLayer {
+    impl<const W: usize> TruncationPolicy<W> for PanicOnLayer {
+        fn supports_partitioned(&self) -> bool {
+            true
+        }
+
         fn finalize_layer_partitioned(
             &self,
             _local: &mut PauliSum<W>,

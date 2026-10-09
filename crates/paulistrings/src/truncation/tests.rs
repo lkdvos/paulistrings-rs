@@ -2,6 +2,9 @@ use super::*;
 use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_sum::PartitionRows;
 use crate::test_support::{assert_same_terms, rand_sum_real, tie_heavy_sum};
+use crate::truncation::builtin::{
+    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
+};
 use num_complex::Complex64;
 
 /// Seed for every `PartitionRows` in this module's tests.
@@ -10,7 +13,7 @@ const PSEED: u64 = 0x5EED_C0FFEE;
 /// Split `sum` into `1 << pbits` partitions, run the policy's collective layer pass on each in its own thread, and gather the result.
 fn partitioned_finalize<const W: usize, T>(policy: &T, sum: &PauliSum<W>, pbits: u8) -> PauliSum<W>
 where
-    T: PartitionedTruncation<W>,
+    T: TruncationPolicy<W>,
 {
     let rows = PartitionRows::<W>::from_seed(sum.num_qubits(), pbits, PSEED);
     let p = rows.num_partitions() as u32;
@@ -56,7 +59,7 @@ fn assert_matches_single_partition<const W: usize, T>(
     pbits: u8,
     what: &str,
 ) where
-    T: PartitionedTruncation<W>,
+    T: TruncationPolicy<W>,
 {
     let mut want = input.clone();
     policy.finalize_layer(&mut want);
@@ -244,19 +247,82 @@ fn collapse_sample_partitioned_draws_one_string_by_weight() {
     }
 }
 
-/// The default body panics for a policy with a real `finalize_layer` and no collective one.
+/// The default body panics above one partition for a policy with a real `finalize_layer` and no collective one.
 #[test]
 #[should_panic(expected = "ApproxTopN")]
 fn the_default_body_rejects_a_policy_that_finalizes_layers() {
-    struct HalfDone;
-    impl<const W: usize> TruncationPolicy<W> for HalfDone {
-        fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-            sum.clear();
-        }
-    }
-    impl<const W: usize> PartitionedTruncation<W> for HalfDone {}
+    let group = InProcessTransport::group(2);
+    let mut sum = rand_sum_real::<1>(10, 32, 0x1234);
+    HalfDone.finalize_layer_partitioned(&mut sum, &group[0]);
+}
 
+/// A policy with a layer pass and no collective form.
+struct HalfDone;
+
+impl<const W: usize> TruncationPolicy<W> for HalfDone {
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        sum.clear();
+    }
+}
+
+/// At one partition the default body is the plain layer pass.
+#[test]
+fn the_default_body_at_one_partition_is_the_plain_pass() {
     let group = InProcessTransport::group(1);
     let mut sum = rand_sum_real::<1>(10, 32, 0x1234);
     HalfDone.finalize_layer_partitioned(&mut sum, &group[0]);
+    assert!(sum.is_empty());
+}
+
+/// Exact `TopN` runs at one partition and panics above it, naming `ApproxTopN`.
+#[test]
+fn exact_top_n_runs_at_one_partition_only() {
+    let input = rand_sum_real::<1>(600, 32, 0x70B0);
+    let mut want = input.clone();
+    TopN(50).finalize_layer(&mut want);
+    let got = partitioned_finalize(&TopN(50), &input, 0);
+    assert_same_terms(&got, &want, "TopN at P = 1");
+
+    let group = InProcessTransport::group(2);
+    let mut local = input.clone();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        TopN(50).finalize_layer_partitioned(&mut local, &group[0])
+    }))
+    .expect_err("TopN above one partition must panic");
+    let message = panic.downcast_ref::<String>().expect("a formatted message");
+    assert!(
+        message.contains("not yet supported") && message.contains("ApproxTopN"),
+        "{message}"
+    );
+}
+
+/// `supports_partitioned` is `false` exactly for a layer pass with no collective form, looking through `And` but not into `Or`.
+#[test]
+fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
+    fn supports<T: TruncationPolicy<1>>(policy: T) -> bool {
+        policy.supports_partitioned()
+    }
+    assert!(supports(CoefficientThreshold(1e-3)));
+    assert!(supports(WeightCutoff(3)));
+    assert!(supports(ApproxTopN(10)));
+    assert!(supports(CollapseSample::new(10, 1)));
+    assert!(supports(And(CoefficientThreshold(1e-3), ApproxTopN(10))));
+    assert!(supports(Or(TopN(10), CoefficientThreshold(1e-3))));
+    assert!(!supports(TopN(10)));
+    assert!(!supports(And(CoefficientThreshold(1e-3), TopN(10))));
+    assert!(!supports(HalfDone));
+}
+
+/// The run-time check every partitioned driver makes before its first layer.
+#[test]
+fn assert_supports_partitions_rejects_exact_top_n_above_one_partition() {
+    assert_supports_partitions::<1, _>(&TopN(10), 1);
+    assert_supports_partitions::<1, _>(&ApproxTopN(10), 4);
+    let panic = std::panic::catch_unwind(|| assert_supports_partitions::<1, _>(&TopN(10), 2))
+        .expect_err("TopN on two partitions must panic");
+    let message = panic.downcast_ref::<String>().expect("a formatted message");
+    assert!(
+        message.contains("not yet supported") && message.contains("ApproxTopN"),
+        "{message}"
+    );
 }

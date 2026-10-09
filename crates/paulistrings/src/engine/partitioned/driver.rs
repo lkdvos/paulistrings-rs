@@ -7,17 +7,18 @@ use super::backend::{PartitionBackend, PartitionStorage};
 use super::plan::PartitionPlan;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{record_layer_row, PartitionLayerRow};
-use super::transport::{Collectives, Transport};
-use super::truncation::PartitionedTruncation;
+use super::transport::Transport;
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
+use crate::collectives::Collectives;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::Stamp;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
+use crate::truncation::TruncationPolicy;
 
 use super::sum::PartitionedSum;
 
@@ -37,7 +38,7 @@ struct CountingCollectives<'a> {
     calls: &'a AtomicU32,
 }
 
-impl super::transport::sealed::Sealed for CountingCollectives<'_> {}
+impl crate::collectives::sealed::Sealed for CountingCollectives<'_> {}
 
 impl Collectives for CountingCollectives<'_> {
     fn rank(&self) -> u32 {
@@ -140,7 +141,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
     work: &mut PartitionWork<B>,
     transport: &X,
 ) where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: TruncationPolicy<W> + ?Sized,
     X: Transport,
     B: PartitionBackend<W, T>,
 {
@@ -287,7 +288,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 /// # Errors
 ///
 /// [`TopologyError`] if `config` cannot be resolved into slots or a pool cannot be built.
-/// Everything else is a panic, as in [`propagate`](crate::propagate).
+/// Everything else is a panic, as in [`propagate`](crate::propagate) and [`PartitionedSum::propagate_with`].
 pub fn propagate_partitioned<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,
@@ -297,7 +298,7 @@ pub fn propagate_partitioned<const W: usize, T>(
     options: PropagateOptions,
 ) -> Result<PauliSum<W>, TopologyError>
 where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: TruncationPolicy<W> + ?Sized,
 {
     let mut split = PartitionedSum::scatter(sum, config)?;
     split.propagate_with(circuit, policy, direction, options);

@@ -29,7 +29,7 @@ use paulistrings::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
 use paulistrings::{
     CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum,
-    PartitionedTruncation, Placement,
+    Placement,
 };
 use paulistrings::{ScatterOptions, ScatterRows};
 
@@ -112,7 +112,8 @@ Options:
                                             steady-state term count, else
                                             TopN returns immediately.
                                             REJECTED for a partitioned cell:
-                                            no PartitionedTruncation impl.
+                                            partitioned exact TopN is not
+                                            yet supported.
                               atopn:<N>     ApproxTopN(N): the same, with a
                                             histogram threshold instead of a
                                             selection. Keeps <= N, so its
@@ -767,13 +768,13 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
         }
     }
-    // `TopN` has no `PartitionedTruncation` impl, so reject it here.
+    // Partitioned exact `TopN` is not yet supported, so reject it here.
     let any_partitioned = partitions.iter().any(|&p| p > 1);
     if any_partitioned {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
-                "--truncation topn:{topn} cannot run a partitioned cell: TopN's exact selection \
-                 has no PartitionedTruncation impl (the trait bound rejects it statically). Use \
+                "--truncation topn:{topn} cannot run a partitioned cell: partitioned exact TopN \
+                 is not yet supported. Use \
                  --truncation atopn:{topn} — its collective octave histogram is the partitioned \
                  form of the same policy — or drop --partitions"
             ));
@@ -791,8 +792,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     if mpi {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
-                "--truncation topn:{topn} cannot run a distributed cell: TopN has no \
-                 PartitionedTruncation impl. Use --truncation atopn:{topn}"
+                "--truncation topn:{topn} cannot run a distributed cell: partitioned exact \
+                 TopN is not yet supported. Use --truncation atopn:{topn}"
             ));
         }
     }
@@ -1036,7 +1037,6 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
         false
     }
 }
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeepPartitioned {}
 
 /// Builds a cell's circuit. `gen_qubits` is the `(q0, q1)` pair the `rotation_*` layers rotate about.
 fn build_circuit<const W: usize>(
@@ -1873,7 +1873,7 @@ fn run_cell_partitioned<const W: usize, P>(
     policy: &P,
 ) -> CellResult
 where
-    P: PartitionedTruncation<W>,
+    P: TruncationPolicy<W>,
 {
     let base = build_base_sum::<W>(layer, cfg);
 
@@ -2004,7 +2004,7 @@ fn run_cell_mpi<const W: usize, P>(
     policy: &P,
 ) -> CellResult
 where
-    P: PartitionedTruncation<W>,
+    P: TruncationPolicy<W>,
 {
     use paulistrings::mpi::{rsmpi, MpiTransport};
     use paulistrings::{Collectives, DistributedSum};
@@ -2825,7 +2825,7 @@ fn print_tsv_row(cell: &CellResult) {
 
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
 /// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
-/// values: the unpartitioned one and its [`PartitionedTruncation`] form (`topn` has none, already
+/// values: the unpartitioned one and its partitioned form (`topn` has none, already
 /// rejected by [`parse_args`]).
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
@@ -2843,7 +2843,7 @@ fn run<const W: usize>(cfg: &Config) {
 fn run_cells<const W: usize, P, PP>(cfg: &Config, policy: &P, partitioned_policy: Option<&PP>)
 where
     P: TruncationPolicy<W>,
-    PP: PartitionedTruncation<W>,
+    PP: TruncationPolicy<W>,
 {
     if cfg.format == Format::Tsv {
         println!("{TSV_HEADER}");

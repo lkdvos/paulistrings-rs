@@ -22,8 +22,7 @@ use bucketed::LayerScratch;
 use partitioned::backend::HostPartition;
 use partitioned::driver::{run_layers, PartitionContext, PartitionWork};
 use partitioned::trace::PartitionLayerRow;
-use partitioned::transport::{Collectives, SoloTransport};
-use partitioned::truncation::PartitionedTruncation;
+use partitioned::transport::SoloTransport;
 
 /// `log` target for the engine's progress events, partitioned or not.
 pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";
@@ -156,7 +155,7 @@ where
     };
     run_layers(
         circuit,
-        &SoloPolicy(policy),
+        policy,
         direction,
         options,
         context,
@@ -179,31 +178,6 @@ where
     );
 
     sum
-}
-
-/// Any policy as a one-partition [`PartitionedTruncation`], whose collective layer pass is the plain one.
-struct SoloPolicy<'a, T: ?Sized>(&'a T);
-
-impl<const W: usize, T: TruncationPolicy<W> + ?Sized> TruncationPolicy<W> for SoloPolicy<'_, T> {
-    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: num_complex::Complex64) -> bool {
-        self.0.keep_term(x, z, c)
-    }
-
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-        self.0.finalize_layer(sum);
-    }
-
-    fn finalizes_layer(&self) -> bool {
-        self.0.finalizes_layer()
-    }
-}
-
-impl<const W: usize, T: TruncationPolicy<W> + ?Sized> PartitionedTruncation<W>
-    for SoloPolicy<'_, T>
-{
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, _collectives: &dyn Collectives) {
-        self.0.finalize_layer(local);
-    }
 }
 
 /// Append a solo run's per-layer rows to the scratch's enabled traces.

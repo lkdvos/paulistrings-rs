@@ -7,9 +7,10 @@ use super::error::GpuError;
 use super::layer::{GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
 use crate::circuit::Circuit;
+use crate::collectives::Collectives;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::distributed::{gather_share, group_bits};
-use crate::engine::partitioned::transport::{Collectives, Transport};
+use crate::engine::partitioned::transport::Transport;
 #[cfg(feature = "phase-timing")]
 use crate::engine::partitioned::PartitionPhaseStats;
 use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy, ScatterRows};

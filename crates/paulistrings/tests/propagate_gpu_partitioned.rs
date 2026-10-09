@@ -12,8 +12,8 @@ use paulistrings::test_support::{
     rows_reading_z63, su4_chain, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::{
-    propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows,
-    PartitionedTruncation, PauliSum, PropagateOptions,
+    propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
@@ -74,7 +74,7 @@ fn run<const W: usize, T>(
     p: usize,
 ) -> Result<PauliSum<W>, GpuError>
 where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     let mut split = split_of(sum, p);
     split.propagate(circuit, policy, direction)?;
@@ -88,7 +88,7 @@ fn check<const W: usize, T>(
     name: &str,
     partitions: &[usize],
 ) where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);

@@ -1,6 +1,6 @@
 use super::*;
+use crate::collectives::Collectives;
 use crate::engine::partitioned::topology::{allowed_cpus, Placement};
-use crate::engine::partitioned::transport::Collectives;
 
 fn config(partitions: usize) -> PartitionConfig {
     PartitionConfig {

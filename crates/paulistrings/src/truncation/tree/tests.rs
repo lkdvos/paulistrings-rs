@@ -1,7 +1,6 @@
 use super::BuiltinTruncation as T;
 use super::*;
 use crate::engine::partitioned::transport::InProcessTransport;
-use crate::engine::partitioned::truncation::PartitionedTruncation;
 use crate::test_support::{and, assert_same_terms, or, rand_sum_real, KeepAll};
 use crate::truncation::{And, Or};
 
@@ -131,7 +130,7 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
     let group = InProcessTransport::group(1);
     let mut got = input.clone();
     let tree = T::from(CollapseSample::new(10, 7));
-    <T as PartitionedTruncation<1>>::finalize_layer_partitioned(&tree, &mut got, &group[0]);
+    <T as TruncationPolicy<1>>::finalize_layer_partitioned(&tree, &mut got, &group[0]);
     assert_same_terms(&got, &want, "partitioned P=1");
 }
 
@@ -169,15 +168,29 @@ fn finalize_layer_equals_the_builtin_composition() {
 
     let group = InProcessTransport::group(1);
     let mut got = input.clone();
-    <T as PartitionedTruncation<1>>::finalize_layer_partitioned(&tree, &mut got, &group[0]);
+    <T as TruncationPolicy<1>>::finalize_layer_partitioned(&tree, &mut got, &group[0]);
     assert_same_terms(&got, &want, "partitioned P=1");
 }
 
 #[test]
-#[should_panic(expected = "no partitioned layer pass")]
-fn a_reached_top_n_panics_in_partitioned_mode() {
-    let group = InProcessTransport::group(1);
+#[should_panic(expected = "not yet supported")]
+fn a_reached_top_n_panics_above_one_partition() {
+    let group = InProcessTransport::group(2);
     let mut sum = rand_sum_real::<1>(10, 32, 0x1);
     let tree = and(T::Coefficient(0.1), T::TopN(3));
-    <T as PartitionedTruncation<1>>::finalize_layer_partitioned(&tree, &mut sum, &group[0]);
+    <T as TruncationPolicy<1>>::finalize_layer_partitioned(&tree, &mut sum, &group[0]);
+}
+
+/// `supports_partitioned` follows the tree: an exact `TopN` under `And` refuses, one under `Or` never runs.
+#[test]
+fn supports_partitioned_reflects_the_tree() {
+    let supports = |tree: &T| <T as TruncationPolicy<1>>::supports_partitioned(tree);
+    assert!(supports(&T::Keep));
+    assert!(supports(&and(T::Coefficient(0.1), T::ApproxTopN(3))));
+    assert!(supports(&or(T::Coefficient(0.1), T::TopN(3))));
+    assert!(!supports(&T::TopN(3)));
+    assert!(!supports(&and(
+        T::Coefficient(0.1),
+        and(T::Weight(2), T::TopN(3))
+    )));
 }

@@ -35,6 +35,7 @@
 
 mod channel;
 mod circuit;
+mod collectives;
 mod engine;
 pub mod examples;
 mod pauli_string;
@@ -53,6 +54,7 @@ pub use channel::{
     PauliChannel, PauliRotation,
 };
 pub use circuit::Circuit;
+pub use collectives::Collectives;
 pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
 #[cfg(feature = "cuda")]
 pub use engine::gpu;
@@ -61,10 +63,9 @@ pub use engine::partitioned::mpi;
 #[cfg(feature = "phase-timing")]
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
-    numa_nodes, propagate_partitioned, Collectives, CpuSet, DistributedSum, PartitionConfig,
+    numa_nodes, propagate_partitioned, CpuSet, DistributedSum, PartitionConfig,
     PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionSlot, PartitionTrace,
-    PartitionedSum, PartitionedTruncation, Placement, ScatterOptions, ScatterRows, TopologyError,
-    Transport,
+    PartitionedSum, Placement, ScatterOptions, ScatterRows, TopologyError, Transport,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;

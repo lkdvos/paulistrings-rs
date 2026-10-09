@@ -11,13 +11,13 @@ use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
 use super::transport::Transport;
-use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
 use crate::readout::echo::{qubit_mask, RotationAxis};
 use crate::readout::product_state::ProductState;
+use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 #[cfg(feature = "phase-timing")]
 use super::sum::PartitionPhaseStats;
@@ -264,12 +264,13 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
         let layer_count = circuit.channels.len();
         let rank = self.transport.rank() as usize;
         let size = self.transport.size() as usize;
+        assert_supports_partitions(policy, size);
         let terms_in = self.local.len();
         let started = Instant::now();
         log::info!(
@@ -432,7 +433,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// [`propagate_with`](Self::propagate_with) under [`PropagateOptions::default()`].
     pub fn propagate<T>(&mut self, circuit: &Circuit<W>, policy: &T, direction: Direction)
     where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
     {
         self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
@@ -444,6 +445,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// # Panics
     ///
     /// If a channel's `prepare` declines, or if the ranks disagree about the run's shape.
+    /// Before the first layer, above one rank, unless [`policy.supports_partitioned()`](TruncationPolicy::supports_partitioned) — exact [`TopN`](crate::TopN) is not yet supported partitioned.
     pub fn propagate_with<T>(
         &mut self,
         circuit: &Circuit<W>,
@@ -451,7 +453,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
     {
         self.propagate_on_backend(circuit, policy, direction, options);
     }

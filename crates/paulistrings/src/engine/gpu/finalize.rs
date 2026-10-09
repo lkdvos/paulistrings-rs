@@ -8,7 +8,7 @@ use super::layer::LayerScratch;
 use super::module::warp_per_bucket;
 use super::scan::exclusive_scan;
 use super::sum::GpuSum;
-use crate::engine::partitioned::transport::Collectives;
+use crate::collectives::Collectives;
 use crate::truncation::builtin::{octave_edge, EdgeDecision, APPROX_BINS};
 
 /// Blocks the histogram launches at most; each block folds its warps' buckets into one shared histogram.

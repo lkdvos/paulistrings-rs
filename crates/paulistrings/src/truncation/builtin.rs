@@ -1,6 +1,7 @@
 //! The built-in truncation policies and combinators, and the helpers their partitioned and device forms share.
 
 use super::TruncationPolicy;
+use crate::collectives::Collectives;
 use crate::pauli_sum::PauliSum;
 use crate::rng::Rng;
 use num_complex::Complex64;
@@ -127,6 +128,18 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         });
         sum.recount();
     }
+
+    /// Panics above one partition, where the `n`-th largest of a split sum has no collective form yet.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        assert!(
+            collectives.size() == 1,
+            "TopN({}) on {} partitions: partitioned exact TopN is not yet supported; ApproxTopN \
+             is the partitioned alternative.",
+            self.0,
+            collectives.size(),
+        );
+        self.finalize_layer(local);
+    }
 }
 
 /// Bins of [`ApproxTopN`]'s histogram, one per `f64` exponent.
@@ -245,6 +258,31 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
         if let EdgeDecision::AtOrAbove { kept, .. } = edge {
             debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
         }
+    }
+
+    /// One `allreduce_sum_u64` of `[len, histogram…]`, then the single-partition edge walk; no early exit, since that would desynchronize the group.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        if collectives.size() == 1 {
+            self.finalize_layer(local);
+            return;
+        }
+        let histogram = octave_histogram(local);
+
+        // `u64`, since `P` partitions' `u32` bins can overflow a `u32`.
+        let mut packed = [0u64; 1 + APPROX_BINS];
+        packed[0] = local.len() as u64;
+        for (slot, &count) in packed[1..].iter_mut().zip(histogram.iter()) {
+            *slot = u64::from(count);
+        }
+        collectives.allreduce_sum_u64(&mut packed);
+
+        let total = packed[0] as usize;
+        let edge = octave_edge(&packed[1..], total, self.0);
+        retain_at_or_above(local, edge);
+    }
+
+    fn supports_partitioned(&self) -> bool {
+        true
     }
 }
 
@@ -372,6 +410,49 @@ impl<const W: usize> TruncationPolicy<W> for CollapseSample {
             "collapse_sample: {len} terms, sum |c|^2 = {total:.6e}, collapsed to one (collapse {n})",
         );
     }
+
+    /// Reduces `[len, pass]` (the pass from rank 0) and the per-partition `Σ|c|²`, then picks a partition by weight and a term within it, as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        if collectives.size() == 1 {
+            self.finalize_layer(local);
+            return;
+        }
+        let rank = collectives.rank() as usize;
+        let call = if rank == 0 { self.next_call() } else { 0 };
+        let mut head = [local.len() as u64, call];
+        collectives.allreduce_sum_u64(&mut head);
+        let [len, call] = head;
+        if len as usize <= self.cache {
+            return;
+        }
+
+        let norms = bucket_norms(local);
+        let mut weights = vec![0.0f64; collectives.size() as usize];
+        weights[rank] = norms.iter().sum();
+        collectives.allreduce_sum_f64(&mut weights);
+        let total: f64 = weights.iter().sum();
+        let target = self.target(call, total, len as usize);
+        let (chosen, rest) = pick_slot(weights.iter().copied(), target)
+            .expect("CollapseSample: a positive total has a positive partition");
+        if rank == chosen {
+            collapse_to_target(local, &norms, rest);
+        } else {
+            local.clear();
+        }
+        if rank == 0 {
+            let collapses = self.count_collapse();
+            log::debug!(
+                target: LOG_TARGET,
+                "collapse_sample: {len} terms over {} partitions, sum |c|^2 = {total:.6e}, \
+                 collapsed to one on partition {chosen} (collapse {collapses})",
+                collectives.size(),
+            );
+        }
+    }
+
+    fn supports_partitioned(&self) -> bool {
+        true
+    }
 }
 
 /// Both policies: a term is kept if both keep it, and both layer passes run, first then second.
@@ -399,6 +480,15 @@ where
 
     fn finalizes_layer(&self) -> bool {
         self.0.finalizes_layer() || self.1.finalizes_layer()
+    }
+
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+        self.0.finalize_layer_partitioned(local, collectives);
+        self.1.finalize_layer_partitioned(local, collectives);
+    }
+
+    fn supports_partitioned(&self) -> bool {
+        self.0.supports_partitioned() && self.1.supports_partitioned()
     }
 }
 

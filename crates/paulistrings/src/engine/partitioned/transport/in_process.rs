@@ -354,7 +354,7 @@ impl InProcessTransport {
     }
 }
 
-impl super::sealed::Sealed for InProcessTransport {}
+impl crate::collectives::sealed::Sealed for InProcessTransport {}
 
 impl Collectives for InProcessTransport {
     fn rank(&self) -> u32 {

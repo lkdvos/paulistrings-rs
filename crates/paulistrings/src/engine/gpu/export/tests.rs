@@ -220,7 +220,8 @@ fn the_receive_takes_the_fewest_power_of_two_chunks_under_its_cap() {
 /// Every rank learns one verdict and the largest chunk count any ready rank asked for; one rank not ready is a no everywhere.
 #[test]
 fn the_vote_agrees_the_largest_chunk_count() {
-    use crate::engine::partitioned::transport::{Collectives, InProcessTransport};
+    use crate::collectives::Collectives;
+    use crate::engine::partitioned::transport::InProcessTransport;
     let run = |asks: [Option<u8>; 4]| -> Vec<Option<u8>> {
         let group = InProcessTransport::group(4);
         std::thread::scope(|s| {

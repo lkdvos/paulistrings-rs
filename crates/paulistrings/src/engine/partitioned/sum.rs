@@ -11,7 +11,6 @@ use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, 
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
-use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
@@ -20,6 +19,7 @@ use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
 use crate::readout::echo::RotationAxis;
 use crate::readout::product_state::ProductState;
+use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 /// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`], held across calls so a driver scatters and gathers once.
 ///
@@ -125,11 +125,12 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
         let n = circuit.channels.len();
         let size = self.num_partitions();
+        assert_supports_partitions(policy, size);
         let terms_in = self.len();
         let started = Instant::now();
         log::info!(
@@ -271,7 +272,7 @@ impl<const W: usize> PartitionedSum<W> {
     /// Propagates through `circuit` under `policy`, in place; see [`propagate_with`](Self::propagate_with).
     pub fn propagate<T>(&mut self, circuit: &Circuit<W>, policy: &T, direction: Direction)
     where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
     {
         self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
@@ -283,7 +284,7 @@ impl<const W: usize> PartitionedSum<W> {
     /// # Panics
     ///
     /// If a channel's [`Channel::prepare`](crate::Channel::prepare) declines, as the unpartitioned engine does.
-    /// If `policy` reports [`finalizes_layer`](crate::TruncationPolicy::finalizes_layer) without overriding [`finalize_layer_partitioned`](PartitionedTruncation::finalize_layer_partitioned).
+    /// Before the first layer, above one partition, unless [`policy.supports_partitioned()`](TruncationPolicy::supports_partitioned) — exact [`TopN`](crate::TopN) is not yet supported partitioned.
     /// A panic in any partition is re-raised on the calling thread.
     pub fn propagate_with<T>(
         &mut self,
@@ -292,7 +293,7 @@ impl<const W: usize> PartitionedSum<W> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
     {
         self.propagate_on_backend(circuit, policy, direction, options);
     }

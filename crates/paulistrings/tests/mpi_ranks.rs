@@ -36,8 +36,8 @@ use paulistrings::test_support::{
 };
 use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PartitionedTruncation,
-    PauliString, PauliSum, PropagateOptions,
+    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
@@ -221,7 +221,7 @@ impl Runner<'_> {
         chunk_bytes: Option<usize>,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+        T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
         let mut transport = MpiTransport::from_communicator(self.world);
         if let Some(bytes) = chunk_bytes {
@@ -267,7 +267,7 @@ impl Runner<'_> {
         got: Option<PauliSum<W>>,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
     {
         match (self.rank, got) {
             (0, Some(got)) => {
@@ -292,7 +292,7 @@ impl Runner<'_> {
         seed: u64,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+        T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
         for direction in [Direction::Forward, Direction::Heisenberg] {
             self.differential(backend, circuit, sum, policy, direction, seed, None, what);

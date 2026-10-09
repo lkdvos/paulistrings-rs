@@ -12,7 +12,7 @@ use cudarc::nccl::sys;
 
 use super::error::GpuError;
 use super::wire::{wire_timeout, DeviceWire, WireGroup, WireOp, WireOpKind};
-use crate::engine::partitioned::transport::Collectives;
+use crate::collectives::Collectives;
 
 /// The oldest runtime `libnccl` the `nccl-02022` bindings are sound against, as `ncclGetVersion` codes it.
 const MIN_NCCL_VERSION: i32 = 22200;

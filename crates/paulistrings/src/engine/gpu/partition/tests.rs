@@ -1,5 +1,4 @@
 use super::*;
-use crate::engine::partitioned::truncation::PartitionedTruncation;
 use crate::test_support::{and, or, rand_sum_real, LoggingTransport};
 use crate::truncation::BuiltinTruncation as T;
 use crate::TruncationPolicy;
@@ -23,7 +22,7 @@ fn part(input: &crate::PauliSum<1>, tree: &T) -> DevicePartition<1> {
     part
 }
 
-/// A device layer pass issues as many reductions as the host's `PartitionedTruncation` does for the same tree, and keeps the same terms.
+/// A device layer pass issues one reduction per reached `ApproxTopN`, as the host's collective form does above one partition, and keeps the host's terms.
 #[test]
 fn a_layer_pass_issues_the_hosts_collectives() {
     crate::require_cuda!();
@@ -39,11 +38,9 @@ fn a_layer_pass_issues_the_hosts_collectives() {
         let mut part = part(&input, &tree);
         PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
         part.take_error().expect("device layer pass");
-        let host = one_rank();
         let mut want_sum = input.clone();
-        <T as PartitionedTruncation<1>>::finalize_layer_partitioned(&tree, &mut want_sum, &host);
+        <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut want_sum);
         assert_eq!(reductions(&device), want, "{tree:?}: device");
-        assert_eq!(reductions(&host), want, "{tree:?}: host");
         assert_eq!(part.len(), want_sum.len(), "{tree:?}: len");
         assert_eq!(
             part.sum().to_host().unwrap().to_arrays(),

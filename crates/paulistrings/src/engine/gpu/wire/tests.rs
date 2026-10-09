@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::partitioned::transport::Collectives;
+use crate::collectives::Collectives;
 use crate::engine::partitioned::transport::InProcessTransport;
 
 #[test]

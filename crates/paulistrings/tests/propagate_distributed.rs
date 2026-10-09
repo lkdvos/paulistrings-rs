@@ -19,8 +19,8 @@ use paulistrings::test_support::{
     trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
 };
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
-    RotationAxis,
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, RotationAxis,
+    TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
@@ -105,7 +105,7 @@ fn distributed<const W: usize, T>(
     size: u32,
 ) -> PauliSum<W>
 where
-    T: PartitionedTruncation<W> + Sync,
+    T: TruncationPolicy<W> + Sync,
 {
     let gathered: Vec<Option<PauliSum<W>>> = on_ranks(size, |transport| {
         let mut split =
@@ -130,7 +130,7 @@ where
 /// The unpartitioned engine is the oracle for every group size and direction.
 fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T, name: &str)
 where
-    T: PartitionedTruncation<W> + Sync,
+    T: TruncationPolicy<W> + Sync,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -161,6 +161,32 @@ fn trotter_matches_propagate_w2() {
     let circuit = trotter_circuit::<2>(24, THETA);
     let sum = rand_sum_real::<2>(900, 24, 0x0D16);
     check(&circuit, &sum, &ApproxTopN(1_500), "trotter w2");
+}
+
+/// Exact `TopN` runs on one rank and panics on every rank of two before the first layer.
+#[test]
+fn exact_top_n_runs_on_one_rank_only() {
+    use paulistrings::TopN;
+    let circuit = trotter_circuit::<1>(24, THETA);
+    let sum = rand_sum_real::<1>(1_200, 24, 0x70B3);
+    let want = propagate(&circuit, sum.clone(), &TopN(800), Direction::Forward);
+    let got = distributed(&circuit, &sum, &TopN(800), Direction::Forward, 1);
+    assert_terms_close(&got, &want, TOL, "TopN on one rank");
+
+    let messages = on_ranks(2, |transport| {
+        let mut split =
+            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+        let terms = split.local().len();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            split.propagate(&circuit, &TopN(800), Direction::Forward)
+        }))
+        .expect_err("TopN on two ranks must panic");
+        assert_eq!(split.local().len(), terms, "no layer may run");
+        panic.downcast_ref::<String>().cloned().unwrap_or_default()
+    });
+    for message in messages {
+        assert!(message.contains("not yet supported"), "{message}");
+    }
 }
 
 /// `BuiltinTruncation`'s collective layer pass, per rank.

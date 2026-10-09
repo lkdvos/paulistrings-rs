@@ -150,7 +150,7 @@ Never design, constrain or reject an optimization to keep output bits stable.
 - Pauli strings are Hermitian everywhere they are parsed: `Y` is `(x=1, z=1)` with no phase; phases arise only from products (`mul_assign` returns `i^k`).
 - `PauliSum::from_strings` is test-only (`pauli_sum/tests.rs`); Rust tests otherwise build sums through `BuildAccumulator`.
 - A channel with support above `MAX_LOCAL_SUPPORT = 2` makes `propagate` panic; only `PauliRotation` is exempt.
-- Partitioned mode rejects exact `TopN`; `ApproxTopN` is partition-exact and the partitioned default. On devices exact `TopN` runs only at one partition.
+- Exact `TopN` runs at one partition only: above it every partitioned driver panics before the first layer (`TruncationPolicy::supports_partitioned`); `ApproxTopN` is partition-exact and the partitioned default.
 - Device drivers take a `BuiltinTruncation`, so a custom `TruncationPolicy` cannot run on a device.
 - From Python, multi-device and `comm=` with `device=` runs scatter and gather on every call; only the one-device `GpuPauliSum` stays resident.
 - Thread and memory pinning are Linux-only.

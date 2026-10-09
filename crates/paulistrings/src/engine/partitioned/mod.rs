@@ -17,7 +17,6 @@ pub(crate) mod sum;
 pub(crate) mod topology;
 pub(crate) mod trace;
 pub(crate) mod transport;
-pub(crate) mod truncation;
 
 pub use distributed::{DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows};
 pub use driver::propagate_partitioned;
@@ -27,5 +26,4 @@ pub use sum::PartitionPhaseStats;
 pub use sum::PartitionedSum;
 pub use topology::{numa_nodes, CpuSet, PartitionConfig, PartitionSlot, Placement, TopologyError};
 pub use trace::{PartitionLayerRecord, PartitionTrace};
-pub use transport::{Collectives, Transport};
-pub use truncation::PartitionedTruncation;
+pub use transport::Transport;

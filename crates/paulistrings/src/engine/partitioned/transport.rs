@@ -1,5 +1,7 @@
-//! The [`Collectives`] and [`Transport`] traits, the [`Payload`] wire seam, the destination-coset [`ChunkMap`], and the in-process transport (ARCHITECTURE.md §Partitioning).
+//! The [`Transport`] trait, the [`Payload`] wire seam, the destination-coset [`ChunkMap`], and the in-process transport (ARCHITECTURE.md §Partitioning).
 
+use crate::collectives::sealed::Sealed;
+use crate::collectives::Collectives;
 use crate::engine::coset::Gf2Span;
 
 mod exchange_block;
@@ -9,11 +11,6 @@ mod in_process;
 pub(crate) use exchange_block::{chunk_rows_of, BlockHeader};
 pub(crate) use exchange_block::{ExchangeBlock, PartnerPayload};
 pub use in_process::InProcessTransport;
-
-/// Seals [`Collectives`] and, through it, [`Transport`].
-pub(crate) mod sealed {
-    pub trait Sealed {}
-}
 
 /// The destination-coset order a layer's exchange blocks are laid out in, and the chunks the bulk transfer is cut into (ARCHITECTURE.md §Partitioning).
 ///
@@ -161,49 +158,6 @@ impl ChunkWait for AlreadyHere {
     fn wait_chunk(&self, _k: usize) {}
 }
 
-/// The group operations a partition needs besides the exchange: its rank, the reductions, and a barrier.
-///
-/// Every partition must issue the identical sequence of collective and transport calls, and every reduction must return the identical value on every partition.
-/// Sealed: implemented only by the in-process, solo and `mpi::MpiTransport` transports.
-pub trait Collectives: sealed::Sealed + Send + Sync {
-    /// This partition's index in the group, `0 <= rank < size`.
-    fn rank(&self) -> u32;
-    /// Number of partitions in the group.
-    fn size(&self) -> u32;
-    /// Maximum of `v` over the group.
-    fn allreduce_max_u8(&self, v: u8) -> u8;
-    /// Element-wise wrapping sum of `buffer` over the group, in place; every partition passes the same length.
-    fn allreduce_sum_u64(&self, buffer: &mut [u64]);
-    /// Element-wise sum of `buffer` over the group, in place, bitwise identical on every partition.
-    ///
-    /// The combination order is the implementation's, so the result may differ by rounding from a serial sum; a slot only one partition fills is exact.
-    fn allreduce_sum_f64(&self, buffer: &mut [f64]);
-    /// Block until every partition has arrived.
-    fn barrier(&self);
-
-    /// Panic unless every partition passed the same `fingerprint`; one collective.
-    fn check_consistency(&self, fingerprint: u64) {
-        // Per bit, how many partitions set it: an agreeing group answers 0 or `size` for every bit.
-        let mut counts = [0u64; 64];
-        for (i, count) in counts.iter_mut().enumerate() {
-            *count = (fingerprint >> i) & 1;
-        }
-        self.allreduce_sum_u64(&mut counts);
-        let size = u64::from(self.size());
-        for (bit, &count) in counts.iter().enumerate() {
-            assert!(
-                count == 0 || count == size,
-                "the partitions disagree about the run: partition {} offered fingerprint \
-                 {fingerprint:#018x}, and {count} of {size} partitions set bit {bit} of theirs. \
-                 Every partition must be driven through the same circuit, in the same direction, \
-                 under the same policy and options — a group that is not stays in step only by \
-                 luck.",
-                self.rank(),
-            );
-        }
-    }
-}
-
 /// The per-layer all-to-all exchange between the partitions of a group.
 ///
 /// Sealed through [`Collectives`]; not object-safe, so the layer loop monomorphizes over it.
@@ -274,7 +228,7 @@ pub trait Transport: Collectives {
 /// The group of one that unpartitioned propagation runs on: no reduction or exchange has anyone to talk to.
 pub(crate) struct SoloTransport;
 
-impl sealed::Sealed for SoloTransport {}
+impl Sealed for SoloTransport {}
 
 impl Collectives for SoloTransport {
     fn rank(&self) -> u32 {

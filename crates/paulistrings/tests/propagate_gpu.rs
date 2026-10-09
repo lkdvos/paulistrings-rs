@@ -9,8 +9,8 @@ use paulistrings::test_support::{
     zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
-    propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PartitionedTruncation,
-    PauliString, PauliSum, PropagateOptions,
+    propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff};
 use paulistrings::{
@@ -35,7 +35,7 @@ fn device_run<const W: usize, T>(
     extra: &[String],
 ) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
 where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
     if let Some(o) = options {
@@ -57,7 +57,7 @@ fn check_with<const W: usize, T>(
     (options, extra): (Option<GpuLayerOptions>, &[String]),
     permuted: Option<bool>,
 ) where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -73,7 +73,7 @@ fn check_with<const W: usize, T>(
 
 fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T, name: &str)
 where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     check_with(circuit, sum, policy, name, (None, &[]), None);
 }
@@ -265,7 +265,7 @@ fn approx_top_n_bounds_every_layer_like_the_host() {
 
 fn assert_rejected_untouched<T>(policy: &T, what: &str)
 where
-    T: PartitionedTruncation<1> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<1> + Clone + Into<BuiltinTruncation>,
 {
     let input = rand_sum::<1>(100, 8, 0x55);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));

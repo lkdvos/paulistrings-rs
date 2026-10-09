@@ -171,7 +171,7 @@ fn x_times_y_gives_i_z() {
 fn mul_value_returning_matches_in_place() {
     // The `mul` value-returning variant produces the same (string, phase)
     // pair as the in-place form, for `X · Z = -iY`.
-    let (p, phase) = PauliString::<1>::x(0).mul(&PauliString::<1>::z(0));
+    let (p, phase) = PauliString::<1>::x(0).product(&PauliString::<1>::z(0));
     assert_eq!(p.x[0], 1);
     assert_eq!(p.z[0], 1);
     assert_eq!(phase, Phase::MINUS_I);

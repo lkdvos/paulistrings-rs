@@ -19,7 +19,7 @@ Circuits come from upstream tooling.
 
 **`PauliString<const W: usize>`** uses the symplectic encoding: each qubit's Pauli is a bit pair with `I = (0,0)`, `X = (1,0)`, `Z = (0,1)`, `Y = (1,1)`, stored as `x: [u64; W]`, `z: [u64; W]`.
 One word covers 64 qubits.
-The type is `Copy + Pod + Zeroable` and `#[repr(C)]` with no padding — `16·W` bytes, directly serializable and GPU-uploadable.
+The type is `Copy` and `#[repr(C)]` with no padding — `16·W` bytes; its derived `Ord` is lexicographic in `x` then `z`, the key order of every sorted bucket.
 
 Multiplication is bitwise XOR of the `(x, z)` parts plus a phase `i^k`; `mul_assign` returns `k` as a `u8` in `0..4` and stores no phase.
 Callers fold the phase into a `Complex64` coefficient at the boundary — the moment a string enters a `PauliSum` or `BuildAccumulator`.
@@ -463,7 +463,7 @@ Everything those methods do is spec-rewriting outside any hot loop — no core c
 
 ## GPU-Readiness
 
-The design decisions a GPU backend needs are already in place: `PauliString` is `Pod` with a defined layout; bucket columns are SoA and flatten to device buffers in one pass; the coset decomposition maps to one block per coset with gather/sort/merge in shared memory, a better CUB fit than any global sort.
+The design decisions a GPU backend needs are already in place: bucket columns are SoA and flatten to device buffers in one pass; the coset decomposition maps to one block per coset with gather/sort/merge in shared memory, a better CUB fit than any global sort.
 The extension to distributed memory is no longer forward-looking: §Partitioning is that exchange, and MPI is the same exchange over ranks.
 
 **The device sum.**

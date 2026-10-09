@@ -48,7 +48,7 @@ Four pillars in priority order:
    write-disjoint layers, Rayon-parallel with no global sort.
 3. **Extensibility** for research — open [`Channel`] and
    [`TruncationPolicy`] traits.
-4. **GPU-readiness** — `#[repr(C)]` `Pod` types, fixed-fanout buffers,
+4. **GPU-readiness** — structure-of-arrays columns, fixed-fanout buffers,
    shared-nothing parallelism that maps onto CUB primitives without
    restructuring.
 

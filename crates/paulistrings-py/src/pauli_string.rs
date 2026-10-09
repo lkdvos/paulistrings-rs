@@ -79,7 +79,7 @@ impl PauliStringImpl {
         for_each_width_pair_rewrap!((self, other), |a, b, wrap| {
             let (product, coeff) = match op {
                 Bracket::Mul => {
-                    let (product, phase) = a.mul(b);
+                    let (product, phase) = a.product(b);
                     (product, phase.to_complex())
                 }
                 Bracket::Commutator => a.commutator(b),

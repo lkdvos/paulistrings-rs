@@ -1,9 +1,6 @@
 //! [`PauliString<W>`], the symplectic `(x, z)` encoding of a Pauli operator on up to `64·W` qubits (ARCHITECTURE.md §Data-Model, §Width).
 
-use bytemuck::{Pod, Zeroable};
 use num_complex::Complex64;
-use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
 
 use crate::phase::Phase;
 
@@ -12,7 +9,7 @@ use crate::phase::Phase;
 /// Pick the smallest `W` that fits; the Python bindings monomorphize `W ∈ {1, 2, 4, 8, 16}`.
 /// The phase of a product is not stored: [`Self::mul_assign`] returns it as a [`Phase`] for the caller to fold into a coefficient.
 /// `Y` is the key `(x=1, z=1)` with no phase factor.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(C)]
 pub struct PauliString<const W: usize> {
     /// X-part bitmask: bit `q` set iff qubit `q` is `X` or `Y`.
@@ -20,9 +17,6 @@ pub struct PauliString<const W: usize> {
     /// Z-part bitmask: bit `q` set iff qubit `q` is `Z` or `Y`.
     pub z: [u64; W],
 }
-
-unsafe impl<const W: usize> Zeroable for PauliString<W> {}
-unsafe impl<const W: usize> Pod for PauliString<W> {}
 
 impl<const W: usize> PauliString<W> {
     /// Identity Pauli string (all qubits `I`).
@@ -106,9 +100,8 @@ impl<const W: usize> PauliString<W> {
     }
 
     /// Value-returning multiply: `(self * other, phase)`.
-    #[allow(clippy::should_implement_trait)]
     #[inline]
-    pub fn mul(mut self, other: &Self) -> (Self, Phase) {
+    pub fn product(mut self, other: &Self) -> (Self, Phase) {
         let phase = self.mul_assign(other);
         (self, phase)
     }
@@ -141,11 +134,11 @@ impl<const W: usize> PauliString<W> {
 
     /// Commutator `[self, other] = self·other − other·self`, as `(product, coefficient)`.
     ///
-    /// The coefficient is `2·i^k` when the strings anticommute and exactly `0` when they commute; the returned string is [`Self::mul`]'s product either way.
+    /// The coefficient is `2·i^k` when the strings anticommute and exactly `0` when they commute; the returned string is [`Self::product`]'s result either way.
     #[inline]
     pub fn commutator(self, other: &Self) -> (Self, Complex64) {
         let vanishes = self.commutes_with(other);
-        let (product, phase) = self.mul(other);
+        let (product, phase) = self.product(other);
         (product, scaled_phase(phase, vanishes))
     }
 
@@ -155,7 +148,7 @@ impl<const W: usize> PauliString<W> {
     #[inline]
     pub fn anticommutator(self, other: &Self) -> (Self, Complex64) {
         let vanishes = !self.commutes_with(other);
-        let (product, phase) = self.mul(other);
+        let (product, phase) = self.product(other);
         (product, scaled_phase(phase, vanishes))
     }
 }
@@ -186,37 +179,6 @@ fn scaled_phase(phase: Phase, vanishes: bool) -> Complex64 {
 impl<const W: usize> Default for PauliString<W> {
     fn default() -> Self {
         Self::identity()
-    }
-}
-
-impl<const W: usize> Ord for PauliString<W> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        for i in 0..W {
-            match self.x[i].cmp(&other.x[i]) {
-                Ordering::Equal => continue,
-                ord => return ord,
-            }
-        }
-        for i in 0..W {
-            match self.z[i].cmp(&other.z[i]) {
-                Ordering::Equal => continue,
-                ord => return ord,
-            }
-        }
-        Ordering::Equal
-    }
-}
-
-impl<const W: usize> PartialOrd for PauliString<W> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<const W: usize> Hash for PauliString<W> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.x.hash(state);
-        self.z.hash(state);
     }
 }
 

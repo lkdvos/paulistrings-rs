@@ -94,7 +94,7 @@ mod props {
             a in arb_pauli_w2(),
             b in arb_pauli_w2(),
         ) {
-            let (product, phase) = a.mul(&b);
+            let (product, phase) = a.product(&b);
             let (comm_product, comm) = a.commutator(&b);
             let (anti_product, anti) = a.anticommutator(&b);
 

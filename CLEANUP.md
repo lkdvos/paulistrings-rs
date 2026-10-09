@@ -45,9 +45,9 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 1 | Leaf algebra | phase, rng, pauli_string | done |
 | 2 | Partition hash | pauli_sum/hash | done |
 | 3 | Storage | pauli_sum/{storage,partition,accumulator} | done |
-| 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | D15, D30–D36 implementing |
-| 5 | Channels II | channel/noise, unitary, prepared | D15, D30–D36 implementing |
-| 6 | Truncation | truncation/* | pending |
+| 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | done |
+| 5 | Channels II | channel/noise, unitary, prepared | done |
+| 6 | Truncation | truncation/* | presented, Q20–Q23 open |
 | 7 | Sort/merge kernels | engine/merge, engine/coset | pending |
 | 8 | Bucketed layer | engine/bucketed, engine/stats | pending |
 | 9 | Front door | engine/mod, engine/direct | pending |
@@ -131,6 +131,13 @@ Chunk 5 (2026-10-09):
 - **D35 One PTM built-in.** `PtmChannel` (support qubits plus compact PTM storage: permutation and signs for Cliffords, the diagonal for diagonal noise, sparse entries otherwise) replaces `Clifford1Q`, `Clifford2Q`, `GeneralUnitary1Q/2Q`, `Depolarizing`, `Dephasing`, `PauliChannel`, `Depolarizing2Q`, `AmplitudeDamping`, with named constructors; adjoint is the transpose; its `prepare` builds the delta list directly without probing `apply`. Python keeps its names. Check memory per gate and `prepare` cost per layer before/after.
 - **D36 Validating constructors.** Real `assert!`s for distinct qubits and `p, γ ∈ [0, 1]` (the release-mode `Depolarizing2Q` equal-qubit hole), no public fields.
 
+### As applied, chunks 4–5
+
+`38353a4` D35+D36 (`PtmChannel` with `hadamard`, `phase_gate`, `pauli_x/y/z`, `cnot`, `cz`, `swap`, `unitary_1q/2q`, `depolarizing`, `dephasing`, `pauli_channel`, `depolarizing_2q`, `amplitude_damping`, `adjoint()`; storage `SignedPermutation`/`Diagonal`/`Sparse`; constructors assert distinct qubits and parameters in [0, 1] incl. NaN; per-constructor tests compare the direct table bitwise against probing `apply`), `12318fc` D30+D31+D15 (`OutputBuffer<W>` owns growable columns; `apply_adjoint` required; `prepare` via a `#[doc(hidden)] prepare_for_layer(.., PrepareToken)` whose token type is unnameable outside the crate), `86cc82d` D33 (plus a new public `Circuit::push_boxed`), `8e506c6` D34.
+Channel production lines 1671 → 1457. `prepare` per layer (indicative, one core): H 426 → 229 ns, CNOT 1058 → 581, dense 2Q 4224 → 1639, depolarizing 368 → 166, amplitude damping 437 → 223. Memory per gate: `size_of::<PtmChannel>()` = 80 bytes (+0 Clifford, +32–128 diagonal, +108 to +4068 sparse) vs 16–48 bytes for the old Clifford/noise structs.
+`debug_name` keeps the old type names ("Clifford1Q", …) so traces and Python `gate_name` are unchanged. Python: `depolarize`, `dephase`, `amplitude_damping`, `pauli_channel` now raise `ValueError` on out-of-range or NaN parameters (10 new tests).
+Equivalence vs `3fef926`: 480 cases bitwise identical (new shim per side; added S†, reversed 2Q gates, all noise parameters, random circuits). Verified: fmt/clippy matrix, rustdoc, 751 workspace tests, `cuda` 881 on the A6000, pytest 496/101, `mpi-test.sh --ranks 2,4` Rust and `--python`.
+
 ### As applied, chunk 3
 
 `6072ee6` D27 (red→green: two Rust tests and one Python test failed with "bucket count mismatch" before the fix; `align_to` returns `Cow`, so neither `add` nor `overlap` clones an already-aligned operand), `b6f21d9` D28 (`test_support` wrappers `with_hash`, `bucket`, `bucket_len`, `refine`, `coarsen`), `e49da4b` D29 (`storage.rs` 632 → 589, `partition.rs` 228 → 205; `merge_sorted` with `keys_are_disjoint`; `merge_runs` deleted; `with_hash` scatters then sorts per bucket; `map_buckets` helper). Deviation accepted: `refine` runs `assert_invariants()` under debug instead of passing `b` to `refine_bucket` (stronger check, same debug test time). Note: on corrupted input a disjoint merge in release drops both duplicate terms where the old code kept both.
@@ -188,6 +195,9 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - Cache the hash-independent part of a channel's prepared table (probe + masks) so a layer recomputes only `δ = H·d`; `prepare` is 4.2–5.7 µs per dense two-qubit gate and dominates small-`m` runs now that the direct path is gone (issue to open).
 
 ## Open items
+
+- `PtmChannel` is 80 bytes (name 16, qubits `[usize; 2]` 16, storage 40); a one-byte kind and `u32` qubits would give about 48.
+- `unitary_1q`/`unitary_2q` do not check unitarity.
 
 - A custom policy overriding `finalize_layer_partitioned` must also override `supports_partitioned` (documented; Rust cannot detect overrides).
 - `Or(TopN, …)`: `supports_partitioned` is true (Or runs no layer pass) while Python and the GPU drivers reject any `TopN` in the tree; and Or dropping its children's layer passes is itself questionable semantics (chunk 6).

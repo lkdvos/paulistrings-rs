@@ -15,14 +15,14 @@ pub(crate) struct BlockHeader {
     /// Live rows, `offsets[num_buckets]`.
     pub rows: u32,
     /// The width `W` the block was built at, checked on receive.
-    pub w: u32,
+    pub width: u32,
     /// The layer plan's remote-delta index this block carries.
     pub entry: u32,
 }
 
 /// The rows one remote delta moves to one partner, CSR-indexed by the receiver's destination position ([`ChunkMap`]).
 ///
-/// The columns are grow-only and may be longer than `header.rows`, which alone says how much is live: read through `cols` or `segment`, never `x.len()`.
+/// The columns are grow-only and may be longer than `header.rows`, which alone says how much is live: read through `columns` or `segment`, never `x.len()`.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ExchangeBlock<const W: usize> {
     pub header: BlockHeader,
@@ -36,7 +36,9 @@ pub(crate) struct ExchangeBlock<const W: usize> {
 /// Compares the live rows only, so a reused block equals the same block built fresh.
 impl<const W: usize> PartialEq for ExchangeBlock<W> {
     fn eq(&self, other: &Self) -> bool {
-        self.header == other.header && self.offsets == other.offsets && self.cols() == other.cols()
+        self.header == other.header
+            && self.offsets == other.offsets
+            && self.columns() == other.columns()
     }
 }
 
@@ -70,7 +72,7 @@ impl<const W: usize> ExchangeBlock<W> {
         self.header = BlockHeader {
             num_buckets: counts.len() as u32,
             rows,
-            w: W as u32,
+            width: W as u32,
             entry,
         };
         self.grow_columns(rows as usize);
@@ -85,7 +87,7 @@ impl<const W: usize> ExchangeBlock<W> {
     }
 
     /// The live rows of the three columns.
-    pub(crate) fn cols(&self) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn columns(&self) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let rows = self.rows();
         (&self.x[..rows], &self.z[..rows], &self.coeff[..rows])
     }
@@ -173,7 +175,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
     fn byte_parts(&self) -> Vec<&[u8]> {
         let mut parts = Vec::with_capacity(PARTS_PER_BLOCK * self.blocks.len());
         for block in &self.blocks {
-            let (x, z, coeff) = block.cols();
+            let (x, z, coeff) = block.columns();
             parts.push(bytemuck::bytes_of(&block.header));
             parts.push(bytemuck::cast_slice(&block.offsets));
             parts.push(bytemuck::cast_slice(x.as_flattened()));
@@ -183,7 +185,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         parts
     }
 
-    fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
         assert_eq!(
             lens.len() % PARTS_PER_BLOCK,
             0,
@@ -229,7 +231,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             block.offsets.clear();
             block.offsets.resize(lens[1] / size_of::<u32>(), 0);
             block.grow_columns(rows);
-            // Overwritten by the arriving header, which `finish_recv` checks against the columns.
+            // Overwritten by the arriving header, which `finish_receive` checks against the columns.
             block.header.rows = rows as u32;
             let ExchangeBlock {
                 header,
@@ -247,12 +249,12 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         parts
     }
 
-    fn finish_recv(&mut self) {
+    fn finish_receive(&mut self) {
         for block in &self.blocks {
             assert_eq!(
-                block.header.w as usize, W,
+                block.header.width as usize, W,
                 "partner payload: block encoded at width W={} decoded at W={W}",
-                block.header.w,
+                block.header.width,
             );
             // A garbled header must fail here rather than as an out-of-bounds read.
             assert!(
@@ -306,8 +308,8 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         parts
     }
 
-    fn early_recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
-        let mut parts = self.recv_into(lens);
+    fn early_receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        let mut parts = self.receive_into(lens);
         let mut early = Vec::with_capacity(2 * parts.len() / PARTS_PER_BLOCK);
         for (i, view) in parts.drain(..).enumerate() {
             if i % PARTS_PER_BLOCK < 2 {
@@ -317,7 +319,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         early
     }
 
-    fn bulk_recv_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
+    fn bulk_receive_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
         let mut parts = Vec::with_capacity(3 * self.blocks.len());
         for block in &mut self.blocks {
             let rows = block.header.rows as usize;

@@ -158,7 +158,7 @@ pub(crate) fn export_layer<const W: usize>(
                 ref mut coeff,
                 ..
             } = *block;
-            let cols = BlockCols {
+            let columns = BlockColumns {
                 x: &mut x[..rows],
                 z: &mut z[..rows],
                 c: &mut coeff[..rows],
@@ -170,7 +170,7 @@ pub(crate) fn export_layer<const W: usize>(
                 &scratch.source_of,
                 0,
                 num_buckets,
-                cols,
+                columns,
             );
         }
         counts.rows_to[q] += rows as u64;
@@ -242,19 +242,19 @@ fn fill_range<const W: usize>(
     source_of: &[u32],
     lo: usize,
     hi: usize,
-    cols: BlockCols<'_, W>,
+    columns: BlockColumns<'_, W>,
 ) {
-    debug_assert_eq!(cols.len(), (offsets[hi] - offsets[lo]) as usize);
-    if hi - lo > 1 && cols.len() > FILL_PARALLEL_MIN_ROWS {
+    debug_assert_eq!(columns.len(), (offsets[hi] - offsets[lo]) as usize);
+    if hi - lo > 1 && columns.len() > FILL_PARALLEL_MIN_ROWS {
         let mid = lo + (hi - lo) / 2;
-        let (head, tail) = cols.split_at((offsets[mid] - offsets[lo]) as usize);
+        let (head, tail) = columns.split_at((offsets[mid] - offsets[lo]) as usize);
         rayon::join(
             || fill_range(local, emitter, offsets, source_of, lo, mid, head),
             || fill_range(local, emitter, offsets, source_of, mid, hi, tail),
         );
         return;
     }
-    let BlockCols { x, z, c } = cols;
+    let BlockColumns { x, z, c } = columns;
     let mut w = 0usize;
     for &source in &source_of[lo..hi] {
         let (bx, bz, bc) = local.bucket(source as usize);
@@ -276,28 +276,28 @@ fn fill_range<const W: usize>(
 }
 
 /// One block's three columns, restricted to a source-bucket range.
-struct BlockCols<'a, const W: usize> {
+struct BlockColumns<'a, const W: usize> {
     x: &'a mut [[u64; W]],
     z: &'a mut [[u64; W]],
     c: &'a mut [Complex64],
 }
 
-impl<'a, const W: usize> BlockCols<'a, W> {
+impl<'a, const W: usize> BlockColumns<'a, W> {
     fn len(&self) -> usize {
         self.c.len()
     }
 
-    fn split_at(self, at: usize) -> (BlockCols<'a, W>, BlockCols<'a, W>) {
+    fn split_at(self, at: usize) -> (BlockColumns<'a, W>, BlockColumns<'a, W>) {
         let (x0, x1) = self.x.split_at_mut(at);
         let (z0, z1) = self.z.split_at_mut(at);
         let (c0, c1) = self.c.split_at_mut(at);
         (
-            BlockCols {
+            BlockColumns {
                 x: x0,
                 z: z0,
                 c: c0,
             },
-            BlockCols {
+            BlockColumns {
                 x: x1,
                 z: z1,
                 c: c1,

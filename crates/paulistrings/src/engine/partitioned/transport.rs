@@ -119,10 +119,10 @@ pub trait Payload: Default + Send + 'static {
     /// Reshape for an incoming message of part lengths `lens` (growing, never shrinking, the storage) and hand out one mutable byte view per part, in `byte_parts` order.
     ///
     /// Panics if `lens` is not a shape this payload can take.
-    fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]>;
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]>;
 
-    /// Check, once the bytes have arrived and before the engine reads them, what `recv_into` could not; panics on an inconsistent payload.
-    fn finish_recv(&mut self);
+    /// Check, once the bytes have arrived and before the engine reads them, what `receive_into` could not; panics on an inconsistent payload.
+    fn finish_receive(&mut self);
 
     /// The parts a two-phase transport must deliver before the body runs, in `byte_parts` order; every part by default.
     fn early_parts(&self) -> Vec<&[u8]> {
@@ -131,19 +131,19 @@ pub trait Payload: Default + Send + 'static {
 
     /// The parts after `early_parts`, each cut at `map`'s chunks: `bulk_parts()[i][k]` is part `i`'s slice for chunk `k`; none by default.
     ///
-    /// Must cut exactly as `bulk_recv_into` does on the receiver, or the two sides post different message sizes.
+    /// Must cut exactly as `bulk_receive_into` does on the receiver, or the two sides post different message sizes.
     fn bulk_parts(&self, map: &ChunkMap) -> Vec<Vec<&[u8]>> {
         let _ = map;
         Vec::new()
     }
 
-    /// `recv_into` sizing every part from `lens` but handing out only the `early_parts` views.
-    fn early_recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
-        self.recv_into(lens)
+    /// `receive_into` sizing every part from `lens` but handing out only the `early_parts` views.
+    fn early_receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        self.receive_into(lens)
     }
 
     /// The receive-side mirror of `bulk_parts`, called once the early parts have arrived.
-    fn bulk_recv_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
+    fn bulk_receive_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
         let _ = map;
         Vec::new()
     }
@@ -286,7 +286,7 @@ impl Payload for ByteParts {
         self.0.iter().map(Vec::as_slice).collect()
     }
 
-    fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
         self.0.resize_with(lens.len(), Vec::new);
         for (part, &len) in self.0.iter_mut().zip(lens) {
             part.clear();
@@ -295,7 +295,7 @@ impl Payload for ByteParts {
         self.0.iter_mut().map(Vec::as_mut_slice).collect()
     }
 
-    fn finish_recv(&mut self) {}
+    fn finish_receive(&mut self) {}
 }
 
 #[cfg(test)]

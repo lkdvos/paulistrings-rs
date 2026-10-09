@@ -560,7 +560,7 @@ impl Transport for MpiTransport {
                     };
                     let lens = lens.next().expect("one header per partner");
                     let peer = self.comm.process_at_rank(q as Rank);
-                    for view in payload.early_recv_into(&lens) {
+                    for view in payload.early_receive_into(&lens) {
                         for piece in view.chunks_mut(self.chunk) {
                             let i = requests.add(
                                 peer.immediate_receive_into_with_tag(scope, piece, tags.early),
@@ -584,7 +584,7 @@ impl Transport for MpiTransport {
                 // SAFETY: as above; the collection holds only completed requests and this rank's sends.
                 let recv_mut = unsafe { &mut *recv_cell.get() };
                 for payload in recv_mut.iter_mut().flatten() {
-                    payload.finish_recv();
+                    payload.finish_receive();
                 }
 
                 for (q, slot) in recv_mut.iter_mut().enumerate() {
@@ -593,7 +593,7 @@ impl Transport for MpiTransport {
                     };
                     let peer = self.comm.process_at_rank(q as Rank);
                     let mut parts: Vec<Vec<Option<&mut [u8]>>> = payload
-                        .bulk_recv_into(map)
+                        .bulk_receive_into(map)
                         .into_iter()
                         .map(|pieces| pieces.into_iter().map(Some).collect())
                         .collect();

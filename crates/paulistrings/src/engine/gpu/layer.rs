@@ -46,7 +46,7 @@ pub struct GpuLayerCounters {
     /// The largest block's records.
     pub records_max: u32,
     /// Record capacity of the launched variant.
-    pub n_cap: u32,
+    pub record_capacity: u32,
     /// Arena batches.
     pub batches: u32,
     /// Blocks that fell back to the `g_hi32` passes, the sender-side merge's included.
@@ -145,11 +145,11 @@ pub(crate) struct LayerScratch<const W: usize> {
     rows: CudaSlice<u32>,
     segment_start: CudaSlice<u32>,
     out_len_pos: CudaSlice<u32>,
-    pub(super) dst_off: CudaSlice<u32>,
+    pub(super) destination_offsets: CudaSlice<u32>,
     /// K7's `[len, bins…]`.
     pub(super) hist: CudaSlice<u64>,
     /// K8's 256-bin radix digit histogram, reused across passes.
-    pub(super) radix_hist: CudaSlice<u64>,
+    pub(super) radix_histogram: CudaSlice<u64>,
     /// K8's small scalar outputs: the extracted singleton bits, or `[above, equal]` counts.
     pub(super) radix_out: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
@@ -164,8 +164,8 @@ pub(crate) struct LayerScratch<const W: usize> {
     longest: Option<u32>,
     pub(super) scan: ScanScratch,
     /// Scan totals, two slots so a count's pair of scans can be read together.
-    pub(super) tot_a: CudaSlice<u32>,
-    tot_b: CudaSlice<u32>,
+    pub(super) totals: CudaSlice<u32>,
+    length_totals: CudaSlice<u32>,
     /// Export, exchange and receive buffers.
     pub(super) export: DeviceExport<W>,
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
@@ -179,7 +179,7 @@ pub(crate) struct LayerScratch<const W: usize> {
     /// Recorded event pairs not yet read; [`Self::resolve`] reads them behind one synchronization instead of one per kernel.
     pending: Vec<(usize, usize, KernelSlot)>,
     /// Host-to-device and device-to-host copy time inside the current layer.
-    pub(crate) xfer_ns: XferNs,
+    pub(crate) transfer_ns: TransferNs,
     #[cfg(feature = "phase-timing")]
     pub(crate) laps: ExchangeLaps,
 }
@@ -187,23 +187,23 @@ pub(crate) struct LayerScratch<const W: usize> {
 type KernelSlot = fn(&mut GpuKernelMs) -> &mut f64;
 
 #[cfg(feature = "phase-timing")]
-pub(crate) type XferNs = [u64; 2];
+pub(crate) type TransferNs = [u64; 2];
 #[cfg(not(feature = "phase-timing"))]
-pub(crate) type XferNs = ();
+pub(crate) type TransferNs = ();
 
-/// Which direction a timed copy in [`xfer`] runs.
+/// Which direction a timed copy in [`timed_transfer`] runs.
 #[derive(Clone, Copy)]
-pub(super) enum Xfer {
+pub(super) enum Transfer {
     H2d,
     D2h,
 }
 
 /// Run `f`, a synchronous host<->device copy on `stream`, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
 #[inline]
-pub(super) fn xfer<T>(
+pub(super) fn timed_transfer<T>(
     stream: &CudaStream,
-    ns: &mut XferNs,
-    dir: Xfer,
+    ns: &mut TransferNs,
+    dir: Transfer,
     f: impl FnOnce() -> Result<T, GpuError>,
 ) -> Result<T, GpuError> {
     #[cfg(feature = "phase-timing")]
@@ -231,9 +231,9 @@ impl<const W: usize> LayerScratch<W> {
             rows: stream.alloc_zeros(1)?,
             segment_start: stream.alloc_zeros(2)?,
             out_len_pos: stream.alloc_zeros(1)?,
-            dst_off: stream.alloc_zeros(2)?,
+            destination_offsets: stream.alloc_zeros(2)?,
             hist: stream.alloc_zeros(1 + APPROX_BINS)?,
-            radix_hist: stream.alloc_zeros(256)?,
+            radix_histogram: stream.alloc_zeros(256)?,
             radix_out: stream.alloc_zeros(2)?,
             fallback: stream.alloc_zeros(2)?,
             table: TableBuffers::new(stream, W)?,
@@ -244,8 +244,8 @@ impl<const W: usize> LayerScratch<W> {
             bucket_at_key: None,
             longest: None,
             scan: ScanScratch::new(stream)?,
-            tot_a: stream.alloc_zeros(2)?,
-            tot_b: stream.alloc_zeros(2)?,
+            totals: stream.alloc_zeros(2)?,
+            length_totals: stream.alloc_zeros(2)?,
             export: DeviceExport::new(sum)?,
             extent: sum.len(),
             options,
@@ -254,7 +254,7 @@ impl<const W: usize> LayerScratch<W> {
             events: Vec::new(),
             next_event: 0,
             pending: Vec::new(),
-            xfer_ns: XferNs::default(),
+            transfer_ns: TransferNs::default(),
             #[cfg(feature = "phase-timing")]
             laps: ExchangeLaps::default(),
         })
@@ -265,8 +265,10 @@ impl<const W: usize> LayerScratch<W> {
             return Ok(None);
         }
         if self.next_event == self.events.len() {
-            self.events
-                .push(sum.ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?);
+            self.events.push(
+                sum.context
+                    .new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?,
+            );
         }
         let i = self.next_event;
         self.events[i].record(&sum.stream)?;
@@ -328,10 +330,10 @@ impl<const W: usize> LayerScratch<W> {
         grow(stream, &mut self.counts, b * e, ordinal)?;
         grow(stream, &mut self.rows, b, ordinal)?;
         grow(stream, &mut self.segment_start, b + 1, ordinal)?;
-        grow(stream, &mut self.dst_off, b + 1, ordinal)?;
+        grow(stream, &mut self.destination_offsets, b + 1, ordinal)?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
         let buffers = &mut self.table;
-        xfer(stream, &mut self.xfer_ns, Xfer::H2d, || {
+        timed_transfer(stream, &mut self.transfer_ns, Transfer::H2d, || {
             if map_stale {
                 stream.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
             }
@@ -357,10 +359,10 @@ impl<const W: usize> LayerScratch<W> {
         unsafe {
             stream
                 .launch_builder(&sum.kernels.count)
-                .arg(&sum.cols.x)
-                .arg(&sum.cols.z)
-                .arg(&sum.cols.start)
-                .arg(&sum.cols.lens)
+                .arg(&sum.columns.x)
+                .arg(&sum.columns.z)
+                .arg(&sum.columns.start)
+                .arg(&sum.columns.lens)
                 .arg(&b32)
                 .arg(&table.mode)
                 .arg(&e32)
@@ -384,9 +386,9 @@ impl<const W: usize> LayerScratch<W> {
             return Ok(l);
         }
         self.scan_lens(sum)?;
-        let (stream, tot_b) = (&sum.stream, &self.tot_b);
-        let l = xfer(stream, &mut self.xfer_ns, Xfer::D2h, || {
-            let v = stream.clone_dtoh(tot_b)?;
+        let (stream, length_totals) = (&sum.stream, &self.length_totals);
+        let l = timed_transfer(stream, &mut self.transfer_ns, Transfer::D2h, || {
+            let v = stream.clone_dtoh(length_totals)?;
             stream.synchronize()?;
             Ok(v[1])
         })?;
@@ -394,17 +396,17 @@ impl<const W: usize> LayerScratch<W> {
         Ok(l)
     }
 
-    /// The scan of the bucket lengths whose maximum `tot_b[1]` is the longest bucket.
+    /// The scan of the bucket lengths whose maximum `length_totals[1]` is the longest bucket.
     fn scan_lens(&mut self, sum: &GpuSum<W>) -> Result<(), GpuError> {
         let b = sum.hash.num_buckets();
         exclusive_scan(
             &sum.stream,
             &sum.kernels,
-            &sum.cols.lens.slice(0..b),
-            &mut self.dst_off.slice_mut(0..b + 1),
+            &sum.columns.lens.slice(0..b),
+            &mut self.destination_offsets.slice_mut(0..b + 1),
             b,
             &mut self.scan,
-            &mut self.tot_b,
+            &mut self.length_totals,
         )
     }
 
@@ -419,7 +421,7 @@ impl<const W: usize> LayerScratch<W> {
         let b = sum.hash.num_buckets();
         let (b32, e32) = (b as u32, table.entries as u32);
         let t1 = self.event(sum)?;
-        // SAFETY: arguments match `k_rows` in count.cu; `recv_off` holds `K × (b + 1)` entries for the `K` received entries `rem` names.
+        // SAFETY: arguments match `k_rows` in count.cu; `received_offsets` holds `K × (b + 1)` entries for the `K` received entries `rem` names.
         unsafe {
             stream
                 .launch_builder(&kernels.rows)
@@ -427,7 +429,7 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&self.bucket_at)
                 .arg(&self.table.bucket_delta)
                 .arg(&self.table.rem)
-                .arg(&self.export.recv_off)
+                .arg(&self.export.received_offsets)
                 .arg(&mut self.rows)
                 .arg(&b32)
                 .arg(&e32)
@@ -440,7 +442,7 @@ impl<const W: usize> LayerScratch<W> {
             &mut self.segment_start.slice_mut(0..b + 1),
             b,
             &mut self.scan,
-            &mut self.tot_a,
+            &mut self.totals,
         )?;
         let known = self.longest;
         if known.is_none() {
@@ -450,12 +452,12 @@ impl<const W: usize> LayerScratch<W> {
         self.segment_start_host.resize(b + 1, 0);
         let (segment_start, segment_start_host) =
             (&self.segment_start, &mut self.segment_start_host);
-        let (tot_a, tot_b) = (&self.tot_a, &self.tot_b);
-        let (tm, longest) = xfer(stream, &mut self.xfer_ns, Xfer::D2h, || {
-            let tm = stream.clone_dtoh(tot_a)?;
+        let (totals, length_totals) = (&self.totals, &self.length_totals);
+        let (tm, longest) = timed_transfer(stream, &mut self.transfer_ns, Transfer::D2h, || {
+            let tm = stream.clone_dtoh(totals)?;
             let longest = match known {
                 Some(l) => l,
-                None => stream.clone_dtoh(tot_b)?[1],
+                None => stream.clone_dtoh(length_totals)?[1],
             };
             stream.memcpy_dtoh(&segment_start.slice(0..b + 1), &mut segment_start_host[..])?;
             stream.synchronize()?;
@@ -504,8 +506,8 @@ fn apply_layer_body<const W: usize, X: Transport>(
         dense: table.dense,
         ..GpuLayerCounters::default()
     };
-    scratch.export.recv_rows = 0;
-    scratch.export.recv_max_segment = 0;
+    scratch.export.received_rows = 0;
+    scratch.export.received_max_segment = 0;
     scratch.longest = None;
     debug_assert!(scratch.export.pending.is_none());
     let refine =
@@ -591,7 +593,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         let (total, max_segment, max_len) = scratch.sizes(sum, &table)?;
         if max_segment as usize <= record_cap
             && max_len as usize <= MAX_BUCKET_LEN
-            && scratch.export.recv_max_segment <= MAX_RECV_SEGMENT
+            && scratch.export.received_max_segment <= MAX_RECV_SEGMENT
         {
             break (total, max_segment);
         }
@@ -616,8 +618,9 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.counters.rows_received = counts.rows_received;
 
     let kernels: Arc<KernelSet> = sum.kernels.clone();
-    let (func, n_cap, smem) = fused_variant(&kernels, W, records_max as usize, table.dense);
-    scratch.counters.n_cap = n_cap as u32;
+    let (func, record_capacity, smem) =
+        fused_variant(&kernels, W, records_max as usize, table.dense);
+    scratch.counters.record_capacity = record_capacity as u32;
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
     let chunk_starts: Vec<usize> = scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
@@ -668,12 +671,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
             table: &scratch.table,
         };
         let recv = FusedRecv {
-            offsets: &scratch.export.recv_off,
-            base: &scratch.export.recv_base,
-            x: &scratch.export.recv_x,
-            z: &scratch.export.recv_z,
-            c: &scratch.export.recv_c,
-            g: &scratch.export.recv_g,
+            offsets: &scratch.export.received_offsets,
+            base: &scratch.export.received_base,
+            x: &scratch.export.received_x,
+            z: &scratch.export.received_z,
+            coefficient: &scratch.export.received_coefficient,
+            g: &scratch.export.received_fingerprint,
         };
         let written = FusedOut {
             arena: &mut arena,
@@ -698,13 +701,13 @@ fn apply_layer_body<const W: usize, X: Transport>(
             &stream,
             &kernels,
             &scratch.out_len_pos.slice(p0..p1),
-            &mut scratch.dst_off.slice_mut(0..n + 1),
+            &mut scratch.destination_offsets.slice_mut(0..n + 1),
             n,
             &mut scratch.scan,
-            &mut scratch.tot_a,
+            &mut scratch.totals,
         )?;
-        let totals = &scratch.tot_a;
-        let batch_out = xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
+        let totals = &scratch.totals;
+        let batch_out = timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
             let v = stream.clone_dtoh(totals)?;
             stream.synchronize()?;
             Ok(v[0])
@@ -726,7 +729,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
                 .arg(&arena.coeff)
                 .arg(&arena.g)
                 .arg(&scratch.segment_start)
-                .arg(&scratch.dst_off)
+                .arg(&scratch.destination_offsets)
                 .arg(&scratch.out_len_pos)
                 .arg(&scratch.bucket_at)
                 .arg(&p0u)
@@ -750,7 +753,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     out.len = running as usize;
     out.buckets = b;
     scratch.arena = Some(arena);
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.extent = sum.len();
     sum.debug_check();
     Ok(counts)

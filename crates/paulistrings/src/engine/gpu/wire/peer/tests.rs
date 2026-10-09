@@ -33,8 +33,8 @@ fn every_pair_exchanges_in_posting_order() {
     };
     let out = on_ranks(size, |wire| {
         let me = wire.rank();
-        let ctx = crate::engine::gpu::device::context(0).expect("device 0");
-        let stream = ctx.new_stream().expect("stream");
+        let context = crate::engine::gpu::device::context(0).expect("device 0");
+        let stream = context.new_stream().expect("stream");
         let peers: Vec<u32> = (0..size).filter(|&q| q != me).collect();
         let sends: Vec<_> = peers
             .iter()
@@ -71,8 +71,8 @@ fn every_pair_exchanges_in_posting_order() {
 fn an_unmatched_receive_panics_naming_both_ranks() {
     crate::require_cuda!();
     let out = on_ranks(2, |wire| {
-        let ctx = crate::engine::gpu::device::context(0).expect("device 0");
-        let stream = ctx.new_stream().expect("stream");
+        let context = crate::engine::gpu::device::context(0).expect("device 0");
+        let stream = context.new_stream().expect("stream");
         let mut dst = stream.alloc_zeros::<u64>(4).expect("alloc");
         let mut group = WireGroup::new();
         if wire.rank() == 0 {
@@ -93,8 +93,8 @@ fn an_unmatched_receive_panics_naming_both_ranks() {
 fn a_size_mismatch_panics_naming_both_ranks() {
     crate::require_cuda!();
     let out = on_ranks(2, |wire| {
-        let ctx = crate::engine::gpu::device::context(0).expect("device 0");
-        let stream = ctx.new_stream().expect("stream");
+        let context = crate::engine::gpu::device::context(0).expect("device 0");
+        let stream = context.new_stream().expect("stream");
         let src = stream.alloc_zeros::<u64>(8).expect("alloc");
         let mut dst = stream.alloc_zeros::<u64>(8).expect("alloc");
         let mut group = WireGroup::new();
@@ -120,8 +120,9 @@ fn peer_access_is_reported_for_every_pair() {
     let n = crate::engine::gpu::device_count();
     for dst in 0..n {
         for src in 0..n {
-            let ctx = |o: usize| crate::engine::gpu::device::context(o as u32).expect("visible");
-            let access = enable_peer_access(&ctx(dst), &ctx(src));
+            let context =
+                |o: usize| crate::engine::gpu::device::context(o as u32).expect("visible");
+            let access = enable_peer_access(&context(dst), &context(src));
             if dst == src {
                 assert_eq!(access, PeerAccess::SameDevice);
             } else {

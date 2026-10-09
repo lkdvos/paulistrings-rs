@@ -39,12 +39,12 @@ fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -
 /// Resident device memory is `16·W + 24` bytes per term plus `8` per bucket, doubled once a refine has run.
 /// Every fallible operation returns a [`GpuError`], device allocation failure as [`GpuError::OutOfMemory`].
 pub struct GpuSum<const W: usize> {
-    pub(super) ctx: Arc<CudaContext>,
+    pub(super) context: Arc<CudaContext>,
     pub(super) stream: Arc<CudaStream>,
     pub(super) kernels: Arc<KernelSet>,
     pub(super) hash: Gf2Hash<W>,
     pub(super) num_qubits: usize,
-    pub(super) cols: DeviceColumns<W>,
+    pub(super) columns: DeviceColumns<W>,
     /// The previous columns, kept as the next refine's or layer's target.
     pub(super) spare: Option<DeviceColumns<W>>,
     /// All `B_MAX_BITS` rows of `hash`, so a refine uploads nothing.
@@ -106,11 +106,11 @@ impl<const W: usize> GpuSum<W> {
     }
 
     fn upload(sum: &PauliSum<W>, ordinal: u32, kernels: Arc<KernelSet>) -> Result<Self, GpuError> {
-        let ctx = device::context(ordinal)?;
-        let stream = ctx.new_stream()?;
+        let context = device::context(ordinal)?;
+        let stream = context.new_stream()?;
         let hash = sum.hash().clone();
         let (n, b) = (sum.len(), hash.num_buckets());
-        let mut cols = DeviceColumns::<W>::with_capacity(&stream, ordinal, n, b)?;
+        let mut columns = DeviceColumns::<W>::with_capacity(&stream, ordinal, n, b)?;
 
         let mut x = Vec::with_capacity(n * W);
         let mut z = Vec::with_capacity(n * W);
@@ -127,14 +127,14 @@ impl<const W: usize> GpuSum<W> {
         }
         start.push(n as u32);
         if n > 0 {
-            stream.memcpy_htod(&x, &mut cols.x)?;
-            stream.memcpy_htod(&z, &mut cols.z)?;
-            stream.memcpy_htod(&c, &mut cols.coeff)?;
+            stream.memcpy_htod(&x, &mut columns.x)?;
+            stream.memcpy_htod(&z, &mut columns.z)?;
+            stream.memcpy_htod(&c, &mut columns.coeff)?;
         }
-        stream.memcpy_htod(&start, &mut cols.start)?;
-        stream.memcpy_htod(&lens, &mut cols.lens)?;
-        cols.len = n;
-        cols.buckets = b;
+        stream.memcpy_htod(&start, &mut columns.start)?;
+        stream.memcpy_htod(&lens, &mut columns.lens)?;
+        columns.len = n;
+        columns.buckets = b;
 
         let hash_rows = stream.clone_htod(&flat_rows::<W>(
             (0..B_MAX_BITS as usize).map(|i| hash.row(i)),
@@ -145,20 +145,20 @@ impl<const W: usize> GpuSum<W> {
             &stream,
             &kernels,
             &fingerprint_rows,
-            (&cols.x, &cols.z),
-            &mut cols.g,
+            (&columns.x, &columns.z),
+            &mut columns.g,
             n,
         )?;
         let scan = (ScanScratch::new(&stream)?, stream.alloc_zeros::<u32>(2)?);
         stream.synchronize()?;
-        let staging = Mutex::new(HostStaging::new(&ctx));
+        let staging = Mutex::new(HostStaging::new(&context));
         let uploaded = Self {
-            ctx,
+            context,
             stream,
             kernels,
             num_qubits: sum.num_qubits(),
             hash,
-            cols,
+            columns,
             spare: None,
             hash_rows,
             fingerprints,
@@ -174,8 +174,8 @@ impl<const W: usize> GpuSum<W> {
     /// The first call allocates page-locked staging for the whole sum, which later calls reuse.
     pub fn to_host(&self) -> Result<PauliSum<W>, GpuError> {
         let b = self.hash.num_buckets();
-        let start = self.stream.clone_dtoh(&self.cols.start.slice(0..b))?;
-        let lens = self.stream.clone_dtoh(&self.cols.lens.slice(0..b))?;
+        let start = self.stream.clone_dtoh(&self.columns.start.slice(0..b))?;
+        let lens = self.stream.clone_dtoh(&self.columns.lens.slice(0..b))?;
         self.stream.synchronize()?;
         let extent = start
             .iter()
@@ -188,15 +188,15 @@ impl<const W: usize> GpuSum<W> {
         if extent > 0 {
             let stream = &self.stream;
             stream.memcpy_dtoh(
-                &self.cols.x.slice(0..extent * W),
+                &self.columns.x.slice(0..extent * W),
                 staging.x.slice_mut(extent * W),
             )?;
             stream.memcpy_dtoh(
-                &self.cols.z.slice(0..extent * W),
+                &self.columns.z.slice(0..extent * W),
                 staging.z.slice_mut(extent * W),
             )?;
             stream.memcpy_dtoh(
-                &self.cols.coeff.slice(0..2 * extent),
+                &self.columns.coeff.slice(0..2 * extent),
                 staging.coeff.slice_mut(2 * extent),
             )?;
             stream.synchronize()?;
@@ -217,12 +217,12 @@ impl<const W: usize> GpuSum<W> {
 
     /// Total number of terms.
     pub fn len(&self) -> usize {
-        self.cols.len
+        self.columns.len
     }
 
     /// `true` if the sum has no terms.
     pub fn is_empty(&self) -> bool {
-        self.cols.len == 0
+        self.columns.len == 0
     }
 
     /// The partitioning hash, identical to the host sum's.
@@ -242,7 +242,7 @@ impl<const W: usize> GpuSum<W> {
 
     /// The device ordinal the sum lives on.
     pub fn device(&self) -> u32 {
-        self.ctx.ordinal() as u32
+        self.context.ordinal() as u32
     }
 
     /// Double the bucket count, as [`PauliSum::refine`]: bucket `β` splits into `β` and `β + B`, each inheriting `β`'s order.
@@ -272,7 +272,7 @@ impl<const W: usize> GpuSum<W> {
         let bits_old = self.hash.bits();
         let b_old = self.hash.num_buckets();
         let b_new = b_old << delta;
-        let n = self.cols.len;
+        let n = self.columns.len;
         let mut out = match self.spare.take() {
             Some(spare) => spare,
             None => DeviceColumns::with_capacity(&self.stream, self.device(), n, b_new)?,
@@ -281,15 +281,15 @@ impl<const W: usize> GpuSum<W> {
         out.buckets = 0;
         out.reserve(n, b_new)?;
         let (b_old32, bits32, delta32) = (b_old as u32, u32::from(bits_old), u32::from(delta));
-        let (kernels, stream, cols) = (&self.kernels, &self.stream, &self.cols);
+        let (kernels, stream, columns) = (&self.kernels, &self.stream, &self.columns);
         // SAFETY: arguments match `k_refine_count` in refine.cu; `out.lens` holds `b_new` entries.
         unsafe {
             stream
                 .launch_builder(&kernels.refine_count)
-                .arg(&cols.x)
-                .arg(&cols.z)
-                .arg(&cols.start)
-                .arg(&cols.lens)
+                .arg(&columns.x)
+                .arg(&columns.z)
+                .arg(&columns.start)
+                .arg(&columns.lens)
                 .arg(&self.hash_rows)
                 .arg(&b_old32)
                 .arg(&bits32)
@@ -311,12 +311,12 @@ impl<const W: usize> GpuSum<W> {
         unsafe {
             stream
                 .launch_builder(&kernels.refine_scatter)
-                .arg(&cols.x)
-                .arg(&cols.z)
-                .arg(&cols.coeff)
-                .arg(&cols.g)
-                .arg(&cols.start)
-                .arg(&cols.lens)
+                .arg(&columns.x)
+                .arg(&columns.z)
+                .arg(&columns.coeff)
+                .arg(&columns.g)
+                .arg(&columns.start)
+                .arg(&columns.lens)
                 .arg(&self.hash_rows)
                 .arg(&b_old32)
                 .arg(&bits32)
@@ -330,7 +330,7 @@ impl<const W: usize> GpuSum<W> {
         }
         out.len = n;
         out.buckets = b_new;
-        self.spare = Some(std::mem::replace(&mut self.cols, out));
+        self.spare = Some(std::mem::replace(&mut self.columns, out));
         for _ in 0..delta {
             self.hash.refine();
         }
@@ -345,10 +345,10 @@ impl<const W: usize> GpuSum<W> {
 
     fn check_invariants(&self) -> Result<Result<(), String>, GpuError> {
         let b = self.hash.num_buckets();
-        if self.cols.buckets != b {
+        if self.columns.buckets != b {
             return Ok(Err(format!(
                 "GpuSum: {} bucket entries for a hash with {b} buckets",
-                self.cols.buckets
+                self.columns.buckets
             )));
         }
         let stream = &self.stream;
@@ -358,16 +358,16 @@ impl<const W: usize> GpuSum<W> {
             b as u32,
             self.num_qubits as u32,
         );
-        let cols = &self.cols;
+        let columns = &self.columns;
         // SAFETY: arguments match `k_check_invariants` in invariants.cu.
         unsafe {
             stream
                 .launch_builder(&self.kernels.check_invariants)
-                .arg(&cols.x)
-                .arg(&cols.z)
-                .arg(&cols.g)
-                .arg(&cols.start)
-                .arg(&cols.lens)
+                .arg(&columns.x)
+                .arg(&columns.z)
+                .arg(&columns.g)
+                .arg(&columns.start)
+                .arg(&columns.lens)
                 .arg(&self.hash_rows)
                 .arg(&bits32)
                 .arg(&b32)
@@ -377,8 +377,8 @@ impl<const W: usize> GpuSum<W> {
                 .launch(warp_per_bucket(b))?;
         }
         let bad = stream.clone_dtoh(&bad)?;
-        let start = stream.clone_dtoh(&cols.start.slice(0..b))?;
-        let lens = stream.clone_dtoh(&cols.lens.slice(0..b))?;
+        let start = stream.clone_dtoh(&columns.start.slice(0..b))?;
+        let lens = stream.clone_dtoh(&columns.lens.slice(0..b))?;
         stream.synchronize()?;
         if bad[..4].iter().any(|&v| v != 0) {
             return Ok(Err(format!(
@@ -387,10 +387,10 @@ impl<const W: usize> GpuSum<W> {
             )));
         }
         let total: usize = lens.iter().map(|&l| l as usize).sum();
-        if total != cols.len {
+        if total != columns.len {
             return Ok(Err(format!(
                 "GpuSum: bucket lengths sum to {total}, cached len is {}",
-                cols.len
+                columns.len
             )));
         }
         let mut spans: Vec<(usize, usize, usize)> = (0..b)
@@ -407,11 +407,11 @@ impl<const W: usize> GpuSum<W> {
             }
         }
         if let Some(&(first, len, i)) = spans.last() {
-            if first + len > cols.term_capacity() {
+            if first + len > columns.term_capacity() {
                 return Ok(Err(format!(
                     "GpuSum: bucket {i} ends at {} beyond capacity {}",
                     first + len,
-                    cols.term_capacity()
+                    columns.term_capacity()
                 )));
             }
         }
@@ -447,16 +447,16 @@ fn gather_sorted<const W: usize>(
                 (key(staged_x, r - 1), key(staged_z, r - 1)) < (key(staged_x, r), key(staged_z, r))
             });
             let build = |rows: &mut dyn Iterator<Item = usize>| {
-                let mut cols = BucketColumns::<W>::default();
-                cols.x.reserve_exact(len);
-                cols.z.reserve_exact(len);
-                cols.coeff.reserve_exact(len);
+                let mut columns = BucketColumns::<W>::default();
+                columns.x.reserve_exact(len);
+                columns.z.reserve_exact(len);
+                columns.coeff.reserve_exact(len);
                 for r in rows {
-                    cols.x.push(key(staged_x, r));
-                    cols.z.push(key(staged_z, r));
-                    cols.coeff.push(coeff(r));
+                    columns.x.push(key(staged_x, r));
+                    columns.z.push(key(staged_z, r));
+                    columns.coeff.push(coeff(r));
                 }
-                cols
+                columns
             };
             if ascending {
                 build(&mut (first..first + len))

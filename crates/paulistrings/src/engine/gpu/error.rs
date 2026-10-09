@@ -14,7 +14,7 @@ pub enum GpuError {
     /// NVRTC compilation failed.
     Compile {
         /// The width the compilation was for.
-        w: usize,
+        width: usize,
         /// NVRTC's compile log.
         log: String,
     },
@@ -59,7 +59,9 @@ impl fmt::Display for GpuError {
             GpuError::NoDevice => write!(f, "no CUDA device is visible to this process"),
             GpuError::LibraryMissing(lib) => write!(f, "{lib} could not be loaded"),
             GpuError::Driver(e) => write!(f, "CUDA driver error: {e}"),
-            GpuError::Compile { w, log } => write!(f, "NVRTC compilation failed at W={w}: {log}"),
+            GpuError::Compile { width, log } => {
+                write!(f, "NVRTC compilation failed at W={width}: {log}")
+            },
             GpuError::OutOfMemory { device, bytes } => {
                 write!(f, "device {device} out of memory (requested {bytes} bytes)")
             }

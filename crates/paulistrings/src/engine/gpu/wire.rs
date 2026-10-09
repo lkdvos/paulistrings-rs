@@ -194,7 +194,7 @@ pub(crate) struct Skeleton {
     pub(crate) offsets: Vec<u32>,
 }
 
-/// One partner's block skeletons in ascending remote-delta index, the host half of an exchange; not a column-less `PartnerPayload`, whose `finish_recv` holds a header to the columns that arrived with it.
+/// One partner's block skeletons in ascending remote-delta index, the host half of an exchange; not a column-less `PartnerPayload`, whose `finish_receive` holds a header to the columns that arrived with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockSkeletons<const W: usize> {
     pub(crate) blocks: Vec<Skeleton>,
@@ -218,7 +218,7 @@ impl<const W: usize> BlockSkeletons<W> {
             header: BlockHeader {
                 num_buckets: b as u32,
                 rows: 0,
-                w: W as u32,
+                width: W as u32,
                 entry,
             },
             offsets: vec![0; b + 1],
@@ -236,7 +236,7 @@ impl<const W: usize> Payload for BlockSkeletons<W> {
         parts
     }
 
-    fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
         assert_eq!(
             lens.len() % 2,
             0,
@@ -270,13 +270,13 @@ impl<const W: usize> Payload for BlockSkeletons<W> {
     }
 
     /// The receive sizes itself from these offsets, so each must be a CSR index that ends at the header's row count.
-    fn finish_recv(&mut self) {
+    fn finish_receive(&mut self) {
         for skeleton in &self.blocks {
             let header = &skeleton.header;
             assert_eq!(
-                header.w as usize, W,
+                header.width as usize, W,
                 "block skeletons: a block encoded at W={} decoded at W={W}",
-                header.w
+                header.width
             );
             assert_eq!(
                 skeleton.offsets.len(),
@@ -318,19 +318,19 @@ impl WireColumn {
     }
 }
 
-/// One transfer of an exchange: rows `rows.0..rows.1` of `column` of the block remote delta `k` carries, in chunk `chunk`, to or from `peer`.
+/// One transfer of an exchange: rows `rows.0..rows.1` of `column` of the block remote delta `delta` carries, in chunk `chunk`, to or from `peer`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ScheduledOp {
     pub(crate) kind: WireOpKind,
     pub(crate) peer: u32,
     pub(crate) chunk: usize,
     pub(crate) column: WireColumn,
-    pub(crate) k: usize,
+    pub(crate) delta: usize,
     pub(crate) rows: (usize, usize),
 }
 
 /// The transfers of one exchange: `partners[k]`, `own[k]` and `recv[k]` are remote delta `k`'s partner and the offsets of the blocks sent and received for it, `k` naming one block pair on both ends.
-/// Per peer, sends and receives both run chunk, column, delta, the order a wire matches in; receives are column-major across peers so each column's tile its `recv_*` column, and an empty piece is posted by neither end.
+/// Per peer, sends and receives both run chunk, column, delta, the order a wire matches in; receives are column-major across peers so each column's tile its `received_*` column, and an empty piece is posted by neither end.
 pub(crate) fn schedule(
     partners: &[u32],
     own: &[&[u32]],
@@ -366,7 +366,7 @@ pub(crate) fn schedule(
                             peer,
                             chunk,
                             column,
-                            k,
+                            delta: k,
                             rows,
                         });
                     }
@@ -384,7 +384,7 @@ pub(crate) fn schedule(
                         peer,
                         chunk,
                         column,
-                        k,
+                        delta: k,
                         rows,
                     });
                 }

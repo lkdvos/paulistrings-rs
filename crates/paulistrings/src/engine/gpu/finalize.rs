@@ -36,10 +36,10 @@ fn octave_histogram_device<const W: usize>(
     // SAFETY: arguments match `k_octave_hist` in truncate.cu; `hist` holds `1 + APPROX_BINS` entries.
     unsafe {
         stream
-            .launch_builder(&sum.kernels.octave_hist)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .launch_builder(&sum.kernels.octave_histogram)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(&b32)
             .arg(&mut scratch.hist)
             .launch(whole_sum_launch(b))?;
@@ -62,8 +62,8 @@ fn retain_at_or_above_device<const W: usize>(
         EdgeDecision::Clear => {
             let b = sum.hash.num_buckets();
             sum.stream
-                .memset_zeros(&mut sum.cols.lens.slice_mut(0..b))?;
-            sum.cols.len = 0;
+                .memset_zeros(&mut sum.columns.lens.slice_mut(0..b))?;
+            sum.columns.len = 0;
             sum.debug_check();
             Ok(())
         }
@@ -113,22 +113,22 @@ fn radix_select_bits<const W: usize>(
         } else {
             u64::MAX << (64 - 8 * pass)
         };
-        stream.memset_zeros(&mut scratch.radix_hist)?;
-        // SAFETY: arguments match `k_radix_hist` in truncate.cu; `radix_hist` holds 256 entries.
+        stream.memset_zeros(&mut scratch.radix_histogram)?;
+        // SAFETY: arguments match `k_radix_hist` in truncate.cu; `radix_histogram` holds 256 entries.
         unsafe {
             stream
-                .launch_builder(&sum.kernels.radix_hist)
-                .arg(&sum.cols.coeff)
-                .arg(&sum.cols.start)
-                .arg(&sum.cols.lens)
+                .launch_builder(&sum.kernels.radix_histogram)
+                .arg(&sum.columns.coeff)
+                .arg(&sum.columns.start)
+                .arg(&sum.columns.lens)
                 .arg(&b)
                 .arg(&fixed_mask)
                 .arg(&prefix)
                 .arg(&shift)
-                .arg(&mut scratch.radix_hist)
+                .arg(&mut scratch.radix_histogram)
                 .launch(whole_sum_launch(b as usize))?;
         }
-        let hist = stream.clone_dtoh(&scratch.radix_hist)?;
+        let hist = stream.clone_dtoh(&scratch.radix_histogram)?;
         stream.synchronize()?;
         let mut cumulative = 0u64;
         let mut chosen: Option<u32> = None;
@@ -155,9 +155,9 @@ fn radix_select_bits<const W: usize>(
             unsafe {
                 stream
                     .launch_builder(&sum.kernels.radix_extract)
-                    .arg(&sum.cols.coeff)
-                    .arg(&sum.cols.start)
-                    .arg(&sum.cols.lens)
+                    .arg(&sum.columns.coeff)
+                    .arg(&sum.columns.start)
+                    .arg(&sum.columns.lens)
                     .arg(&b)
                     .arg(&mask)
                     .arg(&prefix)
@@ -191,7 +191,7 @@ fn retain_device<const W: usize>(
     out.len = 0;
     out.buckets = 0;
     out.reserve(extent, b)?;
-    grow(&stream, &mut scratch.dst_off, b + 1, ordinal)?;
+    grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
     let b32 = b as u32;
     let keep_tied_u32 = u32::from(keep_tied);
     let started = scratch.event(sum)?;
@@ -199,12 +199,12 @@ fn retain_device<const W: usize>(
     unsafe {
         stream
             .launch_builder(&kernels.retain)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.g)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(&b32)
             .arg(&threshold)
             .arg(&keep_tied_u32)
@@ -220,17 +220,17 @@ fn retain_device<const W: usize>(
         &stream,
         &kernels,
         &out.lens.slice(0..b),
-        &mut scratch.dst_off.slice_mut(0..b + 1),
+        &mut scratch.destination_offsets.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
-        &mut scratch.tot_a,
+        &mut scratch.totals,
     )?;
     scratch.lap(sum, started, |m| &mut m.truncate)?;
-    let total = stream.clone_dtoh(&scratch.tot_a)?[0];
+    let total = stream.clone_dtoh(&scratch.totals)?[0];
     stream.synchronize()?;
     out.len = total as usize;
     out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     sum.debug_check();
     Ok(())
 }
@@ -257,9 +257,9 @@ pub(crate) fn top_n_device<const W: usize>(
     unsafe {
         stream
             .launch_builder(&sum.kernels.topn_counts)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(&b)
             .arg(&threshold)
             .arg(&mut scratch.radix_out)

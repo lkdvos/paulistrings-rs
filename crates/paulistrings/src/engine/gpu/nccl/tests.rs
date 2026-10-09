@@ -136,12 +136,12 @@ fn one_rank() -> Option<OneRank> {
         return None;
     }
     let guard = REAL_NCCL.lock().unwrap_or_else(PoisonError::into_inner);
-    let ctx = super::super::device::context(0).expect("a visible device");
+    let context = super::super::device::context(0).expect("a visible device");
     let t = InProcessTransport::group(1).pop().expect("one rank");
-    let comm = NcclComm::init(&t, &ctx)
+    let comm = NcclComm::init(&t, &context)
         .unwrap_or_else(|e| panic!("a one-rank communicator fails to initialize: {e}"));
     comm.set_timeout(Duration::from_secs(60));
-    let stream = ctx.new_stream().expect("a stream");
+    let stream = context.new_stream().expect("a stream");
     Some((guard, comm, stream))
 }
 
@@ -238,7 +238,7 @@ fn interleaved_self_sends_match_in_posting_order() {
     assert!(wire.comm().is_healthy());
 }
 
-/// Every send first, then every receive carved from one concatenated column, as the exchange's `recv_*` layout is: matching is per peer in posting order across the whole group.
+/// Every send first, then every receive carved from one concatenated column, as the exchange's `received_*` layout is: matching is per peer in posting order across the whole group.
 #[test]
 fn self_sends_land_in_one_column_in_posting_order() {
     let Some((_nccl, comm, stream)) = one_rank() else {

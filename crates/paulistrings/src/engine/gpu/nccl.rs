@@ -67,7 +67,7 @@ unsafe impl Send for Raw {}
 /// One rank's non-blocking NCCL communicator, every wait bounded; a failed or timed-out call aborts it and later calls fail without touching NCCL.
 pub(crate) struct NcclComm {
     raw: Mutex<Raw>,
-    ctx: Arc<CudaContext>,
+    context: Arc<CudaContext>,
     rank: u32,
     size: u32,
 }
@@ -76,11 +76,11 @@ pub(crate) struct NcclComm {
 const WARM_UP_BYTES: usize = 8;
 
 impl NcclComm {
-    /// This rank's non-blocking communicator over `collectives`'s group on `ctx`'s device, every wait bounded by [`wire_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
+    /// This rank's non-blocking communicator over `collectives`'s group on `context`'s device, every wait bounded by [`wire_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
     /// A setup that fails after it aborts and fails on this rank alone, so the caller agrees the outcome before [`warm_up`](Self::warm_up).
     pub(crate) fn init(
         collectives: &dyn Collectives,
-        ctx: &Arc<CudaContext>,
+        context: &Arc<CudaContext>,
     ) -> Result<Self, GpuError> {
         let timeout = wire_timeout();
         let (rank, size) = (collectives.rank(), collectives.size());
@@ -103,7 +103,7 @@ impl NcclComm {
             ));
         }
         let id = unpack_id(&buffer[..ID_WORDS]);
-        ctx.bind_to_thread()?;
+        context.bind_to_thread()?;
         let mut config = default_config();
         config.blocking = 0;
         let mut comm: sys::ncclComm_t = std::ptr::null_mut();
@@ -120,7 +120,7 @@ impl NcclComm {
                 #[cfg(test)]
                 force_timeout: false,
             }),
-            ctx: ctx.clone(),
+            context: context.clone(),
             rank,
             size,
         };
@@ -166,7 +166,7 @@ impl NcclComm {
     /// Abort the communicator if it is still live; idempotent, and returns at once.
     pub(crate) fn abort(&self) {
         let mut raw = self.lock();
-        Self::abort_locked(&mut raw, self.rank, &self.ctx);
+        Self::abort_locked(&mut raw, self.rank, &self.context);
     }
 
     fn lock(&self) -> MutexGuard<'_, Raw> {
@@ -174,14 +174,14 @@ impl NcclComm {
     }
 
     /// Mark the communicator dead and abort it on a detached thread.
-    fn abort_locked(raw: &mut Raw, rank: u32, ctx: &Arc<CudaContext>) {
+    fn abort_locked(raw: &mut Raw, rank: u32, context: &Arc<CudaContext>) {
         if raw.aborted {
             return;
         }
         // Detached: `ncclCommAbort` blocks until every stream on the device drains, so a stall that is not NCCL's own would hold the caller past its timeout.
         raw.aborted = true;
         let comm = CommPtr(std::mem::replace(&mut raw.comm, std::ptr::null_mut()));
-        let owned = ctx.clone();
+        let owned = context.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("nccl-abort-{rank}"))
             .spawn(move || abort_now(comm, rank, &owned));
@@ -194,7 +194,7 @@ impl NcclComm {
                 log::warn!(
                     "gpu: no thread for the NCCL abort on rank {rank} ({e}); aborting inline"
                 );
-                abort_now(comm, rank, ctx);
+                abort_now(comm, rank, context);
             }
         }
     }
@@ -222,7 +222,7 @@ impl NcclComm {
             Ok(_) => Ok(false),
             Err(e) => {
                 let detail = self.last_error(raw);
-                Self::abort_locked(raw, self.rank, &self.ctx);
+                Self::abort_locked(raw, self.rank, &self.context);
                 Err(nccl_error(e, format!("{what}{detail}")))
             }
         }
@@ -262,7 +262,7 @@ impl NcclComm {
         })? {
             return Ok(());
         }
-        Self::abort_locked(raw, self.rank, &self.ctx);
+        Self::abort_locked(raw, self.rank, &self.context);
         Err(GpuError::Timeout { what: waiting_on })
     }
 
@@ -271,7 +271,7 @@ impl NcclComm {
         Self::usable(&raw, "ncclGroupStart")?;
         if let Some(op) = ops
             .iter()
-            .find(|op| op.peer() >= self.size || op.stream().context() != &self.ctx)
+            .find(|op| op.peer() >= self.size || op.stream().context() != &self.context)
         {
             return Err(GpuError::Nccl {
                 code: sys::ncclResult_t::ncclInvalidArgument as i32,
@@ -280,11 +280,11 @@ impl NcclComm {
                     op.peer(),
                     self.size,
                     op.stream().context().ordinal(),
-                    self.ctx.ordinal()
+                    self.context.ordinal()
                 ),
             });
         }
-        self.ctx.bind_to_thread()?;
+        self.context.bind_to_thread()?;
         nccl::group_start().map_err(|e| nccl_error(e, "ncclGroupStart"))?;
         let mut first: Option<GpuError> = None;
         for op in ops {
@@ -307,12 +307,12 @@ impl NcclComm {
         // A group must be closed even after a failed post, or this thread's next NCCL call joins it.
         let ended = nccl::group_end();
         if let Some(e) = first {
-            Self::abort_locked(&mut raw, self.rank, &self.ctx);
+            Self::abort_locked(&mut raw, self.rank, &self.context);
             return Err(e);
         }
         if let Err(e) = ended {
             let detail = self.last_error(&raw);
-            Self::abort_locked(&mut raw, self.rank, &self.ctx);
+            Self::abort_locked(&mut raw, self.rank, &self.context);
             return Err(nccl_error(e, format!("ncclGroupEnd{detail}")));
         }
         // A non-blocking communicator may still be enqueueing the group's kernels; until it is done, later work on the streams would run ahead of them.
@@ -321,7 +321,7 @@ impl NcclComm {
 
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
         Self::usable(&self.lock(), "a wait")?;
-        let done = self.ctx.new_event(None)?;
+        let done = self.context.new_event(None)?;
         done.record(stream)?;
         let mut raw = self.lock();
         let timeout = raw.timeout;
@@ -336,7 +336,7 @@ impl NcclComm {
         if ready {
             return Ok(());
         }
-        Self::abort_locked(&mut raw, self.rank, &self.ctx);
+        Self::abort_locked(&mut raw, self.rank, &self.context);
         Err(GpuError::Timeout {
             what: "an NCCL group to complete",
         })
@@ -362,13 +362,13 @@ impl Drop for NcclComm {
 impl NcclComm {
     fn shut_down(&mut self) {
         let rank = self.rank;
-        let bound = self.ctx.bind_to_thread().is_ok();
+        let bound = self.context.bind_to_thread().is_ok();
         let raw = self.raw.get_mut().unwrap_or_else(PoisonError::into_inner);
         if raw.aborted {
             return;
         }
         if std::thread::panicking() || !bound {
-            Self::abort_locked(raw, rank, &self.ctx);
+            Self::abort_locked(raw, rank, &self.context);
             return;
         }
         let comm = raw.comm;
@@ -389,7 +389,7 @@ impl NcclComm {
             .unwrap_or(false);
         if !settled {
             log::warn!("gpu: NCCL finalize failed or timed out on rank {rank}; aborting");
-            Self::abort_locked(raw, rank, &self.ctx);
+            Self::abort_locked(raw, rank, &self.context);
             return;
         }
         raw.aborted = true;
@@ -443,12 +443,12 @@ struct CommPtr(sys::ncclComm_t);
 // SAFETY: the handle moves to the one thread that aborts it, after `Raw::aborted` has taken every other path off it.
 unsafe impl Send for CommPtr {}
 
-fn abort_now(comm: CommPtr, rank: u32, ctx: &Arc<CudaContext>) {
+fn abort_now(comm: CommPtr, rank: u32, context: &Arc<CudaContext>) {
     let start = Instant::now();
-    if let Err(e) = ctx.bind_to_thread() {
+    if let Err(e) = context.bind_to_thread() {
         log::warn!(
             "gpu: binding device {} for the NCCL abort on rank {rank}: {e:?}",
-            ctx.ordinal()
+            context.ordinal()
         );
     }
     // SAFETY: `comm` is a live communicator no other thread touches again.
@@ -573,8 +573,8 @@ pub(crate) fn agree_start(
 }
 
 /// A device's UUID as the two words [`agree_start`] compares.
-pub(crate) fn device_uuid(ctx: &CudaContext) -> Result<[u64; 2], GpuError> {
-    let id = ctx.uuid()?;
+pub(crate) fn device_uuid(context: &CudaContext) -> Result<[u64; 2], GpuError> {
+    let id = context.uuid()?;
     let bytes: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
     Ok([
         u64::from_ne_bytes(bytes[..8].try_into().expect("eight bytes")),

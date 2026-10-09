@@ -405,7 +405,7 @@ fn a_small_shared_memory_limit_still_agrees() {
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let limit = ["-DTEST_SHARED_LIMIT=40000".to_string()];
     let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &limit);
-    assert!(c.n_cap <= 2048 && c.records_max <= 2048, "{c:?}");
+    assert!(c.record_capacity <= 2048 && c.records_max <= 2048, "{c:?}");
     assert_terms_close(&got, &want, TOL, "small shared limit");
 }
 

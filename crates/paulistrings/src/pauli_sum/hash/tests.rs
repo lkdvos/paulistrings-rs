@@ -572,12 +572,12 @@ fn order_broken_by_some_delta<const W: usize>(
             buckets[h.bucket_of_pauli(&p) as usize].push((p.x, p.z));
         }
     }
-    for cols in buckets.iter_mut() {
-        cols.sort_unstable();
-        cols.dedup();
+    for columns in buckets.iter_mut() {
+        columns.sort_unstable();
+        columns.dedup();
         for combo in 1..(1usize << gens.len()) {
             let d = local(combo);
-            let translated: Vec<([u64; W], [u64; W])> = cols
+            let translated: Vec<([u64; W], [u64; W])> = columns
                 .iter()
                 .map(|(x, z)| {
                     let mut kx = *x;

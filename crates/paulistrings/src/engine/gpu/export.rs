@@ -6,7 +6,7 @@ use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
 use super::columns::grow;
 use super::error::GpuError;
-use super::layer::{xfer, LayerScratch, TableBuffers, Xfer};
+use super::layer::{timed_transfer, LayerScratch, TableBuffers, Transfer};
 use super::module::{thread_per, warp_per_bucket, MAX_BUCKET_LEN};
 use super::payload::DevicePayload;
 use super::prepared::DevicePrepared;
@@ -28,18 +28,18 @@ pub(crate) use receive::{finish_receive, receive_chunk};
 pub(crate) struct DeviceExport<const W: usize> {
     counts: CudaSlice<u32>,
     offsets: CudaSlice<u32>,
-    /// Received blocks, concatenated: `recv_off` is `K × (B + 1)` CSR offsets, `recv_base[k]` block `k`'s row base.
-    pub(crate) recv_off: CudaSlice<u32>,
-    pub(crate) recv_base: CudaSlice<u32>,
-    pub(crate) recv_x: CudaSlice<u64>,
-    pub(crate) recv_z: CudaSlice<u64>,
-    pub(crate) recv_c: CudaSlice<f64>,
-    pub(crate) recv_g: CudaSlice<u64>,
+    /// Received blocks, concatenated: `received_offsets` is `K × (B + 1)` CSR offsets, `received_base[k]` block `k`'s row base.
+    pub(crate) received_offsets: CudaSlice<u32>,
+    pub(crate) received_base: CudaSlice<u32>,
+    pub(crate) received_x: CudaSlice<u64>,
+    pub(crate) received_z: CudaSlice<u64>,
+    pub(crate) received_coefficient: CudaSlice<f64>,
+    pub(crate) received_fingerprint: CudaSlice<u64>,
     offsets_host: Vec<u32>,
     base_host: Vec<u32>,
     /// The longest received segment of the current layer; must fit the tag's offset field.
-    pub(crate) recv_max_segment: usize,
-    pub(crate) recv_rows: usize,
+    pub(crate) received_max_segment: usize,
+    pub(crate) received_rows: usize,
     premerge: PremergeScratch,
     stream: Arc<CudaStream>,
     /// The group's device wire, `Some` in every group of more than one partition.
@@ -51,7 +51,7 @@ pub(crate) struct DeviceExport<const W: usize> {
     /// Test hook: the next remote layer's receive growth fails as out of memory.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_recv_growth: bool,
-    /// The current layer's received rows still to move into `recv_*`.
+    /// The current layer's received rows still to move into `received_*`.
     pub(crate) pending: Option<PendingRecv<W>>,
     /// Test hook: the next chunked receive fails as out of memory after moving this chunk.
     #[cfg(any(test, feature = "test-utils"))]
@@ -77,16 +77,16 @@ impl<const W: usize> DeviceExport<W> {
         Ok(Self {
             counts: stream.alloc_zeros(1)?,
             offsets: stream.alloc_zeros(2)?,
-            recv_off: stream.alloc_zeros(2)?,
-            recv_base: stream.alloc_zeros(16)?,
-            recv_x: stream.alloc_zeros(W)?,
-            recv_z: stream.alloc_zeros(W)?,
-            recv_c: stream.alloc_zeros(2)?,
-            recv_g: stream.alloc_zeros(1)?,
+            received_offsets: stream.alloc_zeros(2)?,
+            received_base: stream.alloc_zeros(16)?,
+            received_x: stream.alloc_zeros(W)?,
+            received_z: stream.alloc_zeros(W)?,
+            received_coefficient: stream.alloc_zeros(2)?,
+            received_fingerprint: stream.alloc_zeros(1)?,
             offsets_host: Vec::new(),
             base_host: Vec::new(),
-            recv_max_segment: 0,
-            recv_rows: 0,
+            received_max_segment: 0,
+            received_rows: 0,
             premerge: PremergeScratch::new(stream, W)?,
             stream: stream.clone(),
             wire: None,
@@ -168,7 +168,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let b = sum.hash.num_buckets();
     let cap_rows = recv_cap_rows::<W>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
-    let xfer_ns = &mut scratch.xfer_ns;
+    let transfer_ns = &mut scratch.transfer_ns;
     #[cfg(feature = "phase-timing")]
     let t_exchange = std::time::Instant::now();
     let skeletons: Vec<Option<BlockSkeletons<W>>> = send
@@ -184,7 +184,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let recv = transport.exchange(skeletons, &mut export.skeletons);
     let (rows, ops) = {
         let blocks = paired_blocks(plan, &recv);
-        let ready = stage_receive(sum, export, &blocks, cap_rows, xfer_ns)
+        let ready = stage_receive(sum, export, &blocks, cap_rows, transfer_ns)
             .and_then(|log2| wire_ready(export).map(|()| log2));
         match vote(transport, ready.as_ref().ok().copied()) {
             Some(log2) => {
@@ -202,9 +202,10 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
                             .as_slice()
                     })
                     .collect();
-                let recv_off: Vec<&[u32]> = blocks.iter().map(|b| b.offsets.as_slice()).collect();
-                let ops = schedule(&partners, &own_off, &recv_off, &map);
-                (Ok(export.recv_rows as u64), Some((map, own, ops)))
+                let received_offsets: Vec<&[u32]> =
+                    blocks.iter().map(|b| b.offsets.as_slice()).collect();
+                let ops = schedule(&partners, &own_off, &received_offsets, &map);
+                (Ok(export.received_rows as u64), Some((map, own, ops)))
             }
             None => (ready.and_then(|_| discard_received(export)), None),
         }
@@ -313,12 +314,12 @@ fn export_offsets<const W: usize>(
         &mut scratch.export.offsets.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
-        &mut scratch.tot_a,
+        &mut scratch.totals,
     )?;
     offsets.clear();
     offsets.resize(b + 1, 0);
     let device_offsets = &scratch.export.offsets;
-    xfer(stream, &mut scratch.xfer_ns, Xfer::D2h, || {
+    timed_transfer(stream, &mut scratch.transfer_ns, Transfer::D2h, || {
         stream.memcpy_dtoh(&device_offsets.slice(0..b + 1), &mut offsets[..])?;
         stream.synchronize()?;
         Ok(())
@@ -352,11 +353,11 @@ fn export_fill<const W: usize>(
     unsafe {
         stream
             .launch_builder(&sum.kernels.export_fill)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(context.bucket_at)
             .arg(&table.mode)
             .arg(&e32)
@@ -445,7 +446,7 @@ fn export_blocks_device<const W: usize>(
                 e,
                 &mut block.x,
                 &mut block.z,
-                &mut block.c,
+                &mut block.coefficient,
             )?;
         }
         scratch.lap(sum, t0, |m| &mut m.export)?;
@@ -462,7 +463,7 @@ fn export_blocks_device<const W: usize>(
     Ok((send, counts))
 }
 
-/// Device bytes one received row holds in `recv_*`: both key columns, the coefficient and the fingerprint.
+/// Device bytes one received row holds in `received_*`: both key columns, the coefficient and the fingerprint.
 pub(crate) const fn recv_row_bytes<const W: usize>() -> usize {
     (2 * W + 3) * std::mem::size_of::<u64>()
 }

@@ -51,7 +51,7 @@ pub struct DeviceInfo {
     /// `(major, minor)` compute capability.
     pub compute_capability: (u32, u32),
     /// Total device memory in bytes.
-    pub total_mem: u64,
+    pub total_memory: u64,
 }
 
 /// [`DeviceInfo`] for every visible device, or [`GpuError::NoDevice`] rather than an empty `Vec`.
@@ -65,13 +65,13 @@ pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
     }
     let mut out = Vec::with_capacity(count as usize);
     for ordinal in 0..count as u32 {
-        let ctx = context(ordinal)?;
-        let (major, minor) = ctx.compute_capability().map_err(GpuError::from)?;
+        let context = context(ordinal)?;
+        let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
         out.push(DeviceInfo {
             ordinal,
-            name: ctx.name().map_err(GpuError::from)?,
+            name: context.name().map_err(GpuError::from)?,
             compute_capability: (major as u32, minor as u32),
-            total_mem: ctx.total_mem().map_err(GpuError::from)? as u64,
+            total_memory: context.total_mem().map_err(GpuError::from)? as u64,
         });
     }
     Ok(out)

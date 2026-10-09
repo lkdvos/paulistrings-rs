@@ -15,7 +15,7 @@ pub(crate) struct DeviceBlock<const W: usize> {
     pub(crate) offsets: Vec<u32>,
     pub(crate) x: CudaSlice<u64>,
     pub(crate) z: CudaSlice<u64>,
-    pub(crate) c: CudaSlice<f64>,
+    pub(crate) coefficient: CudaSlice<f64>,
 }
 
 impl<const W: usize> DeviceBlock<W> {
@@ -24,13 +24,13 @@ impl<const W: usize> DeviceBlock<W> {
             header: BlockHeader {
                 num_buckets: 0,
                 rows: 0,
-                w: W as u32,
+                width: W as u32,
                 entry: 0,
             },
             offsets: Vec::new(),
             x: stream.alloc_zeros(W)?,
             z: stream.alloc_zeros(W)?,
-            c: stream.alloc_zeros(2)?,
+            coefficient: stream.alloc_zeros(2)?,
         })
     }
 
@@ -40,7 +40,7 @@ impl<const W: usize> DeviceBlock<W> {
         self.header = BlockHeader {
             num_buckets: b as u32,
             rows: self.offsets[b],
-            w: W as u32,
+            width: W as u32,
             entry,
         };
     }
@@ -54,7 +54,7 @@ impl<const W: usize> DeviceBlock<W> {
     ) -> Result<(), GpuError> {
         grow(stream, &mut self.x, rows * W, ordinal)?;
         grow(stream, &mut self.z, rows * W, ordinal)?;
-        grow(stream, &mut self.c, 2 * rows, ordinal)
+        grow(stream, &mut self.coefficient, 2 * rows, ordinal)
     }
 
     /// Room for `need` rows, keeping the first `live` rows of every column; grows geometrically.
@@ -65,7 +65,7 @@ impl<const W: usize> DeviceBlock<W> {
         need: usize,
         ordinal: u32,
     ) -> Result<(), GpuError> {
-        let capacity = self.c.len() / 2;
+        let capacity = self.coefficient.len() / 2;
         if need <= capacity {
             return Ok(());
         }
@@ -73,7 +73,14 @@ impl<const W: usize> DeviceBlock<W> {
         let bytes = (rows * (2 * W + 2) * 8) as u64;
         grow_keep(stream, &mut self.x, rows * W, live * W, ordinal, bytes)?;
         grow_keep(stream, &mut self.z, rows * W, live * W, ordinal, bytes)?;
-        grow_keep(stream, &mut self.c, 2 * rows, 2 * live, ordinal, bytes)
+        grow_keep(
+            stream,
+            &mut self.coefficient,
+            2 * rows,
+            2 * live,
+            ordinal,
+            bytes,
+        )
     }
 
     pub(crate) fn rows(&self) -> usize {

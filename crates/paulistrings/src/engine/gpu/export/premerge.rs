@@ -7,8 +7,8 @@ use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::layer::{
-    arena_batches, fused_variant, launch_fused, xfer, FusedOut, FusedRecv, FusedTable,
-    LayerScratch, TableBuffers, Xfer,
+    arena_batches, fused_variant, launch_fused, timed_transfer, FusedOut, FusedRecv, FusedTable,
+    LayerScratch, TableBuffers, Transfer,
 };
 use crate::engine::gpu::module::{thread_per, warp_per_bucket, MAX_BUCKET_LEN};
 use crate::engine::gpu::payload::DeviceBlock;
@@ -115,7 +115,7 @@ pub(super) fn premerge_partner<const W: usize>(
         grow(&stream, &mut premerge.rows, b, ordinal)?;
         grow(&stream, &mut premerge.start, b + 1, ordinal)?;
         grow(&stream, &mut premerge.out_len_pos, b, ordinal)?;
-        xfer(&stream, &mut scratch.xfer_ns, Xfer::H2d, || {
+        timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
             premerge.table.upload(&stream, &sub)?;
             stream.memcpy_htod(&selected[..], &mut premerge.selected)?;
             Ok(())
@@ -132,7 +132,7 @@ pub(super) fn premerge_partner<const W: usize>(
                 .arg(&mut premerge.counts)
                 .launch(thread_per(b * nk, 256))?;
         }
-        // SAFETY: arguments match `k_rows` in count.cu; every `rem` entry is `NO_REMOTE`, so `recv_off` is never read.
+        // SAFETY: arguments match `k_rows` in count.cu; every `rem` entry is `NO_REMOTE`, so `received_offsets` is never read.
         unsafe {
             stream
                 .launch_builder(&kernels.rows)
@@ -140,7 +140,7 @@ pub(super) fn premerge_partner<const W: usize>(
                 .arg(&scratch.bucket_at)
                 .arg(&premerge.table.bucket_delta)
                 .arg(&premerge.table.rem)
-                .arg(&scratch.export.recv_off)
+                .arg(&scratch.export.received_offsets)
                 .arg(&mut premerge.rows)
                 .arg(&b32)
                 .arg(&k32)
@@ -161,7 +161,7 @@ pub(super) fn premerge_partner<const W: usize>(
         premerge.start_host.resize(b + 1, 0);
         let (start, start_host, totals) =
             (&premerge.start, &mut premerge.start_host, &premerge.totals);
-        xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
+        timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
             let v = stream.clone_dtoh(totals)?;
             stream.memcpy_dtoh(&start.slice(0..b + 1), &mut start_host[..])?;
             stream.synchronize()?;
@@ -241,17 +241,17 @@ fn premerge_batches<const W: usize>(
         bucket_at,
         scan,
         export,
-        xfer_ns,
+        transfer_ns,
         ..
     } = scratch;
     let DeviceExport {
         premerge,
-        recv_off,
-        recv_base,
-        recv_x,
-        recv_z,
-        recv_c,
-        recv_g,
+        received_offsets,
+        received_base,
+        received_x,
+        received_z,
+        received_coefficient,
+        received_fingerprint,
         ..
     } = export;
     stream.memset_zeros(&mut premerge.fallback)?;
@@ -264,12 +264,12 @@ fn premerge_batches<const W: usize>(
             table: &premerge.table,
         };
         let recv = FusedRecv {
-            offsets: recv_off,
-            base: recv_base,
-            x: recv_x,
-            z: recv_z,
-            c: recv_c,
-            g: recv_g,
+            offsets: received_offsets,
+            base: received_base,
+            x: received_x,
+            z: received_z,
+            coefficient: received_coefficient,
+            g: received_fingerprint,
         };
         let written = FusedOut {
             arena: &mut *arena,
@@ -316,7 +316,7 @@ fn premerge_batches<const W: usize>(
         {
             let (split_offsets, split_offsets_host) =
                 (&premerge.split_offsets, &mut premerge.split_offsets_host);
-            xfer(stream, xfer_ns, Xfer::D2h, || {
+            timed_transfer(stream, transfer_ns, Transfer::D2h, || {
                 stream.memcpy_dtoh(
                     &split_offsets.slice(0..nk * n + 1),
                     &mut split_offsets_host[..],
@@ -373,8 +373,10 @@ fn premerge_batches<const W: usize>(
             if rows > 0 {
                 let live = running[j] as usize;
                 block.reserve_keep(stream, live, live + rows, ordinal)?;
-                let DeviceBlock { x, z, c, .. } = block;
-                copy(j, running[j], (x, z, c))?;
+                let DeviceBlock {
+                    x, z, coefficient, ..
+                } = block;
+                copy(j, running[j], (x, z, coefficient))?;
             }
             running[j] += rows as u32;
         }

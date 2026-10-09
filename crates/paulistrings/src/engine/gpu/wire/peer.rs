@@ -32,7 +32,7 @@ struct Posted {
     ptr: u64,
     bytes: usize,
     stream: usize,
-    ctx: Arc<CudaContext>,
+    context: Arc<CudaContext>,
     ready: Option<Arc<CudaEvent>>,
 }
 
@@ -287,7 +287,7 @@ impl DeviceWire for PeerWire {
                 ptr: op.ptr(),
                 bytes: op.bytes(),
                 stream,
-                ctx: op.stream().context().clone(),
+                context: op.stream().context().clone(),
                 ready,
             });
         }
@@ -355,12 +355,12 @@ impl DeviceWire for PeerWire {
         };
         drop(state);
         let enqueued: Result<(), GpuError> = (|| {
-            let ctx = stream.context();
-            ctx.bind_to_thread()?;
+            let context = stream.context();
+            context.bind_to_thread()?;
             let mut waited: Option<&Arc<CudaEvent>> = None;
             for c in &copies {
-                if c.src_ctx.ordinal() != ctx.ordinal() {
-                    enable_peer_access(ctx, &c.src_ctx);
+                if c.source_context.ordinal() != context.ordinal() {
+                    enable_peer_access(context, &c.source_context);
                 }
                 if !waited.is_some_and(|w| Arc::ptr_eq(w, &c.ready)) {
                     stream.wait(&c.ready)?;
@@ -407,7 +407,7 @@ struct PeerCopy {
     dst: u64,
     src: u64,
     bytes: usize,
-    src_ctx: Arc<CudaContext>,
+    source_context: Arc<CudaContext>,
     ready: Arc<CudaEvent>,
 }
 
@@ -456,7 +456,7 @@ fn check_round(
                 dst: recv.ptr,
                 src: send.ptr,
                 bytes: recv.bytes,
-                src_ctx: send.ctx.clone(),
+                source_context: send.context.clone(),
                 ready: send.ready.clone().expect("a send records its event"),
             });
         }

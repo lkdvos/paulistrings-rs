@@ -25,7 +25,7 @@ fn skeletons_of<const W: usize>(seed: u64, blocks: usize, b: usize) -> BlockSkel
             header: BlockHeader {
                 num_buckets: b as u32,
                 rows,
-                w: W as u32,
+                width: W as u32,
                 entry: 3 * j as u32 + 1,
             },
             offsets,
@@ -42,10 +42,10 @@ fn byte_round_trip<const W: usize>(
     let parts: Vec<Vec<u8>> = sent.byte_parts().iter().map(|p| p.to_vec()).collect();
     let lens: Vec<usize> = parts.iter().map(Vec::len).collect();
     let mut got = pooled;
-    for (dst, src) in got.recv_into(&lens).into_iter().zip(&parts) {
+    for (dst, src) in got.receive_into(&lens).into_iter().zip(&parts) {
         dst.copy_from_slice(src);
     }
-    got.finish_recv();
+    got.finish_receive();
     got
 }
 
@@ -96,7 +96,7 @@ fn a_skeleton_whose_offsets_miss_its_header_is_refused() {
     let r = std::panic::catch_unwind(|| byte_round_trip(&bad, BlockSkeletons::default()));
     assert!(r.is_err());
     let mut wide = skeletons_of::<1>(0xC4, 1, 8);
-    wide.blocks[0].header.w = 2;
+    wide.blocks[0].header.width = 2;
     assert!(
         std::panic::catch_unwind(|| byte_round_trip(&wide, BlockSkeletons::default())).is_err()
     );
@@ -113,14 +113,14 @@ fn a_skeleton_whose_offsets_miss_its_header_is_refused() {
 fn sends_to(ops: &[ScheduledOp], to: u32) -> Vec<(usize, WireColumn, usize, (usize, usize))> {
     ops.iter()
         .filter(|op| op.kind == WireOpKind::Send && op.peer == to)
-        .map(|op| (op.chunk, op.column, op.k, op.rows))
+        .map(|op| (op.chunk, op.column, op.delta, op.rows))
         .collect()
 }
 
 fn recvs_from(ops: &[ScheduledOp], from: u32) -> Vec<(usize, WireColumn, usize, (usize, usize))> {
     ops.iter()
         .filter(|op| op.kind == WireOpKind::Recv && op.peer == from)
-        .map(|op| (op.chunk, op.column, op.k, op.rows))
+        .map(|op| (op.chunk, op.column, op.delta, op.rows))
         .collect()
 }
 
@@ -212,7 +212,7 @@ proptest::proptest! {
                 for column in WireColumn::ALL {
                     let ks: Vec<(usize, (usize, usize))> = ops[a as usize].iter()
                         .filter(|op| op.kind == WireOpKind::Recv && op.column == column && op.chunk == chunk)
-                        .map(|op| (op.k, op.rows)).collect();
+                        .map(|op| (op.delta, op.rows)).collect();
                     proptest::prop_assert!(ks.windows(2).all(|w| w[0].0 < w[1].0));
                     if chunk == 0 {
                         proptest::prop_assert!(ks.iter().all(|&(_, (lo, _))| lo == 0));
@@ -230,8 +230,8 @@ proptest::proptest! {
 #[test]
 fn a_group_records_its_ops_in_posting_order_with_carved_ranges() {
     crate::require_cuda!();
-    let ctx = super::super::device::context(0).expect("a visible device");
-    let stream = ctx.new_stream().expect("a stream");
+    let context = super::super::device::context(0).expect("a visible device");
+    let stream = context.new_stream().expect("a stream");
     let src = stream.alloc_zeros::<f64>(6).expect("alloc");
     let mut dst = stream.alloc_zeros::<u64>(10).expect("alloc");
     let mut group = WireGroup::new();

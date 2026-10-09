@@ -78,7 +78,7 @@ fn the_early_and_bulk_parts_partition_the_wire() {
                     .map(|p| p.iter().map(|c| c.len()).collect())
                     .collect();
                 let got_lens: Vec<Vec<usize>> = payload
-                    .bulk_recv_into(&map)
+                    .bulk_receive_into(&map)
                     .iter()
                     .map(|p| p.iter().map(|c| c.len()).collect())
                     .collect();
@@ -241,7 +241,7 @@ fn with_counts_builds_offsets_and_reserves_the_columns() {
         BlockHeader {
             num_buckets: 4,
             rows: 8,
-            w: 2,
+            width: 2,
             entry: 3,
         }
     );
@@ -262,7 +262,7 @@ fn set_counts_reuses_the_columns_and_grows_only() {
     assert_eq!(block.rows(), 3);
     assert_eq!(block.offsets, vec![0, 1, 3]);
     assert_eq!(block.header.entry, 1);
-    assert_eq!(block.cols().2.len(), 3, "three live rows");
+    assert_eq!(block.columns().2.len(), 3, "three live rows");
     assert_eq!(block.x.len(), 8, "the storage of the wider layer is kept");
     assert_eq!(block.x.as_ptr(), wide, "and it is the same allocation");
     assert_eq!(block.bytes(), 16 + 3 * 4 + 3 * 8 + 3 * 8 + 3 * 16);
@@ -330,7 +330,7 @@ fn byte_parts_are_five_borrowed_views_per_block() {
     assert_eq!(parts.iter().map(|p| p.len()).sum::<usize>(), 92);
 }
 
-/// `byte_parts` on the sender, `recv_into` + `finish_recv` on a fresh receiver.
+/// `byte_parts` on the sender, `receive_into` + `finish_receive` on a fresh receiver.
 fn wire_round_trip<const W: usize>(payload: &PartnerPayload<W>) -> PartnerPayload<W> {
     let sent: Vec<Vec<u8>> = payload
         .byte_parts()
@@ -339,10 +339,10 @@ fn wire_round_trip<const W: usize>(payload: &PartnerPayload<W>) -> PartnerPayloa
         .collect();
     let lens: Vec<usize> = sent.iter().map(Vec::len).collect();
     let mut back = PartnerPayload::<W>::default();
-    for (view, bytes) in back.recv_into(&lens).into_iter().zip(&sent) {
+    for (view, bytes) in back.receive_into(&lens).into_iter().zip(&sent) {
         view.copy_from_slice(bytes);
     }
-    back.finish_recv();
+    back.finish_receive();
     back
 }
 
@@ -371,7 +371,7 @@ fn payload_round_trips_through_byte_parts() {
 #[should_panic(expected = "width")]
 fn a_block_encoded_at_another_width_is_rejected() {
     let mut payload = payload_of::<2>(2, 1, 0x5);
-    payload.blocks[0].header.w = 1;
+    payload.blocks[0].header.width = 1;
     let _ = wire_round_trip(&payload);
 }
 
@@ -408,7 +408,7 @@ impl Payload for Vec<u64> {
         vec![bytemuck::cast_slice(&self[..])]
     }
 
-    fn recv_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
         assert_eq!(lens.len(), 1, "test payload: expected one part");
         check_stride(lens[0], size_of::<u64>(), "test payload");
         self.clear();
@@ -416,7 +416,7 @@ impl Payload for Vec<u64> {
         vec![bytemuck::cast_slice_mut(&mut self[..])]
     }
 
-    fn finish_recv(&mut self) {}
+    fn finish_receive(&mut self) {}
 }
 
 /// A column unique to the ordered pair `(from, to)`.

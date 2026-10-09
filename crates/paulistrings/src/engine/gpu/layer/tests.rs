@@ -96,7 +96,7 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
             c.bits,
             c.refine_passes,
             c.records_max as usize,
-            c.n_cap as usize
+            c.record_capacity as usize
         ),
         (0, 0, 15 * (record_cap / 15), record_cap)
     );

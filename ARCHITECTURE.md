@@ -371,7 +371,7 @@ The header declares *every* part's length, early and bulk alike, which is what s
 MPI's non-overtaking guarantee for a `(source, tag, communicator)` triple then matches sends to receives in posting order, which is why both sides walk partners, parts and chunks in the same ascending order, deriving the chunk edges from the same CSR offsets and cutting at a constant chunk count rather than a thread count, since two ranks may run different pool widths.
 Tags pack `epoch:11 | kind:4`, at most 32767 and so inside the guaranteed `MPI_TAG_UB`.
 Everything is sent as bytes and chunked again at 1 GiB, MPI's counts being `i32` and a `u64` view of the parts unavailable (the block header is four `u32`s and the CSR `offsets` column a `Vec<u32>`, neither 8-aligned); raw host bytes on the wire means a run is homogeneous, same architecture and same `W` on every rank.
-The declared part lengths are enough to size the receiving payload, so `Payload::recv_into` hands MPI mutable byte views of the very columns the coset loop will read and there is no decode pass; `finish_recv` then checks the header against the shape the lengths implied.
+The declared part lengths are enough to size the receiving payload, so `Payload::receive_into` hands MPI mutable byte views of the very columns the coset loop will read and there is no decode pass; `finish_receive` then checks the header against the shape the lengths implied.
 
 **Scatter and gather bracket a distributed run too, with a different contract.**
 The input is *replicated* — every rank calls `scatter` with the same sum and keeps `filter_partition(rows, rank)`, the rows drawn from one seed so nobody has to agree by collective.

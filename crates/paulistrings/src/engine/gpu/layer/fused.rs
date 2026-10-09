@@ -48,15 +48,19 @@ pub(in crate::engine::gpu) fn fused_variant(
     dense: bool,
 ) -> (&CudaFunction, usize, u32) {
     let threads = layer_threads(w) as usize;
-    let n_cap = records_max.max(threads).next_power_of_two();
-    let variant = &kernels.layer[(n_cap / threads).trailing_zeros() as usize];
-    debug_assert_eq!(variant.items * threads, n_cap);
+    let record_capacity = records_max.max(threads).next_power_of_two();
+    let variant = &kernels.layer[(record_capacity / threads).trailing_zeros() as usize];
+    debug_assert_eq!(variant.items * threads, record_capacity);
     let func = if dense {
         &variant.segscan
     } else {
         &variant.serial
     };
-    (func, n_cap, layer_shared_bytes(n_cap, w))
+    (
+        func,
+        record_capacity,
+        layer_shared_bytes(record_capacity, w),
+    )
 }
 
 /// The table-side buffers one fused-layer launch reads: the counts and segment starts sized for `table`'s upload.
@@ -72,7 +76,7 @@ pub(in crate::engine::gpu) struct FusedRecv<'a> {
     pub(in crate::engine::gpu) base: &'a CudaSlice<u32>,
     pub(in crate::engine::gpu) x: &'a CudaSlice<u64>,
     pub(in crate::engine::gpu) z: &'a CudaSlice<u64>,
-    pub(in crate::engine::gpu) c: &'a CudaSlice<f64>,
+    pub(in crate::engine::gpu) coefficient: &'a CudaSlice<f64>,
     pub(in crate::engine::gpu) g: &'a CudaSlice<u64>,
 }
 
@@ -108,12 +112,12 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
     unsafe {
         sum.stream
             .launch_builder(func)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.g)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(bucket_at)
             .arg(fused.counts)
             .arg(fused.segment_start)
@@ -135,7 +139,7 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
             .arg(&b32)
             .arg(received.x)
             .arg(received.z)
-            .arg(received.c)
+            .arg(received.coefficient)
             .arg(received.g)
             .arg(keep)
             .arg(&p0)

@@ -3,20 +3,20 @@
 use crate::engine::coset::Gf2Span;
 use crate::engine::gpu::columns::grow;
 use crate::engine::gpu::error::GpuError;
-use crate::engine::gpu::layer::{xfer, LayerScratch, Xfer, XferNs};
+use crate::engine::gpu::layer::{timed_transfer, LayerScratch, Transfer, TransferNs};
 use crate::engine::gpu::sum::{launch_fingerprint, GpuSum};
 use crate::engine::gpu::wire::{ScheduledOp, Skeleton, WireColumn, WireGroup, WireOpKind};
 use crate::engine::partitioned::transport::ChunkMap;
 
 use super::{recv_row_bytes, DeviceExport, PendingRecv, MAX_RECV_SEGMENT};
 
-/// The receive layout from the skeletons in plan order, checked against the segment cap before any row moves; sizes `recv_*` for this rank's own chunk count, which it returns as `log2`.
+/// The receive layout from the skeletons in plan order, checked against the segment cap before any row moves; sizes `received_*` for this rank's own chunk count, which it returns as `log2`.
 pub(super) fn stage_receive<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
     blocks: &[&Skeleton],
     cap_rows: usize,
-    xfer_ns: &mut XferNs,
+    transfer_ns: &mut TransferNs,
 ) -> Result<u8, GpuError> {
     let b = sum.hash.num_buckets();
     lay_out(
@@ -30,7 +30,7 @@ pub(super) fn stage_receive<const W: usize>(
             )
         }),
     );
-    if export.recv_max_segment > MAX_RECV_SEGMENT {
+    if export.received_max_segment > MAX_RECV_SEGMENT {
         return Err(GpuError::Unsupported(
             "a fused-layer block or a received segment exceeds the record cap at the agreed bucket count",
         ));
@@ -39,11 +39,11 @@ pub(super) fn stage_receive<const W: usize>(
     if std::mem::take(&mut export.fail_recv_growth) {
         return Err(GpuError::OutOfMemory {
             device: sum.device(),
-            bytes: (export.recv_rows * recv_row_bytes::<W>()) as u64,
+            bytes: (export.received_rows * recv_row_bytes::<W>()) as u64,
         });
     }
     let (log2, most) = recv_chunks(&export.offsets_host, b, cap_rows);
-    size_receive(sum, export, most, xfer_ns)?;
+    size_receive(sum, export, most, transfer_ns)?;
     Ok(log2)
 }
 
@@ -67,9 +67,9 @@ pub(super) fn discard_received<const W: usize>(
     let n = export.offsets_host.len();
     export
         .stream
-        .memset_zeros(&mut export.recv_off.slice_mut(0..n))?;
-    export.recv_rows = 0;
-    export.recv_max_segment = 0;
+        .memset_zeros(&mut export.received_offsets.slice_mut(0..n))?;
+    export.received_rows = 0;
+    export.received_max_segment = 0;
     Ok(0)
 }
 
@@ -78,7 +78,7 @@ pub(super) fn recv_cap_rows<const W: usize>(bytes: usize) -> usize {
     (bytes / recv_row_bytes::<W>()).max(1)
 }
 
-/// `off_host`, `recv_max_segment` and `recv_rows` from received blocks in plan order, each `(positions, CSR offsets, rows)`.
+/// `off_host`, `received_max_segment` and `received_rows` from received blocks in plan order, each `(positions, CSR offsets, rows)`.
 fn lay_out<'a, const W: usize>(
     export: &mut DeviceExport<W>,
     b: usize,
@@ -101,8 +101,8 @@ fn lay_out<'a, const W: usize>(
             .max(max_segment);
         total += rows;
     }
-    export.recv_max_segment = max_segment;
-    export.recv_rows = total;
+    export.received_max_segment = max_segment;
+    export.received_rows = total;
 }
 
 /// Received rows over every block in positions `lo..hi` of the concatenated `K × (b + 1)` offsets.
@@ -143,33 +143,33 @@ pub(super) fn position_chunks(bits: u8, b: usize, log2: u8) -> ChunkMap {
     map
 }
 
-/// Room for `rows` received rows in `recv_*`, and the offsets in `recv_off`.
+/// Room for `rows` received rows in `received_*`, and the offsets in `received_offsets`.
 fn size_receive<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
     rows: usize,
-    xfer_ns: &mut XferNs,
+    transfer_ns: &mut TransferNs,
 ) -> Result<(), GpuError> {
     let stream = &sum.stream;
     let ordinal = sum.device();
     let DeviceExport {
-        recv_off,
-        recv_x,
-        recv_z,
-        recv_c,
-        recv_g,
+        received_offsets,
+        received_x,
+        received_z,
+        received_coefficient,
+        received_fingerprint,
         offsets_host,
         ..
     } = export;
-    grow(stream, recv_off, offsets_host.len().max(2), ordinal)?;
-    grow(stream, recv_x, rows.max(1) * W, ordinal)?;
-    grow(stream, recv_z, rows.max(1) * W, ordinal)?;
-    grow(stream, recv_c, 2 * rows.max(1), ordinal)?;
-    grow(stream, recv_g, rows.max(1), ordinal)?;
-    xfer(stream, xfer_ns, Xfer::H2d, || {
+    grow(stream, received_offsets, offsets_host.len().max(2), ordinal)?;
+    grow(stream, received_x, rows.max(1) * W, ordinal)?;
+    grow(stream, received_z, rows.max(1) * W, ordinal)?;
+    grow(stream, received_coefficient, 2 * rows.max(1), ordinal)?;
+    grow(stream, received_fingerprint, rows.max(1), ordinal)?;
+    timed_transfer(stream, transfer_ns, Transfer::H2d, || {
         stream.memcpy_htod(
             &offsets_host[..],
-            &mut recv_off.slice_mut(0..offsets_host.len()),
+            &mut received_offsets.slice_mut(0..offsets_host.len()),
         )?;
         Ok(())
     })
@@ -193,7 +193,7 @@ pub(super) fn chunk_layout(
     at
 }
 
-/// Move chunk `c` of the pending receive into `recv_*`, fingerprinted, with its bases in `recv_base`; called in chunk order before the chunk's first batch.
+/// Move chunk `c` of the pending receive into `received_*`, fingerprinted, with its bases in `received_base`; called in chunk order before the chunk's first batch.
 pub(crate) fn receive_chunk<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,
@@ -204,7 +204,7 @@ pub(crate) fn receive_chunk<const W: usize>(
     let export = &mut scratch.export;
     let mut pending = export.pending.take().expect("a pending receive");
     debug_assert_eq!(pending.next, c);
-    let r = move_chunk(sum, export, &mut pending, c, true, &mut scratch.xfer_ns);
+    let r = move_chunk(sum, export, &mut pending, c, true, &mut scratch.transfer_ns);
     export.pending = Some(pending);
     #[cfg(feature = "phase-timing")]
     {
@@ -221,14 +221,14 @@ pub(crate) fn receive_chunk<const W: usize>(
     r
 }
 
-/// Chunk `c` of `pending` into `recv_*` through one wire group; with `keep` its rows are fingerprinted and its bases uploaded, without it the transfer only completes, as a failed layer's must.
+/// Chunk `c` of `pending` into `received_*` through one wire group; with `keep` its rows are fingerprinted and its bases uploaded, without it the transfer only completes, as a failed layer's must.
 fn move_chunk<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
     pending: &mut PendingRecv<W>,
     c: usize,
     keep: bool,
-    xfer_ns: &mut XferNs,
+    transfer_ns: &mut TransferNs,
 ) -> Result<usize, GpuError> {
     let b = sum.hash.num_buckets();
     let stream = &sum.stream;
@@ -241,11 +241,11 @@ fn move_chunk<const W: usize>(
         "a remote layer on a partition without a device wire",
     ))?;
     let DeviceExport {
-        recv_base,
-        recv_x,
-        recv_z,
-        recv_c,
-        recv_g,
+        received_base,
+        received_x,
+        received_z,
+        received_coefficient,
+        received_fingerprint,
         base_host,
         ..
     } = export;
@@ -258,7 +258,7 @@ fn move_chunk<const W: usize>(
     let (sends, recvs) = (&sends[of_chunk(sends)], &recvs[of_chunk(recvs)]);
     let mut group = WireGroup::new();
     for op in sends {
-        let (q, j) = own[op.k];
+        let (q, j) = own[op.delta];
         let block = &send[q]
             .as_ref()
             .expect("a payload for every partner")
@@ -268,7 +268,9 @@ fn move_chunk<const W: usize>(
         match op.column {
             WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, stream),
             WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, stream),
-            WireColumn::Coefficient => group.send(block.c.slice(r0 * e..r1 * e), op.peer, stream),
+            WireColumn::Coefficient => {
+                group.send(block.coefficient.slice(r0 * e..r1 * e), op.peer, stream)
+            }
         }
     }
     let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
@@ -280,17 +282,17 @@ fn move_chunk<const W: usize>(
             .collect()
     };
     group.recv_parts(
-        recv_x.slice_mut(0..n * W),
+        received_x.slice_mut(0..n * W),
         &recv_parts(WireColumn::X),
         stream,
     );
     group.recv_parts(
-        recv_z.slice_mut(0..n * W),
+        received_z.slice_mut(0..n * W),
         &recv_parts(WireColumn::Z),
         stream,
     );
     group.recv_parts(
-        recv_c.slice_mut(0..2 * n),
+        received_coefficient.slice_mut(0..2 * n),
         &recv_parts(WireColumn::Coefficient),
         stream,
     );
@@ -306,12 +308,12 @@ fn move_chunk<const W: usize>(
         stream,
         &sum.kernels,
         &sum.fingerprint_rows,
-        (&*recv_x, &*recv_z),
-        recv_g,
+        (&*received_x, &*received_z),
+        received_fingerprint,
         n,
     )?;
-    xfer(stream, xfer_ns, Xfer::H2d, || {
-        stream.memcpy_htod(&base_host[..], recv_base)?;
+    timed_transfer(stream, transfer_ns, Transfer::H2d, || {
+        stream.memcpy_htod(&base_host[..], received_base)?;
         Ok(())
     })?;
     Ok(n)
@@ -331,7 +333,14 @@ pub(crate) fn finish_receive<const W: usize>(
         if pending.failed {
             break;
         }
-        if let Err(e) = move_chunk(sum, export, &mut pending, c, false, &mut scratch.xfer_ns) {
+        if let Err(e) = move_chunk(
+            sum,
+            export,
+            &mut pending,
+            c,
+            false,
+            &mut scratch.transfer_ns,
+        ) {
             drained = Err(e);
             break;
         }

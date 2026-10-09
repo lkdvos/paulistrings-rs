@@ -41,6 +41,6 @@ fn devices_are_consistent() {
     assert_eq!(list.len(), device_count());
     for d in &list {
         assert!(d.compute_capability >= (5, 0));
-        assert!(d.total_mem > 0);
+        assert!(d.total_memory > 0);
     }
 }

@@ -188,8 +188,8 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     old.resize_with(members, BucketColumns::default);
     runs.resize_with(members, GatherRun::default);
 
-    for (slot, cols) in chunk.iter_mut().zip(old.iter_mut()) {
-        std::mem::swap(slot, cols);
+    for (slot, columns) in chunk.iter_mut().zip(old.iter_mut()) {
+        std::mem::swap(slot, columns);
         slot.clear();
     }
     #[cfg(feature = "phase-timing")]
@@ -355,8 +355,8 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         stamp.lap(&mut stats.merge_ns);
     }
 
-    for cols in old.iter_mut() {
-        cols.clear();
+    for columns in old.iter_mut() {
+        columns.clear();
     }
     #[cfg(feature = "phase-timing")]
     {

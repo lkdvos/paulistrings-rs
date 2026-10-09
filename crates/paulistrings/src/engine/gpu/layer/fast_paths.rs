@@ -30,9 +30,9 @@ pub(super) fn rescale_device<const W: usize>(
     out.len = 0;
     out.buckets = 0;
     out.reserve(extent, b)?;
-    grow(&stream, &mut scratch.dst_off, b + 1, ordinal)?;
+    grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
     let amp = &mut scratch.table.amp;
-    xfer(&stream, &mut scratch.xfer_ns, Xfer::H2d, || {
+    timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
         stream.memcpy_htod(&table.amp, amp)?;
         Ok(())
     })?;
@@ -42,12 +42,12 @@ pub(super) fn rescale_device<const W: usize>(
     unsafe {
         stream
             .launch_builder(&kernels.rescale)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.g)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(&b32)
             .arg(&table.kq)
             .arg(&table.q0)
@@ -66,21 +66,21 @@ pub(super) fn rescale_device<const W: usize>(
         &stream,
         &kernels,
         &out.lens.slice(0..b),
-        &mut scratch.dst_off.slice_mut(0..b + 1),
+        &mut scratch.destination_offsets.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
-        &mut scratch.tot_a,
+        &mut scratch.totals,
     )?;
     scratch.lap(sum, t0, |m| &mut m.rescale)?;
-    let totals = &scratch.tot_a;
-    let total = xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
+    let totals = &scratch.totals;
+    let total = timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
         let v = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
         Ok(v[0])
     })?;
     out.len = total as usize;
     out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.counters.rescaled = true;
     sum.debug_check();
     Ok(())
@@ -114,7 +114,7 @@ pub(super) fn permute_device<const W: usize>(
     out.buckets = 0;
     out.reserve(n_in, b)?;
     let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
-    xfer(&stream, &mut scratch.xfer_ns, Xfer::H2d, || {
+    timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
         stream.memcpy_htod(&table.amp, &mut buffers.amp)?;
         stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
         stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
@@ -131,12 +131,12 @@ pub(super) fn permute_device<const W: usize>(
     // SAFETY: arguments match `k_perm_count` in permute.cu; `counts` holds `b * e` entries.
     unsafe {
         stream
-            .launch_builder(&kernels.perm_count)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .launch_builder(&kernels.permute_count)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(&table.mode)
             .arg(&e32)
             .arg(&table.kq)
@@ -157,7 +157,7 @@ pub(super) fn permute_device<const W: usize>(
     // SAFETY: arguments match `k_perm_lens`; `out.lens` holds `b` entries.
     unsafe {
         stream
-            .launch_builder(&kernels.perm_lens)
+            .launch_builder(&kernels.permute_lengths)
             .arg(&scratch.counts)
             .arg(&scratch.table.bucket_delta)
             .arg(&b32)
@@ -172,20 +172,20 @@ pub(super) fn permute_device<const W: usize>(
         &mut out.start.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
-        &mut scratch.tot_a,
+        &mut scratch.totals,
     )?;
     scratch.lap(sum, t1, |m| &mut m.sizes)?;
     let t2 = scratch.event(sum)?;
     // SAFETY: arguments match `k_perm_scatter`; `out` has room for every input row, the scan's total at most.
     unsafe {
         stream
-            .launch_builder(&kernels.perm_scatter)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
+            .launch_builder(&kernels.permute_scatter)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.g)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lens)
             .arg(&table.mode)
             .arg(&e32)
             .arg(&table.kq)
@@ -209,15 +209,15 @@ pub(super) fn permute_device<const W: usize>(
             .launch(block_per_bucket)?;
     }
     scratch.lap(sum, t2, |m| &mut m.permute)?;
-    let totals = &scratch.tot_a;
-    let total = xfer(&stream, &mut scratch.xfer_ns, Xfer::D2h, || {
+    let totals = &scratch.totals;
+    let total = timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
         let v = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
         Ok(v[0])
     })?;
     out.len = total as usize;
     out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.extent = sum.len();
     scratch.counters.bits = sum.hash.bits();
     scratch.counters.records = n_in as u64;

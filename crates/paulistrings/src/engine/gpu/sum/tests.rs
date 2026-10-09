@@ -14,16 +14,16 @@ struct Raw<const W: usize> {
 
 impl<const W: usize> GpuSum<W> {
     fn download_raw(&self) -> Raw<W> {
-        let n = self.cols.len;
+        let n = self.columns.len;
         let s = &self.stream;
         let words = |v: Vec<u64>| -> Vec<[u64; W]> {
             v.chunks_exact(W)
                 .map(|c| std::array::from_fn(|w| c[w]))
                 .collect()
         };
-        let x = s.clone_dtoh(&self.cols.x.slice(0..n * W)).unwrap();
-        let z = s.clone_dtoh(&self.cols.z.slice(0..n * W)).unwrap();
-        let g = s.clone_dtoh(&self.cols.g.slice(0..n)).unwrap();
+        let x = s.clone_dtoh(&self.columns.x.slice(0..n * W)).unwrap();
+        let z = s.clone_dtoh(&self.columns.z.slice(0..n * W)).unwrap();
+        let g = s.clone_dtoh(&self.columns.g.slice(0..n)).unwrap();
         s.synchronize().unwrap();
         Raw {
             x: words(x),
@@ -239,18 +239,18 @@ fn to_host_re_sorts_a_bucket_out_of_lex_order() {
     let c: Vec<f64> = bc.iter().rev().flat_map(|c| [c.re, c.im]).collect();
     let mut dev = GpuSum::from_host(&sum, 0).expect("upload");
     let s = dev.stream.clone();
-    s.memcpy_htod(&rev(bx), &mut dev.cols.x.slice_mut(2 * r0..2 * (r0 + l)))
+    s.memcpy_htod(&rev(bx), &mut dev.columns.x.slice_mut(2 * r0..2 * (r0 + l)))
         .unwrap();
-    s.memcpy_htod(&rev(bz), &mut dev.cols.z.slice_mut(2 * r0..2 * (r0 + l)))
+    s.memcpy_htod(&rev(bz), &mut dev.columns.z.slice_mut(2 * r0..2 * (r0 + l)))
         .unwrap();
-    s.memcpy_htod(&c, &mut dev.cols.coeff.slice_mut(2 * r0..2 * (r0 + l)))
+    s.memcpy_htod(&c, &mut dev.columns.coeff.slice_mut(2 * r0..2 * (r0 + l)))
         .unwrap();
     let fingerprints = FingerprintRows::<2>::new(sum.hash().seed());
     let g: Vec<u64> = (0..l)
         .rev()
         .map(|i| fingerprints.fingerprint(&bx[i], &bz[i]))
         .collect();
-    s.memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0..r0 + l))
+    s.memcpy_htod(&g, &mut dev.columns.g.slice_mut(r0..r0 + l))
         .unwrap();
     dev.assert_invariants_device()
         .expect("order within a bucket is free on the device");
@@ -271,15 +271,15 @@ fn invariants_kernel_reports_corruption() {
     let (bx, bz, _) = sum.bucket(b0);
     let r0: usize = (0..b0).map(|b| sum.bucket_len(b)).sum();
     dev.stream
-        .memcpy_htod(&bx[0], &mut dev.cols.x.slice_mut(r0 + 1..r0 + 2))
+        .memcpy_htod(&bx[0], &mut dev.columns.x.slice_mut(r0 + 1..r0 + 2))
         .unwrap();
     dev.stream
-        .memcpy_htod(&bz[0], &mut dev.cols.z.slice_mut(r0 + 1..r0 + 2))
+        .memcpy_htod(&bz[0], &mut dev.columns.z.slice_mut(r0 + 1..r0 + 2))
         .unwrap();
     let fingerprints = FingerprintRows::<1>::new(sum.hash().seed());
     let g = [fingerprints.fingerprint(&bx[0], &bz[0])];
     dev.stream
-        .memcpy_htod(&g, &mut dev.cols.g.slice_mut(r0 + 1..r0 + 2))
+        .memcpy_htod(&g, &mut dev.columns.g.slice_mut(r0 + 1..r0 + 2))
         .unwrap();
     let msg = dev.assert_invariants_device().unwrap_err();
     assert!(msg.contains("0 misplaced, 1 duplicate keys"), "{msg}");
@@ -288,17 +288,17 @@ fn invariants_kernel_reports_corruption() {
     let mut dev = GpuSum::from_host(&sum, 0).expect("upload");
     let (cx, cz, _) = sum.bucket(b1);
     dev.stream
-        .memcpy_htod(&cx[0], &mut dev.cols.x.slice_mut(r0..r0 + 1))
+        .memcpy_htod(&cx[0], &mut dev.columns.x.slice_mut(r0..r0 + 1))
         .unwrap();
     dev.stream
-        .memcpy_htod(&cz[0], &mut dev.cols.z.slice_mut(r0..r0 + 1))
+        .memcpy_htod(&cz[0], &mut dev.columns.z.slice_mut(r0..r0 + 1))
         .unwrap();
     let msg = dev.assert_invariants_device().unwrap_err();
     assert!(msg.contains("1 misplaced"), "{msg}");
     assert!(msg.contains("1 stale fingerprints"), "{msg}");
 
     let mut dev = GpuSum::from_host(&sum, 0).expect("upload");
-    dev.cols.len += 1;
+    dev.columns.len += 1;
     let msg = dev.assert_invariants_device().unwrap_err();
     assert!(msg.contains("bucket lengths sum to"), "{msg}");
 }

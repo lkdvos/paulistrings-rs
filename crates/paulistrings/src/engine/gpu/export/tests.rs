@@ -123,7 +123,7 @@ fn download<const W: usize>(
     let n = block.rows();
     let x = s.clone_dtoh(&block.x.slice(0..n * W)).unwrap();
     let z = s.clone_dtoh(&block.z.slice(0..n * W)).unwrap();
-    let c = s.clone_dtoh(&block.c.slice(0..2 * n)).unwrap();
+    let c = s.clone_dtoh(&block.coefficient.slice(0..2 * n)).unwrap();
     s.synchronize().unwrap();
     (x, z, c)
 }
@@ -141,7 +141,7 @@ fn assert_payloads_eq<const W: usize>(e: &Exported<W>, what: &str) {
                     assert_eq!(gb.header, wb.header, "{what}: header {j} to {q}");
                     assert_eq!(gb.offsets, wb.offsets, "{what}: offsets {j} to {q}");
                     let (x, z, c) = download(&e.dev.stream, gb);
-                    let (wx, wz, wc) = wb.cols();
+                    let (wx, wz, wc) = wb.columns();
                     assert_eq!(x, wx.as_flattened(), "{what}: x {j} to {q}");
                     assert_eq!(z, wz.as_flattened(), "{what}: z {j} to {q}");
                     assert_eq!(
@@ -261,10 +261,10 @@ type Key<const W: usize> = ([u64; W], [u64; W]);
 type PositionSums<const W: usize> = Vec<std::collections::BTreeMap<Key<W>, Complex64>>;
 
 /// One block's `(offsets, x, z, coeff)`, live rows only.
-type BlockCols<const W: usize> = (Vec<u32>, Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>);
+type BlockColumns<const W: usize> = (Vec<u32>, Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>);
 
 /// The per-position key sums of `blocks`, and the largest number of times one key occurs at one position.
-fn position_sums<const W: usize>(blocks: &[BlockCols<W>], b: usize) -> (PositionSums<W>, usize) {
+fn position_sums<const W: usize>(blocks: &[BlockColumns<W>], b: usize) -> (PositionSums<W>, usize) {
     let mut out: PositionSums<W> = vec![Default::default(); b];
     let mut seen: Vec<std::collections::BTreeMap<Key<W>, usize>> = vec![Default::default(); b];
     let mut most = 0;
@@ -310,12 +310,12 @@ fn assert_position_sums_close<const W: usize>(
     }
 }
 
-fn host_block_cols<const W: usize>(b: &ExchangeBlock<W>) -> BlockCols<W> {
-    let (x, z, c) = b.cols();
+fn host_block_cols<const W: usize>(b: &ExchangeBlock<W>) -> BlockColumns<W> {
+    let (x, z, c) = b.columns();
     (b.offsets.clone(), x.to_vec(), z.to_vec(), c.to_vec())
 }
 
-fn device_block_cols<const W: usize>(s: &Arc<CudaStream>, b: &DeviceBlock<W>) -> BlockCols<W> {
+fn device_block_cols<const W: usize>(s: &Arc<CudaStream>, b: &DeviceBlock<W>) -> BlockColumns<W> {
     let (x, z, c) = download(s, b);
     let x: Vec<[u64; W]> = x.chunks(W).map(|w| w.try_into().unwrap()).collect();
     let z: Vec<[u64; W]> = z.chunks(W).map(|w| w.try_into().unwrap()).collect();
@@ -349,7 +349,7 @@ fn premerge_matches_host_by_key<const W: usize>(
                     continue;
                 };
                 assert_eq!(g.blocks.len(), w.blocks.len(), "{what}: blocks to {q}");
-                let g: Vec<BlockCols<W>> = g
+                let g: Vec<BlockColumns<W>> = g
                     .blocks
                     .iter()
                     .map(|b| {

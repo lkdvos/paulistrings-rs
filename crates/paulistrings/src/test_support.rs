@@ -976,15 +976,16 @@ pub fn with_zero_coefficients<const W: usize>(sum: &PauliSum<W>, every: usize) -
     let buckets = (0..sum.num_buckets())
         .map(|b| {
             let (x, z, c) = sum.bucket(b);
-            let mut cols = crate::pauli_sum::storage::BucketColumns::<W>::default();
-            cols.x.extend_from_slice(x);
-            cols.z.extend_from_slice(z);
+            let mut columns = crate::pauli_sum::storage::BucketColumns::<W>::default();
+            columns.x.extend_from_slice(x);
+            columns.z.extend_from_slice(z);
             for &c in c {
-                cols.coeff
+                columns
+                    .coeff
                     .push(if i.is_multiple_of(every) { ZERO } else { c });
                 i += 1;
             }
-            cols
+            columns
         })
         .collect();
     PauliSum::from_buckets(buckets, sum.hash().clone(), sum.num_qubits())

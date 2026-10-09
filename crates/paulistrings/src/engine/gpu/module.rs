@@ -106,11 +106,11 @@ pub(crate) struct KernelSet {
     pub(crate) premerge_copy: CudaFunction,
     pub(crate) compact: CudaFunction,
     pub(crate) rescale: CudaFunction,
-    pub(crate) perm_count: CudaFunction,
-    pub(crate) perm_lens: CudaFunction,
-    pub(crate) perm_scatter: CudaFunction,
-    pub(crate) octave_hist: CudaFunction,
-    pub(crate) radix_hist: CudaFunction,
+    pub(crate) permute_count: CudaFunction,
+    pub(crate) permute_lengths: CudaFunction,
+    pub(crate) permute_scatter: CudaFunction,
+    pub(crate) octave_histogram: CudaFunction,
+    pub(crate) radix_histogram: CudaFunction,
     pub(crate) radix_extract: CudaFunction,
     pub(crate) topn_counts: CudaFunction,
     pub(crate) retain: CudaFunction,
@@ -157,7 +157,7 @@ pub(crate) fn compile_ptx(
     NVRTC_COMPILES.with(|count| count.set(count.get() + 1));
     let ptx = compile_ptx_with_opts(source.clone(), compile_options.clone()).map_err(|e| {
         GpuError::Compile {
-            w,
+            width: w,
             log: e.to_string(),
         }
     })?;
@@ -201,14 +201,14 @@ pub(crate) fn kernel_set_with_options(
     {
         return Ok(set.clone());
     }
-    let ctx = device::context(ordinal)?;
-    let (major, minor) = ctx.compute_capability().map_err(GpuError::from)?;
+    let context = device::context(ordinal)?;
+    let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
     let ptx = compile_ptx(w, &arch, extra_options)?;
-    let module = ctx.load_module(ptx).map_err(GpuError::from)?;
+    let module = context.load_module(ptx).map_err(GpuError::from)?;
     let load = |name: &str| module.load_function(name).map_err(GpuError::from);
     let threads = layer_threads(w) as usize;
-    let mut limit = ctx
+    let mut limit = context
         .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
         .map_err(GpuError::from)?
         .max(0) as usize;
@@ -262,11 +262,11 @@ pub(crate) fn kernel_set_with_options(
         premerge_copy: load("k_premerge_copy")?,
         compact: load("k_compact")?,
         rescale: load("k_rescale")?,
-        perm_count: load("k_perm_count")?,
-        perm_lens: load("k_perm_lens")?,
-        perm_scatter: load("k_perm_scatter")?,
-        octave_hist: load("k_octave_hist")?,
-        radix_hist: load("k_radix_hist")?,
+        permute_count: load("k_perm_count")?,
+        permute_lengths: load("k_perm_lens")?,
+        permute_scatter: load("k_perm_scatter")?,
+        octave_histogram: load("k_octave_hist")?,
+        radix_histogram: load("k_radix_hist")?,
         radix_extract: load("k_radix_extract")?,
         topn_counts: load("k_topn_counts")?,
         retain: load("k_retain")?,

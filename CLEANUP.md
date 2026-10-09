@@ -43,8 +43,8 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 |---|---|---|---|
 | 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | done (A/B pending) |
 | 1 | Leaf algebra | phase, rng, pauli_string | done |
-| 2 | Partition hash | pauli_sum/hash | D24–D26 implementing |
-| 3 | Storage | bucket/sum, pauli_sum, accumulator | pending |
+| 2 | Partition hash | pauli_sum/hash | done |
+| 3 | Storage | pauli_sum/{storage,partition,accumulator} | D27–D29 implementing |
 | 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | pending |
 | 5 | Channels II | channel/noise, unitary, prepared | pending |
 | 6 | Truncation | truncation/* | pending |
@@ -112,6 +112,17 @@ Chunk 2 (2026-10-09):
 - **D26** `PartitionRows::from_rows` moves to `test_support`.
 - Open design candidate for chunks 11–13: partition rows as the leading rows of one hash matrix, so remote-delta planning reuses `Gf2Span` over `p + b` bits.
 
+Chunk 3 (2026-10-09):
+
+- **D27 `overlap` aligns.** `PauliSum::overlap` aligns `other` to `self`'s partition like `add` (it asserted equal bucket counts, so Python `small.overlap(propagated)` hit a Rust panic); tests in Rust and Python.
+- **D28 Partition management is internal.** `refine`, `coarsen`, `rebucket`, `with_hash`, `bucket(b)`, `bucket_len` become crate-private (tests via `test_support`); `num_buckets` and `hash()` stay read-only.
+- **D29 Storage cleanups.** One `merge_sorted(a, b, on_equal)` two-pointer helper (overlap keeps its scalar loop); one run-merger; `with_hash` scatters then sorts per bucket instead of a global merge; one serial-or-parallel helper; `refine_bucket` takes `b` only under `debug_assertions`; accumulator sorts with `sort_unstable_by` on the derived order.
+
+### As applied, chunks 0–2 follow-ups
+
+`26595cf` D22; `74aa287` D23 (`TruncationPolicy::finalize_layer_partitioned` default + `supports_partitioned` fail-fast checked in `PartitionedSum`/`DistributedSum::propagate_on_backend` before anything detaches; `ApproxTopN`/`CollapseSample` call plain `finalize_layer` at one partition, so P=1 traces count fewer collectives; exact `TopN` now runs at P=1 and one-rank `DistributedSum`; `Collectives` in `src/collectives.rs`); `24a76d7` D24; `f3c2c3b` D25; `e8b6587` D26; `2e5ba53` CLAUDE.md GPU-per-rank recipe loads `python-mpi`/`uv`.
+Equivalence vs `b9a4878` (harness now with partitioned P = 1, 2, 4 and hash-index cases): 88 cases bitwise identical. Verified: fmt/clippy matrix, rustdoc, 739 workspace tests, `cuda` lib 674 + device nets on the A6000, pytest 485/101, `--features mpi` 741, `mpi-test.sh --ranks 2,4` Rust and `--python`.
+
 ### As applied, chunk 1
 
 `af7e971` D18 (derived order/hash checked against every sort, merge, radix and GPU key; `Pod` claims in ARCHITECTURE and README fixed; Python `.mul` unchanged), `be9c4c7` D19 (`usize` indices on string constructors, `support_mask`, every channel constructor and `support` field, `LocalPtm::qubits()` iterator, `PartitionRows::cut`, `PartitionRowPolicy`; `u32` kept in `LocalPtm.qubits` and GPU kernel args; Python: a qubit index ≥ 2^32 now raises `ValueError` from the bounds check instead of `OverflowError`), `52bceb4` D20 (five tests that only re-tested `Phase::apply` removed; 737 → 732 tests), `34fe078` D21 (`#[inline]` 164 → 7, `always` 6 → 0, `never` 2 → 1, `#[cold]` 2 → 1; `.text` probe 1,606,324 → 1,609,108, cdylib 3,007,018 → 3,016,714; bisection stopped by the user, partial per-file codegen map in the agent report).
@@ -159,6 +170,9 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - Cache the hash-independent part of a channel's prepared table (probe + masks) so a layer recomputes only `δ = H·d`; `prepare` is 4.2–5.7 µs per dense two-qubit gate and dominates small-`m` runs now that the direct path is gone (issue to open).
 
 ## Open items
+
+- A custom policy overriding `finalize_layer_partitioned` must also override `supports_partitioned` (documented; Rust cannot detect overrides).
+- `Or(TopN, …)`: `supports_partitioned` is true (Or runs no layer pass) while Python and the GPU drivers reject any `TopN` in the tree; and Or dropping its children's layer passes is itself questionable semantics (chunk 6).
 
 - Re-evaluate which `#[inline]` annotations matter by A/B. Removing them alone changed codegen in `channel/{clifford,noise,unitary}.rs`, `engine/{coset,mod}.rs` and `partitioned/export.rs` (both binaries), and in `channel/rotation.rs`, `engine/merge.rs` and `partitioned/driver.rs` (cdylib only).
 - `mpi-test.sh --python` needs `python-mpi/3.12.9` and `uv` loaded on top of the MPI module list (document in CLAUDE.md).

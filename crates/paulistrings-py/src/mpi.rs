@@ -302,8 +302,13 @@ impl MpiGpuRun {
             gather,
             device,
         } = self;
-        let mut split = MpiGpuSum::<W>::scatter_to_device(sum, transport, device, &rows)
-            .map_err(MpiGpuFailure::Gpu)?;
+        let mut split = MpiGpuSum::<W>::scatter_to_device_with(
+            sum,
+            transport,
+            device,
+            ScatterRows::Policy(rows.clone()),
+        )
+        .map_err(MpiGpuFailure::Gpu)?;
         if traced {
             split.enable_trace();
         }

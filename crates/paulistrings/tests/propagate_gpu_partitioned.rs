@@ -17,6 +17,7 @@ use paulistrings::{
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
+use paulistrings::{ScatterOptions, ScatterRows};
 
 const TOL: f64 = 1e-11;
 const THETA: f64 = 0.1;
@@ -61,8 +62,7 @@ fn config(partitions: usize) -> PartitionConfig {
 
 /// A split of `sum` over `p` partitions.
 fn split_of<const W: usize>(sum: &PauliSum<W>, p: usize) -> GpuPartitionedSum<W> {
-    let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-    GpuPartitionedSum::scatter_to_devices(sum, runtime, &config(p)).expect("scatter")
+    GpuPartitionedSum::scatter_to_devices(sum, &config(p)).expect("scatter")
 }
 
 /// One propagation and gather.
@@ -200,7 +200,7 @@ fn a_rotation_crossing_the_partition_agrees() {
     }
 }
 
-/// Cut rows: one qubit block per partition, scattered through `scatter_to_devices_with_rows`.
+/// Cut rows: one qubit block per partition, scattered through `scatter_to_devices_with`.
 #[test]
 fn cut_rows_agree() {
     require_cuda!();
@@ -215,9 +215,14 @@ fn cut_rows_agree() {
         for direction in [Direction::Forward, Direction::Heisenberg] {
             let want = propagate(&circuit, sum.clone(), &ApproxTopN(2_500), direction);
             let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-            let mut split =
-                GpuPartitionedSum::scatter_to_devices_with_rows(&sum, rows.clone(), runtime)
-                    .expect("scatter");
+            let mut split = GpuPartitionedSum::scatter_to_devices_with(
+                &sum,
+                ScatterOptions {
+                    runtime,
+                    rows: ScatterRows::Explicit(rows.clone()),
+                },
+            )
+            .expect("scatter");
             split.enable_trace();
             split
                 .propagate(&circuit, ApproxTopN(2_500), direction)
@@ -495,8 +500,14 @@ fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
     );
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices_with_rows(&input, rows, runtime).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &input,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    )
+    .expect("scatter");
     split
         .propagate(&circuit, KeepAll, Direction::Forward)
         .expect("propagate");
@@ -529,9 +540,14 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
         options,
     );
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices_with_rows(&input, rows_reading_z63(), runtime)
-            .expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &input,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows_reading_z63()),
+        },
+    )
+    .expect("scatter");
     split.set_layer_options(GpuLayerOptions {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
         ..GpuLayerOptions::default()
@@ -594,8 +610,14 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
         Direction::Forward,
     );
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split = GpuPartitionedSum::scatter_to_devices_with_rows(&sum, rows.clone(), runtime)
-        .expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows.clone()),
+        },
+    )
+    .expect("scatter");
     split.enable_trace();
     split
         .propagate(&circuit, ApproxTopN(4_000), Direction::Forward)
@@ -630,8 +652,14 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     circuit.push(Clifford2Q::cnot(12, 14));
     circuit.push(zz_rotation::<1>(3, 5, 0.25));
     let runtime = PartitionRuntime::new(&config(4)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices_with_rows(&sum, rows, runtime).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    )
+    .expect("scatter");
     split.enable_trace();
     split
         .propagate(&circuit, ApproxTopN(6_000), Direction::Forward)

@@ -15,7 +15,10 @@ use crate::engine::partitioned::driver::scatter_local;
 use crate::engine::partitioned::transport::Collectives;
 #[cfg(feature = "phase-timing")]
 use crate::engine::partitioned::PartitionPhaseStats;
-use crate::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum, Placement};
+use crate::engine::partitioned::{
+    PartitionConfig, PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement,
+    ScatterOptions, ScatterRows,
+};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
@@ -154,37 +157,37 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         )
     }
 
-    /// Splits `sum` across `runtime`'s device partitions, deriving the partition rows from `config` as [`PartitionedSum::scatter`] does.
+    /// Splits `sum` across the device partitions `config` places, by seeded rows as [`PartitionedSum::scatter`] draws them.
     ///
     /// # Errors
     ///
-    /// [`GpuError::Unsupported`] if a slot of `runtime` names no device, and any device error of the uploads.
+    /// [`GpuError::Topology`] if `config` does not resolve, [`GpuError::Unsupported`] if a slot names no device, and any device error of the uploads.
     pub fn scatter_to_devices(
         sum: &PauliSum<W>,
-        runtime: Arc<PartitionRuntime>,
         config: &PartitionConfig,
     ) -> Result<Self, GpuError> {
-        let seed = config
-            .partition_row_seed
-            .unwrap_or_else(|| sum.hash().seed());
-        let rows = PartitionRows::<W>::from_seed(sum.num_qubits(), runtime.partition_bits(), seed);
-        Self::scatter_to_devices_with_rows(sum, rows, runtime)
+        let options = ScatterOptions {
+            runtime: PartitionRuntime::new(config).map_err(GpuError::Topology)?,
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config.partition_row_seed)),
+        };
+        Self::scatter_to_devices_with(sum, options)
     }
 
-    /// Splits `sum` across `runtime`'s device partitions with caller-supplied rows.
+    /// [`scatter_to_devices`](Self::scatter_to_devices) onto a caller-built runtime, split by the rows `options` names.
     ///
     /// # Errors
     ///
-    /// As [`Self::scatter_to_devices`].
+    /// As [`Self::scatter_to_devices`], [`GpuError::Topology`] aside.
     ///
     /// # Panics
     ///
-    /// If `rows` does not name the runtime's partition count or the sum's qubit count.
-    pub fn scatter_to_devices_with_rows(
+    /// If the rows do not name the runtime's partition count or the sum's qubit count.
+    pub fn scatter_to_devices_with(
         sum: &PauliSum<W>,
-        rows: PartitionRows<W>,
-        runtime: Arc<PartitionRuntime>,
+        options: ScatterOptions<W>,
     ) -> Result<Self, GpuError> {
+        let ScatterOptions { runtime, rows } = options;
+        let rows = rows.resolve(sum, runtime.partition_bits());
         Self::upload(sum, rows, runtime, &[])
     }
 
@@ -391,8 +394,7 @@ pub fn propagate_gpu_partitioned<const W: usize>(
     direction: Direction,
     config: &PartitionConfig,
 ) -> Result<PauliSum<W>, GpuError> {
-    let runtime = PartitionRuntime::new(config).map_err(GpuError::Topology)?;
-    let mut split = GpuPartitionedSum::scatter_to_devices(sum, runtime, config)?;
+    let mut split = GpuPartitionedSum::scatter_to_devices(sum, config)?;
     split.propagate(circuit, policy, direction)?;
     split.gather()
 }

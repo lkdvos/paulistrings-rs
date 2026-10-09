@@ -157,7 +157,13 @@ fn partitioned_stats_are_attributed() {
     let config = unpinned_partitions(2, 1, 0x51A75);
     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
     let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
-    let mut split = PartitionedSum::scatter_with_rows(sum, rows, runtime);
+    let mut split = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    );
 
     let started = std::time::Instant::now();
     split.propagate(&circuit, &KeepAll, Direction::Forward);

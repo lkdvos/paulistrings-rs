@@ -316,7 +316,7 @@ fn exact_top_n_edge_cases_match_the_host() {
 fn exact_top_n_is_unsupported_above_one_partition() {
     require_cuda!();
     use paulistrings::gpu::GpuPartitionedSum;
-    use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
+    use paulistrings::{PartitionConfig, Placement};
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
@@ -327,9 +327,7 @@ fn exact_top_n_is_unsupported_above_one_partition() {
         },
         ..PartitionConfig::default()
     };
-    let runtime = PartitionRuntime::new(&config).expect("runtime");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices(&input, runtime, &config).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices(&input, &config).expect("scatter");
     let r = split.propagate(&circuit, T::TopN(10), Direction::Forward);
     assert!(
         matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),

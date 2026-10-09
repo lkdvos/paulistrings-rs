@@ -16,11 +16,11 @@ fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
                 .map(|t| {
                     let input = &input;
                     s.spawn(move || {
-                        GpuDistributedSum::scatter_to_device(
+                        GpuDistributedSum::scatter_to_device_with(
                             input,
                             t,
                             0,
-                            &PartitionRowPolicy::Seeded(Some(0x5EED)),
+                            ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(0x5EED))),
                         )
                         .map(|_| ())
                     })
@@ -620,7 +620,7 @@ mod protocol {
 }
 
 impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
-    /// [`scatter_to_device_with_rows`](Self::scatter_to_device_with_rows) exchanging over `wire`, this rank's of an in-process group, instead of NCCL (test hook).
+    /// [`scatter_to_device_with`](Self::scatter_to_device_with) exchanging over `wire`, this rank's of an in-process group, instead of NCCL (test hook).
     pub(crate) fn scatter_with_wire(
         sum: &PauliSum<W>,
         transport: X,

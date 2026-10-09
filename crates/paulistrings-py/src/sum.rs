@@ -15,7 +15,8 @@ use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, EngineSelection, GateTrace, LayerScratch,
     PartitionConfig, PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace,
     PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis, ProductState,
-    PropagateOptions, RotationAxis, StabilizerState, TopologyError, DEFAULT_SMALL_SUM_THRESHOLD,
+    PropagateOptions, RotationAxis, ScatterOptions, ScatterRows, StabilizerState, TopologyError,
+    DEFAULT_SMALL_SUM_THRESHOLD,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -1083,9 +1084,13 @@ impl RunMode {
                 // The runtime (and its pinned pools) is cached per config, so
                 // a Trotter loop of many short calls builds it once.
                 let runtime = runtime_for(&config).map_err(PropagateFailure::Topology)?;
-                let bits = runtime.num_partitions().trailing_zeros() as u8;
-                let rows = rows.rows::<W>(sum.num_qubits(), bits, sum.hash().seed());
-                let mut split = PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime);
+                let mut split = PartitionedSum::scatter_with(
+                    sum.clone(),
+                    ScatterOptions {
+                        runtime,
+                        rows: ScatterRows::Policy(rows.clone()),
+                    },
+                );
                 if traced {
                     split.enable_trace();
                 }
@@ -1143,9 +1148,13 @@ fn run_devices<const W: usize>(
     use paulistrings::gpu::GpuPartitionedSum;
     // Cached like a host runtime: each slot's pool binds its device context once, not per call.
     let runtime = runtime_for(config).map_err(PropagateFailure::Topology)?;
-    let bits = runtime.num_partitions().trailing_zeros() as u8;
-    let rows = rows.rows::<W>(sum.num_qubits(), bits, sum.hash().seed());
-    let split = GpuPartitionedSum::scatter_to_devices_with_rows(sum, rows, runtime);
+    let split = GpuPartitionedSum::scatter_to_devices_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Policy(rows.clone()),
+        },
+    );
     let mut split = split.map_err(PropagateFailure::Gpu)?;
     if traced {
         split.enable_trace();

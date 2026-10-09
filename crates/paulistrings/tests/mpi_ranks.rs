@@ -240,11 +240,11 @@ impl Runner<'_> {
             Backend::Device => {
                 use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
                 let device = local_device_for_comm(self.world).expect("a device on every rank");
-                let mut split = MpiGpuSum::scatter_to_device(
+                let mut split = MpiGpuSum::scatter_to_device_with(
                     sum,
                     transport,
                     device,
-                    &PartitionRowPolicy::Seeded(Some(seed)),
+                    ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(seed))),
                 )
                 .expect("device scatter");
                 assert_eq!(split.device(), device);
@@ -955,11 +955,11 @@ mod device {
 
         // A group of more than one rank needs NCCL on distinct devices; where the ranks share one, or cannot load NCCL, every rank must fail the scatter alike.
         let device = local_device_for_comm(r.world).expect("a device on every rank");
-        let started = MpiGpuSum::<1>::scatter_to_device(
+        let started = MpiGpuSum::<1>::scatter_to_device_with(
             &rand_sum::<1>(50, 8, 0xB0FF),
             MpiTransport::from_communicator(r.world),
             device,
-            &PartitionRowPolicy::Seeded(Some(SEED)),
+            ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(SEED))),
         )
         .map(|_| ());
         let failed = count(r, started.is_err());

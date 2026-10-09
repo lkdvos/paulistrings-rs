@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use super::backend::{PartitionBackend, PartitionStorage};
 use super::plan::PartitionPlan;
-use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{record_layer_row, PartitionLayerRow};
 use super::transport::{Collectives, Transport};
@@ -276,7 +275,7 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
 
 /// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
 ///
-/// A caller propagating repeatedly should hold a [`PartitionRuntime`] and a [`PartitionedSum`] instead, so pools, split and scratch survive between calls.
+/// A caller propagating repeatedly should hold a [`PartitionRuntime`](super::runtime::PartitionRuntime) and a [`PartitionedSum`] instead, so pools, split and scratch survive between calls.
 /// [`EngineSelection`](crate::EngineSelection) in `options` is ignored.
 ///
 /// # Errors
@@ -294,8 +293,7 @@ pub fn propagate_partitioned<const W: usize, T>(
 where
     T: PartitionedTruncation<W> + ?Sized,
 {
-    let runtime = PartitionRuntime::new(config)?;
-    let mut split = PartitionedSum::scatter(sum, runtime, config);
+    let mut split = PartitionedSum::scatter(sum, config)?;
     split.propagate_with(circuit, policy, direction, options);
     Ok(split.into_gathered())
 }

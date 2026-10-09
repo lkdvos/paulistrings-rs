@@ -6,9 +6,10 @@ use std::time::Instant;
 use num_complex::Complex64;
 
 use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
+use super::distributed::{PartitionRowPolicy, ScatterOptions, ScatterRows};
 use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, LOG_TARGET};
 use super::runtime::PartitionRuntime;
-use super::topology::PartitionConfig;
+use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
 use super::truncation::PartitionedTruncation;
 use crate::circuit::Circuit;
@@ -208,34 +209,32 @@ impl<const W: usize, B: PartitionStorage<W>> PartitionedSum<W, B> {
 }
 
 impl<const W: usize> PartitionedSum<W> {
-    /// Splits `sum` across `runtime`'s partitions, with rows from [`PartitionRows::from_seed`] at `config.partition_row_seed` or else the sum's hash seed.
+    /// Splits `sum` across the partitions `config` places, by seeded rows ([`PartitionRowPolicy::Seeded`] at `config.partition_row_seed`).
+    ///
+    /// # Errors
+    ///
+    /// [`TopologyError`] if `config` cannot be resolved or a pool cannot be built.
     ///
     /// # Panics
     ///
     /// In debug builds, if the partition rows are not independent of the sum's hash rows.
-    pub fn scatter(
-        sum: PauliSum<W>,
-        runtime: Arc<PartitionRuntime>,
-        config: &PartitionConfig,
-    ) -> Self {
-        let seed = config
-            .partition_row_seed
-            .unwrap_or_else(|| sum.hash().seed());
-        let rows = PartitionRows::<W>::from_seed(sum.num_qubits(), runtime.partition_bits(), seed);
-        Self::scatter_with_rows(sum, rows, runtime)
+    pub fn scatter(sum: PauliSum<W>, config: &PartitionConfig) -> Result<Self, TopologyError> {
+        let options = ScatterOptions {
+            runtime: PartitionRuntime::new(config)?,
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config.partition_row_seed)),
+        };
+        Ok(Self::scatter_with(sum, options))
     }
 
-    /// Splits `sum` across `runtime`'s partitions using caller-supplied rows; at `P = 1` the scatter changes nothing.
+    /// [`scatter`](Self::scatter) onto a caller-built runtime, split by the rows `options` names; at `P = 1` the scatter changes nothing.
     ///
     /// # Panics
     ///
-    /// If `rows.num_partitions()` is not the runtime's partition count.
+    /// If the rows do not name the runtime's partition count, or as [`PartitionRows::cut`].
     /// In debug builds, if the rows are not independent of the sum's hash rows, which costs load balance but not correctness.
-    pub fn scatter_with_rows(
-        sum: PauliSum<W>,
-        rows: PartitionRows<W>,
-        runtime: Arc<PartitionRuntime>,
-    ) -> Self {
+    pub fn scatter_with(sum: PauliSum<W>, options: ScatterOptions<W>) -> Self {
+        let ScatterOptions { runtime, rows } = options;
+        let rows = rows.resolve(&sum, runtime.partition_bits());
         let size = runtime.num_partitions();
         rows.assert_splits(sum.hash(), sum.num_qubits(), size);
 

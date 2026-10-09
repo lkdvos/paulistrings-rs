@@ -125,7 +125,7 @@ A rank that cannot use its device fails the call on every rank, the peers raisin
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
+use paulistrings::{PartitionConfig, Placement};
 use paulistrings::gpu::GpuPartitionedSum;
 
 let config = PartitionConfig {
@@ -133,8 +133,7 @@ let config = PartitionConfig {
     bind_memory: false,
     partition_row_seed: None,
 };
-let runtime = PartitionRuntime::new(&config)?;
-let mut split = GpuPartitionedSum::scatter_to_devices(&observable, runtime, &config)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&observable, &config)?;
 split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 ```

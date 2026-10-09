@@ -10,6 +10,7 @@ use paulistrings::{
 use paulistrings::{ApproxTopN, CoefficientThreshold};
 use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
+use paulistrings::{PartitionRowPolicy, ScatterOptions, ScatterRows};
 
 const TOL: f64 = 1e-11;
 const NQ: usize = 16;
@@ -47,7 +48,13 @@ fn a_held_sum_propagates_across_calls() {
     let once = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     let twice = propagate(&circuit, once.clone(), &KeepAll, Direction::Forward);
 
-    let mut ps = PartitionedSum::scatter(sum, runtime.clone(), &config(4));
+    let mut ps = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime: runtime.clone(),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config(4).partition_row_seed)),
+        },
+    );
     assert_eq!(ps.num_partitions(), 4);
     ps.assert_invariants();
 
@@ -98,7 +105,13 @@ fn a_runtime_serves_more_than_one_sum() {
             &CoefficientThreshold(1e-10),
             Direction::Heisenberg,
         );
-        let mut ps = PartitionedSum::scatter(sum, runtime.clone(), &cfg);
+        let mut ps = PartitionedSum::scatter_with(
+            sum,
+            ScatterOptions {
+                runtime: runtime.clone(),
+                rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(cfg.partition_row_seed)),
+            },
+        );
         ps.propagate(
             &circuit,
             &CoefficientThreshold(1e-10),
@@ -122,7 +135,13 @@ fn explicit_rows_may_be_lopsided() {
     // One row seeing only qubit 13's `x` bit: a term is in partition 1 only if
     // it carries `X` or `Y` there — roughly one term in twelve.
     let rows = PartitionRows::<1>::from_rows(NQ, vec![[1u64 << 13]], vec![[0u64]]);
-    let mut ps = PartitionedSum::scatter_with_rows(sum, rows, runtime);
+    let mut ps = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    );
     ps.assert_invariants();
     assert!(
         ps.partition(0).len() > ps.partition(1).len(),
@@ -139,8 +158,8 @@ fn explicit_rows_may_be_lopsided() {
 /// An empty sum scatters, propagates and gathers.
 #[test]
 fn an_empty_sum_is_a_valid_partitioned_sum() {
-    let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
-    let mut ps = PartitionedSum::scatter(PauliSum::<1>::empty(NQ), runtime, &config(4));
+    let mut ps =
+        PartitionedSum::scatter(PauliSum::<1>::empty(NQ), &config(4)).expect("topology resolves");
     assert!(ps.is_empty());
     assert_eq!(ps.len(), 0);
     ps.assert_invariants();
@@ -168,7 +187,13 @@ fn echo_read_outs_agree_with_or_without_excluded_rows() {
             PartitionRows::<1>::from_seed(NQ, 2, 0xEC43),
         ] {
             let excluded = rows.avoids(&mx, &mz);
-            let mut ps = PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime.clone());
+            let mut ps = PartitionedSum::scatter_with(
+                sum.clone(),
+                ScatterOptions {
+                    runtime: runtime.clone(),
+                    rows: ScatterRows::Explicit(rows),
+                },
+            );
             ps.propagate(&circuit(), &KeepAll, Direction::Heisenberg);
             let got = ps.rotated_overlap(&sites, 0.3, axis);
             assert!(

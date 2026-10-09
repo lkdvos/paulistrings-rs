@@ -132,7 +132,6 @@ Built with both `mpi` and `cuda`, the Rust driver `gpu::MpiGpuSum` holds each ra
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::PartitionRowPolicy;
 use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 
@@ -140,7 +139,7 @@ let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialize
 let world = universe.world();
 let device = local_device_for_comm(&world)?;
 let transport = MpiTransport::from_communicator(&world);
-let mut split = MpiGpuSum::<2>::scatter_to_device(&observable, transport, device, &PartitionRowPolicy::Seeded(None))?;
+let mut split = MpiGpuSum::<2>::scatter_to_device(&observable, transport, device)?;
 split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 if let Some(evolved) = split.gather()? {
     println!("{} terms", evolved.len());

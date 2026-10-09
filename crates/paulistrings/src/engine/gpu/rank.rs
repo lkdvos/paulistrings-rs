@@ -12,7 +12,7 @@ use crate::engine::partitioned::distributed::{gather_share, group_bits};
 use crate::engine::partitioned::transport::{Collectives, Transport};
 #[cfg(feature = "phase-timing")]
 use crate::engine::partitioned::PartitionPhaseStats;
-use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy};
+use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy, ScatterRows};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
@@ -66,7 +66,7 @@ pub type GpuDistributedSum<const W: usize, X> = DistributedSum<W, X, DeviceParti
 pub type MpiGpuSum<const W: usize> = GpuDistributedSum<W, MpiTransport>;
 
 impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
-    /// Split the replicated `sum` across `transport`'s group by the rows `policy` names, and upload this rank's share to `device`. **Collective.**
+    /// Split the replicated `sum` across `transport`'s group by seeded rows ([`PartitionRowPolicy::Seeded`] at the sum's own hash seed), and upload this rank's share to `device`. **Collective.**
     ///
     /// # Errors
     ///
@@ -74,22 +74,21 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     ///
     /// # Panics
     ///
-    /// If the group size is not a power of two, and as [`PartitionRows::cut`] for a [`Cut`](PartitionRowPolicy::Cut) policy.
+    /// If the group size is not a power of two.
     pub fn scatter_to_device(
         sum: &PauliSum<W>,
         transport: X,
         device: u32,
-        policy: &PartitionRowPolicy,
     ) -> Result<Self, GpuError> {
-        let rows = policy.rows(
-            sum.num_qubits(),
-            group_bits(transport.size()),
-            sum.hash().seed(),
-        );
-        Self::scatter_to_device_with_rows(sum, transport, device, rows)
+        Self::scatter_to_device_with(
+            sum,
+            transport,
+            device,
+            ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
+        )
     }
 
-    /// [`scatter_to_device`](Self::scatter_to_device) with caller-supplied rows, which every rank must pass identically. **Collective.**
+    /// [`scatter_to_device`](Self::scatter_to_device) split by the rows `rows` names; [`ScatterRows::Explicit`] rows must be the same on every rank. **Collective.**
     ///
     /// # Errors
     ///
@@ -97,13 +96,14 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     ///
     /// # Panics
     ///
-    /// If `rows` does not name one partition per rank or is for a different qubit count than `sum`.
-    pub fn scatter_to_device_with_rows(
+    /// If the group size is not a power of two, if the rows do not name one partition per rank or are for a different qubit count than `sum`, or as [`PartitionRows::cut`].
+    pub fn scatter_to_device_with(
         sum: &PauliSum<W>,
         transport: X,
         device: u32,
-        rows: PartitionRows<W>,
+        rows: ScatterRows<W>,
     ) -> Result<Self, GpuError> {
+        let rows = rows.resolve(sum, group_bits(transport.size()));
         Self::scatter_then(sum, transport, device, rows, start_exchange)
     }
 
@@ -350,12 +350,7 @@ pub fn propagate_mpi_gpu<const W: usize>(
         None => local_device_for_comm(comm),
     };
     let device = agree(&transport, picked)?;
-    let mut split = MpiGpuSum::<W>::scatter_to_device(
-        sum,
-        transport,
-        device,
-        &PartitionRowPolicy::Seeded(None),
-    )?;
+    let mut split = MpiGpuSum::<W>::scatter_to_device(sum, transport, device)?;
     split.propagate_with(circuit, policy, direction, options)?;
     split.gather()
 }

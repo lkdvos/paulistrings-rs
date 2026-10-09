@@ -31,6 +31,7 @@ use paulistrings::{
     CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum,
     PartitionedTruncation, Placement,
 };
+use paulistrings::{ScatterOptions, ScatterRows};
 
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
@@ -1481,8 +1482,14 @@ fn run_cell_gpu<const W: usize>(
     let hash_seed = base.hash().seed();
 
     let started = Instant::now();
-    let mut split = GpuPartitionedSum::scatter_to_devices_with_rows(&base, rows, runtime)
-        .unwrap_or_else(|e| fail("scatter", e));
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &base,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    )
+    .unwrap_or_else(|e| fail("scatter", e));
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
@@ -1941,7 +1948,13 @@ where
     };
 
     let split_hash_seed = base.hash().seed();
-    let mut split = PartitionedSum::scatter_with_rows(base, rows, runtime);
+    let mut split = PartitionedSum::scatter_with(
+        base,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    );
     split.enable_trace();
 
     // Untimed warm-up, then its counters discarded — same contract as the unpartitioned cell.
@@ -2012,7 +2025,7 @@ where
     P: PartitionedTruncation<W>,
 {
     use paulistrings::mpi::{rsmpi, MpiTransport};
-    use paulistrings::{Collectives, DistributedSum, ScatterOptions, ScatterRows};
+    use paulistrings::{Collectives, DistributedSum};
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
     let world = SimpleCommunicator::world();
@@ -2212,8 +2225,9 @@ fn run_cell_mpi_gpu<const W: usize>(
 
     let transport = MpiTransport::from_communicator(&world);
     let started = Instant::now();
-    let mut split = MpiGpuSum::scatter_to_device_with_rows(&base, transport, device, rows)
-        .unwrap_or_else(|e| fail("scatter", e));
+    let mut split =
+        MpiGpuSum::scatter_to_device_with(&base, transport, device, ScatterRows::Explicit(rows))
+            .unwrap_or_else(|e| fail("scatter", e));
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();

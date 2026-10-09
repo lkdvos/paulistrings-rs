@@ -26,6 +26,7 @@ use paulistrings::{
     PropagateOptions,
 };
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum};
+use paulistrings::{ScatterOptions, ScatterRows};
 
 const NQ: usize = 32;
 const TOL: f64 = 1e-11;
@@ -88,8 +89,13 @@ fn total(trace: &PartitionTrace) -> usize {
 fn exchange_free_layers_are_collective_free() {
     let circuit = steps(2, 0.1);
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
-    let mut ps =
-        PartitionedSum::scatter_with_rows(rand_sum_real::<1>(600, NQ, 0xC01), cut_rows(), runtime);
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum_real::<1>(600, NQ, 0xC01),
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(cut_rows()),
+        },
+    );
     ps.enable_trace();
     ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
@@ -132,10 +138,12 @@ fn exchange_free_layers_are_collective_free() {
 fn one_partition_takes_no_collective_and_still_rebuckets() {
     let circuit = steps(2, 0.1);
     let runtime = PartitionRuntime::new(&config(1)).expect("topology resolves");
-    let mut ps = PartitionedSum::scatter_with_rows(
+    let mut ps = PartitionedSum::scatter_with(
         rand_sum_real::<1>(400, NQ, 0xC02),
-        PartitionRows::<1>::none(NQ),
-        runtime,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(PartitionRows::<1>::none(NQ)),
+        },
     );
     let before = ps.bits();
     ps.enable_trace();
@@ -205,7 +213,13 @@ fn a_remote_layer_after_a_long_local_run_agrees_first() {
     circuit.push(zz_rotation::<1>(15, 16, 0.41));
 
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
-    let mut ps = PartitionedSum::scatter_with_rows(lopsided_start(), cut_rows(), runtime);
+    let mut ps = PartitionedSum::scatter_with(
+        lopsided_start(),
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(cut_rows()),
+        },
+    );
     ps.enable_trace();
     ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
@@ -261,7 +275,13 @@ fn the_lagged_schedule_still_matches_propagate() {
                 PartitionRows::<1>::cut(NQ, &quarters)
             };
             let runtime = PartitionRuntime::new(&config(p)).expect("topology resolves");
-            let mut ps = PartitionedSum::scatter_with_rows(sum.clone(), rows, runtime);
+            let mut ps = PartitionedSum::scatter_with(
+                sum.clone(),
+                ScatterOptions {
+                    runtime,
+                    rows: ScatterRows::Explicit(rows),
+                },
+            );
             ps.propagate(&circuit, &policy, direction);
             let got = ps.into_gathered();
             let what = format!("P={p} {direction:?}");

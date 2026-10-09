@@ -79,22 +79,32 @@ impl PartitionRowPolicy {
     }
 }
 
-/// How [`DistributedSum::scatter_with`] runs this rank's partition and picks the rows the group splits by.
+/// How a `scatter_with` runs its partitions and picks the rows the sum splits by.
 #[derive(Clone)]
 pub struct ScatterOptions<const W: usize> {
-    /// The one-partition runtime, reusable across sums.
+    /// The runtime the partitions run on, reusable across sums; one partition for a [`DistributedSum`].
     pub runtime: Arc<PartitionRuntime>,
     /// The partition rows the group splits by.
     pub rows: ScatterRows<W>,
 }
 
-/// The partition rows a [`DistributedSum::scatter_with`] splits by.
+/// The partition rows a `scatter_with` splits by.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScatterRows<const W: usize> {
-    /// The rows a policy draws for the group's size, falling back to the sum's own hash seed.
+    /// The rows a policy draws for the partition count, falling back to the sum's own hash seed.
     Policy(PartitionRowPolicy),
-    /// Rows the caller built; every rank must pass the same ones.
+    /// Rows the caller built; in a distributed group every rank must pass the same ones.
     Explicit(PartitionRows<W>),
+}
+
+impl<const W: usize> ScatterRows<W> {
+    /// The rows for `2^bits` partitions of `sum`.
+    pub(crate) fn resolve(self, sum: &PauliSum<W>, bits: u8) -> PartitionRows<W> {
+        match self {
+            Self::Policy(policy) => policy.rows(sum.num_qubits(), bits, sum.hash().seed()),
+            Self::Explicit(rows) => rows,
+        }
+    }
 }
 
 /// `log2(size)`, the partition bits of a group; panics unless `size` is a power of two.
@@ -377,14 +387,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// In debug builds, if the rows are not independent of the sum's hash rows.
     pub fn scatter_with(sum: PauliSum<W>, transport: X, options: ScatterOptions<W>) -> Self {
         let ScatterOptions { runtime, rows } = options;
-        let rows = match rows {
-            ScatterRows::Policy(policy) => policy.rows(
-                sum.num_qubits(),
-                group_bits(transport.size()),
-                sum.hash().seed(),
-            ),
-            ScatterRows::Explicit(rows) => rows,
-        };
+        let rows = rows.resolve(&sum, group_bits(transport.size()));
         assert_eq!(
             runtime.num_partitions(),
             1,

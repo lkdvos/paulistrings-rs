@@ -10,7 +10,7 @@ pub const DEFAULT_RECORDS_PER_BLOCK: usize = 4096;
 /// Default cap on the loose output arena, in bytes.
 pub const DEFAULT_ARENA_BYTES: usize = 4 << 30;
 
-/// How the device chooses its bucket count before a layer; grow-only either way, as [`PauliSum::rebucket`](crate::PauliSum::rebucket).
+/// How the device chooses its bucket count before a layer; grow-only either way, as on the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuBucketPolicy {
     /// `fanout × terms per bucket ≈ target`, so a fused block sees about `target` records whatever the channel's fanout.

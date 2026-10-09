@@ -11,7 +11,7 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhaseStats {
     // -- wall-clock, once per layer, on the calling thread --
-    /// `PauliSum::rebucket` before each layer.
+    /// The grow-only rebucket before each layer.
     pub rebucket_ns: u64,
     /// `Channel::prepare`.
     pub prepare_ns: u64,

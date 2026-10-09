@@ -5,7 +5,7 @@
 
 use num_complex::Complex64;
 use paulistrings::test_support::{
-    assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
+    assert_same_terms, assert_terms_close, bucket, canonical_triples, naive_apply_layer, rand_sum,
 };
 use paulistrings::{
     AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, IdentityChannel,
@@ -75,8 +75,8 @@ fn weight_cutoff_drops_high_weight_terms() {
     assert!(out.len() < input.len(), "nothing was dropped");
     for i in 0..out.len() {
         let p = PauliString::<1> {
-            x: out.bucket(0).0[i],
-            z: out.bucket(0).1[i],
+            x: bucket(&out, 0).0[i],
+            z: bucket(&out, 0).1[i],
         };
         assert!(p.weight() <= 2, "kept a weight-{} term", p.weight());
     }
@@ -104,16 +104,16 @@ fn rotation_round_trips_via_heisenberg_on_a_single_term() {
     let back = paulistrings::propagate(&circuit, fwd, &NoTruncation, Direction::Heisenberg);
     // Back to X with coefficient 1; the Y component cancels.
     let xs: Vec<usize> = (0..back.len())
-        .filter(|&i| back.bucket(0).2[i].norm() > 1e-9)
+        .filter(|&i| bucket(&back, 0).2[i].norm() > 1e-9)
         .collect();
     assert_eq!(xs.len(), 1, "expected one surviving term, got {back:?}");
     let i = xs[0];
     assert_eq!(
-        (back.bucket(0).0[i], back.bucket(0).1[i]),
+        (bucket(&back, 0).0[i], bucket(&back, 0).1[i]),
         ([0b100], [0]),
         "should be X(2)"
     );
-    assert!((back.bucket(0).2[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
+    assert!((bucket(&back, 0).2[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
 }
 
 #[test]

@@ -13,11 +13,12 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 use paulistrings::test_support::{
-    circuit_generators, count_remote_deltas, haar_su4_matrix, low_weight_sum, rand_sum,
-    GeneratorWeight, BITS_AGREE_EVERY, B_MAX_BITS, DEFAULT_HASH_SEED,
+    bucket_len, refine, with_hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+    TIMER_READ_OVERHEAD_NS,
 };
 use paulistrings::test_support::{
-    DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN, TIMER_READ_OVERHEAD_NS,
+    circuit_generators, count_remote_deltas, haar_su4_matrix, low_weight_sum, rand_sum,
+    GeneratorWeight, BITS_AGREE_EVERY, B_MAX_BITS, DEFAULT_HASH_SEED,
 };
 #[cfg(feature = "cuda")]
 use paulistrings::BuiltinTruncation;
@@ -1162,7 +1163,7 @@ struct Occupancy {
 fn occupancy_histogram<const W: usize>(sum: &PauliSum<W>, step: usize) -> Occupancy {
     let num_buckets = sum.num_buckets();
     let mut nonempty: Vec<usize> = (0..num_buckets)
-        .map(|b| sum.bucket_len(b))
+        .map(|b| bucket_len(sum, b))
         .filter(|&len| len > 0)
         .collect();
     nonempty.sort_unstable();
@@ -1276,10 +1277,10 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
         base
     } else {
         let nq = base.num_qubits();
-        base.with_hash(Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
+        with_hash(base, Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
     };
     while base.hash().bits() < cfg.bucket_bits {
-        base.refine();
+        refine(&mut base);
     }
     base
 }
@@ -1846,9 +1847,9 @@ fn reseed_hash_until_independent<const W: usize>(
             cfg.partition_rows.label(),
             layer.name(),
         );
-        let mut base = base.with_hash(Gf2Hash::<W>::new(num_qubits, 0, candidate));
+        let mut base = with_hash(base, Gf2Hash::<W>::new(num_qubits, 0, candidate));
         while base.hash().bits() < cfg.bucket_bits {
-            base.refine();
+            refine(&mut base);
         }
         return base;
     }

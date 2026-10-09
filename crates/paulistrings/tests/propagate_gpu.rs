@@ -6,7 +6,7 @@ use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_terms_close, cancellation_channel, cancellation_sum, differential_channels_w1,
     differential_channels_w2, haar_su4_matrix, or, rand_sum, random_circuit, trotter_circuit,
-    zz_rotation, KeepAll, ShiftX, Xs64,
+    with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
@@ -474,7 +474,7 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
     // Two buckets at upload, so the driver's schedule refines before the second layer, which cannot fit at three bits.
     let input = rand_sum::<2>(4000, 128, 0xE44);
     let seed = input.hash().seed();
-    let input = input.with_hash(Gf2Hash::new(128, 1, seed));
+    let input = with_hash(input, Gf2Hash::new(128, 1, seed));
     let su4 = || GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix());
     let mut first = Circuit::<2>::new(128);
     first.push(zz_rotation::<2>(0, 1, 0.3));
@@ -772,11 +772,10 @@ fn clifford_layers_take_the_permutation_path_w2() {
 #[test]
 fn the_permutation_path_has_no_bucket_length_cap() {
     require_cuda!();
-    let input = rand_sum::<2>(20_000, 128, 0xB16).with_hash(Gf2Hash::new(
-        128,
-        0,
-        rand_sum::<2>(1, 128, 0).hash().seed(),
-    ));
+    let input = with_hash(
+        rand_sum::<2>(20_000, 128, 0xB16),
+        Gf2Hash::new(128, 0, rand_sum::<2>(1, 128, 0).hash().seed()),
+    );
     assert_eq!(input.num_buckets(), 1);
     let opts = GpuLayerOptions {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),

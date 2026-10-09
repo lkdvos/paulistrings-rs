@@ -297,14 +297,8 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Repartition under `hash`, keeping every term.
-    ///
-    /// [`Self::refine`] and [`Self::coarsen`] are cheaper when only the bucket count changes.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `hash` was built for a different qubit count.
-    pub fn with_hash(self, hash: Gf2Hash<W>) -> Self {
+    /// Repartition under `hash`, keeping every term; panics if `hash` was built for a different qubit count.
+    pub(crate) fn with_hash(self, hash: Gf2Hash<W>) -> Self {
         assert_eq!(
             self.num_qubits,
             hash.num_qubits(),
@@ -367,18 +361,18 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Borrow bucket `b`'s columns as `(x, z, coeff)`.
-    pub fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let columns = &self.buckets[b];
         (&columns.x, &columns.z, &columns.coeff)
     }
 
     /// Number of terms in bucket `b`.
-    pub fn bucket_len(&self, b: usize) -> usize {
+    pub(crate) fn bucket_len(&self, b: usize) -> usize {
         self.buckets[b].len()
     }
 
     /// Double the bucket count, splitting each bucket in two by the hash's new row.
-    pub fn refine(&mut self) {
+    pub(crate) fn refine(&mut self) {
         let old_num_buckets = self.buckets.len();
         self.hash.refine();
         let new_bit = self.hash.bits() - 1;
@@ -406,7 +400,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Halve the bucket count, merging bucket pairs `(i, i + B/2)`.
-    pub fn coarsen(&mut self) {
+    pub(crate) fn coarsen(&mut self) {
         self.hash.coarsen();
         let new_num_buckets = self.buckets.len() / 2;
 
@@ -430,10 +424,8 @@ impl<const W: usize> PauliSum<W> {
         self.buckets = merged;
     }
 
-    /// Refine until the bucket count suits `len()` terms at `target` per bucket and at least `min_buckets` buckets once the sum is large enough.
-    ///
-    /// Grow-only: it never coarsens; shrink explicitly with [`Self::with_hash`] or [`Self::coarsen`].
-    pub fn rebucket(&mut self, target: usize, min_buckets: usize) {
+    /// Refine until the bucket count suits `len()` terms at `target` per bucket, with the `min_buckets` floor once the sum is large enough; never coarsens.
+    pub(crate) fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
         let want = desired_bits(self.len, target, min_buckets).max(self.hash.bits());
         while self.hash.bits() < want {

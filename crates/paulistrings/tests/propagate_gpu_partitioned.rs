@@ -9,7 +9,8 @@ use paulistrings::require_cuda;
 use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
-    rows_reading_z63, su4_chain, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    rows_reading_z63, su4_chain, trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation,
+    KeepAll,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
@@ -528,7 +529,7 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     };
     let input = x0_terms_identity_on_q63(MAX_BUCKET_LEN + MAX_BUCKET_LEN / 2, 0xF3);
     let seed = input.hash().seed();
-    let input = input.with_hash(paulistrings::Gf2Hash::new(64, 1, seed));
+    let input = with_hash(input, paulistrings::Gf2Hash::new(64, 1, seed));
     let want = propagate_with(
         &circuit,
         input.clone(),
@@ -573,9 +574,10 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
     use paulistrings::GeneralUnitary2Q;
     // One bucket in, so the scatter keeps one bucket and the agreement stays there under the capped proposal.
     let sum = rand_sum::<1>(20_000, 10, 0x1F03);
-    let sum = sum
-        .clone()
-        .with_hash(paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()));
+    let sum = with_hash(
+        sum.clone(),
+        paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()),
+    );
     let mut circuit = Circuit::<1>::new(10);
     circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
     let mut split = split_of(&sum, 2);

@@ -93,9 +93,7 @@ impl Default for PropagateOptions {
 /// // H conjugates Z to X, so propagating Z₀ through H gives X₀.
 /// let evolved = propagate(&circuit, observable, &KeepAll, Direction::Heisenberg);
 /// assert_eq!(evolved.len(), 1);
-/// let (x, z, _c) = evolved.bucket(0);
-/// assert_eq!(x[0], [1]);
-/// assert_eq!(z[0], [0]);
+/// assert_eq!(evolved.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
 /// ```
 pub fn propagate<const W: usize, T>(
     circuit: &Circuit<W>,

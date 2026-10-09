@@ -245,7 +245,7 @@ impl<const W: usize> GpuSum<W> {
         self.context.ordinal() as u32
     }
 
-    /// Double the bucket count, as [`PauliSum::refine`]: bucket `β` splits into `β` and `β + B`, each inheriting `β`'s order.
+    /// Double the bucket count as the host sum does: bucket `β` splits into `β` and `β + B`, each inheriting `β`'s order.
     /// Returns [`GpuError::Unsupported`] at `B_MAX_BITS`.
     pub fn refine(&mut self) -> Result<(), GpuError> {
         if self.hash.bits() >= B_MAX_BITS {

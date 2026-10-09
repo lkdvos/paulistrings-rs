@@ -509,6 +509,34 @@ pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, 
     }
 }
 
+/// [`PauliSum`] repartitioned under `hash`, every term kept.
+pub fn with_hash<const W: usize>(sum: PauliSum<W>, hash: crate::Gf2Hash<W>) -> PauliSum<W> {
+    sum.with_hash(hash)
+}
+
+/// Bucket `b`'s columns as `(x, z, coeff)`.
+pub fn bucket<const W: usize>(
+    sum: &PauliSum<W>,
+    b: usize,
+) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    sum.bucket(b)
+}
+
+/// Number of terms in bucket `b`.
+pub fn bucket_len<const W: usize>(sum: &PauliSum<W>, b: usize) -> usize {
+    sum.bucket_len(b)
+}
+
+/// Double the bucket count.
+pub fn refine<const W: usize>(sum: &mut PauliSum<W>) {
+    sum.refine();
+}
+
+/// Halve the bucket count.
+pub fn coarsen<const W: usize>(sum: &mut PauliSum<W>) {
+    sum.coarsen();
+}
+
 /// Panics unless `sum` holds [`PauliSum`]'s structural invariant: every term in its hash bucket, each bucket strictly ascending in `(x, z)`, every key within `num_qubits`.
 pub fn assert_invariants<const W: usize>(sum: &PauliSum<W>) {
     sum.assert_invariants();

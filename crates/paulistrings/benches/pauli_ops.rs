@@ -11,7 +11,7 @@ use criterion::{
     PlotConfiguration, Throughput,
 };
 use num_complex::Complex64;
-use paulistrings::test_support::apply_layer_bucketed;
+use paulistrings::test_support::{apply_layer_bucketed, coarsen, refine, with_hash};
 use paulistrings::test_support::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::BuildAccumulator;
 use paulistrings::Circuit;
@@ -213,7 +213,7 @@ fn bucketed_layer_case<const W: usize, C>(
 {
     let policy = AlwaysKeep;
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len()), 0xBEEF);
-    let mut sum = input.clone().with_hash(hash);
+    let mut sum = with_hash(input.clone(), hash);
     let prep = ch
         .prepare(sum.hash(), false)
         .expect("channel could not be prepared");
@@ -290,7 +290,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     // Warm `input` to the fixed point once so every thread count clones the same steady state.
     {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut warm = input.clone().with_hash(hash);
+        let mut warm = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&rot, warm.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         for _ in 0..3 {
@@ -309,7 +309,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
             .expect("failed to build rayon pool");
         // Bucket count does not depend on thread count (ARCHITECTURE.md §Bucket-Policy).
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut sum = input.clone().with_hash(hash);
+        let mut sum = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
@@ -341,7 +341,7 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     // Warm `input` to the fixed point once so every thread count clones the same steady state.
     {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut warm = input.clone().with_hash(hash);
+        let mut warm = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&gu2q, warm.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         for _ in 0..3 {
@@ -360,7 +360,7 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
             .expect("failed to build rayon pool");
         // Same fixed bit count at every thread count as `bench_thread_scaling_bucketed`.
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut sum = input.clone().with_hash(hash);
+        let mut sum = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&gu2q, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
@@ -423,8 +423,8 @@ fn bench_rebucket(c: &mut Criterion) {
         bencher.iter_batched(
             || input.clone(),
             |mut sum| {
-                sum.refine();
-                sum.coarsen();
+                refine(&mut sum);
+                coarsen(&mut sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -450,7 +450,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     let keep = (input.len() * 4) / 5;
     group.bench_function("bucketed/keep80pct", |bencher| {
         bencher.iter_batched_ref(
-            || input.clone().with_hash(hash.clone()),
+            || with_hash(input.clone(), hash.clone()),
             |sum| {
                 paulistrings::TopN(keep).finalize_layer(sum);
                 black_box(sum.len())
@@ -479,7 +479,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     let tied_keep = (tied.len() * 4) / 5;
     group.bench_function("bucketed/tie_heavy_keep80pct", |bencher| {
         bencher.iter_batched_ref(
-            || tied.clone().with_hash(tied_hash.clone()),
+            || with_hash(tied.clone(), tied_hash.clone()),
             |sum| {
                 paulistrings::TopN(tied_keep).finalize_layer(sum);
                 black_box(sum.len())
@@ -509,7 +509,7 @@ fn bench_bucket_size_sweep(c: &mut Criterion) {
     for &bits in &[4u8, 6, 8, 10, 12, 14] {
         let per_bucket = n >> bits;
         let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
-        let mut sum = input.clone().with_hash(hash);
+        let mut sum = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_function(format!("{per_bucket}_per_bucket"), |bencher| {

@@ -42,8 +42,8 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | # | Chunk | Files | Status |
 |---|---|---|---|
 | 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | done (A/B pending) |
-| 1 | Leaf algebra | phase, rng, pauli_string | D18–D21 implementing |
-| 2 | Partition hash | bucket/hash | pending |
+| 1 | Leaf algebra | phase, rng, pauli_string | done |
+| 2 | Partition hash | pauli_sum/hash | D24–D26 implementing |
 | 3 | Storage | bucket/sum, pauli_sum, accumulator | pending |
 | 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | pending |
 | 5 | Channels II | channel/noise, unitary, prepared | pending |
@@ -100,6 +100,23 @@ Chunk 1 (2026-10-09):
 - **D20 `Phase` stays** (exact, swap-and-negate `apply`, natural return of `mul_assign`; no phase bits in the key — the coefficient carries it and the key must be the operator); `BuildAccumulator::add_term(string, coeff)` drops the `Phase` argument (66 of 71 call sites passed `Phase::ONE`).
 - **D21 `#[inline]` only where it can matter.** Remove from generic and private functions crate-wide; keep on small non-generic `pub` functions; keep `always`/`never`/`#[cold]` only with a stated reason; verified by a byte comparison of the release probe's `.text`, differences either kept with a reason or queued for A/B.
 
+Chunk 0 follow-ups (2026-10-09):
+
+- **D22 One per-layer DEBUG format.** `layer k/n [name]: a -> b terms, x ms (partition r/P, d remote deltas, m rows in)` at every P; the benchmark parser's anchored prefix still matches.
+- **D23 One truncation trait.** `finalize_layer_partitioned(&self, local, collectives)` becomes a default method of `TruncationPolicy` (one partition: `finalize_layer`; more: panic if `finalizes_layer()` and not overridden); `PartitionedTruncation` and `SoloPolicy` deleted; `Collectives` moves below `truncation` (sealed, move-only); exact `TopN` above one partition is a run-time error checked at call start, its message noting it is not yet supported. Partitioned `TopN` stays welcome later (exact selection by refining `ApproxTopN`'s all-reduced histogram).
+
+Chunk 2 (2026-10-09):
+
+- **D24 `Gf2Matrix`.** One crate-private GF(2) matrix type (draw, from rows, apply, row parity, row) under both `Gf2Hash` (`{matrix, active bits, seed}`) and `PartitionRows` (`{matrix}`); public API unchanged.
+- **D25** Drop `bucket_of_pauli` and `partition_of_pauli`; the `(x, z)` forms stay.
+- **D26** `PartitionRows::from_rows` moves to `test_support`.
+- Open design candidate for chunks 11–13: partition rows as the leading rows of one hash matrix, so remote-delta planning reuses `Gf2Span` over `p + b` bits.
+
+### As applied, chunk 1
+
+`af7e971` D18 (derived order/hash checked against every sort, merge, radix and GPU key; `Pod` claims in ARCHITECTURE and README fixed; Python `.mul` unchanged), `be9c4c7` D19 (`usize` indices on string constructors, `support_mask`, every channel constructor and `support` field, `LocalPtm::qubits()` iterator, `PartitionRows::cut`, `PartitionRowPolicy`; `u32` kept in `LocalPtm.qubits` and GPU kernel args; Python: a qubit index ≥ 2^32 now raises `ValueError` from the bounds check instead of `OverflowError`), `52bceb4` D20 (five tests that only re-tested `Phase::apply` removed; 737 → 732 tests), `34fe078` D21 (`#[inline]` 164 → 7, `always` 6 → 0, `never` 2 → 1, `#[cold]` 2 → 1; `.text` probe 1,606,324 → 1,609,108, cdylib 3,007,018 → 3,016,714; bisection stopped by the user, partial per-file codegen map in the agent report).
+Equivalence vs `b3e0b2b`: 49 cases bitwise identical. Verified: fmt/clippy matrix, rustdoc, 732 workspace tests, `cuda` 862 on the A6000, pytest 485/101, `mpi-test.sh --ranks 2,4` Rust and `--python`.
+
 ### As applied, chunk 0
 
 `fab0549` D17: direct path, `EngineSelection`, `small_sum_threshold` and Python `engine=`/`small_sum_threshold=` removed (+195/−1721, 37 files); workspace tests 758 → 737, pytest 523 → 485 passed (101 skipped).
@@ -142,6 +159,9 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - Cache the hash-independent part of a channel's prepared table (probe + masks) so a layer recomputes only `δ = H·d`; `prepare` is 4.2–5.7 µs per dense two-qubit gate and dominates small-`m` runs now that the direct path is gone (issue to open).
 
 ## Open items
+
+- Re-evaluate which `#[inline]` annotations matter by A/B. Removing them alone changed codegen in `channel/{clifford,noise,unitary}.rs`, `engine/{coset,mod}.rs` and `partitioned/export.rs` (both binaries), and in `channel/rotation.rs`, `engine/merge.rs` and `partitioned/driver.rs` (cdylib only).
+- `mpi-test.sh --python` needs `python-mpi/3.12.9` and `uv` loaded on top of the MPI module list (document in CLAUDE.md).
 
 - `ApproxTopN` wipes a sum whose top octave alone exceeds `n` to empty (documented contract; seen at 1e5-start cases with `ApproxTopN(4000)`): surprising behaviour to revisit in chunk 6.
 - `benchmarks/python/jl_performance/README.md` and `post-optimization-auto/` still describe `engine="auto"` as historical records (chunk 23).

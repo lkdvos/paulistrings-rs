@@ -1,10 +1,13 @@
 //! `PartitionTrace`: the opt-in per-layer record of a partitioned run.
 
-use paulistrings::bucket::desired_bits;
-use paulistrings::channel::{Clifford1Q, Clifford2Q, PauliRotation};
-use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, PartitionedSum};
-use paulistrings::test_support::{low_weight_sum, rand_sum, unpinned_partitions, KeepAll};
+use paulistrings::test_support::desired_bits;
+use paulistrings::test_support::{
+    low_weight_sum, partition_rows, rand_sum, unpinned_partitions, KeepAll,
+};
 use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
+use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
+use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
+use paulistrings::{ScatterOptions, ScatterRows};
 
 const NQ: usize = 16;
 
@@ -40,13 +43,13 @@ fn wide_gen() -> PauliString<1> {
 /// One row seeing the `x` bit of qubit 0, which [`wide_gen`] carries: the
 /// generator pass is remote at every rank.
 fn rows_seeing_qubit_0_x() -> PartitionRows<1> {
-    PartitionRows::<1>::from_rows(NQ, vec![[1u64]], vec![[0u64]])
+    partition_rows::<1>(NQ, vec![[1u64]], vec![[0u64]])
 }
 
 #[test]
 fn tracing_is_off_by_default() {
-    let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x1), runtime, &config(2));
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x1), &config(2))
+        .expect("topology resolves");
     ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     assert!(ps.take_trace().is_none(), "no trace unless asked for");
 }
@@ -55,9 +58,9 @@ fn tracing_is_off_by_default() {
 /// diagonal of `rows_sent` is zero, and draining leaves tracing on.
 #[test]
 fn a_trace_records_every_layer() {
-    let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
     let circuit = circuit();
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x2), runtime, &config(4));
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x2), &config(4))
+        .expect("topology resolves");
     ps.enable_trace();
     ps.enable_trace(); // idempotent
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
@@ -124,7 +127,13 @@ fn total_rows_exchanged_counts_the_anticommuting_terms() {
         .count() as u64;
     assert!(anticommuting > 0 && anticommuting < sum.len() as u64);
 
-    let mut ps = PartitionedSum::scatter_with_rows(sum, rows_seeing_qubit_0_x(), runtime);
+    let mut ps = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()),
+        },
+    );
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -138,15 +147,15 @@ fn total_rows_exchanged_counts_the_anticommuting_terms() {
 /// A key-preserving layer crosses nothing and makes no transport call.
 #[test]
 fn a_key_preserving_layer_is_local() {
-    use paulistrings::channel::Depolarizing;
+    use paulistrings::Depolarizing;
 
-    let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut circuit = Circuit::<1>::new(NQ);
     circuit.push(Depolarizing {
         support: [3],
         p: 0.1,
     });
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x4), runtime, &config(2));
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x4), &config(2))
+        .expect("topology resolves");
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -158,8 +167,8 @@ fn a_key_preserving_layer_is_local() {
 /// Random rows on a big dense sum balance the split to within a few percent.
 #[test]
 fn imbalance_is_near_one_for_random_rows() {
-    let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(20_000, NQ, 0x5), runtime, &config(4));
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(20_000, NQ, 0x5), &config(4))
+        .expect("topology resolves");
     ps.enable_trace();
     ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -181,7 +190,13 @@ fn bits_are_uniform_and_grow_only() {
     // Lopsided on purpose: weight-2 keys over 16 qubits rarely carry `X` on
     // qubit 0, so partition 0 holds the bulk and the `max` is what decides.
     let sum = low_weight_sum::<1>(3_000, NQ, 2, 0x6);
-    let mut ps = PartitionedSum::scatter_with_rows(sum, rows_seeing_qubit_0_x(), runtime);
+    let mut ps = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()),
+        },
+    );
     assert!(
         ps.partition(0).len() > 2 * ps.partition(1).len(),
         "fixture should be lopsided: {} vs {}",
@@ -193,11 +208,10 @@ fn bits_are_uniform_and_grow_only() {
     let options = PropagateOptions {
         target_bucket_len: 32,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
     let before = ps.bits();
     ps.enable_trace();
-    ps.propagate_with_options(&circuit(), &KeepAll, Direction::Forward, options);
+    ps.propagate_with(&circuit(), &KeepAll, Direction::Forward, options);
     let trace = ps.take_trace().expect("tracing is on");
 
     let mut prev = before;
@@ -229,9 +243,9 @@ fn bits_are_uniform_and_grow_only() {
 /// `nanos` has one rank-local timing per partition.
 #[test]
 fn gate_identity_and_timing_are_recorded_per_layer() {
-    let runtime = PartitionRuntime::new(&config(4)).expect("topology resolves");
     let circuit = circuit();
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x4), runtime, &config(4));
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x4), &config(4))
+        .expect("topology resolves");
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -252,10 +266,10 @@ fn gate_identity_and_timing_are_recorded_per_layer() {
 /// written.
 #[test]
 fn heisenberg_reverses_circuit_index_not_application_index() {
-    let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let circuit = circuit();
     let n = circuit.channels.len();
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x5), runtime, &config(2));
+    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x5), &config(2))
+        .expect("topology resolves");
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Heisenberg);
     let trace = ps.take_trace().expect("tracing is on");

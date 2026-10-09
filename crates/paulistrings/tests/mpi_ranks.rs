@@ -29,24 +29,21 @@
 use std::panic::AssertUnwindSafe;
 
 use num_complex::Complex64;
-use paulistrings::channel::{
-    Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
-use paulistrings::engine::partitioned::{
-    count_remote_deltas, Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy,
-    PartitionRuntime, BITS_AGREE_EVERY,
-};
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{
-    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
-};
+use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PartitionedTruncation,
-    PauliString, PauliSum, Phase, PropagateOptions,
+    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
+};
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
+use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::{
+    Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
+    ScatterOptions, ScatterRows,
 };
 use rsmpi::collective::{CommunicatorCollectives, SystemOperation};
 use rsmpi::topology::{Communicator, SimpleCommunicator};
@@ -61,7 +58,7 @@ const THETA: f64 = 0.1;
 /// One weight-2 `ZZ` rotation: the smallest layer that can cross a boundary.
 fn single_rotation<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    circuit.push(zz_rotation::<W>(0, (nq / 2) as u32, 0.37));
+    circuit.push(zz_rotation::<W>(0, nq / 2, 0.37));
     circuit
 }
 
@@ -69,8 +66,8 @@ fn single_rotation<const W: usize>(nq: usize) -> Circuit<W> {
 /// a pure relabelling.
 fn cnot_ring<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    for q in 0..nq as u32 {
-        circuit.push(Clifford2Q::cnot(q, (q + 1) % nq as u32));
+    for q in 0..nq {
+        circuit.push(Clifford2Q::cnot(q, (q + 1) % nq));
     }
     circuit
 }
@@ -94,14 +91,14 @@ fn haar_su4<const W: usize>(nq: usize) -> Circuit<W> {
 fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
     for round in 0..3 {
-        for q in 0..nq as u32 {
+        for q in 0..nq {
             circuit.push(PauliRotation::new(
                 PauliString::<W>::x(q),
                 0.21 + 0.01 * f64::from(round),
             ));
         }
     }
-    circuit.push(zz_rotation::<W>(nq as u32 / 2 - 1, nq as u32 / 2, 0.33));
+    circuit.push(zz_rotation::<W>(nq / 2 - 1, nq / 2, 0.33));
     circuit
 }
 
@@ -109,8 +106,8 @@ fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
 /// [`local_run_then_one_crossing`] one remote layer at any rank count.
 fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
     let per = nq / size;
-    let blocks: Vec<Vec<u32>> = (0..size)
-        .map(|b| ((b * per) as u32..((b + 1) * per) as u32).collect())
+    let blocks: Vec<Vec<usize>> = (0..size)
+        .map(|b| (b * per..(b + 1) * per).collect())
         .collect();
     PartitionRows::<W>::cut(nq, &blocks)
 }
@@ -119,7 +116,7 @@ fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
 /// **no** transport call at all.
 fn depolarizing_only<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
-    for q in 0..nq as u32 {
+    for q in 0..nq {
         circuit.push(Depolarizing {
             support: [q],
             p: 0.05,
@@ -224,7 +221,7 @@ impl Runner<'_> {
         chunk_bytes: Option<usize>,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+        T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
         let mut transport = MpiTransport::from_communicator(self.world);
         if let Some(bytes) = chunk_bytes {
@@ -243,11 +240,11 @@ impl Runner<'_> {
             Backend::Device => {
                 use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
                 let device = local_device_for_comm(self.world).expect("a device on every rank");
-                let mut split = MpiGpuSum::scatter_to_device(
+                let mut split = MpiGpuSum::scatter_to_device_with(
                     sum,
                     transport,
                     device,
-                    &PartitionRowPolicy::Seeded(Some(seed)),
+                    ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(seed))),
                 )
                 .expect("device scatter");
                 assert_eq!(split.device(), device);
@@ -270,7 +267,7 @@ impl Runner<'_> {
         got: Option<PauliSum<W>>,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + ?Sized,
+        T: TruncationPolicy<W> + ?Sized,
     {
         match (self.rank, got) {
             (0, Some(got)) => {
@@ -295,7 +292,7 @@ impl Runner<'_> {
         seed: u64,
         what: &str,
     ) where
-        T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+        T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
         for direction in [Direction::Forward, Direction::Heisenberg] {
             self.differential(backend, circuit, sum, policy, direction, seed, None, what);
@@ -654,7 +651,11 @@ fn run_host_cases(r: &mut Runner) {
         let config = r.config(SEED);
         let runtime = PartitionRuntime::new(&config).expect("topology resolves");
         let transport = MpiTransport::from_communicator(r.world);
-        let mut split = DistributedSum::scatter_with_rows(sum.clone(), transport, runtime, rows);
+        let options = ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        };
+        let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
         split.enable_trace();
         split.propagate(&circuit, &WeightCutoff(4), Direction::Forward);
         let trace = split.take_trace().expect("tracing is on");
@@ -697,34 +698,31 @@ fn run_host_cases(r: &mut Runner) {
         const NQ: usize = 16;
         let size = r.size as usize;
         let per = NQ / size;
-        let blocks: Vec<Vec<u32>> = (0..size)
-            .map(|b| ((b * per) as u32..((b + 1) * per) as u32).collect())
+        let blocks: Vec<Vec<usize>> = (0..size)
+            .map(|b| (b * per..(b + 1) * per).collect())
             .collect();
 
         // One `Z` per qubit: a single-`Z` key has odd z-weight in exactly the
         // block holding that qubit, so its rank is that block's index.
         let mut acc = BuildAccumulator::<1>::new(NQ);
-        for q in 0..NQ as u32 {
-            acc.add_term(
-                PauliString::<1>::z(q),
-                Phase::ONE,
-                Complex64::new(1.0 + f64::from(q), 0.0),
-            );
+        for q in 0..NQ {
+            acc.add_term(PauliString::<1>::z(q), Complex64::new(1.0 + q as f64, 0.0));
         }
         let sum = acc.finalize();
 
         let transport = MpiTransport::from_communicator(r.world);
-        let mut split = DistributedSum::scatter_with_policy(
-            sum.clone(),
-            transport,
-            &r.config(SEED),
-            &PartitionRowPolicy::Cut(blocks.clone()),
-        )
-        .expect("topology resolves");
+        let options = ScatterOptions {
+            runtime: PartitionRuntime::new(&r.config(SEED)).expect("topology resolves"),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Cut(blocks.clone())),
+        };
+        let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
         split.assert_invariants();
 
         let (_, z, _) = split.local().to_arrays();
-        let mut held: Vec<u32> = z.iter().map(|row| row[0].trailing_zeros()).collect();
+        let mut held: Vec<usize> = z
+            .iter()
+            .map(|row| row[0].trailing_zeros() as usize)
+            .collect();
         held.sort_unstable();
         assert_eq!(held, blocks[r.rank as usize], "rank {}'s block", r.rank);
 
@@ -817,7 +815,7 @@ fn run_host_cases(r: &mut Runner) {
         "collapse sample keeps one bounded unit-norm trajectory",
         |r| {
             use paulistrings::test_support::{collapsing_circuit, z0_sum};
-            use paulistrings::truncation::CollapseSample;
+            use paulistrings::CollapseSample;
             const CACHE: usize = 6;
             let (circuit, input) = (collapsing_circuit(), z0_sum());
 
@@ -870,13 +868,11 @@ fn run_host_cases(r: &mut Runner) {
                 exclude_z: vec![2, 3, 6],
             };
             let transport = MpiTransport::from_communicator(r.world);
-            let mut split = DistributedSum::scatter_with_policy(
-                sum.clone(),
-                transport,
-                &r.config(SEED),
-                &policy,
-            )
-            .expect("topology resolves");
+            let options = ScatterOptions {
+                runtime: PartitionRuntime::new(&r.config(SEED)).expect("topology resolves"),
+                rows: ScatterRows::Policy(policy.clone()),
+            };
+            let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
             split.propagate(&circuit, &KeepAll, Direction::Heisenberg);
             let got = split.rotated_overlap(&sites, 0.3, axis);
             let want = oracle.rotated_overlap(&sites, 0.3, axis);
@@ -958,11 +954,11 @@ mod device {
 
         // A group of more than one rank needs NCCL on distinct devices; where the ranks share one, or cannot load NCCL, every rank must fail the scatter alike.
         let device = local_device_for_comm(r.world).expect("a device on every rank");
-        let started = MpiGpuSum::<1>::scatter_to_device(
+        let started = MpiGpuSum::<1>::scatter_to_device_with(
             &rand_sum::<1>(50, 8, 0xB0FF),
             MpiTransport::from_communicator(r.world),
             device,
-            &PartitionRowPolicy::Seeded(Some(SEED)),
+            ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(SEED))),
         )
         .map(|_| ());
         let failed = count(r, started.is_err());
@@ -1011,7 +1007,7 @@ mod device {
         // Four disjoint dense two-qubit layers: a rank sends each partner several blocks whose row counts differ across layers, so an out-of-order per-partner match would not silently agree.
         r.case("device several distinct-size blocks per partner", |r| {
             let mut circuit = Circuit::<1>::new(12);
-            for (q0, q1) in [(0u32, 1u32), (2, 5), (3, 9), (4, 11)] {
+            for (q0, q1) in [(0, 1), (2, 5), (3, 9), (4, 11)] {
                 circuit.push(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix()));
             }
             let sum = rand_sum::<1>(2_000, 12, 0xB031);

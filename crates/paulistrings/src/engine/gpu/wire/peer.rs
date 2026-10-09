@@ -32,7 +32,7 @@ struct Posted {
     ptr: u64,
     bytes: usize,
     stream: usize,
-    ctx: Arc<CudaContext>,
+    context: Arc<CudaContext>,
     ready: Option<Arc<CudaEvent>>,
 }
 
@@ -52,7 +52,7 @@ struct State {
 struct Shared {
     size: u32,
     state: Mutex<State>,
-    cv: Condvar,
+    condvar: Condvar,
     timeout: Duration,
     /// Groups posted by every rank so far.
     #[cfg(test)]
@@ -75,12 +75,11 @@ pub(crate) enum PeerFault {
 /// A [`DeviceWire`] over a group of in-process ranks: each rank's `n`-th group is matched against every other rank's `n`-th, per peer in posting order, and every receive is a device-to-device copy from its send on the receiver's stream, a peer copy across devices.
 ///
 /// Stricter than NCCL, which would hang: a rank posting a different number of receives from a peer than the peer posts sends to it, or a receive whose size differs from its send, panics naming both ranks, and so does every other rank of the group.
-/// A wait returns once every rank's copies have completed, so the sender's buffers are free again; it times out after `PAULISTRINGS_NCCL_TIMEOUT_S`, killing the wire.
 pub(crate) struct PeerWire {
     rank: u32,
     shared: Arc<Shared>,
     /// This rank's next generation and the one it posted but has not waited on.
-    gen: Mutex<(u64, Option<u64>)>,
+    generation: Mutex<(u64, Option<u64>)>,
     /// Set once this wire failed or timed out; every later call fails.
     dead: AtomicBool,
 }
@@ -118,7 +117,7 @@ impl PeerWire {
                 rounds: BTreeMap::new(),
                 poisoned: None,
             }),
-            cv: Condvar::new(),
+            condvar: Condvar::new(),
             timeout,
             #[cfg(test)]
             posted: AtomicU64::new(0),
@@ -129,7 +128,7 @@ impl PeerWire {
             .map(|rank| PeerWire {
                 rank,
                 shared: shared.clone(),
-                gen: Mutex::new((0, None)),
+                generation: Mutex::new((0, None)),
                 dead: AtomicBool::new(false),
             })
             .collect()
@@ -154,34 +153,34 @@ impl PeerWire {
     }
 
     /// Record `msg` for the group and panic with it.
-    fn fail(&self, mut st: MutexGuard<'_, State>, msg: String) -> ! {
-        st.poisoned.get_or_insert_with(|| msg.clone());
-        drop(st);
-        self.shared.cv.notify_all();
+    fn fail(&self, mut state: MutexGuard<'_, State>, msg: String) -> ! {
+        state.poisoned.get_or_insert_with(|| msg.clone());
+        drop(state);
+        self.shared.condvar.notify_all();
         panic!("{msg}");
     }
 
-    /// Block until `ready` holds for generation `g`, re-raising a peer's failure; a timeout kills the wire.
+    /// Block until `ready` holds for `generation`, re-raising a peer's failure; a timeout kills the wire.
     fn wait_for<'s>(
         &'s self,
-        mut st: MutexGuard<'s, State>,
-        g: u64,
+        mut state: MutexGuard<'s, State>,
+        generation: u64,
         what: &str,
         ready: impl Fn(&Round) -> bool,
     ) -> Result<MutexGuard<'s, State>, GpuError> {
         let start = Instant::now();
         loop {
-            if let Some(msg) = &st.poisoned {
+            if let Some(msg) = &state.poisoned {
                 let msg = format!("peer wire, rank {}: a peer failed: {msg}", self.rank);
-                drop(st);
+                drop(state);
                 panic!("{msg}");
             }
-            let round = st
+            let round = state
                 .rounds
-                .get(&g)
+                .get(&generation)
                 .expect("a posted round stays until every rank left");
             if ready(round) {
-                return Ok(st);
+                return Ok(state);
             }
             let elapsed = start.elapsed();
             if elapsed >= self.shared.timeout {
@@ -189,7 +188,7 @@ impl PeerWire {
                     .filter(|&r| round.posted[r].is_none())
                     .collect();
                 log::warn!(
-                    "gpu: peer wire rank {}: group {g} timed out waiting for {what} (ranks not posted: {missing:?})",
+                    "gpu: peer wire rank {}: group {generation} timed out waiting for {what} (ranks not posted: {missing:?})",
                     self.rank
                 );
                 self.dead.store(true, Ordering::Relaxed);
@@ -197,11 +196,11 @@ impl PeerWire {
                     what: "a peer wire group",
                 });
             }
-            st = self
+            state = self
                 .shared
-                .cv
+                .condvar
                 .wait_timeout(
-                    st,
+                    state,
                     (self.shared.timeout - elapsed).min(Duration::from_millis(50)),
                 )
                 .unwrap_or_else(PoisonError::into_inner)
@@ -227,21 +226,24 @@ impl PeerWire {
 impl Drop for PeerWire {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            let mut st = self.lock();
+            let mut state = self.lock();
             let rank = self.rank;
-            st.poisoned
+            state
+                .poisoned
                 .get_or_insert_with(|| format!("rank {rank} panicked"));
-            drop(st);
-            self.shared.cv.notify_all();
+            drop(state);
+            self.shared.condvar.notify_all();
         }
     }
 }
 
 impl DeviceWire for PeerWire {
+    #[cfg(test)]
     fn rank(&self) -> u32 {
         self.rank
     }
 
+    #[cfg(test)]
     fn size(&self) -> u32 {
         self.shared.size
     }
@@ -285,75 +287,80 @@ impl DeviceWire for PeerWire {
                 ptr: op.ptr(),
                 bytes: op.bytes(),
                 stream,
-                ctx: op.stream().context().clone(),
+                context: op.stream().context().clone(),
                 ready,
             });
         }
-        let g = {
-            let mut gen = self.gen.lock().unwrap_or_else(PoisonError::into_inner);
+        let generation = {
+            let mut counter = self
+                .generation
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             assert!(
-                gen.1.is_none(),
+                counter.1.is_none(),
                 "peer wire, rank {}: a second group posted before the first was waited on",
                 self.rank
             );
-            let g = gen.0;
-            *gen = (g + 1, Some(g));
-            g
+            let generation = counter.0;
+            *counter = (generation + 1, Some(generation));
+            generation
         };
-        let mut st = self.lock();
-        let round = st.rounds.entry(g).or_insert_with(|| Round {
+        let mut state = self.lock();
+        let round = state.rounds.entry(generation).or_insert_with(|| Round {
             posted: (0..size).map(|_| None).collect(),
             done: 0,
             left: 0,
         });
         round.posted[self.rank as usize] = Some(posted);
-        drop(st);
+        drop(state);
         #[cfg(test)]
         self.shared.posted.fetch_add(1, Ordering::Relaxed);
-        self.shared.cv.notify_all();
+        self.shared.condvar.notify_all();
         Ok(())
     }
 
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
         self.alive()?;
         let pending = self
-            .gen
+            .generation
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .1
             .take();
-        let Some(g) = pending else {
+        let Some(generation) = pending else {
             stream.synchronize()?;
             return Ok(());
         };
         let (me, size) = (self.rank as usize, self.shared.size);
-        let st = self.lock();
-        let st = self.wait_for(st, g, "every rank's group", |r| {
+        let state = self.lock();
+        let state = self.wait_for(state, generation, "every rank's group", |r| {
             r.posted.iter().all(Option::is_some)
         })?;
         #[cfg(test)]
         if self.faulty(PeerFault::Wait) {
             // The peers' copies read this rank's buffers, which its caller reuses as soon as this returns.
-            drop(self.wait_for(st, g, "the peers' copies", |r| r.done + 1 >= size)?);
+            drop(self.wait_for(state, generation, "the peers' copies", |r| {
+                r.done + 1 >= size
+            })?);
             return Err(self.die("an injected peer wire wait failure"));
         }
         let copies = match check_round(
-            &st.rounds[&g],
+            &state.rounds[&generation],
             me,
             size as usize,
             stream.cu_stream() as usize,
         ) {
             Ok(copies) => copies,
-            Err(msg) => self.fail(st, msg),
+            Err(msg) => self.fail(state, msg),
         };
-        drop(st);
+        drop(state);
         let enqueued: Result<(), GpuError> = (|| {
-            let ctx = stream.context();
-            ctx.bind_to_thread()?;
+            let context = stream.context();
+            context.bind_to_thread()?;
             let mut waited: Option<&Arc<CudaEvent>> = None;
             for c in &copies {
-                if c.src_ctx.ordinal() != ctx.ordinal() {
-                    enable_peer_access(ctx, &c.src_ctx);
+                if c.source_context.ordinal() != context.ordinal() {
+                    enable_peer_access(context, &c.source_context);
                 }
                 if !waited.is_some_and(|w| Arc::ptr_eq(w, &c.ready)) {
                     stream.wait(&c.ready)?;
@@ -374,14 +381,22 @@ impl DeviceWire for PeerWire {
             Ok(())
         })();
         let synced = enqueued.and_then(|()| Ok(stream.synchronize()?));
-        let mut st = self.lock();
-        st.rounds.get_mut(&g).expect("the round is live").done += 1;
-        self.shared.cv.notify_all();
-        let mut st = self.wait_for(st, g, "every rank's copies", |r| r.done == size)?;
-        let round = st.rounds.get_mut(&g).expect("the round is live");
+        let mut state = self.lock();
+        state
+            .rounds
+            .get_mut(&generation)
+            .expect("the round is live")
+            .done += 1;
+        self.shared.condvar.notify_all();
+        let mut state =
+            self.wait_for(state, generation, "every rank's copies", |r| r.done == size)?;
+        let round = state
+            .rounds
+            .get_mut(&generation)
+            .expect("the round is live");
         round.left += 1;
         if round.left == size {
-            st.rounds.remove(&g);
+            state.rounds.remove(&generation);
         }
         synced
     }
@@ -392,7 +407,7 @@ struct PeerCopy {
     dst: u64,
     src: u64,
     bytes: usize,
-    src_ctx: Arc<CudaContext>,
+    source_context: Arc<CudaContext>,
     ready: Arc<CudaEvent>,
 }
 
@@ -441,7 +456,7 @@ fn check_round(
                 dst: recv.ptr,
                 src: send.ptr,
                 bytes: recv.bytes,
-                src_ctx: send.ctx.clone(),
+                source_context: send.context.clone(),
                 ready: send.ready.clone().expect("a send records its event"),
             });
         }
@@ -462,8 +477,7 @@ enum PeerAccess {
     Failed(String),
 }
 
-/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair, and report the outcome.
-/// A pair without access is still correct, since the copy stages through the host, so the outcome is logged rather than an error.
+/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair; a pair without it stays correct through host staging, so the outcome is logged, not an error.
 fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAccess {
     static DONE: Mutex<Vec<((usize, usize), PeerAccess)>> = Mutex::new(Vec::new());
     let pair = (dst.ordinal(), src.ordinal());
@@ -532,144 +546,4 @@ fn try_enable_peer_access(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::WireGroup;
-    use super::*;
-
-    fn on_ranks<R: Send>(
-        size: u32,
-        f: impl Fn(PeerWire) -> R + Sync,
-    ) -> Vec<std::thread::Result<R>> {
-        let wires = PeerWire::group(size);
-        std::thread::scope(|s| {
-            let f = &f;
-            let hs: Vec<_> = wires.into_iter().map(|w| s.spawn(move || f(w))).collect();
-            hs.into_iter().map(|h| h.join()).collect()
-        })
-    }
-
-    /// The panic message every rank of `out` ended on.
-    fn panics(out: Vec<std::thread::Result<()>>) -> Vec<String> {
-        out.into_iter()
-            .map(|r| {
-                let e = r.expect_err("every rank panics");
-                e.downcast_ref::<String>().cloned().unwrap_or_default()
-            })
-            .collect()
-    }
-
-    /// Each rank sends every other rank two messages of distinct sizes and contents and receives both of each peer's into one concatenated column.
-    #[test]
-    fn every_pair_exchanges_in_posting_order() {
-        crate::require_cuda!();
-        let size = 3u32;
-        let msg = |from: u32, to: u32, m: u64| -> Vec<u64> {
-            let n = 1 + from as usize * 7 + to as usize * 3 + m as usize * 11;
-            (0..n as u64)
-                .map(|i| (u64::from(from) << 40) ^ (u64::from(to) << 32) ^ (m << 24) ^ i)
-                .collect()
-        };
-        let out = on_ranks(size, |wire| {
-            let me = wire.rank();
-            let ctx = crate::engine::gpu::device::context(0).expect("device 0");
-            let stream = ctx.new_stream().expect("stream");
-            let peers: Vec<u32> = (0..size).filter(|&q| q != me).collect();
-            let sends: Vec<_> = peers
-                .iter()
-                .flat_map(|&q| (0..2).map(move |m| (q, m)))
-                .map(|(q, m)| (q, stream.clone_htod(&msg(me, q, m)).expect("upload")))
-                .collect();
-            let parts: Vec<(usize, u32)> = peers
-                .iter()
-                .flat_map(|&q| (0..2).map(move |m| (msg(q, me, m).len(), q)))
-                .collect();
-            let total: usize = parts.iter().map(|p| p.0).sum();
-            let mut dst = stream.alloc_zeros::<u64>(total).expect("alloc");
-            let mut group = WireGroup::new();
-            for (q, s) in &sends {
-                group.send(s.as_view(), *q, &stream);
-            }
-            group.recv_parts(dst.as_view_mut(), &parts, &stream);
-            group.post(&wire).expect("post");
-            wire.wait(&stream).expect("wait");
-            let got = stream.clone_dtoh(&dst).expect("download");
-            let want: Vec<u64> = peers
-                .iter()
-                .flat_map(|&q| (0..2).flat_map(move |m| msg(q, me, m)))
-                .collect();
-            assert_eq!(got, want, "rank {me}");
-        });
-        for r in out {
-            r.expect("every rank completes");
-        }
-    }
-
-    /// A receive with no matching send fails every rank, and the failing rank's message names both ends.
-    #[test]
-    fn an_unmatched_receive_panics_naming_both_ranks() {
-        crate::require_cuda!();
-        let out = on_ranks(2, |wire| {
-            let ctx = crate::engine::gpu::device::context(0).expect("device 0");
-            let stream = ctx.new_stream().expect("stream");
-            let mut dst = stream.alloc_zeros::<u64>(4).expect("alloc");
-            let mut group = WireGroup::new();
-            if wire.rank() == 0 {
-                group.recv(dst.as_view_mut(), 1, &stream);
-            }
-            group.post(&wire).expect("post");
-            wire.wait(&stream).expect("wait");
-        });
-        let msgs = panics(out);
-        assert!(
-            msgs.iter()
-                .all(|m| m.contains("rank 0 posts 1 receives from rank 1, which posts 0 sends")),
-            "{msgs:?}"
-        );
-    }
-
-    #[test]
-    fn a_size_mismatch_panics_naming_both_ranks() {
-        crate::require_cuda!();
-        let out = on_ranks(2, |wire| {
-            let ctx = crate::engine::gpu::device::context(0).expect("device 0");
-            let stream = ctx.new_stream().expect("stream");
-            let src = stream.alloc_zeros::<u64>(8).expect("alloc");
-            let mut dst = stream.alloc_zeros::<u64>(8).expect("alloc");
-            let mut group = WireGroup::new();
-            let peer = 1 - wire.rank();
-            let n = if wire.rank() == 0 { 8 } else { 4 };
-            group.send(src.slice(0..n), peer, &stream);
-            group.recv(dst.slice_mut(0..8), peer, &stream);
-            group.post(&wire).expect("post");
-            wire.wait(&stream).expect("wait");
-        });
-        let msgs = panics(out);
-        assert!(
-            msgs.iter().all(|m| m.contains(
-                "receive 0 of rank 0 from rank 1 is 64 bytes, rank 1's send 0 to rank 0 is 32"
-            )),
-            "{msgs:?}"
-        );
-    }
-
-    #[test]
-    fn peer_access_is_reported_for_every_pair() {
-        crate::require_cuda!();
-        let n = crate::engine::gpu::device_count();
-        for dst in 0..n {
-            for src in 0..n {
-                let ctx =
-                    |o: usize| crate::engine::gpu::device::context(o as u32).expect("visible");
-                let access = enable_peer_access(&ctx(dst), &ctx(src));
-                if dst == src {
-                    assert_eq!(access, PeerAccess::SameDevice);
-                } else {
-                    assert!(
-                        !matches!(access, PeerAccess::Failed(_)),
-                        "{dst} <- {src}: {access:?}"
-                    );
-                }
-            }
-        }
-    }
-}
+mod tests;

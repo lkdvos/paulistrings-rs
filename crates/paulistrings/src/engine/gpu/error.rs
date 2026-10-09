@@ -14,7 +14,7 @@ pub enum GpuError {
     /// NVRTC compilation failed.
     Compile {
         /// The width the compilation was for.
-        w: usize,
+        width: usize,
         /// NVRTC's compile log.
         log: String,
     },
@@ -59,7 +59,9 @@ impl fmt::Display for GpuError {
             GpuError::NoDevice => write!(f, "no CUDA device is visible to this process"),
             GpuError::LibraryMissing(lib) => write!(f, "{lib} could not be loaded"),
             GpuError::Driver(e) => write!(f, "CUDA driver error: {e}"),
-            GpuError::Compile { w, log } => write!(f, "NVRTC compilation failed at W={w}: {log}"),
+            GpuError::Compile { width, log } => {
+                write!(f, "NVRTC compilation failed at W={width}: {log}")
+            },
             GpuError::OutOfMemory { device, bytes } => {
                 write!(f, "device {device} out of memory (requested {bytes} bytes)")
             }
@@ -90,8 +92,7 @@ impl GpuError {
 }
 
 impl From<cudarc::driver::DriverError> for GpuError {
-    /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with `device = 0` and `bytes = 0`
-    /// (the driver error carries neither); a caller that knows better should build the variant itself.
+    /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with `device = 0` and `bytes = 0`, since the driver error carries neither.
     fn from(e: cudarc::driver::DriverError) -> Self {
         if e.0 == cudarc::driver::sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY {
             GpuError::OutOfMemory {

@@ -1,6 +1,6 @@
 //! Per-phase timing / memory probe for the bucketed propagation engine.
 //!
-//! Drives [`propagate_with_scratch_and_options`] over a menu of layers (rotation, Clifford,
+//! Drives [`propagate_with`] over a menu of layers (rotation, Clifford,
 //! general-unitary, noise, Trotter, and partitioned/distributed variants) across a matrix of
 //! thread and partition counts, and prints the [`PhaseStats`] breakdown the `phase-timing`
 //! feature exposes.
@@ -12,31 +12,32 @@
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::bucket::hash::B_MAX_BITS;
-use paulistrings::bucket::sum::{
-    DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+use paulistrings::test_support::{
+    bucket_len, refine, with_hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+    TIMER_READ_OVERHEAD_NS,
 };
-use paulistrings::channel::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
-use paulistrings::engine::partitioned::{
-    circuit_generators, count_remote_deltas, CpuSet, GeneratorWeight, PartitionConfig,
-    PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum, PartitionedTruncation,
-    Placement, BITS_AGREE_EVERY,
+use paulistrings::test_support::{
+    circuit_generators, count_remote_deltas, haar_su4_matrix, low_weight_sum, rand_sum,
+    GeneratorWeight, BITS_AGREE_EVERY, B_MAX_BITS, DEFAULT_HASH_SEED,
 };
-use paulistrings::engine::stats::TIMER_READ_OVERHEAD_NS;
-use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 #[cfg(feature = "cuda")]
-use paulistrings::truncation::BuiltinTruncation;
-use paulistrings::truncation::{ApproxTopN, CoefficientThreshold, TopN};
+use paulistrings::BuiltinTruncation;
 use paulistrings::{
-    propagate_with_scratch_and_options, BuildAccumulator, Circuit, Direction, Gf2Hash,
-    LayerScratch, PartitionRows, PauliString, PauliSum, Phase, PhaseStats, PropagateOptions,
-    TruncationPolicy,
+    propagate_with, BuildAccumulator, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
+    PauliString, PauliSum, PhaseStats, PropagateOptions, TruncationPolicy,
 };
+use paulistrings::{ApproxTopN, CoefficientThreshold, TopN};
+use paulistrings::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
+use paulistrings::{
+    CpuSet, PartitionConfig, PartitionPhaseStats, PartitionRuntime, PartitionTrace, PartitionedSum,
+    Placement,
+};
+use paulistrings::{ScatterOptions, ScatterRows};
 
 const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
 
-Measures the phase-timing breakdown of propagate_with_scratch_and_options across a
+Measures the phase-timing breakdown of propagate_with across a
 menu of layers and thread counts.
 
 Options:
@@ -91,7 +92,7 @@ Options:
                             floor, raising --target-bucket-len alone is inert.
   --occupancy-at <rep>     0-based rep index to sample bucket occupancy at (diagnostic, opt-in;
                             absent by default). Runs ONE real cfg.reps-deep trajectory from the
-                            cell's built initial sum, one propagate_with_scratch_and_options call
+                            cell's built initial sum, one propagate_with call
                             per rep (no untimed warm-up pass first: warm-up-then-repeat would
                             silently run the dynamics to depth 2 * --reps, which is fine for a
                             periodic single-gate layer but wrong for a growing Trotter-step
@@ -112,7 +113,8 @@ Options:
                                             steady-state term count, else
                                             TopN returns immediately.
                                             REJECTED for a partitioned cell:
-                                            no PartitionedTruncation impl.
+                                            partitioned exact TopN is not
+                                            yet supported.
                               atopn:<N>     ApproxTopN(N): the same, with a
                                             histogram threshold instead of a
                                             selection. Keeps <= N, so its
@@ -249,7 +251,7 @@ impl LayerKind {
     }
 
     /// The layer's two-qubit generator graph for `--partition-rows cut`; empty when it has none.
-    fn cut_edges(self, num_qubits: usize) -> Vec<(u32, u32)> {
+    fn cut_edges(self, num_qubits: usize) -> Vec<(usize, usize)> {
         match self {
             LayerKind::TfimStep => chain_edges(num_qubits),
             LayerKind::HeavyHexStep => heavy_hex_127_edges(),
@@ -287,7 +289,7 @@ enum Format {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TruncSpec {
     Keep,
-    Coeff(f64),
+    Coefficient(f64),
     TopN(usize),
     ApproxTopN(usize),
 }
@@ -297,7 +299,7 @@ impl TruncSpec {
     fn label(self) -> String {
         match self {
             TruncSpec::Keep => "keep".to_string(),
-            TruncSpec::Coeff(t) => format!("coeff:{t}"),
+            TruncSpec::Coefficient(t) => format!("coeff:{t}"),
             TruncSpec::TopN(n) => format!("topn:{n}"),
             TruncSpec::ApproxTopN(n) => format!("atopn:{n}"),
         }
@@ -317,7 +319,7 @@ impl TruncSpec {
                     "--truncation coeff:<t> expects a finite, non-negative threshold, got '{v}'"
                 ));
             }
-            return Ok(TruncSpec::Coeff(thr));
+            return Ok(TruncSpec::Coefficient(thr));
         }
         if let Some(v) = t.strip_prefix("topn:") {
             return Ok(TruncSpec::TopN(parse_usize(v, "--truncation topn:<N>")?));
@@ -767,13 +769,13 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             }
         }
     }
-    // `TopN` has no `PartitionedTruncation` impl, so reject it here.
+    // Partitioned exact `TopN` is not yet supported, so reject it here.
     let any_partitioned = partitions.iter().any(|&p| p > 1);
     if any_partitioned {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
-                "--truncation topn:{topn} cannot run a partitioned cell: TopN's exact selection \
-                 has no PartitionedTruncation impl (the trait bound rejects it statically). Use \
+                "--truncation topn:{topn} cannot run a partitioned cell: partitioned exact TopN \
+                 is not yet supported. Use \
                  --truncation atopn:{topn} — its collective octave histogram is the partitioned \
                  form of the same policy — or drop --partitions"
             ));
@@ -791,8 +793,8 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     if mpi {
         if let TruncSpec::TopN(topn) = truncation {
             return Err(format!(
-                "--truncation topn:{topn} cannot run a distributed cell: TopN has no \
-                 PartitionedTruncation impl. Use --truncation atopn:{topn}"
+                "--truncation topn:{topn} cannot run a distributed cell: partitioned exact \
+                 TopN is not yet supported. Use --truncation atopn:{topn}"
             ));
         }
     }
@@ -871,18 +873,18 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
 }
 
 /// A weight-2 `ZZ` rotation, verbatim from `benches/pauli_ops.rs::zz_rotation`.
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
+fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
-    gen.z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
-    gen.z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
+    gen.z[q0 / 64] |= 1u64 << (q0 % 64);
+    gen.z[q1 / 64] |= 1u64 << (q1 % 64);
     PauliRotation::new(gen, theta)
 }
 
 /// sqrt(SWAP) on `(q0, q1)`, verbatim from `benches/pauli_ops.rs::sqrt_swap`.
-fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
+fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
@@ -902,7 +904,7 @@ fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
 /// One fixed Haar-random SU(4) block on `(q0, q1)`, the probe's stand-in for the general matrix-gate path.
 ///
 /// Unlike [`sqrt_swap`], a generic SU(4) keeps a dense PTM under repeated application rather than cycling.
-fn haar_su4_block(q0: u32, q1: u32) -> GeneralUnitary2Q {
+fn haar_su4_block(q0: usize, q1: usize) -> GeneralUnitary2Q {
     GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())
 }
 
@@ -921,13 +923,10 @@ fn trotter_circuit<const W: usize>() -> Circuit<W> {
     let theta = 0.1;
     let mut circuit = Circuit::<W>::new(num_qubits);
     for q in 0..num_qubits {
-        let q0 = q as u32;
-        let q1 = ((q + 1) % num_qubits) as u32;
-        circuit.push(zz_rotation::<W>(q0, q1, 2.0 * theta));
+        circuit.push(zz_rotation::<W>(q, (q + 1) % num_qubits, 2.0 * theta));
     }
     for q in 0..num_qubits {
-        let qq = q as u32;
-        let gen = PauliString::<W>::x(qq);
+        let gen = PauliString::<W>::x(q);
         circuit.push(PauliRotation::new(gen, 2.0 * theta));
     }
     circuit
@@ -943,44 +942,40 @@ const THETA_ZZ: f64 = -std::f64::consts::FRAC_PI_2;
 const THETA_H: f64 = 5.0 * std::f64::consts::PI / 16.0;
 
 /// The bonds of a 1D **open** chain: `n - 1` edges `(i, i+1)`.
-fn chain_edges(num_qubits: usize) -> Vec<(u32, u32)> {
+fn chain_edges(num_qubits: usize) -> Vec<(usize, usize)> {
     (0..num_qubits.saturating_sub(1))
-        .map(|i| (i as u32, i as u32 + 1))
+        .map(|i| (i, i + 1))
         .collect()
 }
 
 /// The 127-qubit heavy-hex coupling map, from `test_support`.
-fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+fn heavy_hex_127_edges() -> Vec<(usize, usize)> {
     paulistrings::test_support::heavy_hex_127_edges()
 }
 
 /// Greedy first-fit edge coloring in sorted edge order; a color is a set of disjoint-support
 /// edges, i.e. one hardware layer.
-fn edge_coloring(edges: &[(u32, u32)]) -> Vec<Vec<(u32, u32)>> {
-    let n = edges
-        .iter()
-        .map(|&(a, b)| a.max(b) as usize + 1)
-        .max()
-        .unwrap_or(0);
+fn edge_coloring(edges: &[(usize, usize)]) -> Vec<Vec<(usize, usize)>> {
+    let n = edges.iter().map(|&(a, b)| a.max(b) + 1).max().unwrap_or(0);
     let mut used: Vec<Vec<usize>> = vec![Vec::new(); n];
-    let mut classes: Vec<Vec<(u32, u32)>> = Vec::new();
+    let mut classes: Vec<Vec<(usize, usize)>> = Vec::new();
     for &(a, b) in edges {
         let mut color = 0usize;
-        while used[a as usize].contains(&color) || used[b as usize].contains(&color) {
+        while used[a].contains(&color) || used[b].contains(&color) {
             color += 1;
         }
         while classes.len() <= color {
             classes.push(Vec::new());
         }
         classes[color].push((a, b));
-        used[a as usize].push(color);
-        used[b as usize].push(color);
+        used[a].push(color);
+        used[b].push(color);
     }
     classes
 }
 
 /// A `PauliRotation` about `X_q`.
-fn x_rotation<const W: usize>(q: u32, theta: f64) -> PauliRotation<W> {
+fn x_rotation<const W: usize>(q: usize, theta: f64) -> PauliRotation<W> {
     PauliRotation::new(PauliString::<W>::x(q), theta)
 }
 
@@ -994,7 +989,7 @@ fn tfim_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit
         for (a, b) in chain_edges(num_qubits) {
             c.push(zz_rotation::<W>(a, b, THETA_ZZ));
         }
-        for q in 0..num_qubits as u32 {
+        for q in 0..num_qubits {
             c.push(x_rotation::<W>(q, THETA_H));
         }
     }
@@ -1009,13 +1004,13 @@ fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Ci
         num_qubits >= HEAVY_HEX_QUBITS,
         "heavy_hex_step_circuit: the lattice needs {HEAVY_HEX_QUBITS} qubits, got {num_qubits}",
     );
-    let zz_order: Vec<(u32, u32)> = edge_coloring(&heavy_hex_127_edges())
+    let zz_order: Vec<(usize, usize)> = edge_coloring(&heavy_hex_127_edges())
         .into_iter()
         .flatten()
         .collect();
     let mut c = Circuit::<W>::new(num_qubits);
     for _ in 0..steps {
-        for q in 0..HEAVY_HEX_QUBITS as u32 {
+        for q in 0..HEAVY_HEX_QUBITS {
             c.push(x_rotation::<W>(q, THETA_H));
         }
         for &(a, b) in &zz_order {
@@ -1026,9 +1021,9 @@ fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Ci
 }
 
 /// The single-term observable `Z_q` on `num_qubits` qubits, coefficient 1.
-fn z_observable<const W: usize>(num_qubits: usize, q: u32) -> PauliSum<W> {
+fn z_observable<const W: usize>(num_qubits: usize, q: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
-    acc.add_term(PauliString::<W>::z(q), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<W>::z(q), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
 
@@ -1037,24 +1032,19 @@ struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
 /// [`AlwaysKeep`] for a partitioned cell.
-///
-/// A separate type rather than an impl on `AlwaysKeep`: flipping `finalizes_layer()` to `false`
-/// on `AlwaysKeep` itself would change what the unpartitioned cell measures
-/// (`PropagateOptions::starts_direct` reads it).
 struct AlwaysKeepPartitioned;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
     fn finalizes_layer(&self) -> bool {
         false
     }
 }
-impl<const W: usize> PartitionedTruncation<W> for AlwaysKeepPartitioned {}
 
 /// Builds a cell's circuit. `gen_qubits` is the `(q0, q1)` pair the `rotation_*` layers rotate about.
 fn build_circuit<const W: usize>(
     layer: LayerKind,
     qubits: usize,
     reps: usize,
-    gen_qubits: (u32, u32),
+    gen_qubits: (usize, usize),
 ) -> Circuit<W> {
     let theta = 0.1;
     match layer {
@@ -1128,7 +1118,7 @@ struct CellResult {
     /// `--bind-memory`, as the `pin_memory` field of the sidecar.
     pin_memory: bool,
     /// The `(q0, q1)` the `rotation_*` layers rotated about.
-    gen_qubits: (u32, u32),
+    gen_qubits: (usize, usize),
     /// `--initial` as it applied to this layer (each layer has its own default).
     initial: &'static str,
     /// `--partition-rows` echoed back; written on every row for a single schema.
@@ -1173,7 +1163,7 @@ struct Occupancy {
 fn occupancy_histogram<const W: usize>(sum: &PauliSum<W>, step: usize) -> Occupancy {
     let num_buckets = sum.num_buckets();
     let mut nonempty: Vec<usize> = (0..num_buckets)
-        .map(|b| sum.bucket_len(b))
+        .map(|b| bucket_len(sum, b))
         .filter(|&len| len > 0)
         .collect();
     nonempty.sort_unstable();
@@ -1278,7 +1268,7 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
         // Everything else takes `--initial`, defaulting per layer.
         _ => match cfg.initial.unwrap_or_else(|| Initial::default_for(layer)) {
             Initial::Random => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
-            Initial::Z0 => z_observable::<W>(cfg.qubits, (cfg.qubits / 2) as u32),
+            Initial::Z0 => z_observable::<W>(cfg.qubits, cfg.qubits / 2),
         },
     };
     // `--hash-seed` re-draws H's rows, which changes the coset dimension `r` (research/FINDINGS.md).
@@ -1287,10 +1277,10 @@ fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W>
         base
     } else {
         let nq = base.num_qubits();
-        base.with_hash(Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
+        with_hash(base, Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
     };
     while base.hash().bits() < cfg.bucket_bits {
-        base.refine();
+        refine(&mut base);
     }
     base
 }
@@ -1306,7 +1296,7 @@ where
 {
     let base = build_base_sum::<W>(layer, cfg);
     // Nothing is remote without partitions, so `rotation_local`/`rotation_remote` are `rotation_zz` here.
-    let gen_qubits = (0u32, 1u32);
+    let gen_qubits = (0, 1);
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
     let pool = rayon::ThreadPoolBuilder::new()
@@ -1318,7 +1308,6 @@ where
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     };
 
     if cfg.occupancy_at.is_some() && layer == LayerKind::Trotter {
@@ -1349,7 +1338,7 @@ where
             let mut occupancy = None;
             for step in 0..cfg.reps {
                 let start = Instant::now();
-                sum = propagate_with_scratch_and_options(
+                sum = propagate_with(
                     &one_rep,
                     sum,
                     policy,
@@ -1368,7 +1357,7 @@ where
             (steady_n, wall_ns, stats, occupancy)
         } else {
             // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
-            let warmed = propagate_with_scratch_and_options(
+            let warmed = propagate_with(
                 &circuit,
                 base.clone(),
                 policy,
@@ -1380,7 +1369,7 @@ where
 
             let steady_n = warmed.len();
             let start = Instant::now();
-            let output = propagate_with_scratch_and_options(
+            let output = propagate_with(
                 &circuit,
                 warmed,
                 policy,
@@ -1437,7 +1426,7 @@ where
 fn device_truncation(spec: TruncSpec) -> BuiltinTruncation {
     match spec {
         TruncSpec::Keep => BuiltinTruncation::Keep,
-        TruncSpec::Coeff(t) => BuiltinTruncation::Coeff(t),
+        TruncSpec::Coefficient(t) => BuiltinTruncation::Coefficient(t),
         TruncSpec::TopN(n) => BuiltinTruncation::TopN(n),
         TruncSpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(n),
     }
@@ -1482,19 +1471,25 @@ fn run_cell_gpu<const W: usize>(
     let hash_seed = base.hash().seed();
 
     let started = Instant::now();
-    let mut split = GpuPartitionedSum::scatter_to_devices_with_rows(&base, rows, runtime)
-        .unwrap_or_else(|e| fail("scatter", e));
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &base,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    )
+    .unwrap_or_else(|e| fail("scatter", e));
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     let n = split.len();
     let started = Instant::now();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
@@ -1526,7 +1521,7 @@ struct DeviceRun {
     hash_seed: u64,
     wall_ns: u64,
     partitions: usize,
-    gen_qubits: (u32, u32),
+    gen_qubits: (usize, usize),
     row_stats: RowChoiceStats,
     mpi: Option<(u32, u32)>,
     device: DeviceCellStats,
@@ -1538,7 +1533,6 @@ fn device_options(cfg: &Config) -> PropagateOptions {
     PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     }
 }
 
@@ -1601,18 +1595,18 @@ fn choose_generator<const W: usize>(
     qubits: usize,
     base: &PauliSum<W>,
     rows: &PartitionRows<W>,
-) -> (u32, u32) {
+) -> (usize, usize) {
     if !layer.picks_generator() {
         return (0, 1);
     }
     let want_remote = layer == LayerKind::RotationRemote;
     // A dense SU(4) needs all 15 deltas local, so it scans every pair, not just those touching 0.
-    let pairs: Vec<(u32, u32)> = if layer == LayerKind::Su4Local {
-        (0..qubits as u32)
-            .flat_map(|q0| ((q0 + 1)..qubits as u32).map(move |q1| (q0, q1)))
+    let pairs: Vec<(usize, usize)> = if layer == LayerKind::Su4Local {
+        (0..qubits)
+            .flat_map(|q0| ((q0 + 1)..qubits).map(move |q1| (q0, q1)))
             .collect()
     } else {
-        (1..qubits as u32).map(|q| (0, q)).collect()
+        (1..qubits).map(|q| (0, q)).collect()
     };
     for (q0, q1) in pairs {
         let mut probe = Circuit::<W>::new(qubits);
@@ -1644,7 +1638,7 @@ fn choose_generator<const W: usize>(
 /// Exact by dynamic program, minimizing cut edges first and then size imbalance, with block
 /// sizes additionally held within ±25% of `num_qubits / partitions` (without that bound, the
 /// heavy-hex lattice's minimum is a 4/123 split whose smaller half holds almost nothing).
-fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec<usize> {
+fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(usize, usize)]) -> Vec<usize> {
     let n = num_qubits;
     assert!(partitions >= 1 && partitions <= n);
 
@@ -1654,8 +1648,8 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
     for l in (0..n).rev() {
         row.iter_mut().for_each(|v| *v = 0);
         for &(a, b) in edges {
-            if a as usize == l && (b as usize) < n {
-                row[b as usize + 1] += 1;
+            if a == l && b < n {
+                row[b + 1] += 1;
             }
         }
         let mut running = 0i64;
@@ -1715,27 +1709,23 @@ fn cut_blocks(num_qubits: usize, partitions: usize, edges: &[(u32, u32)]) -> Vec
 fn cut_rows<const W: usize>(
     num_qubits: usize,
     partitions: usize,
-    edges: &[(u32, u32)],
+    edges: &[(usize, usize)],
 ) -> (PartitionRows<W>, Vec<usize>, usize) {
     let ends = cut_blocks(num_qubits, partitions, edges);
 
     // label[q] = the partition label of q's block.
     let mut label = vec![0u32; num_qubits];
-    let mut blocks: Vec<Vec<u32>> = Vec::with_capacity(partitions);
+    let mut blocks: Vec<Vec<usize>> = Vec::with_capacity(partitions);
     let mut start = 0usize;
     for (block, &end) in ends.iter().enumerate() {
         label[start..end].iter_mut().for_each(|l| *l = block as u32);
-        blocks.push((start as u32..end as u32).collect());
+        blocks.push((start..end).collect());
         start = end;
     }
 
     let crossed = edges
         .iter()
-        .filter(|&&(a, b)| {
-            (a as usize) < num_qubits
-                && (b as usize) < num_qubits
-                && label[a as usize] != label[b as usize]
-        })
+        .filter(|&&(a, b)| a < num_qubits && b < num_qubits && label[a] != label[b])
         .count();
     (PartitionRows::cut(num_qubits, &blocks), ends, crossed)
 }
@@ -1857,9 +1847,9 @@ fn reseed_hash_until_independent<const W: usize>(
             cfg.partition_rows.label(),
             layer.name(),
         );
-        let mut base = base.with_hash(Gf2Hash::<W>::new(num_qubits, 0, candidate));
+        let mut base = with_hash(base, Gf2Hash::<W>::new(num_qubits, 0, candidate));
         while base.hash().bits() < cfg.bucket_bits {
-            base.refine();
+            refine(&mut base);
         }
         return base;
     }
@@ -1884,7 +1874,7 @@ fn run_cell_partitioned<const W: usize, P>(
     policy: &P,
 ) -> CellResult
 where
-    P: PartitionedTruncation<W>,
+    P: TruncationPolicy<W>,
 {
     let base = build_base_sum::<W>(layer, cfg);
 
@@ -1938,21 +1928,26 @@ where
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     };
 
     let split_hash_seed = base.hash().seed();
-    let mut split = PartitionedSum::scatter_with_rows(base, rows, runtime);
+    let mut split = PartitionedSum::scatter_with(
+        base,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    );
     split.enable_trace();
 
     // Untimed warm-up, then its counters discarded — same contract as the unpartitioned cell.
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let _ = split.take_trace();
     let _ = split.take_stats();
 
     let steady_n = split.len();
     let started = Instant::now();
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
@@ -2010,10 +2005,10 @@ fn run_cell_mpi<const W: usize, P>(
     policy: &P,
 ) -> CellResult
 where
-    P: PartitionedTruncation<W>,
+    P: TruncationPolicy<W>,
 {
-    use paulistrings::engine::partitioned::{Collectives, DistributedSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
+    use paulistrings::{Collectives, DistributedSum};
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
     let world = SimpleCommunicator::world();
@@ -2059,23 +2054,26 @@ where
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     };
 
     let transport = MpiTransport::from_communicator(&world);
     let split_hash_seed = base.hash().seed();
-    let mut split = DistributedSum::scatter_with_rows(base, transport, runtime, rows);
+    let scatter_options = ScatterOptions {
+        runtime,
+        rows: ScatterRows::Explicit(rows),
+    };
+    let mut split = DistributedSum::scatter_with(base, transport, scatter_options);
     split.enable_trace();
 
     // Untimed warm-up, counters discarded; a barrier so the timed call starts together.
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let _ = split.take_trace();
     let _ = split.take_stats();
     split.transport().barrier();
 
     let steady_n = split.len_local();
     let started = Instant::now();
-    split.propagate_with_options(&circuit, policy, Direction::Forward, options);
+    split.propagate_with(&circuit, policy, Direction::Forward, options);
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
@@ -2162,9 +2160,9 @@ fn run_cell_mpi_gpu<const W: usize>(
     cfg: &Config,
     policy: &BuiltinTruncation,
 ) -> CellResult {
-    use paulistrings::engine::partitioned::Collectives;
     use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
+    use paulistrings::Collectives;
     use rsmpi::topology::{Communicator, SimpleCommunicator};
 
     let world = SimpleCommunicator::world();
@@ -2209,20 +2207,21 @@ fn run_cell_mpi_gpu<const W: usize>(
 
     let transport = MpiTransport::from_communicator(&world);
     let started = Instant::now();
-    let mut split = MpiGpuSum::scatter_to_device_with_rows(&base, transport, device, rows)
-        .unwrap_or_else(|e| fail("scatter", e));
+    let mut split =
+        MpiGpuSum::scatter_to_device_with(&base, transport, device, ScatterRows::Explicit(rows))
+            .unwrap_or_else(|e| fail("scatter", e));
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     split.transport().barrier();
     let n = split.len_local();
     let started = Instant::now();
     split
-        .propagate_with_options(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
@@ -2827,12 +2826,12 @@ fn print_tsv_row(cell: &CellResult) {
 
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
 /// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
-/// values: the unpartitioned one and its [`PartitionedTruncation`] form (`topn` has none, already
+/// values: the unpartitioned one and its partitioned form (`topn` has none, already
 /// rejected by [`parse_args`]).
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
         TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
-        TruncSpec::Coeff(t) => run_cells::<W, _, _>(
+        TruncSpec::Coefficient(t) => run_cells::<W, _, _>(
             cfg,
             &CoefficientThreshold(t),
             Some(&CoefficientThreshold(t)),
@@ -2845,7 +2844,7 @@ fn run<const W: usize>(cfg: &Config) {
 fn run_cells<const W: usize, P, PP>(cfg: &Config, policy: &P, partitioned_policy: Option<&PP>)
 where
     P: TruncationPolicy<W>,
-    PP: PartitionedTruncation<W>,
+    PP: TruncationPolicy<W>,
 {
     if cfg.format == Format::Tsv {
         println!("{TSV_HEADER}");

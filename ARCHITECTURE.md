@@ -19,7 +19,7 @@ Circuits come from upstream tooling.
 
 **`PauliString<const W: usize>`** uses the symplectic encoding: each qubit's Pauli is a bit pair with `I = (0,0)`, `X = (1,0)`, `Z = (0,1)`, `Y = (1,1)`, stored as `x: [u64; W]`, `z: [u64; W]`.
 One word covers 64 qubits.
-The type is `Copy + Pod + Zeroable` and `#[repr(C)]` with no padding — `16·W` bytes, directly serializable and GPU-uploadable.
+The type is `Copy` and `#[repr(C)]` with no padding — `16·W` bytes; its derived `Ord` is lexicographic in `x` then `z`, the key order of every sorted bucket.
 
 Multiplication is bitwise XOR of the `(x, z)` parts plus a phase `i^k`; `mul_assign` returns `k` as a `u8` in `0..4` and stores no phase.
 Callers fold the phase into a `Complex64` coefficient at the boundary — the moment a string enters a `PauliSum` or `BuildAccumulator`.
@@ -123,7 +123,6 @@ Refine and coarsen parallelize per bucket (pair) above the same 8192-term thresh
 They are a **measurement lever, not a tuning parameter**: the defaults are the measured optimum.
 Both have to move together — above the floor, `desired_bits` clamps the count at `min_buckets` whatever the target asks for — and `min_buckets` must stay `>= 16` or the "worth splitting" gate goes non-monotone.
 `rebucket` being grow-only, lowering either mid-run never coarsens a partition already grown.
-The small-sum direct path (`engine::direct`) sizes its partition from the defaults regardless.
 Pinned by `crates/paulistrings/tests/bucket_knob.rs`.
 
 ## Prepared-Channels
@@ -133,12 +132,12 @@ The engine **prepares** a channel once per layer into one of two forms, so no la
 ```rust
 pub enum Prepared<const W: usize> {
     Local(LocalPtm<W>),        // support on ≤ MAX_LOCAL_SUPPORT qubits
-    Rotation(RotationPrep<W>), // exp(-iθP/2), any generator weight
+    Rotation(PreparedRotation<W>), // exp(-iθP/2), any generator weight
 }
 ```
 
-`LocalPtm` is the channel's local Pauli-transfer matrix over its support: a list of `DeltaEntry`s, each carrying the bucket delta `δ = H·d`, the delta in local support coordinates, full-width XOR masks, and an amplitude per input support pattern (`amp[s]` takes pattern `s` to `s ⊕ d`; exact zero means "no output").
-The `i^k` phase is folded into `amp` at prepare time.
+`LocalPtm` is the channel's local Pauli-transfer matrix over its support: a list of `DeltaEntry`s, each carrying the bucket delta `δ = H·d`, the delta in local support coordinates, full-width XOR masks, and an amplitude per input support pattern (`amplitude[s]` takes pattern `s` to `s ⊕ d`; exact zero means "no output").
+The `i^k` phase is folded into `amplitude` at prepare time.
 `MAX_LOCAL_SUPPORT = 2` bounds the dense table at `16 × 16` amplitudes, 4 KB per layer; a support-3 table would be 64 KB with a 1 KB amplitude row inlined per entry, which is why wider supports take a different route.
 
 `Channel::prepare` has a **default implementation that is automatic and complete for any channel with support on ≤ 2 qubits**: `derive_local` calls the channel's own `apply` on each of the ≤ 16 local basis Paulis and reads the PTM off the results.
@@ -162,7 +161,7 @@ Channel fanout (`max_fanout`) sizes the `OutputBuffer` for direct `apply` calls 
 
 ## Engine
 
-`propagate` (and `propagate_with_scratch`, which it wraps) iterates the circuit's channels — in order for forward propagation, in reverse with adjoints for Heisenberg — and per layer runs:
+`propagate` (and `propagate_with`, which it wraps) iterates the circuit's channels — in order for forward propagation, in reverse with adjoints for Heisenberg — and per layer runs:
 
 ```
 rebucket → prepare → apply layer over cosets → policy.finalize_layer
@@ -179,7 +178,7 @@ Bucket *handles* are permuted into coset-contiguous order once per layer (two `O
 2. **Size** each per-member gather run exactly from the swapped-out lengths, plus one spare slot per column for the gather's branchless zero-amplitude filter to discard into.
 3. **Gather input-major**: each term is loaded once and its whole fanout scattered to runs via the O(1) index identity `member(i) ⊕ δ = member(i ⊕ coord(δ))`, so the gather visits each input term exactly once with no read amplification.
    Rows whose PTM amplitude is exactly zero are filtered **branchlessly** — always materialized, published only by `len += (amp != 0)` — because which entries vanish depends on the term's support pattern.
-   (An output-major variant guards rank ≥ 3 custom channels, selected by `GATHER_OUTPUT_MAJOR_MIN_R`; no built-in reaches it.)
+   (An output-major variant takes over at coset dimension `r ≥ GATHER_OUTPUT_MAJOR_MIN_R = 3`, which a dense two-qubit gate reaches at `r = 4`.)
 4. Per run, **sort the rest stream and merge**, straight into the member's live slot.
 
 **Split streams.**
@@ -234,7 +233,7 @@ A global bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p` desig
 **A partition holds the terms with `part(v) = rank` and nothing else**, so a key lives on exactly one partition and duplicates can no more straddle partitions than buckets (§Bucketing).
 
 The partition rows are a separate matrix, not a prefix of `H`: `H`'s active rows grow with the term count, and a row that moved would change a term's owner mid-run.
-`from_seed` draws them from a salted seed so they are independent of the refinement stream at every bucket count; `from_rows` is the hook for choosing them deliberately.
+`from_seed` draws them from a salted seed so they are independent of the refinement stream at every bucket count; `cut` and `from_seed_excluding` are the hooks for choosing them deliberately, and tests pin explicit rows through `test_support::partition_rows`.
 `is_independent_of(hash)` checks at scatter that the joint row set has full rank, so the global bucket carries `p + b` bits of entropy rather than `max(p, b)`; dependence costs load balance, not correctness.
 
 **The classification is per layer, not per term.**
@@ -244,14 +243,14 @@ A delta with `pd ≠ 0` is **remote**: every row it produces from local bucket `
 The identity delta has mask `0`, so a partition never ships to itself, and remoteness is a property of the mask alone, so every partition reaches the same verdict without a vote — which is what lets the transport pair calls positionally.
 
 **The wire unit is one CSR block per remote delta, indexed by the receiver's destination position.**
-`Gf2Span::perm_index` renumbers the bucket index so a receiver's coset occupies a contiguous run of *positions* (§Engine); both sides can compute that renumbering, so the **sender** lays the block out in it: segment `p` holds the rows for the receiver's position `p`, generated from the sender's own bucket `bucket_at(p) ⊕ bd`, and the receiver filling output bucket `β′` reads `segment(position_of(β′))` through a table.
+`Gf2Span::permuted_index` renumbers the bucket index so a receiver's coset occupies a contiguous run of *positions* (§Engine); both sides can compute that renumbering, so the **sender** lays the block out in it: segment `p` holds the rows for the receiver's position `p`, generated from the sender's own bucket `bucket_at(p) ⊕ bd`, and the receiver filling output bucket `β′` reads `segment(position_of(β′))` through a table.
 A coset's rows are then **contiguous**, so a prefix of the transfer is a whole unit of the receiver's work — what the pipelined receive waits on (`ChunkMap` carries both the order and the chunk edges).
 A `PartnerPayload` is that partner's blocks in ascending remote-delta index, walked in lockstep with the receiver's own plan, so a delta with no rows still ships its empty block.
 
 A layer is **export → exchange → local coset loop**, a push model, and the last two overlap:
 
 1. Two passes over the local buckets build one block per remote delta — count rows per (delta, source bucket), then fill each block's CSR segments in destination-position order.
-   The row arithmetic is the engine's own gather at row granularity (`DeltaEntry::emit`, `RotationPrep::emit_gen`), so an exported row is bitwise the row a local gather would have produced.
+   The row arithmetic is the engine's own gather at row granularity (`DeltaEntry::emit`, `PreparedRotation::emit_generator`), so an exported row is bitwise the row a local gather would have produced.
 2. One all-to-all `Transport::exchange_layer`, which is **two-phase**: the *early* parts (block headers and CSR offsets) are waited out before the caller's body runs, while the *bulk* parts (key and coefficient columns) are cut at the chunk edges, posted chunk-major, and still in flight while the coset loop runs inside the call.
    `ExtraRows::count` needs only the offsets, so a gather run can be sized before a row has landed.
 3. The bucketed coset loop (§Engine) over the *local* deltas only, with the received rows entering each output bucket's gather run through `ExtraRows`.
@@ -281,11 +280,12 @@ The schedule must be computable identically by every partition without communica
 `P = 1` has no group, so it skips the reduction and refines every layer, which is what keeps it bit for bit `propagate`.
 **A layer with no remote delta makes no transport call at all**, and with the bits agreement off its schedule it makes no call of any kind.
 
-Layer finalization is collective, so the policy bound is `PartitionedTruncation`, and `finalize_layer_partitioned` runs on every layer on every partition for a policy whose `finalizes_layer` is true — a collective is well defined only if nobody skips it, and `finalizes_layer` is a property of the policy *type*, so the group cannot split on it.
+Layer finalization is collective: `TruncationPolicy::finalize_layer_partitioned` runs on every layer on every partition for a policy whose `finalizes_layer` is true — a collective is well defined only if nobody skips it, and `finalizes_layer` is a property of the policy *type*, so the group cannot split on it.
+Its default is `finalize_layer` at one partition and nothing above it, which is correct only for a policy with no layer pass; a policy with a collective form overrides it and `supports_partitioned`, which every partitioned driver checks before the first layer.
 A policy with no layer pass costs nothing per layer; one that has a collective form must report `finalizes_layer`.
 `ApproxTopN` is **partition-exact**: the global octave histogram is the sum of the per-partition histograms, so one all-reduce has every partition choose the same edge and the union of the retained sets is the single-partition answer (§Truncation) — at the price of one collective per layer whatever the partition rows do.
 `And` runs both sides; `Or` runs neither, because its unpartitioned `finalize_layer` is the trait's no-op default rather than either child's, and the two must agree.
-Exact `TopN` is a distributed `k`-th selection, not a sum, and is **rejected at compile time** by the trait bound rather than approximated.
+Exact `TopN` is a distributed `k`-th selection, not a sum, and is **not yet supported** above one partition: `supports_partitioned` is `false`, so the driver panics before the first layer rather than approximate; exact selection by refining `ApproxTopN`'s all-reduced histogram is the open route.
 
 **The runtime is one pinned Rayon pool per partition, with work-stealing inside a partition only.**
 The split is static at the outer level because first touch needs a stable domain-level split, and stealing is untouched at the inner one because it is what beats a static assignment (§Parallelism).
@@ -312,14 +312,16 @@ Traffic-minimizing rows are cut-like, reading the qubits on the boundary of a sp
 
 The engine's *partition* is not a thread and not a process: it is whatever a `Transport` says a peer is, and `run_layers` is one function generic over the transport, with `scatter_local`, `PartitionWork` and `apply_layer_partitioned` shared below it.
 
+Unpartitioned `propagate` is the third caller: one `HostPartition` on the caller's own Rayon pool over a no-op `SoloTransport`, with the policy wrapped so its plain `finalize_layer` is the collective one; alone, the host backend rebuckets before `prepare` (`PartitionStorage::refine_unprepared`), so a growing layer prepares once.
+
 **Two drivers, because three things above the layer loop do not reconcile.**
 `PartitionedSum` holds `P` partitions inside one process and fans out to them per call; `DistributedSum` *is* one partition, and its peers are other processes (`MpiTransport`, behind the off-by-default `mpi` feature — or the in-process transport, which is how the distributed shape is tested with no MPI in the picture).
 They differ in the transport group's lifetime (per call, against one endpoint for the process's whole life, because an `MPI_Comm` is not something to duplicate per layer), in scatter and gather (one sum split locally and merged back bitwise, against a replicated input and a byte-framed gather to rank 0), and in the consistency check (one process cannot hand its own partitions different circuits, so only the distributed driver pays for it).
 
 **Backend composition.**
-Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
+Where a partition's terms live is a second axis, orthogonal to how its peers are reached: `run_layers` touches a partition's storage only through two crate-private traits, the policy-free `PartitionStorage` (`len`, `hash`, `refine`, `refine_unprepared`, `detach`, `stats`) and the layer itself, `PartitionBackend<W, T>: PartitionStorage` (`apply_layer`, `finalize_layer`), so it is generic over the backend exactly as it is over the transport.
 Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
-The loop keeps the `PartitionedTruncation` bound, so a backend cannot widen what a partitioned run accepts, and exact `TopN` stays a compile-time rejection.
+The drivers check `supports_partitioned` before the loop, so a backend cannot widen what a partitioned run accepts.
 `HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum<W, B = HostPartition<W>>` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
 `DevicePartition` (the `cuda` feature) is the device backend, and the device drivers are the same two types over it (`GpuPartitionedSum`, whose one-partition form is `GpuPauliSum`, and `GpuDistributedSum`), adding only the upload at scatter, the fallible gather and the poisoning of a failed group: its K10 export lays out the same CSR blocks in the receiver's position order, and its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`.
 Exchange rows never leave device memory, so a group is all device partitions or all host ones.
@@ -371,7 +373,7 @@ The header declares *every* part's length, early and bulk alike, which is what s
 MPI's non-overtaking guarantee for a `(source, tag, communicator)` triple then matches sends to receives in posting order, which is why both sides walk partners, parts and chunks in the same ascending order, deriving the chunk edges from the same CSR offsets and cutting at a constant chunk count rather than a thread count, since two ranks may run different pool widths.
 Tags pack `epoch:11 | kind:4`, at most 32767 and so inside the guaranteed `MPI_TAG_UB`.
 Everything is sent as bytes and chunked again at 1 GiB, MPI's counts being `i32` and a `u64` view of the parts unavailable (the block header is four `u32`s and the CSR `offsets` column a `Vec<u32>`, neither 8-aligned); raw host bytes on the wire means a run is homogeneous, same architecture and same `W` on every rank.
-The declared part lengths are enough to size the receiving payload, so `Payload::recv_into` hands MPI mutable byte views of the very columns the coset loop will read and there is no decode pass; `finish_recv` then checks the header against the shape the lengths implied.
+The declared part lengths are enough to size the receiving payload, so `Payload::receive_into` hands MPI mutable byte views of the very columns the coset loop will read and there is no decode pass; `finish_receive` then checks the header against the shape the lengths implied.
 
 **Scatter and gather bracket a distributed run too, with a different contract.**
 The input is *replicated* — every rank calls `scatter` with the same sum and keeps `filter_partition(rows, rank)`, the rows drawn from one seed so nobody has to agree by collective.
@@ -396,11 +398,14 @@ Truncation is what keeps Pauli propagation tractable, and it is a composable ext
 pub trait TruncationPolicy<const W: usize>: Send + Sync {
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool { true }
     fn finalize_layer(&self, sum: &mut PauliSum<W>) {}
+    fn finalizes_layer(&self) -> bool { true }
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) { … }
+    fn supports_partitioned(&self) -> bool { !self.finalizes_layer() }
 }
 ```
 
 The split is performance-critical: `keep_term` runs on every merged output — potentially billions of times — and must inline to nanoseconds; it sees the **summed** coefficient, inside the merge.
-`finalize_layer` runs once per layer and may be non-local.
+`finalize_layer` runs once per layer and may be non-local; its partitioned form is §Partitioning's.
 
 Built-ins: `CoefficientThreshold(eps)` and `WeightCutoff(k)` are per-term filters; `TopN(n)` and `ApproxTopN(n)` are layer finalizations.
 Policies compose with `And` / `Or` (Python: `&` / `|`).
@@ -422,7 +427,7 @@ It keeps `≤ n` (so the memory bound is exact) and `> n - p`, where `p` is the 
 Tie groups need no rule here: equal magnitudes share an octave, so a multiplet is always kept or dropped whole — at the price of a wider degenerate case, a sum confined to a single octave of `|c|²` being wiped exactly as an all-tied sum is under `TopN`.
 `TopN` remains the default and the choice whenever the retained count itself matters.
 
-Under partitioning the two swap places: `ApproxTopN` is **partition-exact**, while exact `TopN` has no collective form and is rejected at compile time (§Partitioning).
+Under partitioning the two swap places: `ApproxTopN` is **partition-exact**, while exact `TopN` has no collective form yet and is rejected before the first layer (§Partitioning).
 
 ## Channels
 
@@ -462,7 +467,7 @@ Everything those methods do is spec-rewriting outside any hot loop — no core c
 
 ## GPU-Readiness
 
-The design decisions a GPU backend needs are already in place: `PauliString` is `Pod` with a defined layout; bucket columns are SoA and flatten to device buffers in one pass; the coset decomposition maps to one block per coset with gather/sort/merge in shared memory, a better CUB fit than any global sort.
+The design decisions a GPU backend needs are already in place: bucket columns are SoA and flatten to device buffers in one pass; the coset decomposition maps to one block per coset with gather/sort/merge in shared memory, a better CUB fit than any global sort.
 The extension to distributed memory is no longer forward-looking: §Partitioning is that exchange, and MPI is the same exchange over ranks.
 
 **The device sum.**
@@ -470,7 +475,7 @@ The extension to distributed memory is no longer forward-looking: §Partitioning
 Within a bucket the device keeps unique keys in no particular order; `to_host` re-sorts each bucket to the host's lexicographic order.
 
 **The fused layer.**
-One block per output position `p`, the coset-contiguous renumbering `Gf2Span::perm_index` of a bucket `β`.
+One block per output position `p`, the coset-contiguous renumbering `Gf2Span::permuted_index` of a bucket `β`.
 For every entry `e` of the prepared table and every row `r` of source bucket `β ⊕ δ_e` that the entry emits (`amp_e[s] ≠ 0` on the table entry, never on the product), the block builds a record `(g_lo32, tag)` in shared memory with `tag = e:4 | r:12`.
 A 16-bit index array is radix-sorted by `g_lo32`; adjacent equal-`g_lo32` records with different keys trigger eight more passes over `g_hi32`, and a pair still colliding a full lex-key sort, so equal keys always end adjacent.
 A segmented sum over each equal-key run (a warp-shuffle block scan on dense tables, a head-serial walk on sparse ones) gives the coefficient; a row survives if the sum is not exactly zero and `keep_term` accepts it, and its key and coefficient are recomputed from the input at write time.

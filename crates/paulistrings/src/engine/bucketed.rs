@@ -1,6 +1,6 @@
-//! The bucketed layer engine. See ARCHITECTURE.md §Engine.
+//! One layer of the bucketed engine, applied coset by coset, and the reusable `LayerScratch`.
 //!
-//! Applies one prepared channel to a `PauliSum` one coset of `span(h(D))` at a time: cosets are write-disjoint, so each is gathered, sorted and merged in place with no cross-task synchronization. `LayerScratch` holds the reusable per-layer working set.
+//! See ARCHITECTURE.md §Engine.
 
 use std::sync::Mutex;
 
@@ -9,42 +9,42 @@ use rayon::prelude::*;
 
 use super::coset::Gf2Span;
 use super::merge::{
-    merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
     RADIX_MAX_REST_ROWS_PER_KEY, RADIX_MIN_DISJOINT_STREAMS, RADIX_MIN_REST_STREAMS,
 };
-use crate::bucket::sum::{BucketCols, PauliSum};
-use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
-use crate::pauli_string::PauliString;
-use crate::phase::Phase;
+use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
+use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 #[cfg(feature = "phase-timing")]
-use super::stats::{CosetStats, PhaseStats, Stamp};
+use super::stats::{PhaseStats, Stamp};
+
+mod coset_fill;
+
+pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
-/// Reusable per-layer scratch, held by the caller across layers so a layer allocates nothing after the first call: every field retains its high-water capacity across cosets and layers.
-/// The serial path uses this instance directly; the parallel path gives each Rayon worker its own slot in `workers`, so capacity is bounded by `threads × coset working set`.
+/// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
-/// A task's output cannot depend on which scratch slot it drew: the swap site clears every write destination before use, so worker-to-slot assignment varying run to run is unobservable — which is what keeps output byte-identical across thread counts.
+/// A task's output cannot depend on which worker slot it drew: every write destination is cleared before use.
 #[derive(Debug, Default)]
 pub struct LayerScratch<const W: usize> {
-    /// The per-coset working set (serial path).
+    /// The serial path's coset working set.
     pub(super) task: CosetScratch<W>,
-    /// The layer's handle permutation, `perm[β] = span.perm_index(β)`.
-    pub(super) perm: Vec<u32>,
-    /// The inverse of [`Self::perm`], `inv_perm[perm[β]] = β`, so a coset member's *original* bucket index is recoverable from its permuted position. Filled only when the layer's [`ExtraRows`] source asks for it ([`ExtraRows::NEEDS_BETA`]); left empty otherwise, which [`fill_coset`] reads as "the permutation is the identity".
-    pub(super) inv_perm: Vec<u32>,
-    /// Staging area the bucket handles are permuted into. Holds handles only while a layer runs; its elements carry no capacity of their own.
-    pub(super) staging: Vec<BucketCols<W>>,
-    /// Worker-persistent coset working sets for the parallel path, one slot per Rayon worker, indexed by `rayon::current_thread_index()`. Each worker locks only its own slot, so the mutexes are uncontended.
+    /// The layer's handle permutation, `permutation[β] = span.permuted_index(β)`.
+    pub(super) permutation: Vec<u32>,
+    /// The inverse of [`Self::permutation`], filled only under [`ExtraRows::NEEDS_BETA`]; empty means the identity.
+    pub(super) inverse_permutation: Vec<u32>,
+    /// Bucket handles in coset-contiguous order while a layer runs.
+    pub(super) staging: Vec<BucketColumns<W>>,
+    /// One coset working set per Rayon worker, indexed by `rayon::current_thread_index()`, so each mutex is uncontended.
     pub(super) workers: Vec<Mutex<CosetScratch<W>>>,
-    /// Layer-level (wall-clock) phase counters; the per-coset busy-time counters live in each `CosetScratch`.
+    /// Layer-level wall-clock counters; per-coset busy time lives in each `CosetScratch`.
     #[cfg(feature = "phase-timing")]
     pub(crate) stats: PhaseStats,
-    /// The opt-in per-layer term-count trace, `None` unless [`Self::enable_term_trace`] was called.
+    /// `None` unless [`Self::enable_term_trace`] was called.
     pub(crate) term_trace: Option<TermTrace>,
-    /// The opt-in per-layer gate trace, `None` unless [`Self::enable_gate_trace`] was called.
+    /// `None` unless [`Self::enable_gate_trace`] was called.
     pub(crate) gate_trace: Option<GateTrace>,
 }
 
@@ -54,51 +54,47 @@ impl<const W: usize> LayerScratch<W> {
         Self::default()
     }
 
-    /// Drain and return the accumulated phase counters (layer-level wall-clock fields plus every worker's busy-time counters), zeroing them.
-    /// Counters accumulate across layers and `propagate_with_scratch` calls until drained.
+    /// Drain the phase counters accumulated since the last drain, across layers and calls.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PhaseStats {
         let mut total = std::mem::take(&mut self.stats);
         total.absorb_coset(&std::mem::take(&mut self.task.stats));
         for slot in &self.workers {
-            let mut ws = slot.lock().unwrap();
-            total.absorb_coset(&std::mem::take(&mut ws.stats));
+            let mut worker_scratch = slot.lock().unwrap();
+            total.absorb_coset(&std::mem::take(&mut worker_scratch.stats));
         }
         total
     }
 
-    /// Start recording a [`TermTrace`] on every subsequent [`propagate_with_scratch`](crate::propagate_with_scratch) call driven by this scratch. Idempotent, and it never discards counts already recorded. Always compiled: the counts come from `sum.len()` reads the layer loop already performs.
+    /// Record a [`TermTrace`] on every later call driven by this scratch; idempotent.
     pub fn enable_term_trace(&mut self) {
         self.term_trace.get_or_insert_with(TermTrace::default);
     }
 
-    /// Drain and return the per-layer term counts, or `None` if tracing was never enabled.
-    /// Draining leaves tracing enabled with empty vectors, so a reused scratch reports each call separately without re-enabling.
+    /// Drain the term trace, or `None` if it was never enabled; tracing stays enabled.
     pub fn take_term_trace(&mut self) -> Option<TermTrace> {
         self.term_trace.as_mut().map(std::mem::take)
     }
 
-    /// Start recording a [`GateTrace`] on every subsequent [`propagate_with_scratch`](crate::propagate_with_scratch) call driven by this scratch. Idempotent, and it never discards records already taken.
-    /// Always compiled: enabling it costs one extra `Instant::now()` pair per traced layer, gated behind the same hoisted flag as the per-layer `DEBUG` log.
+    /// Record a [`GateTrace`] on every later call driven by this scratch; idempotent.
     pub fn enable_gate_trace(&mut self) {
         self.gate_trace.get_or_insert_with(GateTrace::default);
     }
 
-    /// Drain and return the per-layer gate trace, or `None` if tracing was never enabled.
-    /// Draining leaves tracing enabled with empty vectors, so a reused scratch reports each call separately without re-enabling.
+    /// Drain the gate trace, or `None` if it was never enabled; tracing stays enabled.
     pub fn take_gate_trace(&mut self) -> Option<GateTrace> {
         self.gate_trace.as_mut().map(std::mem::take)
     }
 }
 
-/// Per-layer resident term counts, recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_term_trace`](LayerScratch::enable_term_trace) set.
-/// Both vectors have one entry per layer applied, in application order (so *reverse* circuit order under [`Direction::Heisenberg`](crate::Direction)). Always compiled — the `phase-timing` feature gates only the timing counters.
-/// These are counts of the sum as it rests between layers, post-truncation; the transient in-layer expansion is not captured, since observing it would mean instrumenting the coset loop.
+/// Resident term counts between layers, one entry per layer in application order.
+///
+/// Counts are post-truncation; the transient expansion inside a layer is not captured.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TermTrace {
-    /// Resident term count before each layer. `terms_in[k + 1]` equals `terms_out[k]`.
+    /// Resident term count before each layer.
     pub terms_in: Vec<usize>,
-    /// Resident term count after each layer, i.e. after the truncation policy's `finalize_layer`.
+    /// Resident term count after each layer's `finalize_layer`.
     pub terms_out: Vec<usize>,
 }
 
@@ -114,19 +110,12 @@ impl TermTrace {
     }
 }
 
-/// Per-layer structured gate trace: application index, original circuit index, gate name, term counts, and the complete gate's elapsed wall time.
-///
-/// Recorded by [`propagate_with_scratch`](crate::propagate_with_scratch) when the driving [`LayerScratch`] has [`enable_gate_trace`](LayerScratch::enable_gate_trace) set.
-/// Always compiled, like [`TermTrace`]; unlike it, a traced layer pays one extra `Instant::now()` pair, gated behind the same hoisted flag that already guards the per-layer `DEBUG` log, so an untraced layer's cost is unchanged (CLAUDE.md §Performance discipline).
-/// `nanos[k]` covers the same window `propagate`'s per-layer `DEBUG` line reports: before `rebucket`/`prepare`, through the coset loop, `finalize_layer`, and any completion sync that phase needs — a complete gate application.
-///
-/// Every field has one entry per layer applied, in *application* order (so reverse circuit order under [`Direction::Heisenberg`](crate::Direction::Heisenberg)); `circuit_index` recovers the original position regardless of direction, and `application_index` is the loop counter, so a consumer needs neither the direction nor the circuit length to pair the two.
-/// There is no per-gate Trotter-step index here: [`Circuit`](crate::Circuit) has no notion of steps, so a step boundary is `circuit_index / channels_per_step` for a caller who knows that constant, not something the engine can compute.
+/// Per-layer gate records, one entry per layer in application order (reverse circuit order under [`Direction::Heisenberg`](crate::Direction::Heisenberg)).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GateTrace {
     /// This layer's position in [`Circuit::channels`](crate::Circuit), independent of propagation direction.
     pub circuit_index: Vec<u32>,
-    /// This layer's position in the propagation loop, i.e. `k` in `propagate`'s `for k in 0..n`.
+    /// This layer's position in application order.
     pub application_index: Vec<u32>,
     /// [`Channel::debug_name`](crate::Channel::debug_name) of the applied channel.
     pub gate_name: Vec<&'static str>,
@@ -134,187 +123,44 @@ pub struct GateTrace {
     pub terms_in: Vec<usize>,
     /// Resident term count after the layer, i.e. after `finalize_layer`.
     pub terms_out: Vec<usize>,
-    /// Elapsed wall-clock nanoseconds for the complete gate application.
+    /// Wall-clock nanoseconds for the whole layer, from `rebucket` through `finalize_layer`.
     pub nanos: Vec<u64>,
 }
 
-/// One coset task's working set: the swapped-out input columns and the per-output-member gather runs.
-#[derive(Clone, Debug, Default)]
-pub(super) struct CosetScratch<const W: usize> {
-    /// The coset's input columns, `mem::swap`ped with the live bucket slots so the layer runs in place: bucket capacity circulates through here instead of through a second full-sum copy.
-    old: Vec<BucketCols<W>>,
-    /// Per-output-member gather runs.
-    runs: Vec<GatherRun<W>>,
-    /// Scratch for `sort_rows_with_scratch`'s per-run sort, reused across every run in every coset this scratch instance handles.
-    sort: SortScratch<W>,
-    /// This slot's busy-time phase counters, drained by `LayerScratch::take_stats`.
-    #[cfg(feature = "phase-timing")]
-    stats: CosetStats,
-}
-
-/// One output member's gather run: key columns and coefficients.
-/// Equal-key summation order is not pinned by a sort tiebreak — see the module doc and `merge::sort_rows_with_scratch`.
-#[derive(Clone, Debug, Default)]
-pub(super) struct GatherRun<const W: usize> {
-    /// The identity-delta stream: keys untouched, so it inherits the source bucket's strictly-ascending, duplicate-free order and is never sorted. Under a dense identity plan only `id_coeff` is populated, aligned 1:1 with `old[j]` whose keys the merge borrows in place; under a sparse plan all three columns are filled.
-    id_x: Vec<[u64; W]>,
-    id_z: Vec<[u64; W]>,
-    id_coeff: Vec<Complex64>,
-    /// Every other delta's rows — keys XOR'd by a constant mask, so generally unsorted; canonicalized per run by `sort_rows_with_scratch`.
-    x: Vec<[u64; W]>,
-    z: Vec<[u64; W]>,
-    coeff: Vec<Complex64>,
-}
-
-/// `a != ZERO`, without the `||` short-circuit — one flag, no branch.
-#[inline(always)]
-fn nonzero(a: Complex64) -> bool {
-    (a.re != 0.0) | (a.im != 0.0)
-}
-
-impl<const W: usize> GatherRun<W> {
-    #[inline]
-    fn reset(&mut self, cap_id_keys: usize, cap_id_coeff: usize, cap_rest: usize) {
-        self.id_x.clear();
-        self.id_z.clear();
-        self.id_coeff.clear();
-        self.x.clear();
-        self.z.clear();
-        self.coeff.clear();
-        // One slot past the exact capacity: `push_if` writes a discarded row at `len` before
-        // deciding not to publish it via `set_len`, so the write must stay in bounds even when
-        // every countable row is kept.
-        self.id_x.reserve(cap_id_keys + 1);
-        self.id_z.reserve(cap_id_keys + 1);
-        self.id_coeff.reserve(cap_id_coeff + 1);
-        self.x.reserve(cap_rest + 1);
-        self.z.reserve(cap_rest + 1);
-        self.coeff.reserve(cap_rest + 1);
-    }
-
-    /// Write one row at `len` in a three-column stream and publish it iff `keep`.
-    /// The single unsafe block behind every gather append, so there is one invariant to audit
-    /// rather than several copies of it that drift apart.
-    ///
-    /// # Safety
-    ///
-    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`. The caller gets this from
-    /// [`GatherRun::reset`], which reserves one slot past the plan's exact per-run capacity.
-    #[inline]
-    unsafe fn append_if(
-        xs: &mut Vec<[u64; W]>,
-        zs: &mut Vec<[u64; W]>,
-        cs: &mut Vec<Complex64>,
-        keep: bool,
-        x: [u64; W],
-        z: [u64; W],
-        c: Complex64,
-    ) {
-        let n = xs.len();
-        debug_assert!(n < xs.capacity());
-        debug_assert!(n < zs.capacity());
-        debug_assert!(n < cs.capacity());
-        unsafe {
-            xs.as_mut_ptr().add(n).write(x);
-            zs.as_mut_ptr().add(n).write(z);
-            cs.as_mut_ptr().add(n).write(c);
-            let m = n + keep as usize;
-            xs.set_len(m);
-            zs.set_len(m);
-            cs.set_len(m);
-        }
-    }
-
-    /// Branchless filtered append to the rest stream.
-    #[inline]
-    fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: `reset` reserved `cap_rest + 1` on all three columns, and `cap_rest` bounds
-        // every row the plan's deltas can emit into this run.
-        unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
-    }
-
-    /// Unconditional append to the rest stream — [`Self::push_if`] with the predicate known true, which is what the rotation generator pass wants.
-    #[inline]
-    fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        self.push_if(true, x, z, c);
-    }
-
-    /// Branchless filtered append to the identity stream.
-    #[inline]
-    fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: as `push_if`, with `cap_id_keys` / `cap_id_coeff` bounding the identity stream's rows.
-        unsafe {
-            Self::append_if(
-                &mut self.id_x,
-                &mut self.id_z,
-                &mut self.id_coeff,
-                keep,
-                x,
-                z,
-                c,
-            )
-        }
-    }
-
-    /// Unchecked unconditional append to the identity *coefficient* column.
-    /// The dense-identity plans emit exactly one identity row per source row and borrow the
-    /// keys from the source bucket, so this is the only column materialized — hence its own
-    /// helper rather than [`Self::push_id_if`].
-    #[inline]
-    fn push_id_coeff(&mut self, c: Complex64) {
-        let n = self.id_coeff.len();
-        debug_assert!(n < self.id_coeff.capacity());
-        // SAFETY: `reset` reserved `cap_id_coeff + 1`, and `cap_id_coeff` is the source
-        // bucket's length — exactly the number of calls this loop makes.
-        unsafe {
-            self.id_coeff.as_mut_ptr().add(n).write(c);
-            self.id_coeff.set_len(n + 1);
-        }
-    }
-
-    #[cfg(any(test, feature = "phase-timing"))]
-    #[inline]
-    fn len(&self) -> usize {
-        self.id_coeff.len() + self.coeff.len()
-    }
-}
-
-/// A prepared channel's delta set, annotated with each entry's coset coordinate
-/// (`span.coord_of(bucket_delta)`), computed once per layer.
+/// A prepared channel's delta set annotated with each entry's coset coordinate, computed once per layer.
 pub(super) enum DeltaPlan<'p, const W: usize> {
     /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`.
     Local {
         ptm: &'p LocalPtm<W>,
         coords: Vec<u32>,
-        /// Whether `deltas()[0]` is the identity delta (entry 0 by construction order), whose stream the gather routes into the run's pre-sorted `id` columns. True for every built-in channel.
+        /// Whether `deltas()[0]` is the identity delta, whose stream goes to the run's pre-sorted `id` columns.
         has_identity: bool,
-        /// Whether the identity entry's amplitude is nonzero for every active support pattern. Dense means each source row emits exactly one id row with its key untouched, so the gather materializes only the coefficient and the merge borrows the keys from `old[j]` in place. True for `GeneralUnitary1Q/2Q` and weight-≤2 rotations; false for Cliffords (e.g. CNOT), which keep the materialized key+coeff form (see `research/FINDINGS.md`).
+        /// Whether the identity amplitude is nonzero on every active support pattern, so the merge borrows the id keys from the source bucket (ARCHITECTURE.md §Engine).
         dense_identity: bool,
-        /// Whether this layer's gather runs go to `merge::sort_rows_radix_with_scratch` instead of the comparison kernel: at least `merge::RADIX_MIN_REST_STREAMS` rest streams, or at least `merge::RADIX_MIN_DISJOINT_STREAMS` streams whose [`rest_rows_per_key`] is below `merge::RADIX_MAX_REST_ROWS_PER_KEY`. Decided once per layer; see `RADIX_MIN_REST_STREAMS`.
+        /// Whether this layer's runs use the radix sort kernel, decided once per layer (see `RADIX_MIN_REST_STREAMS`).
         radix_sort: bool,
     },
     /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
-        prep: &'p RotationPrep<W>,
+        rotation: &'p PreparedRotation<W>,
         coord_identity: u32,
-        coord_gen: u32,
-        /// Whether the generator pass emits here. False only under a partitioning whose partition rows see the generator, where every generator row belongs to a partner instead ([`LayerKnobs::gen_local`]); `coord_gen` is then meaningless and set to 0.
-        gen_local: bool,
+        generator_coordinate: u32,
+        /// Whether the generator pass emits here ([`LayerKnobs::generator_local`]); `generator_coordinate` is 0 when not.
+        generator_local: bool,
     },
 }
 
-/// Per-layer overrides the partitioned engine hands the coset loop.
-/// [`Default`] is the non-partitioned answer to all three, so `apply_layer_bucketed` passes it and nothing about the single-partition path changes.
+/// Per-layer overrides the partitioned engine hands the coset loop; [`Default`] is the unpartitioned answer.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LayerKnobs<'k> {
-    /// Bucket deltas to build the coset span from. `None` (default) means the prepared channel's own [`Prepared::bucket_deltas`]; the partitioned layer passes its plan's local bucket deltas.
+    /// Bucket deltas to build the coset span from, instead of [`Prepared::bucket_deltas`].
     pub bucket_deltas: Option<&'k [u32]>,
-    /// Rest-stream count driving the sort-kernel choice. `None` (default) derives it from the plan. The partitioned layer passes the channel's total stream count (local + remote), so every partition picks the kernel the unpartitioned run would.
+    /// The channel's total rest-stream count, so every partition picks the sort kernel the unpartitioned run would.
     pub rest_streams: Option<usize>,
-    /// Rest-stream overlap driving the sort-kernel choice, as [`rest_streams`](Self::rest_streams) does for the count. `None` (default) derives it from the plan's own PTM. The partitioned layer passes the unrestricted channel's [`rest_rows_per_key`]: a PTM cut down to local entries can only look more disjoint than the channel is, which could otherwise switch one partition onto the radix kernel that the unpartitioned run keeps on the comparison kernel.
+    /// The unrestricted channel's [`rest_rows_per_key`], since a PTM cut down to local entries can look more disjoint than the channel is.
     pub rows_per_key: Option<f64>,
-    /// Whether a wide rotation's generator pass emits here (see [`DeltaPlan::Rotation::gen_local`]). `true` by default.
-    pub gen_local: bool,
+    /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
+    pub generator_local: bool,
 }
 
 impl Default for LayerKnobs<'_> {
@@ -323,31 +169,23 @@ impl Default for LayerKnobs<'_> {
             bucket_deltas: None,
             rest_streams: None,
             rows_per_key: None,
-            gen_local: true,
+            generator_local: true,
         }
     }
 }
 
-/// Rest rows landing on one output key, averaged over the output keys that get at least one —
-/// the plan-time estimate of `rows_sorted / distinct keys`, and the second arm of the radix
-/// gate (`merge::RADIX_MAX_REST_ROWS_PER_KEY`). `1.0` means the rest streams are pairwise
-/// disjoint, so the per-run merge's branch is a coin flip; higher means the streams overlap
-/// and the merge steps through them in lock-step, which the branch predictor learns.
-/// Must be asked of the channel's own PTM, never a restricted one: a partitioned layer hands
-/// [`DeltaPlan::new`] a PTM cut down to its local entries, and a cut-down delta set can only
-/// look more disjoint than the channel is — see [`LayerKnobs::rows_per_key`].
+/// Mean rest rows per output key that gets any, the radix gate's second arm; ask it of the channel's own PTM, never a restricted one.
 pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
-    // Entry 0 is the identity delta when present, and its stream is the pre-sorted `id` columns — never part of the sorted rest stream.
     let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
     let dim = 1usize << (2 * ptm.k());
     let (mut rows, mut keys) = (0u32, 0u32);
-    for o in 0..dim {
-        let n = ptm.deltas()[rest_start..]
+    for output in 0..dim {
+        let rows_here = ptm.deltas()[rest_start..]
             .iter()
-            .filter(|d| d.amp[o ^ d.local_delta as usize] != ZERO)
+            .filter(|delta| delta.amplitude[output ^ delta.local_delta as usize] != ZERO)
             .count() as u32;
-        rows += n;
-        keys += u32::from(n > 0);
+        rows += rows_here;
+        keys += u32::from(rows_here > 0);
     }
     if keys == 0 {
         0.0
@@ -357,8 +195,8 @@ pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
 }
 
 impl<'p, const W: usize> DeltaPlan<'p, W> {
-    pub(super) fn new(prep: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
-        match prep {
+    pub(super) fn new(prepared: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
+        match prepared {
             Prepared::Local(ptm) => {
                 let coords: Vec<u32> = ptm
                     .deltas()
@@ -366,17 +204,14 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                     .map(|d| span.coord_of(d.bucket_delta))
                     .collect();
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
-                // The identity delta hashes to bucket delta 0, so the id stream stays in its own member.
                 debug_assert!(!has_identity || coords[0] == 0);
-                // Dense over the active patterns only: `amp` is sized LOCAL_DIM but the channel populates `4^k` entries.
+                // `amplitude` is sized LOCAL_DIM but only `4^k` entries are populated.
                 let dim = 1usize << (2 * ptm.k());
                 let dense_identity =
-                    has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
-                // `deltas()` is the realized delta set (§Bucketing), so its length minus the identity entry is the stream count the sort-kernel crossover turns on.
+                    has_identity && ptm.deltas()[0].amplitude[..dim].iter().all(|a| *a != ZERO);
                 let rest_streams = knobs
                     .rest_streams
                     .unwrap_or(ptm.deltas().len() - has_identity as usize);
-                // Both arms read channel-wide quantities, never this partition's view of them, so every partition picks the kernel the unpartitioned run would.
                 let radix_sort = rest_streams >= RADIX_MIN_REST_STREAMS
                     || (rest_streams >= RADIX_MIN_DISJOINT_STREAMS
                         && knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
@@ -389,47 +224,34 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                     radix_sort,
                 }
             }
-            Prepared::Rotation(r) => DeltaPlan::Rotation {
-                prep: r,
-                coord_identity: span.coord_of(r.bucket_delta_identity),
-                // `coord_of` demands its argument be in the span, and a
-                // remote generator's bucket delta is not.
-                coord_gen: if knobs.gen_local {
-                    span.coord_of(r.bucket_delta_gen)
+            Prepared::Rotation(rotation) => DeltaPlan::Rotation {
+                rotation,
+                coord_identity: span.coord_of(rotation.bucket_delta_identity),
+                // `coord_of` demands its argument be in the span, and a remote generator's bucket delta is not.
+                generator_coordinate: if knobs.generator_local {
+                    span.coord_of(rotation.bucket_delta_generator)
                 } else {
                     0
                 },
-                gen_local: knobs.gen_local,
+                generator_local: knobs.generator_local,
             },
         }
     }
 }
 
-/// Extra rest-stream rows for an output bucket, supplied by the partitioned engine.
-/// A partition generates rows whose output bucket lives on another partition; they arrive here
-/// and are appended to that bucket's gather run after the local gather and before the per-run
-/// sort. Going into the rest stream (never the pre-sorted id stream) is what makes them safe:
-/// it is sorted anyway, so `merge2_into` sees the complete sum before `keep_term` runs
-/// (ARCHITECTURE.md §Truncation).
-/// Zero-cost when [`NoExtra`]: [`NEEDS_BETA`](Self::NEEDS_BETA) is a `const false` that deletes
-/// every call site, along with the inverse-permutation pass that exists only to answer them.
-///
-/// # Contract
-///
-/// An implementation that can return rows must set `NEEDS_BETA = true`.
+/// Rows received from other partitions, appended to an output bucket's rest stream before the sort so `keep_term` sees the complete sum (ARCHITECTURE.md §Truncation).
+/// An implementation that can return rows must set `NEEDS_BETA = true`; under `false` every call site compiles away.
 pub(crate) trait ExtraRows<const W: usize> {
-    /// Whether the engine must recover each coset member's original bucket index before calling this source. `false` (default) also means the engine never calls [`count`](Self::count) or [`append_into`](Self::append_into).
+    /// Whether the engine recovers original bucket indices and calls this source at all.
     const NEEDS_BETA: bool = false;
 
-    /// How many rows are destined for output bucket `beta` (its original index). Used to size the gather run exactly, so it must agree with what [`append_into`](Self::append_into) pushes.
-    #[inline]
+    /// Rows destined for original bucket `beta`; must equal what [`append_into`](Self::append_into) pushes.
     fn count(&self, beta: u32) -> usize {
         let _ = beta;
         0
     }
 
-    /// Append bucket `beta`'s rows onto the run's rest columns, all three in step. `beta` is the bucket's original index.
-    #[inline]
+    /// Append original bucket `beta`'s rows onto the run's rest columns.
     fn append_into(
         &self,
         beta: u32,
@@ -441,31 +263,34 @@ pub(crate) trait ExtraRows<const W: usize> {
     }
 }
 
-/// The non-partitioned engine's [`ExtraRows`]: no rows, ever. Every method is
-/// the trait default, so the hook compiles away entirely.
+/// The unpartitioned engine's [`ExtraRows`]: no rows.
 pub(crate) struct NoExtra;
 
 impl<const W: usize> ExtraRows<W> for NoExtra {}
 
-/// Apply one prepared channel to a bucketed sum.
-/// `policy`'s `keep_term` is folded into the per-bucket merge, so it sees fully summed coefficients (ARCHITECTURE.md §Truncation).
-/// `finalize_layer` is not called here; `propagate` owns that.
+/// Apply one prepared channel to a bucketed sum, folding `keep_term` into the merge; the caller runs `finalize_layer`.
 pub fn apply_layer_bucketed<const W: usize, T>(
     sum: &mut PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     policy: &T,
     scratch: &mut LayerScratch<W>,
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
-    apply_layer_bucketed_with(sum, prep, policy, scratch, &NoExtra, LayerKnobs::default())
+    apply_layer_bucketed_with(
+        sum,
+        prepared,
+        policy,
+        scratch,
+        &NoExtra,
+        LayerKnobs::default(),
+    )
 }
 
-/// [`apply_layer_bucketed`] with an [`ExtraRows`] source feeding each output bucket's rest stream and the partitioned engine's per-layer [`LayerKnobs`] — the entry point the partitioned engine drives.
-/// Under [`NoExtra`] and default knobs it is [`apply_layer_bucketed`], with the hook's call sites and the inverse-permutation pass behind a `const false`.
+/// [`apply_layer_bucketed`] with the partitioned engine's [`ExtraRows`] source and [`LayerKnobs`].
 pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     sum: &mut PauliSum<W>,
-    prep: &Prepared<W>,
+    prepared: &Prepared<W>,
     policy: &T,
     scratch: &mut LayerScratch<W>,
     extra: &X,
@@ -475,77 +300,64 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     X: ExtraRows<W> + Sync,
 {
     #[cfg(feature = "phase-timing")]
-    let mut st = Stamp::now();
+    let mut stamp = Stamp::now();
 
-    // Key-preserving channels leave every key bitwise unchanged, so the output is already
-    // sorted and duplicate-free: rescaling each coefficient is an in-place filter, no sort needed.
-    // `!X::NEEDS_BETA` must still be asked: a partitioned layer's local delta table can look
-    // key-preserving while received rows still have to be merged in.
-    if let Prepared::Local(ptm) = prep {
+    // A partitioned layer's local table can look key-preserving while received rows still need merging.
+    if let Prepared::Local(ptm) = prepared {
         if !X::NEEDS_BETA && ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
             #[cfg(feature = "phase-timing")]
-            st.lap(&mut scratch.stats.rescale_ns);
+            stamp.lap(&mut scratch.stats.rescale_ns);
             return;
         }
     }
 
-    // The coset structure of this layer's bucket-delta set: `span(h(D))` rather than `h(D)`
-    // itself, since an open-trait channel's delta set need not be XOR-closed.
     let own_deltas;
     let deltas: &[u32] = match knobs.bucket_deltas {
-        Some(d) => d,
+        Some(deltas) => deltas,
         None => {
-            own_deltas = prep.bucket_deltas();
+            own_deltas = prepared.bucket_deltas();
             &own_deltas
         }
     };
     let span = Gf2Span::new(deltas, sum.hash().bits());
-    let plan = DeltaPlan::new(prep, &span, knobs);
-    let m = span.coset_size();
+    let plan = DeltaPlan::new(prepared, &span, knobs);
+    let coset_size = span.coset_size();
     let num_cosets = span.num_cosets();
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.span_plan_ns);
+    stamp.lap(&mut scratch.stats.span_plan_ns);
 
-    // Permute the bucket handles into coset-contiguous order: coset `c` owns
-    // `staging[c·2^r .. (c+1)·2^r]`, members ascending by basis coordinate. Handles are three
-    // `Vec` headers; the term data never moves. At `r = 0` `perm_index` is the identity, so
-    // both handle passes are skipped and the chunk loop runs on the buckets directly.
+    // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the permutation is the identity and the handle passes are skipped.
     let identity_perm = span.r() == 0;
     if !identity_perm {
         let buckets = sum.buckets_mut();
-        scratch.perm.clear();
+        scratch.permutation.clear();
         scratch
-            .perm
-            .extend((0..buckets.len() as u32).map(|beta| span.perm_index(beta)));
+            .permutation
+            .extend((0..buckets.len() as u32).map(|beta| span.permuted_index(beta)));
         scratch
             .staging
-            .resize_with(buckets.len(), BucketCols::default);
-        for (beta, cols) in buckets.iter_mut().enumerate() {
-            scratch.staging[scratch.perm[beta] as usize] = std::mem::take(cols);
+            .resize_with(buckets.len(), BucketColumns::default);
+        for (beta, columns) in buckets.iter_mut().enumerate() {
+            scratch.staging[scratch.permutation[beta] as usize] = std::mem::take(columns);
         }
     }
-    // The inverse handle permutation, so `fill_coset` can name a member's original bucket.
-    // Under `NoExtra` this is a `const false` branch the compiler deletes and `inv_perm` stays
-    // empty, which `fill_coset` reads as "the permutation is the identity".
     if X::NEEDS_BETA {
-        scratch.inv_perm.clear();
+        scratch.inverse_permutation.clear();
         if !identity_perm {
-            scratch.inv_perm.resize(scratch.perm.len(), 0);
-            for (beta, &p) in scratch.perm.iter().enumerate() {
-                scratch.inv_perm[p as usize] = beta as u32;
+            scratch
+                .inverse_permutation
+                .resize(scratch.permutation.len(), 0);
+            for (beta, &position) in scratch.permutation.iter().enumerate() {
+                scratch.inverse_permutation[position as usize] = beta as u32;
             }
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.permute_ns);
+    stamp.lap(&mut scratch.stats.permute_ns);
 
-    // Each coset is a closed task: it reads and writes only its own chunk, so the chunk loop
-    // needs no atomics, no cross-task locks, and no reconciliation pass, and output is
-    // byte-identical across thread counts (ARCHITECTURE.md §Determinism).
+    // Each coset reads and writes only its own chunk (ARCHITECTURE.md §Parallelism).
     {
-        // Size the worker pool before `staging` is borrowed below; keeping existing slots
-        // preserves their high-water capacity.
         if num_cosets >= MIN_COSETS_FOR_PARALLEL {
             let pool = rayon::current_num_threads().max(1);
             if scratch.workers.len() < pool {
@@ -553,17 +365,15 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             }
         }
         let workers = &scratch.workers;
-        // Empty unless this layer's `ExtraRows` asked for it; `fill_coset` takes empty to
-        // mean the identity permutation.
-        let inv_perm: &[u32] = &scratch.inv_perm;
-        let chunks: &mut [BucketCols<W>] = if identity_perm {
+        let inverse_permutation: &[u32] = &scratch.inverse_permutation;
+        let chunks: &mut [BucketColumns<W>] = if identity_perm {
             sum.buckets_mut()
         } else {
             scratch.staging.as_mut_slice()
         };
         if num_cosets < MIN_COSETS_FOR_PARALLEL {
-            for (ci, chunk) in chunks.chunks_mut(m).enumerate() {
-                let base = ci * m;
+            for (coset_index, chunk) in chunks.chunks_mut(coset_size).enumerate() {
+                let base = coset_index * coset_size;
                 fill_coset::<W, T, X>(
                     chunk,
                     &plan,
@@ -571,29 +381,39 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                     &mut scratch.task,
                     extra,
                     base,
-                    inv_perm,
+                    inverse_permutation,
                 );
             }
         } else {
             chunks
-                .par_chunks_mut(m)
+                .par_chunks_mut(coset_size)
                 .enumerate()
-                .for_each(|(ci, chunk)| {
-                    let base = ci * m;
-                    // Inside `par_chunks_mut` the body always runs on a pool worker, so the
-                    // index is present and below the pool size; the fresh-scratch arm is a
-                    // defensive fallback only.
+                .for_each(|(coset_index, chunk)| {
+                    let base = coset_index * coset_size;
+                    // The fresh-scratch arm is a defensive fallback; a pool worker always has an index.
                     match rayon::current_thread_index() {
-                        Some(i) if i < workers.len() => {
-                            let mut ws = workers[i].lock().unwrap();
+                        Some(worker) if worker < workers.len() => {
+                            let mut worker_scratch = workers[worker].lock().unwrap();
                             fill_coset::<W, T, X>(
-                                chunk, &plan, policy, &mut ws, extra, base, inv_perm,
+                                chunk,
+                                &plan,
+                                policy,
+                                &mut worker_scratch,
+                                extra,
+                                base,
+                                inverse_permutation,
                             );
                         }
                         _ => {
-                            let mut ws = CosetScratch::<W>::default();
+                            let mut worker_scratch = CosetScratch::<W>::default();
                             fill_coset::<W, T, X>(
-                                chunk, &plan, policy, &mut ws, extra, base, inv_perm,
+                                chunk,
+                                &plan,
+                                policy,
+                                &mut worker_scratch,
+                                extra,
+                                base,
+                                inverse_permutation,
                             );
                         }
                     }
@@ -601,421 +421,47 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.coset_loop_ns);
+    stamp.lap(&mut scratch.stats.coset_loop_ns);
 
-    // Un-permute: every handle goes back to its bucket index, leaving the staging slots as
-    // empty, capacity-free defaults.
     if !identity_perm {
         let buckets = sum.buckets_mut();
-        for (beta, cols) in buckets.iter_mut().enumerate() {
-            *cols = std::mem::take(&mut scratch.staging[scratch.perm[beta] as usize]);
+        for (beta, columns) in buckets.iter_mut().enumerate() {
+            *columns = std::mem::take(&mut scratch.staging[scratch.permutation[beta] as usize]);
         }
     }
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.unpermute_ns);
+    stamp.lap(&mut scratch.stats.unpermute_ns);
     sum.recount();
     #[cfg(feature = "phase-timing")]
-    st.lap(&mut scratch.stats.recount_ns);
+    stamp.lap(&mut scratch.stats.recount_ns);
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
 }
 
-/// Below this many cosets there is nothing to spread, so skip Rayon entirely — mostly the
-/// `bits = 0` / `r = bits` case, where one coset spans every bucket and the layer degenerates
-/// to a single whole-sum task on the same code path.
-pub(super) const MIN_COSETS_FOR_PARALLEL: usize = 2;
-
-/// Gather, sort and merge one coset, in place. The unit of parallel work.
-/// `chunk` holds the coset's `2^r` bucket columns, members ascending by basis coordinate,
-/// serving as both input source and output destination.
-/// `extra` supplies rows generated elsewhere (the partitioned engine); they join each member's
-/// rest stream between the gather and the sort, so the merge sees the complete sum. Naming
-/// their destination needs the member's original bucket index, recovered from `chunk_base` and
-/// `inv_perm`. Under [`NoExtra`] all of that is behind `X::NEEDS_BETA == false` and compiles away.
-pub(super) fn fill_coset<const W: usize, T, X>(
-    chunk: &mut [BucketCols<W>],
-    plan: &DeltaPlan<'_, W>,
-    policy: &T,
-    ws: &mut CosetScratch<W>,
-    extra: &X,
-    chunk_base: usize,
-    inv_perm: &[u32],
-) where
-    T: TruncationPolicy<W> + ?Sized,
-    X: ExtraRows<W>,
-{
-    let m = chunk.len();
-    // Member `j`'s original bucket index. An empty `inv_perm` means the layer skipped the
-    // handle permutation (`r = 0`), where the permuted slot is the bucket.
-    let beta_of = |j: usize| -> u32 {
-        if inv_perm.is_empty() {
-            (chunk_base + j) as u32
-        } else {
-            inv_perm[chunk_base + j]
-        }
-    };
-    #[cfg(feature = "phase-timing")]
-    let CosetScratch {
-        old,
-        runs,
-        sort,
-        stats,
-    } = ws;
-    #[cfg(not(feature = "phase-timing"))]
-    let CosetScratch { old, runs, sort } = ws;
-    #[cfg(feature = "phase-timing")]
-    let mut st = Stamp::now();
-    old.resize_with(m, BucketCols::default);
-    runs.resize_with(m, GatherRun::default);
-
-    // Swap the coset's columns out. The chunk slots inherit this scratch's cleared,
-    // capacity-retaining columns and become the write destinations — capacities circulate
-    // between buckets across cosets, which holds the steady state allocation-free in aggregate.
-    for (slot, cols) in chunk.iter_mut().zip(old.iter_mut()) {
-        std::mem::swap(slot, cols);
-        slot.clear();
-    }
-    #[cfg(feature = "phase-timing")]
-    st.lap(&mut stats.swap_ns);
-
-    // Exact per-run capacity, counted once per delta entry, split by destination stream: the
-    // identity entry feeds the pre-sorted `id` columns, everything else the sorted rest. Under
-    // a dense identity the id key columns stay empty since the merge borrows the source
-    // bucket's keys, so only `id_coeff` needs capacity.
-    for (j, run) in runs.iter_mut().enumerate() {
-        let (cap_id_keys, cap_id_coeff, mut cap_rest): (usize, usize, usize) = match plan {
-            DeltaPlan::Local {
-                coords,
-                has_identity,
-                dense_identity,
-                ..
-            } => {
-                let mut id = 0usize;
-                let mut rest = 0usize;
-                for (e, &c) in coords.iter().enumerate() {
-                    let l = old[j ^ c as usize].len();
-                    if *has_identity && e == 0 {
-                        id += l;
-                    } else {
-                        rest += l;
-                    }
-                }
-                (if *dense_identity { 0 } else { id }, id, rest)
-            }
-            DeltaPlan::Rotation {
-                coord_identity,
-                coord_gen,
-                gen_local,
-                ..
-            } => (
-                0,
-                old[j ^ *coord_identity as usize].len(),
-                // A remote generator emits nothing here, so the rest stream is whatever
-                // `extra` adds below and nothing else.
-                if *gen_local {
-                    old[j ^ *coord_gen as usize].len()
-                } else {
-                    0
-                },
-            ),
-        };
-        // Received rows land in the rest stream, so they belong to its exact capacity.
-        // `const false` under `NoExtra`.
-        if X::NEEDS_BETA {
-            cap_rest += extra.count(beta_of(j));
-        }
-        run.reset(cap_id_keys, cap_id_coeff, cap_rest);
-    }
-    #[cfg(feature = "phase-timing")]
-    st.lap(&mut stats.size_ns);
-
-    // Gather. Two visit orders produce the same multiset of rows per run, differing only in
-    // arrival order, which the key-only sort erases up to floating-point tolerance (see
-    // `local_gather_orders_agree_to_fp_tolerance`). Which order is faster depends on `r`; see
-    // `GATHER_OUTPUT_MAJOR_MIN_R`.
-    match plan {
-        DeltaPlan::Local {
-            ptm,
-            coords,
-            has_identity,
-            dense_identity,
-            ..
-        } => {
-            if m >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
-                gather_local_output_major(old, runs, ptm, coords, *has_identity, *dense_identity);
-            } else {
-                gather_local_input_major(old, runs, ptm, coords, *has_identity, *dense_identity);
-            }
-        }
-        DeltaPlan::Rotation {
-            prep,
-            coord_identity,
-            coord_gen,
-            gen_local,
-        } => {
-            // The identity pass and the generator pass. Every term emits exactly one
-            // identity-pass row (full coefficient when it commutes, `cos`-scaled when it
-            // doesn't, kept even when `cos == 0` — see `merge2_into` on signed zeros), so the
-            // id stream is the whole source bucket in order and only the coefficient is
-            // materialized; the merge borrows the keys from the source bucket in place.
-            for (i, src) in old.iter().enumerate() {
-                for t in 0..src.len() {
-                    let v = PauliString::<W> {
-                        x: src.x[t],
-                        z: src.z[t],
-                    };
-                    if v.commutes_with(&prep.gen) {
-                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t]);
-                    } else {
-                        runs[i ^ *coord_identity as usize].push_id_coeff(src.coeff[t] * prep.cos);
-                        // `true` on every unpartitioned layer; under a partitioning that sees
-                        // the generator, these rows belong to a partner and the export pass
-                        // has already shipped them.
-                        if *gen_local {
-                            let mut prod = v;
-                            let phase = prod.mul_assign(&prep.gen);
-                            let total = Phase::I + phase;
-                            runs[i ^ *coord_gen as usize].push_row(
-                                prod.x,
-                                prod.z,
-                                total.apply(src.coeff[t]) * prep.sin,
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Rows generated on other partitions whose output bucket lives here. The rest stream only:
-    // it is sorted below, so a received row may duplicate a local key and `merge2_into` still
-    // sees the complete sum before `keep_term` runs. `const false` under `NoExtra`.
-    if X::NEEDS_BETA {
-        for (j, run) in runs.iter_mut().enumerate() {
-            extra.append_into(beta_of(j), &mut run.x, &mut run.z, &mut run.coeff);
-        }
-    }
-    #[cfg(feature = "phase-timing")]
-    st.lap(&mut stats.gather_ns);
-
-    // Sort each run's rest stream by key alone, then fuse the two-stream merge with the
-    // segmented reduction into the member's live slot: the id stream never moves through the
-    // sort. Under a dense identity plan the id stream's keys were never materialized either —
-    // they are the source bucket's own key columns, borrowed here.
-    // Which sort kernel this layer uses, hoisted out of the run loop: a per-layer property of
-    // the plan, never a per-run one.
-    let radix = matches!(
-        plan,
-        DeltaPlan::Local {
-            radix_sort: true,
-            ..
-        }
-    );
-    for (j, (run, dst)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
-        #[cfg(feature = "phase-timing")]
-        {
-            stats.rows_gathered += run.len() as u64;
-            stats.rows_sorted += run.coeff.len() as u64;
-        }
-        if radix {
-            sort_rows_radix_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
-        } else {
-            sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
-        }
-        #[cfg(feature = "phase-timing")]
-        st.lap(&mut stats.sort_ns);
-        let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {
-            DeltaPlan::Local {
-                dense_identity: true,
-                ..
-            } => {
-                let src = &old[j];
-                debug_assert_eq!(src.len(), run.id_coeff.len());
-                #[cfg(feature = "phase-timing")]
-                {
-                    stats.rows_id += src.len() as u64;
-                }
-                (&src.x, &src.z)
-            }
-            DeltaPlan::Local { .. } => (&run.id_x, &run.id_z),
-            DeltaPlan::Rotation { coord_identity, .. } => {
-                let src = &old[j ^ *coord_identity as usize];
-                debug_assert_eq!(src.len(), run.id_coeff.len());
-                #[cfg(feature = "phase-timing")]
-                {
-                    stats.rows_id += src.len() as u64;
-                }
-                (&src.x, &src.z)
-            }
-        };
-        merge2_into::<W, T>(
-            a_x,
-            a_z,
-            &run.id_coeff,
-            &run.x,
-            &run.z,
-            &run.coeff,
-            &mut dst.x,
-            &mut dst.z,
-            &mut dst.coeff,
-            policy,
-        );
-        #[cfg(feature = "phase-timing")]
-        st.lap(&mut stats.merge_ns);
-    }
-
-    // Leave `old` cleared so the next coset's swap hands its chunk clean, capacity-retaining
-    // columns. Runs are cleared by their own `reset`.
-    for cols in old.iter_mut() {
-        cols.clear();
-    }
-    #[cfg(feature = "phase-timing")]
-    {
-        st.lap(&mut stats.clear_ns);
-        stats.cosets += 1;
-        stats.runs += m as u64;
-    }
-}
-
-/// Coset dimension at or above which the gather switches to output-major.
-///
-/// Input-major loads each term once but keeps `2^r` write streams open per task; at large `r`
-/// those streams plus the swapped coset no longer fit L2. Output-major re-reads each input
-/// bucket `2^r` times but keeps a single write stream, trading re-reads (coset-local, cheap)
-/// for write-stream pressure. Below this threshold the extra re-reads cost more than the write
-/// streams save; above it, the reverse. Both orders gather the same multiset of rows, so the
-/// choice is a pure performance knob, never a correctness one — pinned by
-/// `local_gather_orders_agree_to_fp_tolerance`. See `research/FINDINGS.md` for the measurements
-/// behind the current value.
-const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
-
-/// Input-major gather for a tabulated (`Local`) plan: each term is loaded once and its whole
-/// fanout is scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`. Rows land in the runs in
-/// (input member, input position, delta) order.
-///
-/// The zero-amplitude filter is branchless: the row is always materialized and
-/// [`GatherRun::push_if`] publishes it only when the amplitude is nonzero, avoiding a
-/// data-dependent branch on which PTM entries vanish for a given support pattern (see
-/// `research/FINDINGS.md`).
-fn gather_local_input_major<const W: usize>(
-    old: &[BucketCols<W>],
-    runs: &mut [GatherRun<W>],
-    ptm: &LocalPtm<W>,
-    coords: &[u32],
-    has_identity: bool,
-    dense_identity: bool,
-) {
-    let rest_start = has_identity as usize;
-    for (i, src) in old.iter().enumerate() {
-        for t in 0..src.len() {
-            let s = ptm.support_bits(&src.x[t], &src.z[t]);
-            if has_identity {
-                // Entry 0 is the identity delta: masks are zero, so the row lands in this
-                // member's own run with its key untouched — the pre-sorted id stream.
-                let a = ptm.deltas()[0].amp[s];
-                if dense_identity {
-                    // Dense: `a` never vanishes and the stream is 1:1 with the source rows,
-                    // so only the coefficient is stored — the merge borrows the keys from `old[i]`.
-                    debug_assert!(a != ZERO);
-                    runs[i].push_id_coeff(src.coeff[t] * a);
-                } else {
-                    runs[i].push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
-                }
-            }
-            for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
-                let a = d.amp[s];
-                let mut kx = src.x[t];
-                let mut kz = src.z[t];
-                for w in 0..W {
-                    kx[w] ^= d.mask_x[w];
-                    kz[w] ^= d.mask_z[w];
-                }
-                runs[i ^ coords[e] as usize].push_if(nonzero(a), kx, kz, src.coeff[t] * a);
-            }
-        }
-    }
-}
-
-/// Output-major gather for a tabulated (`Local`) plan: for each output member, stream the one
-/// input bucket per delta entry and append to that member's run only. Rows land in (delta,
-/// input position) order — the same multiset as [`gather_local_input_major`] in a different
-/// order; they agree only up to floating-point tolerance (see
-/// `local_gather_orders_agree_to_fp_tolerance`).
-///
-/// The zero-amplitude filter is branchless, as in [`gather_local_input_major`], and helps here
-/// even though output-major is only reached on a dense PTM with nothing to filter: what
-/// [`GatherRun::push_if`] removes is the `Vec::push` capacity check and length increment per row.
-fn gather_local_output_major<const W: usize>(
-    old: &[BucketCols<W>],
-    runs: &mut [GatherRun<W>],
-    ptm: &LocalPtm<W>,
-    coords: &[u32],
-    has_identity: bool,
-    dense_identity: bool,
-) {
-    let rest_start = has_identity as usize;
-    for (j, run) in runs.iter_mut().enumerate() {
-        if has_identity {
-            // Entry 0: masks zero — the member's own bucket streams into the pre-sorted id
-            // columns; coefficient only when the identity is dense (keys borrowed).
-            let d = &ptm.deltas()[0];
-            let src = &old[j];
-            for t in 0..src.len() {
-                let s = ptm.support_bits(&src.x[t], &src.z[t]);
-                let a = d.amp[s];
-                if dense_identity {
-                    debug_assert!(a != ZERO);
-                    run.push_id_coeff(src.coeff[t] * a);
-                } else {
-                    run.push_id_if(nonzero(a), src.x[t], src.z[t], src.coeff[t] * a);
-                }
-            }
-        }
-        for (e, d) in ptm.deltas().iter().enumerate().skip(rest_start) {
-            let src = &old[j ^ coords[e] as usize];
-            for t in 0..src.len() {
-                let s = ptm.support_bits(&src.x[t], &src.z[t]);
-                let a = d.amp[s];
-                let mut kx = src.x[t];
-                let mut kz = src.z[t];
-                for w in 0..W {
-                    kx[w] ^= d.mask_x[w];
-                    kz[w] ^= d.mask_z[w];
-                }
-                run.push_if(nonzero(a), kx, kz, src.coeff[t] * a);
-            }
-        }
-    }
-}
-
-/// In-place coefficient rescale for a key-preserving channel.
-///
-/// Keys are untouched, so each bucket stays sorted and duplicate-free and no
-/// gather, sort or merge is needed. `keep_term` still applies, on the rescaled
-/// coefficient, and exact zeros are still dropped — matching the general path.
+/// In-place coefficient rescale for a key-preserving channel, with the general path's zero drop and `keep_term`.
 fn rescale_in_place<const W: usize, T>(sum: &mut PauliSum<W>, ptm: &LocalPtm<W>, policy: &T)
 where
     T: TruncationPolicy<W> + ?Sized,
 {
-    let amp = &ptm.deltas()[0].amp;
-    sum.buckets_mut().par_iter_mut().for_each(|cols| {
-        let n = cols.len();
+    let amplitude = &ptm.deltas()[0].amplitude;
+    sum.buckets_mut().par_iter_mut().for_each(|columns| {
+        let len = columns.len();
         let mut keep = 0usize;
-        for i in 0..n {
-            let s = ptm.support_bits(&cols.x[i], &cols.z[i]);
-            let c = cols.coeff[i] * amp[s];
-            if c == ZERO || !policy.keep_term(&cols.x[i], &cols.z[i], c) {
+        for i in 0..len {
+            let pattern = ptm.support_bits(&columns.x[i], &columns.z[i]);
+            let coeff = columns.coeff[i] * amplitude[pattern];
+            if coeff == ZERO || !policy.keep_term(&columns.x[i], &columns.z[i], coeff) {
                 continue;
             }
-            // `keep <= i` always, so this never overwrites an unread slot.
-            cols.x[keep] = cols.x[i];
-            cols.z[keep] = cols.z[i];
-            cols.coeff[keep] = c;
+            columns.x[keep] = columns.x[i];
+            columns.z[keep] = columns.z[i];
+            columns.coeff[keep] = coeff;
             keep += 1;
         }
-        cols.x.truncate(keep);
-        cols.z.truncate(keep);
-        cols.coeff.truncate(keep);
+        columns.x.truncate(keep);
+        columns.z.truncate(keep);
+        columns.coeff.truncate(keep);
     });
     sum.recount();
 
@@ -1024,1951 +470,4 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::Gf2Hash;
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
-    use crate::channel::identity::IdentityChannel;
-    use crate::channel::noise::{AmplitudeDamping, Dephasing, Depolarizing};
-    use crate::channel::rotation::PauliRotation;
-    use crate::channel::Channel;
-    use crate::pauli_sum::PauliSum;
-    use crate::truncation::builtin::{And, CoefficientThreshold, WeightCutoff};
-
-    // The differential oracle and the shared fixtures live in
-    // `crate::test_support`; re-exported here so the sibling test modules keep
-    // reaching them through `super::tests::…`.
-    pub(super) use crate::test_support::{
-        assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
-    };
-
-    /// `push_if` publishes a row exactly when `keep`, and a discarded row
-    /// leaves the columns' lengths — and every already-published row —
-    /// untouched, even when it is the last countable row (the `+ 1` slot
-    /// `reset` reserves is the one it writes into).
-    #[test]
-    fn push_if_publishes_only_kept_rows_and_never_overruns() {
-        let mut run: GatherRun<1> = GatherRun::default();
-        // Exactly two countable rows for the rest stream.
-        run.reset(0, 0, 2);
-        let c = |v: f64| Complex64::new(v, 0.0);
-        run.push_if(false, [7], [7], c(9.0)); // discarded at len 0
-        assert_eq!(run.x.len(), 0);
-        run.push_if(true, [1], [2], c(1.0));
-        run.push_if(false, [7], [7], c(9.0)); // discarded at len 1
-        run.push_if(true, [3], [4], c(2.0)); // the last countable row
-        assert_eq!(run.x.as_slice(), &[[1], [3]]);
-        assert_eq!(run.z.as_slice(), &[[2], [4]]);
-        assert_eq!(run.coeff.as_slice(), &[c(1.0), c(2.0)]);
-        // The identity stream answers the same contract.
-        run.reset(1, 1, 0);
-        run.push_id_if(false, [5], [6], c(3.0));
-        assert_eq!(run.id_x.len(), 0);
-        run.push_id_if(true, [5], [6], c(3.0));
-        assert_eq!(run.id_x.as_slice(), &[[5]]);
-        assert_eq!(run.id_coeff.as_slice(), &[c(3.0)]);
-    }
-
-    /// The zero test `push_if` is handed must agree with `Complex64`'s own
-    /// `!= ZERO`, signed zeros and NaN included.
-    #[test]
-    fn nonzero_agrees_with_complex_inequality() {
-        for a in [
-            Complex64::new(0.0, 0.0),
-            Complex64::new(-0.0, 0.0),
-            Complex64::new(0.0, -0.0),
-            Complex64::new(-0.0, -0.0),
-            Complex64::new(1.0, 0.0),
-            Complex64::new(0.0, 1.0),
-            Complex64::new(f64::NAN, 0.0),
-            Complex64::new(0.0, f64::NAN),
-            Complex64::new(f64::MIN_POSITIVE, 0.0),
-        ] {
-            assert_eq!(nonzero(a), a != ZERO, "disagreement at {a}");
-        }
-    }
-
-    const TOL: f64 = 1e-11;
-
-    pub(super) struct AlwaysKeep;
-    impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-    /// One Haar-random SU(4) block — the dense-PTM two-qubit gate, using the shared canonical fixture [`crate::test_support::haar_su4_matrix`].
-    /// Every PTM entry is nonzero, so all 16 bucket deltas are realized: the gather run is 15 concatenated rest streams with ~15-fold duplicate keys, the shape the radix sort kernel is chosen for.
-    pub(super) fn haar_su4(q0: u32, q1: u32) -> crate::channel::GeneralUnitary2Q {
-        crate::channel::GeneralUnitary2Q::from_matrix(
-            q0,
-            q1,
-            crate::test_support::haar_su4_matrix(),
-        )
-    }
-
-    /// The term trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
-    #[test]
-    fn term_trace_is_opt_in_and_drains_on_take() {
-        let mut scratch = LayerScratch::<1>::new();
-        assert!(scratch.take_term_trace().is_none(), "off by default");
-
-        scratch.enable_term_trace();
-        scratch.term_trace.as_mut().unwrap().terms_in.push(7);
-        scratch.enable_term_trace(); // idempotent: must not clear the 7
-        assert_eq!(
-            scratch.take_term_trace(),
-            Some(TermTrace {
-                terms_in: vec![7],
-                terms_out: vec![],
-            })
-        );
-        assert_eq!(scratch.take_term_trace(), Some(TermTrace::default()));
-    }
-
-    /// The gate trace's state machine mirrors [`TermTrace`]'s: off by default, `enable` idempotent and non-destructive, `take` drains but stays on.
-    #[test]
-    fn gate_trace_is_opt_in_and_drains_on_take() {
-        let mut scratch = LayerScratch::<1>::new();
-        assert!(scratch.take_gate_trace().is_none(), "off by default");
-
-        scratch.enable_gate_trace();
-        scratch.gate_trace.as_mut().unwrap().circuit_index.push(3);
-        scratch.enable_gate_trace(); // idempotent: must not clear the 3
-        assert_eq!(
-            scratch.take_gate_trace(),
-            Some(GateTrace {
-                circuit_index: vec![3],
-                ..GateTrace::default()
-            })
-        );
-        assert_eq!(scratch.take_gate_trace(), Some(GateTrace::default()));
-    }
-
-    /// `peak_terms` is the between-layer resident maximum, which lives in
-    /// `terms_out` except for a first layer that only ever shrinks.
-    #[test]
-    fn peak_terms_spans_the_first_input_and_every_output() {
-        assert_eq!(TermTrace::default().peak_terms(), None);
-        assert_eq!(
-            TermTrace {
-                terms_in: vec![9, 4],
-                terms_out: vec![4, 6],
-            }
-            .peak_terms(),
-            Some(9),
-            "a shrinking first layer keeps the input as the peak"
-        );
-        assert_eq!(
-            TermTrace {
-                terms_in: vec![1, 5],
-                terms_out: vec![5, 3],
-            }
-            .peak_terms(),
-            Some(5)
-        );
-    }
-
-    /// Run one layer through the bucketed engine, converting in and out.
-    pub(super) fn bucketed_layer<const W: usize, C, T>(
-        input: &PauliSum<W>,
-        ch: &C,
-        policy: &T,
-        adjoint: bool,
-        bits: u8,
-        seed: u64,
-    ) -> PauliSum<W>
-    where
-        C: Channel<W> + ?Sized,
-        T: TruncationPolicy<W> + ?Sized,
-    {
-        let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
-        let mut b = input.clone().with_hash(hash);
-        let prep = ch
-            .prepare(b.hash(), adjoint)
-            .expect("channel could not be prepared");
-        let mut scratch = LayerScratch::<W>::new();
-        apply_layer_bucketed(&mut b, &prep, policy, &mut scratch);
-        b
-    }
-
-    /// Keys must match exactly; coefficients only to tolerance — see
-    /// [`assert_terms_close`].
-    pub(super) fn assert_sums_close<const W: usize>(
-        got: &PauliSum<W>,
-        want: &PauliSum<W>,
-        what: &str,
-    ) {
-        assert_terms_close(got, want, TOL, what);
-    }
-
-    // ---- hand-checked behaviour ----
-
-    #[test]
-    fn h_conjugates_z_to_x() {
-        let mut acc = BuildAccumulator::<1>::with_capacity(4, 1);
-        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-        let input = acc.finalize();
-        let out = bucketed_layer(&input, &Clifford1Q::h(0), &AlwaysKeep, false, 4, 0x1);
-        assert_eq!(out.len(), 1);
-        let (x, z, c) = out.iter().next().unwrap();
-        assert_eq!(*x, [1]);
-        assert_eq!(*z, [0]);
-        assert!((c - Complex64::new(1.0, 0.0)).norm() < TOL);
-    }
-
-    #[test]
-    fn cnot_propagates_z_on_the_control() {
-        let mut acc = BuildAccumulator::<1>::with_capacity(4, 1);
-        acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
-        let input = acc.finalize();
-        // I⊗Z under CNOT(0 -> 1) becomes Z⊗Z.
-        let out = bucketed_layer(&input, &Clifford2Q::cnot(0, 1), &AlwaysKeep, false, 4, 0x1);
-        assert_eq!(out.len(), 1);
-        let (x, z, _) = out.iter().next().unwrap();
-        assert_eq!(*z, [0b11]);
-        assert_eq!(*x, [0]);
-    }
-
-    #[test]
-    fn a_rotation_fans_out_to_two_terms() {
-        let mut acc = BuildAccumulator::<1>::with_capacity(4, 1);
-        acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
-        let input = acc.finalize();
-        let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_3);
-        let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
-        // cos(pi/3)*X + sin(pi/3)*(i * X * Z) = 0.5*X - 0.866*Y
-        assert_eq!(out.len(), 2);
-        let want = naive_apply_layer(&input, &rot, &AlwaysKeep, false);
-        assert_sums_close(&out, &want, "rotation fanout");
-    }
-
-    // ---- the differential test against the naive oracle ----
-
-    /// Every built-in channel, over both occupancy regimes, several bucket counts, forward and adjoint, against three policies.
-    /// The primary correctness net for the engine: `naive_apply_layer` (`crate::test_support`) is the oracle, and a disagreement is a bug here until proven otherwise.
-    #[test]
-    fn differential_against_the_naive_oracle_w1_dense_collisions() {
-        // Only 8 qubits, so 2000 random terms collide heavily under a rotation
-        // (both `v` and `v ^ gen` are usually present) and the merge phase has
-        // real duplicate runs to combine. This is the case that matters.
-        let input = rand_sum::<1>(2000, 8, 0xC0FFEE);
-        // The shared channel net (`test_support::differential_channels_w1`),
-        // so the bucketed and partitioned engines cover the same list.
-        let channels = crate::test_support::differential_channels_w1();
-
-        for (name, ch) in &channels {
-            let cr: &dyn Channel<1> = ch.as_ref();
-            for &adjoint in &[false, true] {
-                for &bits in &[0u8, 1, 3, 6, 11] {
-                    let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
-                    let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
-                    assert_terms_close(
-                        &got,
-                        &want,
-                        TOL,
-                        &format!("{name} adjoint={adjoint} bits={bits}"),
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn differential_against_the_naive_oracle_w2_sparse() {
-        // The other regime: wide keys, few collisions, word-boundary supports.
-        let input = rand_sum::<2>(3000, 128, 0xBEEF);
-        let channels = crate::test_support::differential_channels_w2();
-        for (name, ch) in &channels {
-            let cr: &dyn Channel<2> = ch.as_ref();
-            for &adjoint in &[false, true] {
-                for &bits in &[2u8, 5, 9] {
-                    let want = naive_apply_layer(&input, cr, &AlwaysKeep, adjoint);
-                    let got = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xABCD);
-                    assert_terms_close(
-                        &got,
-                        &want,
-                        TOL,
-                        &format!("{name} adjoint={adjoint} bits={bits}"),
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn differential_with_truncation_policies() {
-        let input = rand_sum::<1>(1500, 8, 0xF00D);
-        // Thresholds are chosen far from the coefficient scale so the two
-        // engines cannot disagree merely by rounding across a cutoff.
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let cnot = Clifford2Q::cnot(1, 5);
-
-        for bits in [0u8, 4, 9] {
-            let got = bucketed_layer(&input, &rot, &CoefficientThreshold(1e-9), false, bits, 0x11);
-            let want = naive_apply_layer(&input, &rot, &CoefficientThreshold(1e-9), false);
-            assert_terms_close(&got, &want, TOL, &format!("threshold bits={bits}"));
-
-            let got = bucketed_layer(&input, &rot, &WeightCutoff(4), false, bits, 0x11);
-            let want = naive_apply_layer(&input, &rot, &WeightCutoff(4), false);
-            assert_terms_close(&got, &want, TOL, &format!("weight bits={bits}"));
-
-            let policy = And(CoefficientThreshold(1e-9), WeightCutoff(5));
-            let got = bucketed_layer(&input, &cnot, &policy, false, bits, 0x11);
-            let want = naive_apply_layer(&input, &cnot, &policy, false);
-            assert_terms_close(&got, &want, TOL, &format!("and bits={bits}"));
-        }
-    }
-
-    #[test]
-    fn keep_term_sees_the_summed_coefficient() {
-        // Two terms that nearly cancel must be dropped by a threshold their
-        // individual magnitudes would pass. A rotation at theta = pi/2 sends
-        // X and Y to the same key with opposite-ish weights.
-        let mut acc = BuildAccumulator::<1>::with_capacity(4, 2);
-        acc.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.5, 0.0));
-        acc.add_term(
-            PauliString::<1>::y(0),
-            Phase::ONE,
-            Complex64::new(-0.4999999, 0.0),
-        );
-        let input = acc.finalize();
-        // theta = 0 keeps keys fixed but the sum has no duplicates, so use the
-        // oracle for the general statement instead of hand-computing.
-        let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_2);
-        for bits in [0u8, 3, 7] {
-            let policy = CoefficientThreshold(1e-6);
-            let got = bucketed_layer(&input, &rot, &policy, false, bits, 0x21);
-            let want = naive_apply_layer(&input, &rot, &policy, false);
-            assert_terms_close(&got, &want, TOL, &format!("post-sum threshold bits={bits}"));
-        }
-    }
-
-    // ---- the key-preserving fast path ----
-
-    #[test]
-    fn rescale_fast_path_agrees_with_the_general_path() {
-        // Depolarizing/Dephasing/Pauli gates take `rescale_in_place`. Compare
-        // against the naive oracle, which has no such special case.
-        let input = rand_sum::<1>(1500, 8, 0x5A5A);
-        let chans: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-            ("identity", Box::new(IdentityChannel::new())),
-            (
-                "depolarizing",
-                Box::new(Depolarizing {
-                    support: [3],
-                    p: 0.11,
-                }),
-            ),
-            (
-                "dephasing",
-                Box::new(Dephasing {
-                    support: [3],
-                    p: 0.11,
-                }),
-            ),
-            ("pauli_z", Box::new(Clifford1Q::z(3))),
-        ];
-        for (name, ch) in &chans {
-            let cr: &dyn Channel<1> = ch.as_ref();
-            for bits in [0u8, 4, 8] {
-                let got = bucketed_layer(&input, cr, &AlwaysKeep, false, bits, 0x31);
-                let want = naive_apply_layer(&input, cr, &AlwaysKeep, false);
-                assert_terms_close(&got, &want, TOL, &format!("{name} bits={bits}"));
-            }
-        }
-    }
-
-    #[test]
-    fn rescale_fast_path_still_applies_truncation() {
-        let input = rand_sum::<1>(1500, 8, 0x5A5B);
-        let depol = Depolarizing {
-            support: [3],
-            p: 0.11,
-        };
-        for bits in [0u8, 5] {
-            let policy = And(CoefficientThreshold(0.3), WeightCutoff(4));
-            let got = bucketed_layer(&input, &depol, &policy, false, bits, 0x41);
-            let want = naive_apply_layer(&input, &depol, &policy, false);
-            assert_terms_close(&got, &want, TOL, &format!("truncated rescale bits={bits}"));
-            assert!(got.len() < input.len(), "truncation dropped nothing");
-        }
-    }
-
-    // ---- determinism ----
-
-    /// sqrt(SWAP) on two qubits: a wide delta set whose outputs can merge
-    /// three or more contributions into one key. That is the only regime
-    /// where the accumulation *order* is observable at all — with at most
-    /// two summands, float addition is commutative and any order gives the
-    /// same bits — so a determinism test without a channel like this cannot
-    /// see the delta-index tiebreak in the per-bucket sort.
-    fn sqrt_swap_w1(a: u32, b: u32) -> crate::channel::GeneralUnitary2Q {
-        let h = Complex64::new(0.5, 0.5);
-        let hc = Complex64::new(0.5, -0.5);
-        let one = Complex64::new(1.0, 0.0);
-        let zero = Complex64::new(0.0, 0.0);
-        crate::channel::GeneralUnitary2Q::from_matrix(
-            a,
-            b,
-            [
-                [one, zero, zero, zero],
-                [zero, h, hc, zero],
-                [zero, hc, h, zero],
-                [zero, zero, zero, one],
-            ],
-        )
-    }
-
-    #[test]
-    fn output_agrees_across_bucket_counts_to_fp_tolerance() {
-        // A different bucket count can gather a duplicate key's contributions in a different order, so only floating-point-tolerance agreement is expected (ARCHITECTURE.md §Determinism).
-        // GeneralUnitary2Q is load-bearing: rotations and Cliffords merge at most two contributions per key, where any order is bitwise-equal by commutativity, so only a wide-delta channel exercises the relaxed axis (see `sqrt_swap_w1`).
-        let input = rand_sum::<1>(2000, 8, 0x9001);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let cnot = Clifford2Q::cnot(1, 5);
-        let gu2q = sqrt_swap_w1(1, 5);
-        for ch in [
-            &rot as &dyn Channel<1>,
-            &cnot as &dyn Channel<1>,
-            &gu2q as &dyn Channel<1>,
-        ] {
-            let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 0, 0x51);
-            for bits in [1u8, 2, 3, 5, 8, 11] {
-                let got = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x51);
-                assert_terms_close(&got, &reference, TOL, &format!("bits={bits}"));
-            }
-        }
-    }
-
-    #[test]
-    fn output_agrees_across_hash_seeds_to_fp_tolerance() {
-        // A different `H` permutes which terms share a bucket but must not change the arithmetic beyond floating-point tolerance (see the bucket-count test above); GeneralUnitary2Q is load-bearing for the same reason.
-        let input = rand_sum::<1>(2000, 8, 0x9002);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let gu2q = sqrt_swap_w1(1, 5);
-        for ch in [&rot as &dyn Channel<1>, &gu2q as &dyn Channel<1>] {
-            let reference = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, 1);
-            for seed in [2u64, 3, 5, 8, 13, 21] {
-                let got = bucketed_layer(&input, ch, &AlwaysKeep, false, 6, seed);
-                assert_terms_close(&got, &reference, TOL, &format!("seed={seed}"));
-            }
-        }
-    }
-
-    #[test]
-    fn local_gather_orders_agree_to_fp_tolerance() {
-        // The r-threshold hybrid ships output-major gathering for wide spans and input-major below the threshold; the two visit orders emit the same multiset of rows per run in different sequences.
-        // The key-only sort makes no promise about a duplicate key's relative row order, so unmerged rows need not line up element-wise; what must still hold is that merging each run's rows gives the same keys with the same totals, to floating-point tolerance.
-        // sqrt-SWAP's nonzero delta masks are {XX, ZZ, YY}-shaped, so its span has rank exactly 2 under any hash, and a rank-2 coset of four members exercises the (rank-independent) property fully.
-        let input = rand_sum::<1>(2000, 8, 0xAB12);
-        let gu2q = sqrt_swap_w1(1, 5);
-        let hash = Gf2Hash::<1>::new(8, 5, 0x77);
-        let sum = input.clone().with_hash(hash);
-        let prep = gu2q.prepare(sum.hash(), false).unwrap();
-        let Prepared::Local(ptm) = &prep else {
-            panic!("gu2q prepares to a Local plan");
-        };
-        let span = Gf2Span::new(&prep.bucket_deltas(), sum.hash().bits());
-        assert!(
-            span.r() >= 2,
-            "want a multi-member coset so the two visit orders actually differ; got r={}",
-            span.r()
-        );
-        let coords: Vec<u32> = ptm
-            .deltas()
-            .iter()
-            .map(|d| span.coord_of(d.bucket_delta))
-            .collect();
-        let m = span.coset_size();
-
-        // Assemble the rank-0 coset's member columns, ascending by coordinate.
-        let mut old: Vec<BucketCols<1>> = (0..m).map(|_| BucketCols::default()).collect();
-        for beta in 0..sum.num_buckets() as u32 {
-            let p = span.perm_index(beta) as usize;
-            if p < m {
-                let (bx, bz, bc) = sum.bucket(beta as usize);
-                old[p] = BucketCols {
-                    x: bx.to_vec(),
-                    z: bz.to_vec(),
-                    coeff: bc.to_vec(),
-                };
-            }
-        }
-
-        let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
-        // gu2q's identity amplitude is dense, so the gather materializes only
-        // the id coefficients and the merge borrows the keys from the source
-        // bucket — mirrored below in `merge_run`.
-        let dim = 1usize << (2 * ptm.k());
-        let dense_identity = has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
-        assert!(dense_identity, "gu2q's identity amplitude must be dense");
-        let gather = |output_major: bool| {
-            let mut runs: Vec<GatherRun<1>> = (0..m).map(|_| GatherRun::default()).collect();
-            for (j, run) in runs.iter_mut().enumerate() {
-                let mut cap_id = 0usize;
-                let mut cap_rest = 0usize;
-                for (e, &c) in coords.iter().enumerate() {
-                    let l = old[j ^ c as usize].len();
-                    if has_identity && e == 0 {
-                        cap_id += l;
-                    } else {
-                        cap_rest += l;
-                    }
-                }
-                run.reset(0, cap_id, cap_rest);
-            }
-            if output_major {
-                gather_local_output_major(&old, &mut runs, ptm, &coords, has_identity, true);
-            } else {
-                gather_local_input_major(&old, &mut runs, ptm, &coords, has_identity, true);
-            }
-            let mut scratch = SortScratch::<1>::default();
-            for run in runs.iter_mut() {
-                sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, &mut scratch);
-            }
-            runs
-        };
-        let a = gather(false);
-        let b = gather(true);
-        assert!(
-            a.iter().map(GatherRun::len).sum::<usize>() > 0,
-            "gather produced nothing — the coset assembly is wrong"
-        );
-        // Merge (sum) each run's rows into unique-key triples before
-        // comparing, rather than comparing the sorted-but-unmerged rows
-        // element-wise: a duplicate key's rows can land in either relative
-        // order under the key-only sort, independent of visit order, so a
-        // raw element-wise comparison could see a spurious mismatch at a tie
-        // that has nothing to do with which order gathered it.
-        let merge_run =
-            |j: usize, run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
-                let src = &old[j];
-                assert_eq!(src.len(), run.id_coeff.len(), "dense id must be 1:1");
-                let mut mx = Vec::new();
-                let mut mz = Vec::new();
-                let mut mc = Vec::new();
-                merge2_into::<1, AlwaysKeep>(
-                    &src.x,
-                    &src.z,
-                    &run.id_coeff,
-                    &run.x,
-                    &run.z,
-                    &run.coeff,
-                    &mut mx,
-                    &mut mz,
-                    &mut mc,
-                    &AlwaysKeep,
-                );
-                (mx, mz, mc)
-            };
-        for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
-            let (max, maz, mac) = merge_run(j, ra);
-            let (mbx, mbz, mbc) = merge_run(j, rb);
-            assert_eq!(max, mbx, "run {j}: merged keys (x) diverge");
-            assert_eq!(maz, mbz, "run {j}: merged keys (z) diverge");
-            assert_eq!(mac.len(), mbc.len(), "run {j}: merged term count diverges");
-            for (i, (ca, cb)) in mac.iter().zip(mbc.iter()).enumerate() {
-                let d = (ca - cb).norm();
-                assert!(
-                    d < TOL,
-                    "run {j} term {i}: merged coefficients {ca} vs {cb} (delta {d:e})"
-                );
-            }
-        }
-    }
-
-    /// The dense/sparse identity classification that decides
-    /// whether the merge borrows the id stream's keys from the source
-    /// bucket. Dense = the identity amplitude never vanishes over the
-    /// active support patterns; pinned per built-in so a PTM change that
-    /// silently flips a channel's path shows up here.
-    #[test]
-    fn identity_density_classification() {
-        let hash = Gf2Hash::<1>::new(12, 6, 0xD1CE);
-        let check = |ch: &dyn Channel<1>, want: bool, label: &str| {
-            let prep = ch.prepare(&hash, false).unwrap();
-            let span = Gf2Span::new(&prep.bucket_deltas(), 6);
-            match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
-                DeltaPlan::Local { dense_identity, .. } => {
-                    assert_eq!(dense_identity, want, "{label}")
-                }
-                DeltaPlan::Rotation { .. } => panic!("{label}: expected a Local plan"),
-            }
-        };
-        // Dense: every source row emits an id row.
-        check(&sqrt_swap_w1(1, 5), true, "gu2q");
-        check(
-            &PauliRotation::new(PauliString::<1>::z(2), 0.3),
-            true,
-            "rot_z",
-        );
-        check(
-            &AmplitudeDamping {
-                support: [5],
-                gamma: 0.3,
-            },
-            true,
-            "amplitude_damping",
-        );
-        // Sparse: the id amplitude vanishes on some patterns (CNOT: 12 of
-        // 16; H: 2 of 4) — these keep the materialized id stream.
-        check(&Clifford2Q::cnot(1, 4), false, "cnot");
-        check(&Clifford1Q::h(3), false, "h");
-    }
-
-    /// Which sort kernel each built-in's layer gets, and the two plan-time quantities that decide it.
-    /// The radix kernel wins where the comparison merge is expensive per row (many streams, as in `su4`, or disjoint streams that mispredict, as in the key-permuting Cliffords) and loses badly on a single nearly-sorted stream. Both triggers are pinned per channel, values and all, so a PTM change that silently flips either direction shows up here (see `research/FINDINGS.md`).
-    #[test]
-    fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
-        let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
-        let rest_streams = |ch: &dyn Channel<1>, label: &str| -> (usize, bool, f64) {
-            let prep = ch.prepare(&hash, false).unwrap();
-            let span = Gf2Span::new(&prep.bucket_deltas(), 8);
-            match DeltaPlan::new(&prep, &span, LayerKnobs::default()) {
-                DeltaPlan::Local {
-                    ptm,
-                    has_identity,
-                    radix_sort,
-                    ..
-                } => (
-                    ptm.deltas().len() - has_identity as usize,
-                    radix_sort,
-                    rest_rows_per_key(ptm),
-                ),
-                // A wide rotation has one rest stream by construction and no
-                // `radix_sort` field: `fill_coset` reads `false` for it.
-                DeltaPlan::Rotation { .. } => {
-                    assert!(
-                        label.starts_with("rot"),
-                        "{label}: unexpected Rotation plan"
-                    );
-                    (1, false, 0.0)
-                }
-            }
-        };
-        // (label, rest streams, rest_rows_per_key, radix).
-        let expect: &[(&str, usize, f64, bool)] = &[
-            ("haar_su4", 15, 14.0, true),
-            ("gu2q_sqrt_swap", 3, 3.0, false),
-            ("cnot", 3, 1.0, true),
-            ("cz", 3, 1.0, true),
-            ("swap", 3, 1.0, true),
-            ("h", 1, 1.0, false),
-            ("s", 1, 1.0, false),
-            ("rot_zz", 1, 1.0, false),
-            ("depolarizing", 0, 0.0, false),
-        ];
-        let mut selected = Vec::new();
-        let cases: Vec<(&str, Box<dyn Channel<1>>)> = vec![
-            ("haar_su4", Box::new(haar_su4(1, 5))),
-            ("gu2q_sqrt_swap", Box::new(sqrt_swap_w1(1, 5))),
-            ("cnot", Box::new(Clifford2Q::cnot(1, 5))),
-            ("cz", Box::new(Clifford2Q::cz(1, 5))),
-            ("swap", Box::new(Clifford2Q::swap(1, 5))),
-            ("h", Box::new(Clifford1Q::h(3))),
-            ("s", Box::new(Clifford1Q::s(3))),
-            (
-                "rot_zz",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<1>::z(1);
-                        g.mul_assign(&PauliString::<1>::z(5));
-                        g
-                    },
-                    0.3,
-                )),
-            ),
-            (
-                "depolarizing",
-                Box::new(Depolarizing {
-                    support: [3],
-                    p: 0.05,
-                }),
-            ),
-        ];
-        assert_eq!(cases.len(), expect.len());
-        for ((label, ch), &(want_label, want_streams, want_rpk, want_radix)) in
-            cases.iter().zip(expect)
-        {
-            assert_eq!(*label, want_label);
-            let (streams, radix, rpk) = rest_streams(ch.as_ref(), label);
-            assert_eq!(streams, want_streams, "{label}: rest streams");
-            assert!(
-                (rpk - want_rpk).abs() < 1e-9,
-                "{label}: rest_rows_per_key {rpk}, want {want_rpk}",
-            );
-            assert_eq!(
-                radix, want_radix,
-                "{label}: {streams} rest streams, {rpk} rows per key, radix_sort = {radix}",
-            );
-            if radix {
-                selected.push(*label);
-            }
-        }
-        // Arm one: the dense SU(4) realizes all 16 deltas; nothing else here
-        // comes close (sqrt(SWAP) is the runner-up at 3). Arm two: the three
-        // two-qubit Cliffords, whose rest streams are disjoint. `sqrt(SWAP)`
-        // has the same stream count as `cnot` and is deliberately *not*
-        // selected — the whole point of the second arm's quantity.
-        assert_eq!(
-            selected,
-            vec!["haar_su4", "cnot", "cz", "swap"],
-            "the radix gate fired on an unexpected set of channels",
-        );
-    }
-
-    /// A partitioned layer must pick the kernel the unpartitioned run picks, on both arms of the gate.
-    /// `partitioned::layer` hands `DeltaPlan::new` a PTM restricted to local entries, and a restriction can only look more disjoint than the channel: drop two of `sqrt(SWAP)`'s three rest deltas and the survivor reads `rest_rows_per_key == 1.0`, `cnot`'s value. `LayerKnobs::rows_per_key` exists so deriving it locally cannot flip a fan-out channel onto the radix kernel on one partition and not another.
-    #[test]
-    fn a_partitioned_plan_reads_the_channel_wide_overlap() {
-        let hash = Gf2Hash::<1>::new(12, 8, 0xD1CE);
-        let gu2q = sqrt_swap_w1(1, 5);
-        let prep = gu2q.prepare(&hash, false).unwrap();
-        let Prepared::Local(full) = &prep else {
-            panic!("sqrt(SWAP) prepares to a Local plan");
-        };
-        assert!(
-            (rest_rows_per_key(full) - 3.0).abs() < 1e-9,
-            "the channel-wide value is the one the gate must see",
-        );
-
-        // Keep the identity entry and one rest entry: the partition whose
-        // local view is most misleading.
-        let mut keep = vec![false; full.deltas().len()];
-        keep[0] = true;
-        keep[1] = true;
-        let local = Prepared::Local(full.retain_entries(&keep));
-        let Prepared::Local(restricted) = &local else {
-            unreachable!()
-        };
-        assert!(
-            (rest_rows_per_key(restricted) - 1.0).abs() < 1e-9,
-            "the restricted view must be the misleading one, or this test is vacuous",
-        );
-
-        let span = Gf2Span::new(&local.bucket_deltas(), 8);
-        let radix = |knobs: LayerKnobs<'_>| match DeltaPlan::new(&local, &span, knobs) {
-            DeltaPlan::Local { radix_sort, .. } => radix_sort,
-            DeltaPlan::Rotation { .. } => unreachable!(),
-        };
-        // What the partitioned layer actually passes.
-        assert!(
-            !radix(LayerKnobs {
-                rest_streams: Some(3),
-                rows_per_key: Some(rest_rows_per_key(full)),
-                ..LayerKnobs::default()
-            }),
-            "a partition of a fan-out channel must keep the comparison kernel",
-        );
-        // And the failure mode, spelled out: the count override alone is not
-        // enough once the gate has a second arm.
-        assert!(
-            radix(LayerKnobs {
-                rest_streams: Some(3),
-                ..LayerKnobs::default()
-            }),
-            "the restricted PTM really does mislead the overlap arm",
-        );
-    }
-
-    // ---- multi-layer, staying bucketed ----
-
-    #[test]
-    fn many_layers_without_converting_out() {
-        // The point of the bucketed form: convert in once, run many layers,
-        // convert out once. Compare against the same sequence through the
-        // naive oracle.
-        let input = rand_sum::<1>(800, 8, 0x7001);
-        let chans: Vec<Box<dyn Channel<1>>> = vec![
-            Box::new(Clifford1Q::h(0)),
-            Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.3)),
-            Box::new(Clifford2Q::cnot(1, 5)),
-            Box::new(Depolarizing {
-                support: [3],
-                p: 0.05,
-            }),
-            Box::new(Clifford1Q::s(6)),
-            Box::new(PauliRotation::new(
-                {
-                    let mut g = PauliString::<1>::z(1);
-                    g.mul_assign(&PauliString::<1>::z(4));
-                    g
-                },
-                0.2,
-            )),
-        ];
-
-        let mut want = input.clone();
-        for ch in &chans {
-            want = naive_apply_layer(&want, ch.as_ref(), &AlwaysKeep, false);
-        }
-
-        let hash = Gf2Hash::<1>::new(8, 5, 0x77);
-        let mut b = input.clone().with_hash(hash);
-        let mut scratch = LayerScratch::<1>::new();
-        for ch in &chans {
-            let prep = ch.prepare(b.hash(), false).unwrap();
-            apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-        }
-        let got = b;
-        assert_terms_close(&got, &want, TOL, "six layers");
-    }
-
-    #[test]
-    fn layers_survive_a_rebucket_in_between() {
-        let input = rand_sum::<1>(800, 8, 0x7002);
-        let h = Clifford1Q::h(0);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.3);
-
-        let want = naive_apply_layer(
-            &naive_apply_layer(&input, &h, &AlwaysKeep, false),
-            &rot,
-            &AlwaysKeep,
-            false,
-        );
-
-        let hash = Gf2Hash::<1>::new(8, 2, 0x77);
-        let mut b = input.clone().with_hash(hash);
-        let mut scratch = LayerScratch::<1>::new();
-
-        let prep = h.prepare(b.hash(), false).unwrap();
-        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-        b.rebucket(32, 1);
-        let prep = rot.prepare(b.hash(), false).unwrap();
-        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-
-        assert_terms_close(&b, &want, TOL, "layer, rebucket, layer");
-    }
-
-    // ---- the fingerprint net ----
-
-    /// FNV-1a over the eight little-endian bytes of one `u64`.
-    ///
-    /// Written out rather than pulled from a crate so the constant stays part
-    /// of the test: the hardcoded fingerprints below are only meaningful next
-    /// to the exact mix that produced them.
-    fn fnv_fold(h: u64, v: u64) -> u64 {
-        let mut h = h;
-        for b in v.to_le_bytes() {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        h
-    }
-
-    /// A u64 digest of the sum's exact bits, in canonical key order.
-    /// Goes through [`canonical_triples`] (the public `iter()`), so it is blind to how the sum is partitioned or stored: the digest depends only on the term set and the coefficient bit patterns, moving on any ULP change.
-    fn layer_fingerprint<const W: usize>(s: &PauliSum<W>) -> u64 {
-        let mut h = 0xcbf2_9ce4_8422_2325u64;
-        h = fnv_fold(h, s.len() as u64);
-        for (x, z, c) in canonical_triples(s) {
-            for &w in x.iter().chain(z.iter()) {
-                h = fnv_fold(h, w);
-            }
-            h = fnv_fold(h, c.re.to_bits());
-            h = fnv_fold(h, c.im.to_bits());
-        }
-        h
-    }
-
-    /// The channels in the fingerprint net: one per prepared-path shape (Cliffords, a dense two-qubit unitary, weight-2 and weight-4 rotations, the key-preserving rescale path, and amplitude damping).
-    fn fingerprint_channels() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
-        vec![
-            ("clifford1q_h", Box::new(Clifford1Q::h(3))),
-            ("clifford2q_cnot", Box::new(Clifford2Q::cnot(1, 5))),
-            ("clifford2q_swap", Box::new(Clifford2Q::swap(1, 5))),
-            (
-                // sqrt(SWAP): non-Clifford, and dense enough to realize a wide
-                // delta set rather than collapsing to a permutation.
-                "general_unitary2q",
-                Box::new({
-                    let h = Complex64::new(0.5, 0.5);
-                    let hc = Complex64::new(0.5, -0.5);
-                    let one = Complex64::new(1.0, 0.0);
-                    let zero = Complex64::new(0.0, 0.0);
-                    crate::channel::GeneralUnitary2Q::from_matrix(
-                        1,
-                        5,
-                        [
-                            [one, zero, zero, zero],
-                            [zero, h, hc, zero],
-                            [zero, hc, h, zero],
-                            [zero, zero, zero, one],
-                        ],
-                    )
-                }),
-            ),
-            (
-                "rotation_zz",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<2>::z(1);
-                        g.mul_assign(&PauliString::<2>::z(6));
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-            (
-                // Weight 4 > MAX_LOCAL_SUPPORT, so this takes `gather_rotation`.
-                "rotation_w4",
-                Box::new(PauliRotation::new(
-                    {
-                        let mut g = PauliString::<2>::z(0);
-                        for q in [2u32, 4, 7] {
-                            g.mul_assign(&PauliString::<2>::x(q));
-                        }
-                        g
-                    },
-                    0.41,
-                )),
-            ),
-            (
-                "depolarizing",
-                Box::new(Depolarizing {
-                    support: [2],
-                    p: 0.07,
-                }),
-            ),
-            (
-                "amp_damping",
-                Box::new(AmplitudeDamping {
-                    support: [2],
-                    gamma: 0.3,
-                }),
-            ),
-        ]
-    }
-
-    /// Every `(channel, direction, bits)` fingerprint the current engine
-    /// produces, pinned to a literal. Order matches `fingerprint_channels`.
-    const LAYER_FINGERPRINTS: &[(&str, bool, u8, u64)] = &[
-        ("clifford1q_h", false, 2, 0x8a01_7283_1dac_9905),
-        ("clifford1q_h", false, 5, 0x8a01_7283_1dac_9905),
-        ("clifford1q_h", true, 2, 0x8a01_7283_1dac_9905),
-        ("clifford1q_h", true, 5, 0x8a01_7283_1dac_9905),
-        ("clifford2q_cnot", false, 2, 0x8d22_5efb_4856_044f),
-        ("clifford2q_cnot", false, 5, 0x8d22_5efb_4856_044f),
-        ("clifford2q_cnot", true, 2, 0x8d22_5efb_4856_044f),
-        ("clifford2q_cnot", true, 5, 0x8d22_5efb_4856_044f),
-        ("clifford2q_swap", false, 2, 0x5fe9_a80d_62af_1da9),
-        ("clifford2q_swap", false, 5, 0x5fe9_a80d_62af_1da9),
-        ("clifford2q_swap", true, 2, 0x5fe9_a80d_62af_1da9),
-        ("clifford2q_swap", true, 5, 0x5fe9_a80d_62af_1da9),
-        ("general_unitary2q", false, 2, 0x6a89_211e_1337_0d4b),
-        ("general_unitary2q", false, 5, 0x6a89_211e_1337_0d4b),
-        ("general_unitary2q", true, 2, 0x54b3_481c_3682_b7db),
-        ("general_unitary2q", true, 5, 0x54b3_481c_3682_b7db),
-        ("rotation_zz", false, 2, 0x79b5_287d_69fe_3049),
-        ("rotation_zz", false, 5, 0x79b5_287d_69fe_3049),
-        ("rotation_zz", true, 2, 0x0888_9337_8137_9549),
-        ("rotation_zz", true, 5, 0x0888_9337_8137_9549),
-        ("rotation_w4", false, 2, 0xd22c_2678_5d1a_6ec7),
-        ("rotation_w4", false, 5, 0xd22c_2678_5d1a_6ec7),
-        ("rotation_w4", true, 2, 0xda87_ea29_d292_f0c7),
-        ("rotation_w4", true, 5, 0xda87_ea29_d292_f0c7),
-        ("depolarizing", false, 2, 0x0c2d_0f88_a7cb_3051),
-        ("depolarizing", false, 5, 0x0c2d_0f88_a7cb_3051),
-        ("depolarizing", true, 2, 0x0c2d_0f88_a7cb_3051),
-        ("depolarizing", true, 5, 0x0c2d_0f88_a7cb_3051),
-        ("amp_damping", false, 2, 0x8b0f_59fb_c452_c0bf),
-        ("amp_damping", false, 5, 0x8b0f_59fb_c452_c0bf),
-        ("amp_damping", true, 2, 0xd3cf_d844_cd3d_2be8),
-        ("amp_damping", true, 5, 0xd3cf_d844_cd3d_2be8),
-    ];
-
-    /// Exact-bit characterization of one bucketed layer, across every prepared-path shape, both directions and two bucket counts.
-    /// A convenience tripwire, not a correctness requirement (ARCHITECTURE.md §Determinism): a red fingerprint means output bits moved and should be looked at, but when the change is correct to tolerance the fix is to regenerate the literals below, not to preserve the old bits.
-    #[test]
-    fn layer_fingerprints_are_stable() {
-        let input = rand_sum::<2>(2000, 10, 0xC05E7);
-        let channels = fingerprint_channels();
-        let mut got: Vec<(&str, bool, u8, u64)> = Vec::new();
-        for (name, ch) in &channels {
-            let cr: &dyn Channel<2> = ch.as_ref();
-            for &adjoint in &[false, true] {
-                for &bits in &[2u8, 5] {
-                    let out = bucketed_layer(&input, cr, &AlwaysKeep, adjoint, bits, 0xF17E);
-                    got.push((name, adjoint, bits, layer_fingerprint(&out)));
-                }
-            }
-        }
-
-        // Printed so a deliberate re-pin is a copy-paste, never a guess. Run
-        // with `--nocapture` to see it.
-        for &(name, adjoint, bits, fp) in &got {
-            println!("(\"{name}\", {adjoint}, {bits}, {fp:#018x}),");
-        }
-
-        assert_eq!(
-            got.len(),
-            LAYER_FINGERPRINTS.len(),
-            "the net and the pinned table cover different cases"
-        );
-        for (g, w) in got.iter().zip(LAYER_FINGERPRINTS.iter()) {
-            assert_eq!(
-                (g.0, g.1, g.2),
-                (w.0, w.1, w.2),
-                "the net and the pinned table are out of order"
-            );
-            assert_eq!(
-                g.3, w.3,
-                "fingerprint changed for {} adjoint={} bits={}: {:#018x} != {:#018x}",
-                g.0, g.1, g.2, g.3, w.3,
-            );
-        }
-    }
-
-    #[test]
-    fn an_empty_sum_survives_a_layer() {
-        let input = PauliSum::<1>::empty(8);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.3);
-        let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
-        assert!(out.is_empty());
-    }
-
-    /// `bits = 0` means every bucket delta is 0, the span is trivial, and the
-    /// whole sum is one coset processed as a single serial task — the small-sum
-    /// degenerate case runs on the same code path, not a special one.
-    #[test]
-    fn single_bucket_sum_is_one_serial_coset() {
-        let input = rand_sum::<1>(600, 8, 0xB1);
-        for ch in [
-            Box::new(PauliRotation::new(
-                {
-                    let mut g = PauliString::<1>::z(1);
-                    g.mul_assign(&PauliString::<1>::z(5));
-                    g
-                },
-                0.37,
-            )) as Box<dyn Channel<1>>,
-            Box::new(Clifford2Q::cnot(2, 6)),
-        ] {
-            let got = bucketed_layer(&input, ch.as_ref(), &AlwaysKeep, false, 0, 0xEE);
-            assert_eq!(got.num_buckets(), 1);
-            let want = naive_apply_layer(&input, ch.as_ref(), &AlwaysKeep, false);
-            // Tolerance, not bitwise: the oracle sums equal keys in hashmap
-            // iteration order.
-            assert_terms_close(&got, &want, TOL, "bits=0 single coset");
-        }
-    }
-
-    /// A wide rotation whose generator hashes to bucket delta 0: the span is trivial (`r = 0`), each coset is a single bucket, and both passes gather the same swapped-out bucket.
-    /// A rotation merges at most two contributions per output key, so float addition is commutative regardless of gather or sort order — this stays a bitwise check even under the relaxed determinism policy (ARCHITECTURE.md §Determinism).
-    #[test]
-    fn wide_rotation_with_colliding_bucket_delta() {
-        // Weight-4 generator, wider than MAX_LOCAL_SUPPORT, so it prepares as
-        // Prepared::Rotation.
-        let mut gen = PauliString::<1>::z(0);
-        for q in [2u32, 4, 6] {
-            gen.mul_assign(&PauliString::<1>::x(q));
-        }
-        let rot = PauliRotation::new(gen, 0.53);
-        let input = rand_sum::<1>(800, 8, 0xC0111);
-
-        // Find a seed whose 3-bit hash sends the generator's key delta to
-        // bucket 0, which is exactly the H·P = 0 collision.
-        let bits = 3u8;
-        let mut chosen = None;
-        for seed in 0u64..4096 {
-            let hash = Gf2Hash::<1>::new(8, bits, seed);
-            if hash.bucket_of(&gen.x, &gen.z) == 0 {
-                chosen = Some(seed);
-                break;
-            }
-        }
-        let seed = chosen.expect("no seed with H·P = 0 in 4096 tries");
-
-        let hash = Gf2Hash::<1>::new(8, bits, seed);
-        let mut b = input.clone().with_hash(hash);
-        let prep = rot.prepare(b.hash(), false).unwrap();
-        match &prep {
-            Prepared::Rotation(r) => {
-                assert_eq!(
-                    r.bucket_delta_gen, r.bucket_delta_identity,
-                    "seed search failed to produce the collision"
-                );
-            }
-            _ => panic!("weight-4 rotation must prepare as Rotation"),
-        }
-        let mut scratch = LayerScratch::<1>::new();
-        apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-
-        let want = naive_apply_layer(&input, &rot, &AlwaysKeep, false);
-        // Tolerance, not bitwise: the oracle sums equal keys in hashmap order.
-        assert_terms_close(&b, &want, TOL, "H·P = 0 collision");
-    }
-
-    /// One `LayerScratch` serves layers of every prepared shape back to back —
-    /// the coset scratch is shape-agnostic and only ever grows.
-    #[test]
-    fn in_place_layers_share_one_scratch_across_channel_types() {
-        let input = rand_sum::<2>(1500, 10, 0x5CA7C4);
-        let rot = PauliRotation::new(
-            {
-                let mut g = PauliString::<2>::z(1);
-                g.mul_assign(&PauliString::<2>::x(7));
-                g
-            },
-            0.29,
-        );
-        let cnot = Clifford2Q::cnot(3, 8);
-        let h = Complex64::new(0.5, 0.5);
-        let hc = Complex64::new(0.5, -0.5);
-        let one = Complex64::new(1.0, 0.0);
-        let zero = Complex64::new(0.0, 0.0);
-        let gu2q = crate::channel::GeneralUnitary2Q::from_matrix(
-            2,
-            6,
-            [
-                [one, zero, zero, zero],
-                [zero, h, hc, zero],
-                [zero, hc, h, zero],
-                [zero, zero, zero, one],
-            ],
-        );
-        let channels: [&dyn Channel<2>; 3] = [&rot, &cnot, &gu2q];
-
-        let hash = Gf2Hash::<2>::new(10, 5, 0xD00D);
-        let mut b = input.clone().with_hash(hash);
-        let mut scratch = LayerScratch::<2>::new();
-        let mut want = input;
-        for ch in channels {
-            let prep = ch.prepare(b.hash(), false).unwrap();
-            apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-            want = naive_apply_layer(&want, ch, &AlwaysKeep, false);
-        }
-        // Tolerance, not bitwise: the oracle sums equal keys in hashmap order.
-        assert_terms_close(&b, &want, TOL, "rot → cnot → gu2q through one scratch");
-    }
-
-    /// After the working set stops growing, repeated layers allocate nothing:
-    /// the total capacity held by the buckets and the scratch is identical
-    /// after layer `k` and layer `k + 1`.
-    #[test]
-    fn capacity_stabilizes_across_repeated_layers() {
-        let input = rand_sum::<1>(2000, 10, 0xCAFE);
-        let hash = Gf2Hash::<1>::new(10, 4, 0xF00);
-        let mut b = input.with_hash(hash);
-        let hgate = Clifford1Q::h(3);
-        let prep = hgate.prepare(b.hash(), false).unwrap();
-        let mut scratch = LayerScratch::<1>::new();
-
-        let total_capacity = |s: &PauliSum<1>, sc: &LayerScratch<1>| -> usize {
-            let bucket_cap: usize = (0..s.num_buckets())
-                .map(|i| {
-                    let (x, _, _) = s.bucket(i);
-                    // Capacity is not observable through the slice view; go
-                    // through len as a proxy for the data, and measure the
-                    // scratch's real capacities, which are where growth lands.
-                    x.len()
-                })
-                .sum();
-            let old_cap: usize = sc.task.old.iter().map(|c| c.x.capacity()).sum();
-            let run_cap: usize = sc.task.runs.iter().map(|r| r.x.capacity()).sum();
-            let sort_cap = sc.task.sort.total_capacity();
-            bucket_cap + old_cap + run_cap + sort_cap + sc.perm.capacity() + sc.staging.capacity()
-        };
-
-        let mut snapshots = Vec::new();
-        for _ in 0..4 {
-            apply_layer_bucketed(&mut b, &prep, &AlwaysKeep, &mut scratch);
-            snapshots.push(total_capacity(&b, &scratch));
-        }
-        assert_eq!(
-            snapshots[2], snapshots[3],
-            "scratch/bucket footprint still growing at layer 4: {snapshots:?}"
-        );
-    }
-
-    /// A channel whose delta set is **not** XOR-closed: `{0, a, b}` with
-    /// `a ⊕ b` absent. `h(D)` is then not a subspace, and only the *span*'s
-    /// cosets partition the bucket space — a legal `Channel` impl that would
-    /// silently lose terms if the engine grouped by `h(D)` directly.
-    #[test]
-    fn coset_path_is_correct_for_a_non_subspace_delta_set() {
-        struct ThreeDeltas;
-        impl<const W: usize> Channel<W> for ThreeDeltas {
-            fn max_fanout(&self) -> usize {
-                3
-            }
-            fn support(&self) -> [u64; W] {
-                crate::channel::support_mask(&[0, 1])
-            }
-            fn apply(
-                &self,
-                input_x: &[u64; W],
-                input_z: &[u64; W],
-                coeff: Complex64,
-                out: &mut crate::channel::OutputBuffer<'_, W>,
-            ) {
-                // v (0.5) + v⊕x₀ (0.3) + v⊕x₁ (0.2): key deltas {0, a, b}
-                // with a ⊕ b = x₀x₁ never emitted.
-                out.push(*input_x, *input_z, coeff * 0.5);
-                let mut xa = *input_x;
-                xa[0] ^= 1;
-                out.push(xa, *input_z, coeff * 0.3);
-                let mut xb = *input_x;
-                xb[0] ^= 2;
-                out.push(xb, *input_z, coeff * 0.2);
-            }
-        }
-
-        let ch = ThreeDeltas;
-        let input = rand_sum::<1>(1200, 8, 0xAB5EA7);
-        let want = naive_apply_layer(&input, &ch, &AlwaysKeep, false);
-        for bits in [0u8, 2, 5] {
-            let got = bucketed_layer(&input, &ch, &AlwaysKeep, false, bits, 0x7EA);
-            // Tolerance, not bitwise: three deltas can merge three
-            // contributions into one key, and the oracle sums them in hashmap
-            // iteration order.
-            assert_terms_close(
-                &got,
-                &want,
-                TOL,
-                &format!("non-subspace deltas, bits={bits}"),
-            );
-        }
-    }
-}
-
-/// The [`ExtraRows`] hook: rows handed to a layer from outside, as the
-/// partitioned engine will hand them over.
-#[cfg(test)]
-mod extra_rows_tests {
-    use super::tests::{assert_terms_close, bucketed_layer, AlwaysKeep};
-    use super::*;
-    use crate::accumulator::BuildAccumulator;
-    use crate::bucket::hash::Gf2Hash;
-    use crate::channel::clifford::{Clifford1Q, Clifford2Q};
-    use crate::channel::rotation::PauliRotation;
-    use crate::channel::Channel;
-    use crate::pauli_sum::PauliSum;
-    use crate::test_support::{naive_apply_layer, rand_sum};
-    use crate::truncation::builtin::CoefficientThreshold;
-    use std::collections::{HashMap, HashSet};
-
-    const TOL: f64 = 1e-11;
-
-    /// One row to inject: key columns plus coefficient.
-    type Row<const W: usize> = ([u64; W], [u64; W], Complex64);
-
-    /// Rows to inject, keyed by their original output bucket index — the quantity `fill_coset` reconstructs from `chunk_base` plus the inverse permutation.
-    /// Built through [`Self::push`], which derives the bucket from the layer's own hash, so a row can never be filed under a bucket it does not belong to.
-    #[derive(Default)]
-    struct Injected<const W: usize> {
-        rows: HashMap<u32, Vec<Row<W>>>,
-    }
-
-    impl<const W: usize> Injected<W> {
-        fn push(&mut self, hash: &Gf2Hash<W>, x: [u64; W], z: [u64; W], c: Complex64) {
-            let beta = hash.bucket_of(&x, &z);
-            self.rows.entry(beta).or_default().push((x, z, c));
-        }
-
-        fn all(&self) -> impl Iterator<Item = &Row<W>> {
-            self.rows.values().flatten()
-        }
-    }
-
-    impl<const W: usize> ExtraRows<W> for Injected<W> {
-        const NEEDS_BETA: bool = true;
-
-        fn count(&self, beta: u32) -> usize {
-            self.rows.get(&beta).map_or(0, Vec::len)
-        }
-
-        fn append_into(
-            &self,
-            beta: u32,
-            x: &mut Vec<[u64; W]>,
-            z: &mut Vec<[u64; W]>,
-            c: &mut Vec<Complex64>,
-        ) {
-            let Some(rows) = self.rows.get(&beta) else {
-                return;
-            };
-            for &(rx, rz, rc) in rows {
-                x.push(rx);
-                z.push(rz);
-                c.push(rc);
-            }
-        }
-    }
-
-    /// One layer through [`apply_layer_bucketed_with`], at a fixed partition.
-    fn layer_with_extra<const W: usize, T, X>(
-        input: &PauliSum<W>,
-        ch: &dyn Channel<W>,
-        policy: &T,
-        bits: u8,
-        seed: u64,
-        extra: &X,
-    ) -> PauliSum<W>
-    where
-        T: TruncationPolicy<W> + ?Sized,
-        X: ExtraRows<W> + Sync,
-    {
-        let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
-        let mut b = input.clone().with_hash(hash);
-        let prep = ch
-            .prepare(b.hash(), false)
-            .expect("channel could not be prepared");
-        let mut scratch = LayerScratch::<W>::new();
-        apply_layer_bucketed_with(
-            &mut b,
-            &prep,
-            policy,
-            &mut scratch,
-            extra,
-            LayerKnobs::default(),
-        );
-        b
-    }
-
-    /// The oracle: the naive layer plus the injected rows, summed per key and only then filtered.
-    fn expected<const W: usize, T>(
-        input: &PauliSum<W>,
-        ch: &dyn Channel<W>,
-        policy: &T,
-        injected: &Injected<W>,
-    ) -> PauliSum<W>
-    where
-        T: TruncationPolicy<W> + ?Sized,
-    {
-        let base = naive_apply_layer(input, ch, &AlwaysKeep, false);
-        let mut map: HashMap<([u64; W], [u64; W]), Complex64> = HashMap::new();
-        for (x, z, c) in base.iter() {
-            *map.entry((*x, *z)).or_insert(ZERO) += c;
-        }
-        for &(x, z, c) in injected.all() {
-            *map.entry((x, z)).or_insert(ZERO) += c;
-        }
-        let mut acc = BuildAccumulator::<W>::with_capacity(input.num_qubits(), map.len());
-        for ((x, z), c) in map {
-            if c == ZERO || !policy.keep_term(&x, &z, c) {
-                continue;
-            }
-            acc.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
-        }
-        acc.finalize()
-    }
-
-    /// A handful of rows for a layer: some on keys the fixture already carries (colliding with the local output, so they must be summed), some on keys it does not.
-    fn injection_for(input: &PauliSum<1>, hash: &Gf2Hash<1>) -> Injected<1> {
-        let mut injected = Injected::<1>::default();
-        let mut seen: HashSet<([u64; 1], [u64; 1])> = HashSet::new();
-        for (i, (x, z, _)) in input.iter().enumerate() {
-            if i % 137 == 0 && seen.insert((*x, *z)) {
-                injected.push(hash, *x, *z, Complex64::new(0.25, -0.5));
-            }
-        }
-        // 8-qubit fixture, so keys stay inside the low byte.
-        for k in 0u64..5 {
-            let x = [(0xA5u64 ^ k.wrapping_mul(31)) & 0xFF];
-            let z = [(0x3Cu64 ^ k.wrapping_mul(17)) & 0xFF];
-            if seen.insert((x, z)) {
-                injected.push(hash, x, z, Complex64::new(-0.75, 0.125));
-            }
-        }
-        injected
-    }
-
-    /// Injected rows reach the output bucket named by their original index, under both the permuted and the identity handle layouts, and are deduplicated against the local output rather than appended beside it.
-    #[test]
-    fn injected_rows_land_in_their_original_bucket_and_are_summed() {
-        let input = rand_sum::<1>(600, 8, 0xE47A);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let cnot = Clifford2Q::cnot(1, 5);
-        // `want_r` at `bits = 5`: a one-qubit rotation realizes one bucket
-        // delta, CNOT four — so the permutation is non-trivial in both cases,
-        // with 16 and 8 cosets, i.e. the parallel chunk loop.
-        let cases: [(&str, &dyn Channel<1>, u8, usize); 4] = [
-            ("rot bits=5", &rot, 5, 1),
-            ("cnot bits=5", &cnot, 5, 2),
-            ("rot bits=0", &rot, 0, 0),
-            ("cnot bits=0", &cnot, 0, 0),
-        ];
-        for (label, ch, bits, want_r) in cases {
-            // Pick the hash so the span rank is the one the case is about:
-            // whether the handle permutation is non-trivial is a property of
-            // `h(D)`, and a colliding draw would silently turn the `bits = 5`
-            // cases into more of the `bits = 0` one.
-            let seed = (0u64..4096)
-                .find(|&s| {
-                    let hash = Gf2Hash::<1>::new(8, bits, s);
-                    let prep = ch.prepare(&hash, false).unwrap();
-                    Gf2Span::new(&prep.bucket_deltas(), bits).r() == want_r
-                })
-                .unwrap_or_else(|| panic!("{label}: no seed of rank {want_r} in 4096 tries"));
-            let hash = Gf2Hash::<1>::new(8, bits, seed);
-
-            let injected = injection_for(&input, &hash);
-            assert!(
-                injected.all().count() >= 6,
-                "{label}: too few injected rows"
-            );
-
-            // Non-vacuity: the injection must exercise both the summed and
-            // the inserted case.
-            let plain = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, seed);
-            let collided = injected
-                .all()
-                .filter(|(x, z, _)| plain.get(x, z).is_some())
-                .count();
-            let fresh = injected.all().count() - collided;
-            assert!(
-                collided > 0 && fresh > 0,
-                "{label}: want both colliding and fresh keys (collided={collided} fresh={fresh})"
-            );
-
-            let got = layer_with_extra(&input, ch, &AlwaysKeep, bits, seed, &injected);
-            let want = expected(&input, ch, &AlwaysKeep, &injected);
-            assert_eq!(got.len(), plain.len() + fresh, "{label}: term count");
-            assert_terms_close(&got, &want, TOL, label);
-        }
-    }
-
-    /// `NoExtra` is the identity: driving a layer through the generic entry
-    /// point with an *empty* `Injected` (`NEEDS_BETA = true`, so the
-    /// inverse-permutation pass and both hook call sites really run) gives
-    /// exactly what the ordinary path gives.
-    #[test]
-    fn an_empty_injection_changes_nothing() {
-        let input = rand_sum::<1>(600, 8, 0xE47B);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
-        let cnot = Clifford2Q::cnot(1, 5);
-        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
-            for bits in [0u8, 2, 5] {
-                let empty = Injected::<1>::default();
-                let got = layer_with_extra(&input, ch, &AlwaysKeep, bits, 0x7A58, &empty);
-                let plain = bucketed_layer(&input, ch, &AlwaysKeep, false, bits, 0x7A58);
-                assert_eq!(
-                    got.to_arrays(),
-                    plain.to_arrays(),
-                    "bits={bits}: the empty hook perturbed the layer"
-                );
-            }
-        }
-    }
-
-    /// `keep_term` runs on the sum of the local and the injected contribution, not on either alone: two coefficients that each clear the threshold can cancel to below it.
-    #[test]
-    fn keep_term_sees_local_plus_injected() {
-        let mut acc = BuildAccumulator::<1>::with_capacity(8, 2);
-        acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(0.5, 0.0));
-        acc.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
-        let input = acc.finalize();
-        // H on qubit 0 sends Z₀ → X₀ with amplitude 1 and leaves Z₁ alone.
-        let h = Clifford1Q::h(0);
-        let x0 = PauliString::<1>::x(0);
-        let z1 = PauliString::<1>::z(1);
-
-        for bits in [0u8, 3] {
-            let hash = Gf2Hash::<1>::new(8, bits, 0x9F);
-            let mut injected = Injected::<1>::default();
-            injected.push(&hash, x0.x, x0.z, Complex64::new(-0.4999999, 0.0));
-
-            let policy = CoefficientThreshold(1e-6);
-            let got = layer_with_extra(&input, &h, &policy, bits, 0x9F, &injected);
-            assert!(
-                got.get(&x0.x, &x0.z).is_none(),
-                "bits={bits}: a term that only survives unsummed was kept"
-            );
-            assert_eq!(got.len(), 1, "bits={bits}");
-            assert!(
-                (got.get(&z1.x, &z1.z).unwrap() - Complex64::new(1.0, 0.0)).norm() < TOL,
-                "bits={bits}: the untouched term must survive"
-            );
-
-            // The same layer without the threshold: the residue is there, and
-            // it is the sum of the two contributions.
-            let kept = layer_with_extra(&input, &h, &AlwaysKeep, bits, 0x9F, &injected);
-            let want = expected(&input, &h, &AlwaysKeep, &injected);
-            assert_terms_close(&kept, &want, TOL, &format!("no threshold bits={bits}"));
-            assert!(
-                (kept.get(&x0.x, &x0.z).unwrap() - Complex64::new(1.0000000000287557e-7, 0.0))
-                    .norm()
-                    < 1e-18,
-                "bits={bits}: residue {:?}",
-                kept.get(&x0.x, &x0.z),
-            );
-        }
-    }
-}
-
-#[cfg(test)]
-mod finalize_tests {
-    use super::tests::{assert_same_terms, assert_terms_close, naive_apply_layer, rand_sum};
-    use super::*;
-    use crate::bucket::hash::Gf2Hash;
-    use crate::channel::clifford::Clifford1Q;
-    use crate::channel::rotation::PauliRotation;
-    use crate::channel::Channel;
-    use crate::pauli_sum::PauliSum;
-    use crate::truncation::builtin::{And, CoefficientThreshold, Or, TopN, WeightCutoff};
-
-    /// `TopN` bucketed must keep exactly `n` terms, and the same *set* as the
-    /// flat implementation when there are no ties in magnitude.
-    #[test]
-    fn top_n_bucketed_matches_the_flat_implementation() {
-        let input = rand_sum::<1>(2000, 8, 0x1234);
-        for n in [1usize, 7, 100, 999, 1999, 5000] {
-            let policy = TopN(n);
-            let mut flat = input.clone();
-            policy.finalize_layer(&mut flat);
-
-            for bits in [0u8, 3, 6, 10] {
-                let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-                let mut b = input.clone().with_hash(hash);
-                policy.finalize_layer(&mut b);
-                b.assert_invariants();
-                let got = b;
-                assert_same_terms(&got, &flat, &format!("n={n} bits={bits}"));
-            }
-        }
-    }
-
-    #[test]
-    fn top_n_bucketed_keeps_exactly_n_and_the_largest() {
-        let input = rand_sum::<1>(1000, 8, 0x4321);
-        let hash = Gf2Hash::<1>::new(8, 5, 0x99);
-        let mut b = input.clone().with_hash(hash);
-        TopN(50).finalize_layer(&mut b);
-        assert_eq!(b.len(), 50);
-        let got = b;
-
-        // Every retained magnitude must be >= every dropped one.
-        let mut all: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
-        all.sort_by(|a, c| c.partial_cmp(a).unwrap());
-        let cutoff = all[49];
-        for (_, _, c) in got.iter() {
-            assert!(c.norm() >= cutoff - 1e-15, "kept a below-cutoff term");
-        }
-    }
-
-    #[test]
-    fn top_n_zero_clears_and_preserves_the_invariant() {
-        let input = rand_sum::<1>(500, 8, 0x5555);
-        let hash = Gf2Hash::<1>::new(8, 4, 0x99);
-        let mut b = input.clone().with_hash(hash);
-        TopN(0).finalize_layer(&mut b);
-        b.assert_invariants();
-        assert_eq!(b.len(), 0);
-        assert!(b.is_empty());
-    }
-
-    #[test]
-    fn top_n_above_the_length_is_a_no_op() {
-        // Note `rand_sum` dedups, so the realized length is below the request
-        // at only 8 qubits; compare against it rather than the literal.
-        let input = rand_sum::<1>(300, 8, 0x6666);
-        let hash = Gf2Hash::<1>::new(8, 4, 0x99);
-        let mut b = input.clone().with_hash(hash);
-        TopN(10_000).finalize_layer(&mut b);
-        assert_eq!(b.len(), input.len());
-        let got = b;
-        assert_same_terms(&got, &input, "top_n above length");
-    }
-
-    #[test]
-    fn and_runs_both_finalizers_bucketed() {
-        // TopN(n) twice with different n must behave like the tighter one.
-        let input = rand_sum::<1>(1000, 8, 0x7777);
-        let policy = And(TopN(400), TopN(120));
-        let mut flat = input.clone();
-        policy.finalize_layer(&mut flat);
-
-        let hash = Gf2Hash::<1>::new(8, 5, 0x99);
-        let mut b = input.clone().with_hash(hash);
-        policy.finalize_layer(&mut b);
-        b.assert_invariants();
-        let got = b;
-        assert_eq!(got.len(), 120);
-        assert_same_terms(&got, &flat, "and of two top_n");
-    }
-
-    #[test]
-    fn threshold_and_weight_and_or_finalizers_are_no_ops() {
-        // These three have no layer-finalization step; the bucketed override
-        // must leave the sum untouched rather than round-trip it.
-        let input = rand_sum::<1>(500, 8, 0x8888);
-        let hash = Gf2Hash::<1>::new(8, 4, 0x99);
-        for tag in 0..3 {
-            let mut b = input.clone().with_hash(hash.clone());
-            match tag {
-                0 => CoefficientThreshold(0.5).finalize_layer(&mut b),
-                1 => WeightCutoff(2).finalize_layer(&mut b),
-                _ => Or(CoefficientThreshold(0.5), WeightCutoff(2)).finalize_layer(&mut b),
-            }
-            assert_eq!(b.len(), input.len(), "tag {tag} changed the sum");
-        }
-    }
-
-    /// A custom `finalize_layer` written against the public surface (`retain`)
-    /// must act on the bucketed sum directly, and its result must not depend on
-    /// the partition.
-    #[test]
-    fn a_custom_finalizer_runs_on_the_bucketed_sum() {
-        /// Drops every term whose coefficient has negative real part — a global
-        /// pass expressed only as `finalize_layer`, via `retain`.
-        struct DropNegativeReal;
-        impl<const W: usize> TruncationPolicy<W> for DropNegativeReal {
-            fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-                sum.retain(|_x, _z, c| c.re >= 0.0);
-            }
-        }
-
-        let input = rand_sum::<1>(800, 8, 0x9999);
-        let mut flat = input.clone();
-        DropNegativeReal.finalize_layer(&mut flat);
-        assert!(
-            flat.len() < input.len(),
-            "the custom policy dropped nothing"
-        );
-
-        for bits in [0u8, 3, 7] {
-            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            DropNegativeReal.finalize_layer(&mut b);
-            b.assert_invariants();
-            let got = b;
-            assert_same_terms(&got, &flat, &format!("bits={bits}"));
-        }
-    }
-
-    /// Layer then finalize, repeatedly — the shape `propagate` will use.
-    #[test]
-    fn interleaved_layers_and_finalizers_match_the_naive_sequence() {
-        let input = rand_sum::<1>(1200, 8, 0xAAAA);
-        let policy = And(CoefficientThreshold(1e-9), TopN(300));
-        let chans: Vec<Box<dyn Channel<1>>> = vec![
-            Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.37)),
-            Box::new(Clifford1Q::h(0)),
-            Box::new(PauliRotation::new(PauliString::<1>::x(5), 0.21)),
-        ];
-
-        let mut want = input.clone();
-        for ch in &chans {
-            want = naive_apply_layer(&want, ch.as_ref(), &policy, false);
-            policy.finalize_layer(&mut want);
-        }
-
-        let hash = Gf2Hash::<1>::new(8, 5, 0xBB);
-        let mut b = input.clone().with_hash(hash);
-        let mut scratch = LayerScratch::<1>::new();
-        for ch in &chans {
-            let prep = ch.prepare(b.hash(), false).unwrap();
-            apply_layer_bucketed(&mut b, &prep, &policy, &mut scratch);
-            policy.finalize_layer(&mut b);
-        }
-        let got = b;
-
-        assert_terms_close(&got, &want, 1e-11, "3 truncated layers");
-    }
-}
-
-#[cfg(test)]
-mod tie_tests {
-    /// Byte-identical output across thread counts with the engine parallel. `apply_layer_bucketed` fixes the bucket count here, isolating thread count from partition.
-    #[test]
-    fn parallel_output_is_byte_identical_across_thread_counts() {
-        use crate::channel::rotation::PauliRotation;
-        use crate::channel::Channel;
-
-        let input = rand_sum::<1>(4000, 10, 0xC1C1);
-        let rot = PauliRotation::new(PauliString::<1>::z(2), 0.37);
-        let cnot = crate::channel::clifford::Clifford2Q::cnot(1, 5);
-
-        for ch in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>] {
-            // 64 buckets: comfortably above MIN_COSETS_FOR_PARALLEL, so the
-            // parallel path is genuinely exercised.
-            let run = |threads: usize| {
-                rayon::ThreadPoolBuilder::new()
-                    .num_threads(threads)
-                    .build()
-                    .expect("pool")
-                    .install(|| {
-                        let hash = Gf2Hash::<1>::new(10, 6, 0xC1);
-                        let mut b = input.clone().with_hash(hash);
-                        let prep = ch.prepare(b.hash(), false).unwrap();
-                        let mut scratch = LayerScratch::<1>::new();
-                        apply_layer_bucketed(
-                            &mut b,
-                            &prep,
-                            &super::tests::AlwaysKeep,
-                            &mut scratch,
-                        );
-                        b
-                    })
-            };
-            let reference = run(1);
-            for threads in [2usize, 4, 8, 16, 32] {
-                let got = run(threads);
-                assert_eq!(got.len(), reference.len(), "threads={threads}");
-                // Identical fixed hash on both sides, so canonical order is
-                // shared and whole-column equality is the bitwise statement.
-                assert_eq!(
-                    got.to_arrays(),
-                    reference.to_arrays(),
-                    "threads={threads}: output is not byte-identical",
-                );
-            }
-        }
-    }
-
-    /// The in-place rescale path is parallel too, and must give the same answer.
-    #[test]
-    fn parallel_rescale_is_byte_identical_across_thread_counts() {
-        use crate::channel::noise::Depolarizing;
-        use crate::channel::Channel;
-
-        let input = rand_sum::<1>(4000, 10, 0xC1C2);
-        let depol = Depolarizing {
-            support: [3],
-            p: 0.11,
-        };
-        let run = |threads: usize| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .expect("pool")
-                .install(|| {
-                    let hash = Gf2Hash::<1>::new(10, 6, 0xC2);
-                    let mut b = input.clone().with_hash(hash);
-                    let prep = Channel::<1>::prepare(&depol, b.hash(), false).unwrap();
-                    let mut scratch = LayerScratch::<1>::new();
-                    apply_layer_bucketed(&mut b, &prep, &super::tests::AlwaysKeep, &mut scratch);
-                    b
-                })
-        };
-        let reference = run(1);
-        for threads in [2usize, 8, 32] {
-            let got = run(threads);
-            // Identical fixed hash on both sides: canonical order is shared.
-            assert_eq!(
-                got.to_arrays().2,
-                reference.to_arrays().2,
-                "threads={threads}"
-            );
-        }
-    }
-
-    use super::tests::{assert_same_terms, canonical_triples};
-    use super::*;
-    use crate::bucket::hash::Gf2Hash;
-    use crate::pauli_sum::PauliSum;
-    use crate::test_support::{rand_sum, tie_heavy_sum};
-    use crate::truncation::builtin::TopN;
-
-    /// A direct, deliberately naive transcription of the `TopN` tie-group
-    /// rule (ARCHITECTURE.md §Truncation), used as an oracle for the
-    /// production `finalize_layer`.
-    ///
-    /// Full sort instead of a selection, `retain` instead of a per-bucket
-    /// compaction, no parallelism: nothing here shares code with the thing it
-    /// checks. Returns the surviving terms as canonical triples.
-    fn top_n_reference<const W: usize>(
-        sum: &PauliSum<W>,
-        n: usize,
-    ) -> Vec<([u64; W], [u64; W], Complex64)> {
-        let mut triples = canonical_triples(sum);
-        if triples.len() <= n {
-            return triples;
-        }
-        if n == 0 {
-            return Vec::new();
-        }
-        let mut mags: Vec<f64> = triples.iter().map(|t| t.2.norm()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).expect("no NaN magnitudes"));
-        // `t` = the n-th largest magnitude.
-        let t = mags[n - 1];
-        let count_gt = mags.iter().filter(|&&m| m > t).count();
-        let count_eq = mags.iter().filter(|&&m| m == t).count();
-        // Keep the tie group iff it fits entirely.
-        let keep_tied = count_gt + count_eq <= n;
-        triples.retain(|(_, _, c)| {
-            let m = c.norm();
-            m > t || (keep_tied && m == t)
-        });
-        triples
-    }
-
-    /// The retained set is a pure function of the magnitude multiset, so it
-    /// cannot depend on the bucket partition. Checked on tie-dense data, where
-    /// a partition-sensitive rule (flat position, or the old key tiebreak read
-    /// through a bucket index) would show up.
-    #[test]
-    fn top_n_is_bucket_count_independent_on_tied_magnitudes() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x7135);
-        let n = 700; // cuts inside the group of magnitude-0.5 terms
-        let reference = {
-            let hash = Gf2Hash::<1>::new(8, 0, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            b
-        };
-        for bits in [1u8, 2, 4, 6, 9] {
-            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            let got = b;
-            assert_same_terms(
-                &got,
-                &reference,
-                &format!("bits={bits}: TopN kept a different set of tied terms"),
-            );
-        }
-    }
-
-    /// `finalize_layer` must agree with the `TopN` tie-group rule computed the obvious way, pinning which terms survive rather than merely that all partitions agree.
-    /// The `n` sweep mixes arbitrary cut points that straddle a group with the exact group boundaries that fit; the assertions at the end fail the test if it ever stops exercising one of the two branches.
-    #[test]
-    fn top_n_matches_the_reference_rule_on_tied_magnitudes() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x7136);
-        let len = input.len();
-
-        // Cumulative sizes of the magnitude groups, descending: an `n` equal to
-        // one of these is a cut that lands exactly on a group boundary.
-        let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).expect("no NaN magnitudes"));
-        let boundaries: Vec<usize> = (1..mags.len())
-            .filter(|&i| mags[i] != mags[i - 1])
-            .collect();
-        assert!(
-            boundaries.len() >= 2,
-            "fixture must have several magnitude groups, got {}",
-            boundaries.len() + 1
-        );
-
-        let mut sweep = vec![3usize, 250, 700, 1200, 1900];
-        sweep.extend_from_slice(&boundaries);
-        let mut saw_straddle = false;
-        let mut saw_fit = false;
-
-        for n in sweep {
-            let want = top_n_reference(&input, n);
-            // A straddling group is discarded whole, so fewer than `n` survive;
-            // a group that fits leaves exactly `n`.
-            assert!(want.len() <= n, "n={n}: rule must retain at most n");
-            if want.len() < n {
-                saw_straddle = true;
-            } else {
-                saw_fit = true;
-            }
-
-            let policy = TopN(n);
-            for bits in [0u8, 2, 5, 9] {
-                let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-                let mut b = input.clone().with_hash(hash);
-                policy.finalize_layer(&mut b);
-                b.assert_invariants();
-                assert_eq!(
-                    canonical_triples(&b),
-                    want,
-                    "n={n} bits={bits} (len={len}): retained set differs from the \
-                     reference rule",
-                );
-            }
-        }
-
-        assert!(
-            saw_straddle,
-            "the n sweep no longer covers a straddling tie group"
-        );
-        assert!(
-            saw_fit,
-            "the n sweep no longer covers a tie group that fits"
-        );
-    }
-
-    /// The same, across hash seeds: a different `H` permutes bucket membership
-    /// without changing anything about the magnitudes.
-    #[test]
-    fn top_n_is_hash_seed_independent_on_tied_magnitudes() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x7123);
-        let n = 700;
-        let reference = {
-            let hash = Gf2Hash::<1>::new(8, 5, 1);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            b
-        };
-        for seed in [2u64, 3, 5, 8, 13] {
-            let hash = Gf2Hash::<1>::new(8, 5, seed);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            let got = b;
-            assert_same_terms(
-                &got,
-                &reference,
-                &format!("seed={seed}: different set kept"),
-            );
-        }
-    }
-
-    /// `ApproxTopN`'s threshold is a function of the magnitude multiset, so, exactly like `TopN`, the retained set cannot depend on the bucket count or the hash seed.
-    /// `tie_heavy_sum`'s four magnitudes square into four distinct octaves with equal populations, so `n = 700` of 2000 terms cuts between the first and second.
-    #[test]
-    fn approx_top_n_is_partition_independent_on_tied_magnitudes() {
-        use crate::truncation::builtin::ApproxTopN;
-        let input = tie_heavy_sum::<1>(2000, 8, 0x7135);
-        let n = 700;
-        let reference = {
-            let mut b = input.clone().with_hash(Gf2Hash::<1>::new(8, 0, 0x99));
-            ApproxTopN(n).finalize_layer(&mut b);
-            b
-        };
-        assert_eq!(
-            reference.len(),
-            input.iter().filter(|(_, _, c)| c.norm() == 1.0).count(),
-            "the fixture must cut between the top two octaves"
-        );
-        for (bits, seed) in [(1u8, 0x99u64), (2, 0x99), (4, 3), (6, 13), (9, 0x99)] {
-            let mut b = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, seed));
-            ApproxTopN(n).finalize_layer(&mut b);
-            b.assert_invariants();
-            assert_same_terms(
-                &b,
-                &reference,
-                &format!("bits={bits} seed={seed}: ApproxTopN kept a different set"),
-            );
-        }
-    }
-
-    /// Tie-dense data multi-bucket: a straddling group leaves no member behind
-    /// in *any* bucket. The per-bucket compaction is where a partial drop would
-    /// hide, so this is checked on the real partition rather than at `B = 1`.
-    #[test]
-    fn top_n_drops_a_straddling_group_from_every_bucket() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x71C0);
-        let n = 700;
-        // t is the 700th largest magnitude; the group at t straddles the cut.
-        let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let t = mags[n - 1];
-        let count_gt = mags.iter().filter(|&&m| m > t).count();
-        let count_eq = mags.iter().filter(|&&m| m == t).count();
-        assert!(
-            count_gt + count_eq > n,
-            "fixture no longer straddles: gt={count_gt} eq={count_eq} n={n}"
-        );
-
-        for bits in [0u8, 3, 7] {
-            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            b.assert_invariants();
-            assert_eq!(
-                b.len(),
-                count_gt,
-                "bits={bits}: retained count must be exactly count(|c| > t)"
-            );
-            for nb in 0..b.num_buckets() {
-                let (_, _, coeff) = b.bucket(nb);
-                assert!(
-                    coeff.iter().all(|c| c.norm() > t),
-                    "bits={bits} bucket={nb}: a member of the discarded group survived"
-                );
-            }
-        }
-    }
-}
+mod tests;

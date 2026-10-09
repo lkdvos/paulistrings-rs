@@ -3,7 +3,7 @@
 
 use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl};
 use num_complex::Complex64;
-use paulistrings::pauli_string::PauliString as CorePauliString;
+use paulistrings::PauliString as CorePauliString;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyType};
@@ -46,9 +46,9 @@ impl PauliStringImpl {
     /// Single-site `X`/`Y`/`Z`. Caller has already checked `qubit < num_qubits`.
     fn single(axis: Axis, qubit: usize, num_qubits: usize) -> Option<Self> {
         for_num_qubits!(num_qubits, |W| match axis {
-            Axis::X => CorePauliString::<W>::x(qubit as u32),
-            Axis::Y => CorePauliString::<W>::y(qubit as u32),
-            Axis::Z => CorePauliString::<W>::z(qubit as u32),
+            Axis::X => CorePauliString::<W>::x(qubit),
+            Axis::Y => CorePauliString::<W>::y(qubit),
+            Axis::Z => CorePauliString::<W>::z(qubit),
         })
     }
 
@@ -79,7 +79,7 @@ impl PauliStringImpl {
         for_each_width_pair_rewrap!((self, other), |a, b, wrap| {
             let (product, coeff) = match op {
                 Bracket::Mul => {
-                    let (product, phase) = a.mul(b);
+                    let (product, phase) = a.product(b);
                     (product, phase.to_complex())
                 }
                 Bracket::Commutator => a.commutator(b),

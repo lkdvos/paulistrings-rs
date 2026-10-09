@@ -137,7 +137,7 @@ faster.
 
 | workload | channels | crossover (peak terms) |
 |---|---|---|
-| kicked-Ising, 127 q, 5 Trotter steps | 1 355 | **2.73 × 10³** (1.88 × 10³ with `engine="auto"`) |
+| kicked-Ising, 127 q, 5 Trotter steps | 1 355 | **2.73 × 10³** |
 | XXZ chain, n = 100, 6 Trotter steps | 1 782 | **2.00 × 10⁴** |
 | Haar SU(4) brickwork, n = 36, depth 6 | 105 | none on the swept range: faster at every sign-consistent point |
 
@@ -165,24 +165,6 @@ Memory, from the same study: process floors are 37.8 MB against Julia's
 Below the crossover jl's hash-map backend is faster, by up to 3.6× at 68 terms:
 a hash-map insert per term costs little at 10² terms, while the bucketed
 per-layer pipeline costs nearly the same whatever the term count.
-
-That fixed cost is avoidable. `propagate(engine="auto")` routes layers below
-2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
-configurations
-([`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md)),
-measured on the same binary against the default:
-
-| workload | tracked set | `engine="sorted"` (default) | `engine="auto"` |
-|---|---|---|---|
-| XXZ | 1 625 terms | 0.372× (jl faster) | **1.040×, a measured tie** |
-| XXZ | 9 918 terms | 0.873× (jl faster) | **1.051×, a measured tie** |
-| Haar SU(4) | 1 416 terms | 1.097× | **1.660×** |
-| kicked-Ising crossover | — | 2.73 × 10³ terms | **1.88 × 10³ terms** |
-
-Above its threshold the path is inert, measured as its own control: SU(4) at
-84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
-configurations passed the per-layer parity gate with the path enabled — 9 618
-per-layer counts, every one identical to PauliPropagation.jl's.
 
 ## Methodology {#methodology}
 
@@ -328,10 +310,9 @@ carries the physics.
 [`benchmarks/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md),
 plus the per-benchmark READMEs linked inline. Cross-engine performance numbers:
 [`jl_performance/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md)
-(protocol and headline tables, engine `81c568a`),
-[`post-optimization/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md)
+(protocol and headline tables, engine `81c568a`)
 and
-[`post-optimization-auto/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md).
+[`post-optimization/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md).
 qiskit/openfermion numbers:
 [`baseline_comparison/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md)
 and its committed `results.json`.

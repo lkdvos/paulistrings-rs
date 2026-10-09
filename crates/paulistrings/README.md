@@ -16,15 +16,15 @@ This crate is the pure-Rust core. Python bindings live in the
 
 ```rust
 use paulistrings::{
-    channel::Clifford1Q, BuildAccumulator, Circuit, Direction, PauliString, Phase,
+    Clifford1Q, BuildAccumulator, Circuit, Direction, PauliString,
     TruncationPolicy, propagate,
 };
 use num_complex::Complex64;
 
 // Build the observable Z_0 + 0.5 * X_1 on 2 qubits.
 let mut acc = BuildAccumulator::<1>::new(2);
-acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-acc.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
+acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
+acc.add_term(PauliString::<1>::x(1), Complex64::new(0.5, 0.0));
 let observable = acc.finalize();
 
 // Heisenberg-evolve through a one-gate circuit: H on qubit 0.
@@ -48,7 +48,7 @@ Four pillars in priority order:
    write-disjoint layers, Rayon-parallel with no global sort.
 3. **Extensibility** for research — open [`Channel`] and
    [`TruncationPolicy`] traits.
-4. **GPU-readiness** — `#[repr(C)]` `Pod` types, fixed-fanout buffers,
+4. **GPU-readiness** — structure-of-arrays columns, fixed-fanout buffers,
    shared-nothing parallelism that maps onto CUB primitives without
    restructuring.
 

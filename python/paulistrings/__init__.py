@@ -23,7 +23,6 @@ reports what ``partitions="auto"`` has to place against,
 
 from . import _paulistrings
 from ._paulistrings import (
-    DEFAULT_SMALL_SUM_THRESHOLD,
     Circuit,
     PartitionStats,
     PauliString,
@@ -47,7 +46,6 @@ __all__ = [
     "p",
     "PropagationStats",
     "PartitionStats",
-    "DEFAULT_SMALL_SUM_THRESHOLD",
     "diagonal_echo",
     "gates",
     "noise",

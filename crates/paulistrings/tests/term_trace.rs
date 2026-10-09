@@ -1,20 +1,20 @@
 //! The opt-in per-layer term-count trace (`LayerScratch::enable_term_trace`).
 //!
 //! Cross-module: the trace lives on `engine::bucketed::LayerScratch` but is
-//! written by `engine::propagate_with_scratch`'s per-layer epilogue, and its
+//! written by `propagate_with`'s per-layer epilogue, and its
 //! counts are a property of the layer loop (fanout, then the policy's
 //! per-term filter). Design: `research/FINDINGS.md`
 //! §A2. This trace is always compiled — unlike `PhaseStats`, which stays
 //! behind the `phase-timing` feature.
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford1Q, PauliRotation};
 use paulistrings::test_support::assert_terms_close;
-use paulistrings::truncation::CoefficientThreshold;
+use paulistrings::CoefficientThreshold;
 use paulistrings::{
-    propagate, propagate_with_scratch, BuildAccumulator, Circuit, Direction, LayerScratch,
-    PauliString, PauliSum, Phase, TruncationPolicy,
+    propagate, propagate_with, BuildAccumulator, Circuit, Direction, LayerScratch, PauliString,
+    PauliSum, PropagateOptions, TruncationPolicy,
 };
+use paulistrings::{Clifford1Q, PauliRotation};
 
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
@@ -27,7 +27,7 @@ const THETA: f64 = 0.3;
 /// `{X₀: 1}`.
 fn x0_observable<const W: usize>() -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(NUM_QUBITS, 1);
-    acc.add_term(PauliString::<W>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<W>::x(0), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
 
@@ -52,12 +52,13 @@ fn three_layer_circuit<const W: usize>() -> Circuit<W> {
 /// propagation that never enabled it, so `None` ⟺ "tracing off".
 fn check_off_by_default<const W: usize>() {
     let mut scratch = LayerScratch::<W>::new();
-    let out = propagate_with_scratch(
+    let out = propagate_with(
         &three_layer_circuit::<W>(),
         x0_observable::<W>(),
         &AlwaysKeep,
         Direction::Forward,
         &mut scratch,
+        PropagateOptions::default(),
     );
     assert_eq!(out.len(), 3);
     assert!(scratch.take_term_trace().is_none());
@@ -78,12 +79,13 @@ fn term_trace_is_off_by_default_w2() {
 fn check_hand_computed_counts<const W: usize>() {
     let mut scratch = LayerScratch::<W>::new();
     scratch.enable_term_trace();
-    let out = propagate_with_scratch(
+    let out = propagate_with(
         &three_layer_circuit::<W>(),
         x0_observable::<W>(),
         &AlwaysKeep,
         Direction::Forward,
         &mut scratch,
+        PropagateOptions::default(),
     );
 
     let trace = scratch.take_term_trace().expect("trace was enabled");
@@ -112,12 +114,13 @@ fn term_trace_records_hand_computed_counts_w2() {
 fn check_counts_are_post_truncation<const W: usize>() {
     let mut scratch = LayerScratch::<W>::new();
     scratch.enable_term_trace();
-    let out = propagate_with_scratch(
+    let out = propagate_with(
         &three_layer_circuit::<W>(),
         x0_observable::<W>(),
         &CoefficientThreshold(0.1),
         Direction::Forward,
         &mut scratch,
+        PropagateOptions::default(),
     );
 
     let trace = scratch.take_term_trace().expect("trace was enabled");
@@ -143,12 +146,13 @@ fn term_trace_counts_are_post_truncation_w2() {
 fn term_trace_of_an_empty_circuit_is_empty() {
     let mut scratch = LayerScratch::<1>::new();
     scratch.enable_term_trace();
-    let out = propagate_with_scratch(
+    let out = propagate_with(
         &Circuit::<1>::new(NUM_QUBITS),
         x0_observable::<1>(),
         &AlwaysKeep,
         Direction::Forward,
         &mut scratch,
+        PropagateOptions::default(),
     );
     assert_eq!(out.len(), 1);
 
@@ -159,7 +163,7 @@ fn term_trace_of_an_empty_circuit_is_empty() {
 }
 
 /// Taking drains the counts but leaves tracing *on*, so a scratch reused
-/// across `propagate_with_scratch` calls (a Trotter driver) reports each
+/// across `propagate_with` calls (a Trotter driver) reports each
 /// call separately without re-enabling.
 #[test]
 fn taking_the_trace_drains_but_stays_enabled() {
@@ -168,12 +172,13 @@ fn taking_the_trace_drains_but_stays_enabled() {
     scratch.enable_term_trace();
 
     for _ in 0..2 {
-        let _ = propagate_with_scratch(
+        let _ = propagate_with(
             &circuit,
             x0_observable::<1>(),
             &AlwaysKeep,
             Direction::Forward,
             &mut scratch,
+            PropagateOptions::default(),
         );
         let trace = scratch.take_term_trace().expect("still enabled");
         assert_eq!(trace.terms_out, vec![2, 2, 3]);
@@ -197,12 +202,13 @@ fn check_trace_does_not_change_the_result<const W: usize>() {
 
     let mut scratch = LayerScratch::<W>::new();
     scratch.enable_term_trace();
-    let got = propagate_with_scratch(
+    let got = propagate_with(
         &circuit,
         x0_observable::<W>(),
         &AlwaysKeep,
         Direction::Forward,
         &mut scratch,
+        PropagateOptions::default(),
     );
     assert_terms_close(&got, &want, 1e-15, "traced vs untraced propagate");
 }

@@ -19,7 +19,7 @@ typedef unsigned char u8;
 #define FP_ROWS 64
 #define WARP 32
 
-// Fused-layer block width per W, register-bound (ARCHITECTURE.md §GPU-Readiness); `layer_threads` in layer.rs mirrors it.
+// Fused-layer block width per W, register-bound (ARCHITECTURE.md §GPU-Readiness); `layer_threads` in module.rs mirrors it.
 #if W <= 2
 #define THREADS 1024
 #elif W == 4
@@ -41,7 +41,7 @@ typedef unsigned char u8;
 // `entry_of[s]` for a support pattern no entry of a permutation table emits for (permute.cu).
 #define NO_ENTRY 0xFFFFFFFFu
 
-// Prepared-table kinds: a `LocalPtm` and a wide `RotationPrep` (ARCHITECTURE.md §Prepared-Channels).
+// Prepared-table kinds: a `LocalPtm` and a wide `PreparedRotation` (ARCHITECTURE.md §Prepared-Channels).
 #define MODE_LOCAL 0
 #define MODE_ROTATION 1
 
@@ -129,7 +129,7 @@ __device__ __forceinline__ u64 fp_mask() {
 #endif
 }
 
-// Live-qubit mask of word w, as `word_mask` in bucket/hash.rs.
+// Live-qubit mask of word w, as `word_mask` in pauli_string.rs.
 __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
     const u32 lo = 64u * (u32)w;
     if (num_qubits >= lo + 64u) return ~0ull;
@@ -186,7 +186,7 @@ __device__ __forceinline__ bool entry_emits(const Table& T, const Key& k, u32 e)
     return e == 0 || anticommutes_gen(T, k);
 }
 
-// The row entry e emits for (k, c): bitwise `DeltaEntry::emit` for a local table, `RotationPrep::emit_gen` and the identity pass of the rotation arm otherwise.
+// The row entry e emits for (k, c): bitwise `DeltaEntry::emit` for a local table, `PreparedRotation::emit_generator` and the identity pass of the rotation arm otherwise.
 __device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 e, double cr, double ci, double& pr, double& pi) {
     if (T.mode == MODE_LOCAL) {
         const u32 s = support_bits(k, T.kq, T.q0, T.q1);

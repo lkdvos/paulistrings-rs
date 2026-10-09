@@ -27,21 +27,21 @@ impl ScanScratch {
     }
 }
 
-/// `out[i] = Σ_{j<i} input[j]` for `i ≤ n`, so `out[n]` is the total, with `tot_max` (two elements) receiving `[total, max]` of `input[0..n]`; enqueued on `stream`, not synchronized.
+/// `out[i] = Σ_{j<i} input[j]` for `i ≤ n`, so `out[n]` is the total, with `total_max` (two elements) receiving `[total, max]` of `input[0..n]`; enqueued on `stream`, not synchronized.
 pub(crate) fn exclusive_scan(
     stream: &Arc<CudaStream>,
-    k: &KernelSet,
+    kernels: &KernelSet,
     input: &CudaView<'_, u32>,
     out: &mut CudaViewMut<'_, u32>,
     n: usize,
     scratch: &mut ScanScratch,
-    tot_max: &mut CudaSlice<u32>,
+    total_max: &mut CudaSlice<u32>,
 ) -> Result<(), GpuError> {
     let nb = n.div_ceil(SCAN_BLOCK).max(1);
     if nb > SCAN_BLOCK {
         return Err(GpuError::Unsupported("scan of more than 2^24 elements"));
     }
-    debug_assert!(input.len() >= n && out.len() > n && tot_max.len() >= 2);
+    debug_assert!(input.len() >= n && out.len() > n && total_max.len() >= 2);
     let ordinal = stream.context().ordinal() as u32;
     // Every block writes its own slot before `scan_single` reads it, so no zero fill is needed.
     grow(stream, &mut scratch.block_sum, nb, ordinal)?;
@@ -53,7 +53,7 @@ pub(crate) fn exclusive_scan(
     // SAFETY: argument lists match the `extern "C"` signatures in scan.cu, and every buffer holds the elements indexed.
     unsafe {
         stream
-            .launch_builder(&k.scan_block)
+            .launch_builder(&kernels.scan_block)
             .arg(input)
             .arg(&mut *out)
             .arg(&mut *block_sum)
@@ -65,20 +65,20 @@ pub(crate) fn exclusive_scan(
                 shared_mem_bytes: 0,
             })?;
         stream
-            .launch_builder(&k.scan_single)
+            .launch_builder(&kernels.scan_single)
             .arg(&mut *block_sum)
             .arg(&*block_max)
             .arg(&nb32)
             .arg(&mut *out)
             .arg(&n32)
-            .arg(&mut *tot_max)
+            .arg(&mut *total_max)
             .launch(LaunchConfig {
                 grid_dim: (1, 1, 1),
                 block_dim: block,
                 shared_mem_bytes: 0,
             })?;
         stream
-            .launch_builder(&k.scan_add)
+            .launch_builder(&kernels.scan_add)
             .arg(&mut *out)
             .arg(&*block_sum)
             .arg(&n32)

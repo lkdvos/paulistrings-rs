@@ -68,12 +68,12 @@ The crate is [`paulistrings`](https://docs.rs/paulistrings) on crates.io; see it
 The same idea, directly against the core:
 
 ```rust
-use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, Phase, propagate};
-use paulistrings::{channel::Clifford1Q, truncation::TopN};
+use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, propagate};
+use paulistrings::{Clifford1Q, TopN};
 use num_complex::Complex64;
 
 let mut acc = BuildAccumulator::<1>::new(1);
-acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
 let mut circuit = Circuit::<1>::new(1);
 circuit.push(Clifford1Q::h(0));
 let evolved = propagate(&circuit, acc.finalize(), &TopN(10), Direction::Heisenberg);

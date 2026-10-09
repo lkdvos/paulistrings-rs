@@ -84,12 +84,14 @@ pub(crate) fn device_comm_unavailable_error() -> PyErr {
 mod cuda {
     use super::DeviceRequest;
     use crate::circuit::CircuitImpl;
-    use crate::sum::{check_num_qubits, parse_direction, parse_engine, PauliSum, PropagationStats};
+    use crate::sum::{
+        check_num_qubits, parse_direction, parse_propagate_options, PauliSum, PropagationStats,
+    };
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::PyTruncation;
-    use paulistrings::bucket::P_MAX_BITS;
     use paulistrings::gpu::{device_count, GpuError, GpuPauliSum as CoreGpuPauliSum};
-    use paulistrings::truncation::BuiltinTruncation;
+    use paulistrings::BuiltinTruncation;
+    use paulistrings::P_MAX_BITS;
     use paulistrings::{Direction, PartitionTrace, PropagateOptions};
     use pyo3::exceptions::{PyMemoryError, PyNotImplementedError, PyRuntimeError, PyValueError};
     use pyo3::prelude::*;
@@ -250,7 +252,7 @@ mod cuda {
                         let _ = s.take_trace();
                     }
                     let result =
-                        s.propagate_with_options(c, policy, direction, options);
+                        s.propagate_with(c, policy, direction, options);
                     let trace = s.take_trace();
                     result.map_err(PropagateFailure::Gpu)?;
                     Ok(if traced { trace } else { None })
@@ -389,7 +391,7 @@ mod cuda {
             traced: bool,
         ) -> PyResult<Option<paulistrings::PartitionTrace>> {
             let dir = parse_direction(direction)?;
-            let options = parse_engine(None, None, target_bucket_len, min_buckets)?;
+            let options = parse_propagate_options(target_bucket_len, min_buckets);
             check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
             let policy = PyTruncation::tree_of(policy);
             let inner = &mut self.inner;

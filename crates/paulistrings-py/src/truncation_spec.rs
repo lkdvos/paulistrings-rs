@@ -1,7 +1,7 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle over a core [`BuiltinTruncation`] tree.
 //! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`.
 
-use paulistrings::truncation::{BuiltinTruncation, CollapseSample};
+use paulistrings::{BuiltinTruncation, CollapseSample};
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ pub(crate) fn collapse_count(tree: &BuiltinTruncation) -> Option<u64> {
                 walk(b, out);
             }
             BuiltinTruncation::Keep
-            | BuiltinTruncation::Coeff(_)
+            | BuiltinTruncation::Coefficient(_)
             | BuiltinTruncation::Weight(_)
             | BuiltinTruncation::TopN(_)
             | BuiltinTruncation::ApproxTopN(_) => {}
@@ -83,16 +83,26 @@ impl PyTruncation {
     }
 
     fn __repr__(&self) -> String {
-        format!("Truncation({:?})", self.tree)
+        format!("Truncation({})", tree_repr(&self.tree))
+    }
+}
+
+/// The tree's `Debug` form with the Python spelling `Coeff` for [`BuiltinTruncation::Coefficient`].
+fn tree_repr(tree: &BuiltinTruncation) -> String {
+    match tree {
+        BuiltinTruncation::Coefficient(eps) => format!("Coeff({eps:?})"),
+        BuiltinTruncation::And(a, b) => format!("And({}, {})", tree_repr(a), tree_repr(b)),
+        BuiltinTruncation::Or(a, b) => format!("Or({}, {})", tree_repr(a), tree_repr(b)),
+        other => format!("{other:?}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use paulistrings::accumulator::BuildAccumulator;
-    use paulistrings::pauli_string::PauliString;
-    use paulistrings::phase::Phase;
+    use paulistrings::BuildAccumulator;
+    use paulistrings::PauliString;
+
     use paulistrings::TruncationPolicy;
 
     /// `n` single-site `X` strings with coefficient 1.
@@ -100,8 +110,7 @@ mod tests {
         let mut acc = BuildAccumulator::<1>::new(n);
         for q in 0..n {
             acc.add_term(
-                PauliString::<1>::x(q as u32),
-                Phase::ONE,
+                PauliString::<1>::x(q),
                 num_complex::Complex64::new(1.0, 0.0),
             );
         }

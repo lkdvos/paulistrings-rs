@@ -7,12 +7,26 @@ use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
-use crate::accumulator::BuildAccumulator;
 use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
-use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
+
+pub use crate::channel::prepared::Prepared;
+pub use crate::engine::bucketed::apply_layer_bucketed;
+pub use crate::engine::partitioned::driver::BITS_AGREE_EVERY;
+pub use crate::engine::partitioned::plan::count_remote_deltas;
+pub use crate::engine::partitioned::rows::{circuit_generators, GeneratorWeight};
+pub use crate::engine::partitioned::transport::InProcessTransport;
+pub use crate::pauli_sum::hash::B_MAX_BITS;
+pub use crate::pauli_sum::storage::{
+    desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+};
+
+/// Rough estimate of the cost of one `Instant::now()` read, in nanoseconds, for this hardware class; used by the `phase_breakdown` probe's overhead line (`timer_reads() * TIMER_READ_OVERHEAD_NS`).
+#[cfg(feature = "phase-timing")]
+pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
@@ -22,7 +36,7 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 #[macro_export]
 macro_rules! require_cuda {
     () => {
-        if !$crate::engine::gpu::cuda_available() {
+        if !$crate::gpu::cuda_available() {
             return;
         }
     };
@@ -69,9 +83,9 @@ impl CallLog {
     }
 }
 
-/// An [`InProcessTransport`](crate::engine::partitioned::InProcessTransport) rank that logs every collective and exchange it is asked for.
+/// An [`InProcessTransport`](crate::engine::partitioned::transport::InProcessTransport) rank that logs every collective and exchange it is asked for.
 pub struct LoggingTransport {
-    inner: crate::engine::partitioned::InProcessTransport,
+    inner: crate::engine::partitioned::transport::InProcessTransport,
     /// This rank's calls.
     pub log: CallLog,
 }
@@ -79,7 +93,7 @@ pub struct LoggingTransport {
 impl LoggingTransport {
     /// A group of `size` ranks, each waiting up to two minutes on its partners.
     pub fn group(size: u32) -> Vec<Self> {
-        crate::engine::partitioned::InProcessTransport::group_with_timeout(
+        crate::engine::partitioned::transport::InProcessTransport::group_with_timeout(
             size,
             std::time::Duration::from_secs(120),
         )
@@ -92,7 +106,9 @@ impl LoggingTransport {
     }
 }
 
-impl crate::engine::partitioned::Collectives for LoggingTransport {
+impl crate::collectives::sealed::Sealed for LoggingTransport {}
+
+impl crate::collectives::Collectives for LoggingTransport {
     fn rank(&self) -> u32 {
         self.inner.rank()
     }
@@ -122,17 +138,17 @@ impl crate::engine::partitioned::Transport for LoggingTransport {
         &self,
         send: Vec<Option<P>>,
         spare: &mut Vec<P>,
-        map: &crate::engine::partitioned::ChunkMap,
+        map: &crate::engine::partitioned::transport::ChunkMap,
         body: F,
     ) -> (Vec<Option<P>>, R)
     where
-        P: crate::engine::partitioned::Payload,
-        F: FnOnce(&[Option<P>], &dyn crate::engine::partitioned::ChunkWait) -> R,
+        P: crate::engine::partitioned::transport::Payload,
+        F: FnOnce(&[Option<P>], &dyn crate::engine::partitioned::transport::ChunkWait) -> R,
     {
         self.log.push("exchange_layer");
         self.inner.exchange_layer(send, spare, map, body)
     }
-    fn exchange<P: crate::engine::partitioned::Payload>(
+    fn exchange<P: crate::engine::partitioned::transport::Payload>(
         &self,
         send: Vec<Option<P>>,
         spare: &mut Vec<P>,
@@ -214,7 +230,6 @@ impl Xs64 {
     }
 
     /// `W` consecutive draws, word 0 first.
-    #[inline]
     pub fn next_array<const W: usize>(&mut self) -> [u64; W] {
         let mut a = [0u64; W];
         for slot in a.iter_mut() {
@@ -253,7 +268,7 @@ pub fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> Pauli
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -274,7 +289,7 @@ pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
             p.z[w] = rng.next_u64() & m;
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
+        acc.add_term(p, Complex64::new(re, 0.0));
     }
     acc.finalize()
 }
@@ -296,7 +311,7 @@ pub fn rand_sum_unmasked<const W: usize>(n: usize, num_qubits: usize, seed: u64)
         let p = rand_pauli::<W>(&mut rng);
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -344,7 +359,7 @@ pub fn low_weight_sum<const W: usize>(
         let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -354,7 +369,7 @@ pub fn low_weight_sum<const W: usize>(
 pub fn rand_sum_on<const W: usize>(
     n: usize,
     num_qubits: usize,
-    qubits: &[u32],
+    qubits: &[usize],
     seed: u64,
 ) -> PauliSum<W> {
     let mut rng = Xs64::new(seed);
@@ -363,7 +378,7 @@ pub fn rand_sum_on<const W: usize>(
         let mut p = PauliString::<W>::identity();
         for &q in qubits {
             let r = rng.next_u64();
-            let (word, bit) = (q as usize / 64, 1u64 << (q % 64));
+            let (word, bit) = (q / 64, 1u64 << (q % 64));
             if r & 1 == 1 {
                 p.x[word] |= bit;
             }
@@ -373,7 +388,7 @@ pub fn rand_sum_on<const W: usize>(
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -385,11 +400,7 @@ pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for (i, (x, z, _)) in base.iter().enumerate() {
         let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
-        acc.add_term(
-            PauliString::<W> { x: *x, z: *z },
-            Phase::ONE,
-            Complex64::new(mag, 0.0),
-        );
+        acc.add_term(PauliString::<W> { x: *x, z: *z }, Complex64::new(mag, 0.0));
     }
     acc.finalize()
 }
@@ -405,7 +416,7 @@ pub fn tie_heavy_sum_unmasked<const W: usize>(
     for i in 0..n {
         let p = rand_pauli::<W>(&mut rng);
         let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
-        acc.add_term(p, Phase::ONE, Complex64::new(mag, 0.0));
+        acc.add_term(p, Complex64::new(mag, 0.0));
     }
     acc.finalize()
 }
@@ -498,6 +509,39 @@ pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, 
     }
 }
 
+/// [`PauliSum`] repartitioned under `hash`, every term kept.
+pub fn with_hash<const W: usize>(sum: PauliSum<W>, hash: crate::Gf2Hash<W>) -> PauliSum<W> {
+    sum.with_hash(hash)
+}
+
+/// Bucket `b`'s columns as `(x, z, coeff)`.
+pub fn bucket<const W: usize>(
+    sum: &PauliSum<W>,
+    b: usize,
+) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    sum.bucket(b)
+}
+
+/// Number of terms in bucket `b`.
+pub fn bucket_len<const W: usize>(sum: &PauliSum<W>, b: usize) -> usize {
+    sum.bucket_len(b)
+}
+
+/// Double the bucket count.
+pub fn refine<const W: usize>(sum: &mut PauliSum<W>) {
+    sum.refine();
+}
+
+/// Halve the bucket count.
+pub fn coarsen<const W: usize>(sum: &mut PauliSum<W>) {
+    sum.coarsen();
+}
+
+/// Panics unless `sum` holds [`PauliSum`]'s structural invariant: every term in its hash bucket, each bucket strictly ascending in `(x, z)`, every key within `num_qubits`.
+pub fn assert_invariants<const W: usize>(sum: &PauliSum<W>) {
+    sum.assert_invariants();
+}
+
 /// Same keys; coefficients within `tol`, since two implementations can sum duplicate keys in different orders and floating-point addition is not associative — the correctness bar per the crate's determinism policy.
 pub fn assert_terms_close<const W: usize>(
     got: &PauliSum<W>,
@@ -551,7 +595,7 @@ pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> 
         .zip(FOUR_TERM_WEIGHTS)
         .zip(phases)
     {
-        acc.add_term(p, Phase::ONE, Complex64::from_polar(w.sqrt(), phi));
+        acc.add_term(p, Complex64::from_polar(w.sqrt(), phi));
     }
     acc.finalize()
 }
@@ -658,11 +702,15 @@ pub fn gf2_rank(vs: &[u32]) -> usize {
 ///
 /// A channel on `qubits` can only change those qubits' `x`/`z` bits, so its key-delta set lies in `span{X_q, Z_q : q ∈ qubits}` (dimension `2·|qubits|`); this returns the dimension of that space's image under `h`.
 /// Full rank means `h` separates every local delta; anything less means two distinct local deltas share one bucket delta.
-pub fn support_delta_rank<const W: usize>(h: &crate::bucket::Gf2Hash<W>, qubits: &[u32]) -> usize {
+pub fn support_delta_rank<const W: usize>(
+    h: &crate::pauli_sum::Gf2Hash<W>,
+    qubits: &[usize],
+) -> usize {
     let mut imgs: Vec<u32> = Vec::with_capacity(2 * qubits.len());
     for &q in qubits {
-        imgs.push(h.bucket_of_pauli(&PauliString::<W>::x(q)));
-        imgs.push(h.bucket_of_pauli(&PauliString::<W>::z(q)));
+        let (x, z) = (PauliString::<W>::x(q), PauliString::<W>::z(q));
+        imgs.push(h.bucket_of(&x.x, &x.z));
+        imgs.push(h.bucket_of(&z.x, &z.z));
     }
     gf2_rank(&imgs)
 }
@@ -754,7 +802,7 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
             Box::new(PauliRotation::new(
                 {
                     let mut g = PauliString::<1>::z(0);
-                    for q in [2u32, 4, 6] {
+                    for q in [2, 4, 6] {
                         g.mul_assign(&PauliString::<1>::x(q));
                     }
                     g
@@ -814,9 +862,7 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
 
 /// Keep every term, with no layer finalization at all.
 ///
-/// [`TruncationPolicy::finalizes_layer`] defaults to `true`, which [`PartitionedTruncation`]'s default body rejects — a policy with no layer pass has to say so explicitly.
-///
-/// [`PartitionedTruncation`]: crate::PartitionedTruncation
+/// [`TruncationPolicy::finalizes_layer`] defaults to `true`, which a partitioned run rejects ([`TruncationPolicy::supports_partitioned`]) — a policy with no layer pass has to say so explicitly.
 #[derive(Clone, Copy, Debug)]
 pub struct KeepAll;
 
@@ -832,14 +878,12 @@ impl From<KeepAll> for crate::truncation::BuiltinTruncation {
     }
 }
 
-impl<const W: usize> crate::PartitionedTruncation<W> for KeepAll {}
-
-fn set_x<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.x[q as usize / 64] |= 1u64 << (q % 64);
+fn set_x<const W: usize>(p: &mut PauliString<W>, q: usize) {
+    p.x[q / 64] |= 1u64 << (q % 64);
 }
 
-fn set_z<const W: usize>(p: &mut PauliString<W>, q: u32) {
-    p.z[q as usize / 64] |= 1u64 << (q % 64);
+fn set_z<const W: usize>(p: &mut PauliString<W>, q: usize) {
+    p.z[q / 64] |= 1u64 << (q % 64);
 }
 
 /// A seeded circuit drawing from every built-in channel class.
@@ -864,9 +908,9 @@ pub fn random_circuit<const W: usize>(
     let kinds: u64 = if dense { 17 } else { 14 };
     let n = num_qubits as u64;
     for _ in 0..layers {
-        let q0 = (rng.next_u64() % n) as u32;
-        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
-        let wrap = |q: u32, d: u32| (q + d) % num_qubits as u32;
+        let q0 = (rng.next_u64() % n) as usize;
+        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as usize;
+        let wrap = |q: usize, d: usize| (q + d) % num_qubits;
         match rng.next_u64() % kinds {
             0 => circuit.push(Clifford1Q::h(q0)),
             1 => circuit.push(Clifford1Q::s(q0)),
@@ -935,8 +979,8 @@ pub fn random_clifford_circuit<const W: usize>(
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
     let n = num_qubits as u64;
     for _ in 0..layers {
-        let q0 = (rng.next_u64() % n) as u32;
-        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as u32;
+        let q0 = (rng.next_u64() % n) as usize;
+        let q1 = ((q0 as u64 + 1 + rng.next_u64() % (n - 1)) % n) as usize;
         match rng.next_u64() % 6 {
             0 => circuit.push(Clifford1Q::h(q0)),
             1 => circuit.push(Clifford1Q::s(q0)),
@@ -956,15 +1000,16 @@ pub fn with_zero_coefficients<const W: usize>(sum: &PauliSum<W>, every: usize) -
     let buckets = (0..sum.num_buckets())
         .map(|b| {
             let (x, z, c) = sum.bucket(b);
-            let mut cols = crate::bucket::sum::BucketCols::<W>::default();
-            cols.x.extend_from_slice(x);
-            cols.z.extend_from_slice(z);
+            let mut columns = crate::pauli_sum::storage::BucketColumns::<W>::default();
+            columns.x.extend_from_slice(x);
+            columns.z.extend_from_slice(z);
             for &c in c {
-                cols.coeff
+                columns
+                    .coeff
                     .push(if i.is_multiple_of(every) { ZERO } else { c });
                 i += 1;
             }
-            cols
+            columns
         })
         .collect();
     PauliSum::from_buckets(buckets, sum.hash().clone(), sum.num_qubits())
@@ -978,23 +1023,11 @@ pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
-    acc.add_term(identity, Phase::ONE, Complex64::new(-0.5, 0.0));
-    acc.add_term(PauliString::<W>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(
-        PauliString::<W>::x(0),
-        Phase::ONE,
-        Complex64::new(0.25, 0.25),
-    );
-    acc.add_term(
-        PauliString::<W>::y(1),
-        Phase::ONE,
-        Complex64::new(0.75, -0.5),
-    );
-    acc.add_term(
-        PauliString::<W>::z(2),
-        Phase::ONE,
-        Complex64::new(0.125, 0.0),
-    );
+    acc.add_term(identity, Complex64::new(-0.5, 0.0));
+    acc.add_term(PauliString::<W>::z(0), Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<W>::x(0), Complex64::new(0.25, 0.25));
+    acc.add_term(PauliString::<W>::y(1), Complex64::new(0.75, -0.5));
+    acc.add_term(PauliString::<W>::z(2), Complex64::new(0.125, 0.0));
     acc.finalize()
 }
 
@@ -1035,7 +1068,7 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
             x: [(x[0] | 1) & !(1u64 << 63)],
             z: [z[0] & !(1u64 << 63)],
         };
-        acc.add_term(p, Phase::ONE, c);
+        acc.add_term(p, c);
     }
     let out = acc.finalize();
     assert_eq!(out.len(), n, "fixture: the terms must stay distinct");
@@ -1051,9 +1084,22 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
     out
 }
 
+/// [`PartitionRows`](crate::PartitionRows) from explicit rows, masked to the live columns, for tests that pin the split by hand.
+///
+/// # Panics
+///
+/// As the crate-private `PartitionRows::from_rows`: mismatched lengths, more than `P_MAX_BITS` rows, or a row that masks to zero.
+pub fn partition_rows<const W: usize>(
+    num_qubits: usize,
+    rows_x: Vec<[u64; W]>,
+    rows_z: Vec<[u64; W]>,
+) -> crate::PartitionRows<W> {
+    crate::PartitionRows::from_rows(num_qubits, rows_x, rows_z)
+}
+
 /// Partition rows reading `Z₆₃`: `ZZ(0, 63)` is remote and every [`x0_terms_identity_on_q63`] term sits on rank 0.
-pub fn rows_reading_z63() -> crate::bucket::hash::PartitionRows<1> {
-    crate::bucket::hash::PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
+pub fn rows_reading_z63() -> crate::pauli_sum::hash::PartitionRows<1> {
+    crate::pauli_sum::hash::PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])
 }
 
 /// Haar SU(4) layers on `(0, 1)`, `(1, 2)` and `(0, 1)` of `num_qubits` qubits: dense and overlapping, so one partner's remote rows collide at every partition count.
@@ -1071,8 +1117,8 @@ pub fn su4_chain<const W: usize>(num_qubits: usize) -> crate::Circuit<W> {
 
 /// A weight-2 `ZZ` rotation — the TFIM bond term, the smallest layer whose generator can cross a partition boundary.
 pub fn zz_rotation<const W: usize>(
-    q0: u32,
-    q1: u32,
+    q0: usize,
+    q1: usize,
     theta: f64,
 ) -> crate::channel::rotation::PauliRotation<W> {
     let mut gen = PauliString::<W> {
@@ -1080,7 +1126,7 @@ pub fn zz_rotation<const W: usize>(
         z: [0u64; W],
     };
     for q in [q0, q1] {
-        gen.z[q as usize / 64] |= 1u64 << (q % 64);
+        gen.z[q / 64] |= 1u64 << (q % 64);
     }
     crate::channel::rotation::PauliRotation::new(gen, theta)
 }
@@ -1100,12 +1146,12 @@ pub fn trotter_steps<const W: usize>(
     let mut circuit = crate::Circuit::<W>::new(num_qubits);
     for _ in 0..steps {
         for q in 0..num_qubits {
-            let q1 = ((q + 1) % num_qubits) as u32;
-            circuit.push(zz_rotation::<W>(q as u32, q1, 2.0 * theta));
+            let q1 = (q + 1) % num_qubits;
+            circuit.push(zz_rotation::<W>(q, q1, 2.0 * theta));
         }
         for q in 0..num_qubits {
             circuit.push(crate::channel::rotation::PauliRotation::new(
-                PauliString::<W>::x(q as u32),
+                PauliString::<W>::x(q),
                 2.0 * theta,
             ));
         }
@@ -1121,7 +1167,7 @@ pub fn collapsing_circuit() -> crate::Circuit<1> {
 /// `Z0` on eight qubits with coefficient 1.
 pub fn z0_sum() -> PauliSum<1> {
     let mut acc = BuildAccumulator::<1>::new(8);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
 
@@ -1147,7 +1193,7 @@ pub fn unpinned_partitions(
 /// A verbatim copy of `examples/data/heavy_hex_127.edges`, kept here as a constant so Rust probes need no file I/O; `heavy_hex_127_edges_match_the_source_lattice` pins the transcription.
 /// Degree histogram: 2 qubits of degree 1, 89 of degree 2, 36 of degree 3.
 #[rustfmt::skip]
-pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
+pub const HEAVY_HEX_127_EDGES: [(usize, usize); 144] = [
     (0, 1), (0, 14), (1, 2), (2, 3), (3, 4), (4, 5),
     (4, 15), (5, 6), (6, 7), (7, 8), (8, 9), (8, 16),
     (9, 10), (10, 11), (11, 12), (12, 13), (12, 17), (14, 18),
@@ -1175,34 +1221,9 @@ pub const HEAVY_HEX_127_EDGES: [(u32, u32); 144] = [
 ];
 
 /// [`HEAVY_HEX_127_EDGES`] as a `Vec`, for callers that want to own it.
-pub fn heavy_hex_127_edges() -> Vec<(u32, u32)> {
+pub fn heavy_hex_127_edges() -> Vec<(usize, usize)> {
     HEAVY_HEX_127_EDGES.to_vec()
 }
 
 #[cfg(test)]
-mod tests {
-    use super::HEAVY_HEX_127_EDGES;
-
-    /// Pins the transcribed copy: 144 undirected edges over qubits `0..126`, sorted and unique as `(lo, hi)`, degree histogram 2 × 1, 89 × 2, 36 × 3.
-    #[test]
-    fn heavy_hex_127_edges_match_the_source_lattice() {
-        assert_eq!(HEAVY_HEX_127_EDGES.len(), 144);
-        let mut degree = [0usize; 127];
-        let mut prev = (0u32, 0u32);
-        for (i, &(a, b)) in HEAVY_HEX_127_EDGES.iter().enumerate() {
-            assert!(a < b, "edge {i} is not (lo, hi): ({a}, {b})");
-            assert!(b < 127, "edge {i} names qubit {b} outside 0..126");
-            if i > 0 {
-                assert!(prev < (a, b), "edge {i} breaks the sorted-unique order");
-            }
-            prev = (a, b);
-            degree[a as usize] += 1;
-            degree[b as usize] += 1;
-        }
-        let mut histogram = [0usize; 4];
-        for d in degree {
-            histogram[d] += 1;
-        }
-        assert_eq!(histogram, [0, 2, 89, 36]);
-    }
-}
+mod tests;

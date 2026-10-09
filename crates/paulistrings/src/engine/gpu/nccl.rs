@@ -12,10 +12,10 @@ use cudarc::nccl::sys;
 
 use super::error::GpuError;
 use super::wire::{wire_timeout, DeviceWire, WireGroup, WireOp, WireOpKind};
-use crate::engine::partitioned::transport::Collectives;
+use crate::collectives::Collectives;
 
 /// The oldest runtime `libnccl` the `nccl-02022` bindings are sound against, as `ncclGetVersion` codes it.
-pub(crate) const MIN_NCCL_VERSION: i32 = 22200;
+const MIN_NCCL_VERSION: i32 = 22200;
 
 /// `sizeof(ncclUniqueId)` in `u64` words.
 const ID_WORDS: usize = 16;
@@ -65,10 +65,9 @@ struct Raw {
 unsafe impl Send for Raw {}
 
 /// One rank's non-blocking NCCL communicator, every wait bounded; a failed or timed-out call aborts it and later calls fail without touching NCCL.
-/// Drop finalizes and destroys a healthy one (bounded) and aborts any other, never panicking.
 pub(crate) struct NcclComm {
     raw: Mutex<Raw>,
-    ctx: Arc<CudaContext>,
+    context: Arc<CudaContext>,
     rank: u32,
     size: u32,
 }
@@ -77,31 +76,34 @@ pub(crate) struct NcclComm {
 const WARM_UP_BYTES: usize = 8;
 
 impl NcclComm {
-    /// This rank's non-blocking communicator over `coll`'s group on `ctx`'s device, every wait bounded by [`wire_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
+    /// This rank's non-blocking communicator over `collectives`'s group on `context`'s device, every wait bounded by [`wire_timeout`]. **Collective**: one `allreduce_sum_u64` whatever the outcome, carrying rank 0's id and every rank's readiness.
     /// A setup that fails after it aborts and fails on this rank alone, so the caller agrees the outcome before [`warm_up`](Self::warm_up).
-    pub(crate) fn init(coll: &dyn Collectives, ctx: &Arc<CudaContext>) -> Result<Self, GpuError> {
+    pub(crate) fn init(
+        collectives: &dyn Collectives,
+        context: &Arc<CudaContext>,
+    ) -> Result<Self, GpuError> {
         let timeout = wire_timeout();
-        let (rank, size) = (coll.rank(), coll.size());
+        let (rank, size) = (collectives.rank(), collectives.size());
         let local = local_readiness();
         let id = match (&local, rank) {
             (Ok(()), 0) => nccl::get_uniqueid().map_err(|e| nccl_error(e, "ncclGetUniqueId")),
             _ => Ok(sys::ncclUniqueId { internal: [0; 128] }),
         };
-        let mut buf = [0u64; ID_WORDS + 1];
+        let mut buffer = [0u64; ID_WORDS + 1];
         match &id {
-            Ok(id) if local.is_ok() => pack_id(id, &mut buf[..ID_WORDS]),
-            _ => buf[ID_WORDS] = 1,
+            Ok(id) if local.is_ok() => pack_id(id, &mut buffer[..ID_WORDS]),
+            _ => buffer[ID_WORDS] = 1,
         }
-        coll.allreduce_sum_u64(&mut buf);
+        collectives.allreduce_sum_u64(&mut buffer);
         local?;
         id?;
-        if buf[ID_WORDS] != 0 {
+        if buffer[ID_WORDS] != 0 {
             return Err(GpuError::Unsupported(
                 "a peer rank cannot start NCCL (libnccl missing, older than 2.22, or no unique id)",
             ));
         }
-        let id = unpack_id(&buf[..ID_WORDS]);
-        ctx.bind_to_thread()?;
+        let id = unpack_id(&buffer[..ID_WORDS]);
+        context.bind_to_thread()?;
         let mut config = default_config();
         config.blocking = 0;
         let mut comm: sys::ncclComm_t = std::ptr::null_mut();
@@ -118,7 +120,7 @@ impl NcclComm {
                 #[cfg(test)]
                 force_timeout: false,
             }),
-            ctx: ctx.clone(),
+            context: context.clone(),
             rank,
             size,
         };
@@ -131,18 +133,6 @@ impl NcclComm {
         Ok(this)
     }
 
-    /// Replace the wait bound, so a test can force a timeout without waiting out the default.
-    #[cfg(test)]
-    pub(crate) fn set_timeout(&self, timeout: Duration) {
-        self.lock().timeout = timeout;
-    }
-
-    /// Make the next [`DeviceWire::wait`] treat its work as never completing, so it times out and aborts whatever the device does.
-    #[cfg(test)]
-    pub(crate) fn force_timeout(&self) {
-        self.lock().force_timeout = true;
-    }
-
     /// Whether the communicator has not been aborted.
     pub(crate) fn is_healthy(&self) -> bool {
         !self.lock().aborted
@@ -151,32 +141,32 @@ impl NcclComm {
     /// Pay NCCL's lazy connection setup now: one small send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
     /// **Collective over the communicator**, after the group has agreed that every [`init`](Self::init) succeeded.
     pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
-        let (me, n) = (self.rank, self.size);
-        let peers: Vec<u32> = if n == 1 {
+        let (me, size) = (self.rank, self.size);
+        let peers: Vec<u32> = if size == 1 {
             vec![0]
         } else {
-            (0..n).filter(|&q| q != me).collect()
+            (0..size).filter(|&peer| peer != me).collect()
         };
         let out = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut back = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut group = WireGroup::new();
-        for (i, &q) in peers.iter().enumerate() {
+        for (i, &peer) in peers.iter().enumerate() {
             group.send(
                 out.slice(i * WARM_UP_BYTES..(i + 1) * WARM_UP_BYTES),
-                q,
+                peer,
                 stream,
             );
         }
-        let parts: Vec<(usize, u32)> = peers.iter().map(|&q| (WARM_UP_BYTES, q)).collect();
+        let parts: Vec<(usize, u32)> = peers.iter().map(|&peer| (WARM_UP_BYTES, peer)).collect();
         group.recv_parts(back.as_view_mut(), &parts, stream);
         group.post_with(|ops| self.post(ops))?;
         self.wait(stream)
     }
 
-    /// Abort the communicator if it is still live; idempotent, and returns at once (see `abort_locked`).
+    /// Abort the communicator if it is still live; idempotent, and returns at once.
     pub(crate) fn abort(&self) {
         let mut raw = self.lock();
-        Self::abort_locked(&mut raw, self.rank, &self.ctx);
+        Self::abort_locked(&mut raw, self.rank, &self.context);
     }
 
     fn lock(&self) -> MutexGuard<'_, Raw> {
@@ -184,14 +174,14 @@ impl NcclComm {
     }
 
     /// Mark the communicator dead and abort it on a detached thread.
-    /// `ncclCommAbort` blocks until every stream on the device drains, so a stall that is not NCCL's own would otherwise hold the caller past its timeout.
-    fn abort_locked(raw: &mut Raw, rank: u32, ctx: &Arc<CudaContext>) {
+    fn abort_locked(raw: &mut Raw, rank: u32, context: &Arc<CudaContext>) {
         if raw.aborted {
             return;
         }
+        // Detached: `ncclCommAbort` blocks until every stream on the device drains, so a stall that is not NCCL's own would hold the caller past its timeout.
         raw.aborted = true;
         let comm = CommPtr(std::mem::replace(&mut raw.comm, std::ptr::null_mut()));
-        let owned = ctx.clone();
+        let owned = context.clone();
         let spawned = std::thread::Builder::new()
             .name(format!("nccl-abort-{rank}"))
             .spawn(move || abort_now(comm, rank, &owned));
@@ -204,7 +194,7 @@ impl NcclComm {
                 log::warn!(
                     "gpu: no thread for the NCCL abort on rank {rank} ({e}); aborting inline"
                 );
-                abort_now(comm, rank, ctx);
+                abort_now(comm, rank, context);
             }
         }
     }
@@ -232,7 +222,7 @@ impl NcclComm {
             Ok(_) => Ok(false),
             Err(e) => {
                 let detail = self.last_error(raw);
-                Self::abort_locked(raw, self.rank, &self.ctx);
+                Self::abort_locked(raw, self.rank, &self.context);
                 Err(nccl_error(e, format!("{what}{detail}")))
             }
         }
@@ -272,7 +262,7 @@ impl NcclComm {
         })? {
             return Ok(());
         }
-        Self::abort_locked(raw, self.rank, &self.ctx);
+        Self::abort_locked(raw, self.rank, &self.context);
         Err(GpuError::Timeout { what: waiting_on })
     }
 
@@ -281,7 +271,7 @@ impl NcclComm {
         Self::usable(&raw, "ncclGroupStart")?;
         if let Some(op) = ops
             .iter()
-            .find(|op| op.peer() >= self.size || op.stream().context() != &self.ctx)
+            .find(|op| op.peer() >= self.size || op.stream().context() != &self.context)
         {
             return Err(GpuError::Nccl {
                 code: sys::ncclResult_t::ncclInvalidArgument as i32,
@@ -290,11 +280,11 @@ impl NcclComm {
                     op.peer(),
                     self.size,
                     op.stream().context().ordinal(),
-                    self.ctx.ordinal()
+                    self.context.ordinal()
                 ),
             });
         }
-        self.ctx.bind_to_thread()?;
+        self.context.bind_to_thread()?;
         nccl::group_start().map_err(|e| nccl_error(e, "ncclGroupStart"))?;
         let mut first: Option<GpuError> = None;
         for op in ops {
@@ -317,12 +307,12 @@ impl NcclComm {
         // A group must be closed even after a failed post, or this thread's next NCCL call joins it.
         let ended = nccl::group_end();
         if let Some(e) = first {
-            Self::abort_locked(&mut raw, self.rank, &self.ctx);
+            Self::abort_locked(&mut raw, self.rank, &self.context);
             return Err(e);
         }
         if let Err(e) = ended {
             let detail = self.last_error(&raw);
-            Self::abort_locked(&mut raw, self.rank, &self.ctx);
+            Self::abort_locked(&mut raw, self.rank, &self.context);
             return Err(nccl_error(e, format!("ncclGroupEnd{detail}")));
         }
         // A non-blocking communicator may still be enqueueing the group's kernels; until it is done, later work on the streams would run ahead of them.
@@ -331,7 +321,7 @@ impl NcclComm {
 
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
         Self::usable(&self.lock(), "a wait")?;
-        let done = self.ctx.new_event(None)?;
+        let done = self.context.new_event(None)?;
         done.record(stream)?;
         let mut raw = self.lock();
         let timeout = raw.timeout;
@@ -346,7 +336,7 @@ impl NcclComm {
         if ready {
             return Ok(());
         }
-        Self::abort_locked(&mut raw, self.rank, &self.ctx);
+        Self::abort_locked(&mut raw, self.rank, &self.context);
         Err(GpuError::Timeout {
             what: "an NCCL group to complete",
         })
@@ -372,13 +362,13 @@ impl Drop for NcclComm {
 impl NcclComm {
     fn shut_down(&mut self) {
         let rank = self.rank;
-        let bound = self.ctx.bind_to_thread().is_ok();
+        let bound = self.context.bind_to_thread().is_ok();
         let raw = self.raw.get_mut().unwrap_or_else(PoisonError::into_inner);
         if raw.aborted {
             return;
         }
         if std::thread::panicking() || !bound {
-            Self::abort_locked(raw, rank, &self.ctx);
+            Self::abort_locked(raw, rank, &self.context);
             return;
         }
         let comm = raw.comm;
@@ -399,7 +389,7 @@ impl NcclComm {
             .unwrap_or(false);
         if !settled {
             log::warn!("gpu: NCCL finalize failed or timed out on rank {rank}; aborting");
-            Self::abort_locked(raw, rank, &self.ctx);
+            Self::abort_locked(raw, rank, &self.context);
             return;
         }
         raw.aborted = true;
@@ -453,12 +443,12 @@ struct CommPtr(sys::ncclComm_t);
 // SAFETY: the handle moves to the one thread that aborts it, after `Raw::aborted` has taken every other path off it.
 unsafe impl Send for CommPtr {}
 
-fn abort_now(comm: CommPtr, rank: u32, ctx: &Arc<CudaContext>) {
+fn abort_now(comm: CommPtr, rank: u32, context: &Arc<CudaContext>) {
     let start = Instant::now();
-    if let Err(e) = ctx.bind_to_thread() {
+    if let Err(e) = context.bind_to_thread() {
         log::warn!(
             "gpu: binding device {} for the NCCL abort on rank {rank}: {e:?}",
-            ctx.ordinal()
+            context.ordinal()
         );
     }
     // SAFETY: `comm` is a live communicator no other thread touches again.
@@ -501,16 +491,16 @@ fn default_config() -> sys::ncclConfig_t {
 }
 
 fn pack_id(id: &sys::ncclUniqueId, words: &mut [u64]) {
-    for (w, chunk) in words.iter_mut().zip(id.internal.chunks_exact(8)) {
-        *w = u64::from_ne_bytes(std::array::from_fn(|i| chunk[i] as u8));
+    for (word, chunk) in words.iter_mut().zip(id.internal.chunks_exact(8)) {
+        *word = u64::from_ne_bytes(std::array::from_fn(|i| chunk[i] as u8));
     }
 }
 
 fn unpack_id(words: &[u64]) -> sys::ncclUniqueId {
     let mut id = sys::ncclUniqueId { internal: [0; 128] };
-    for (chunk, w) in id.internal.chunks_exact_mut(8).zip(words) {
-        for (c, b) in chunk.iter_mut().zip(w.to_ne_bytes()) {
-            *c = b as std::ffi::c_char;
+    for (chunk, word) in id.internal.chunks_exact_mut(8).zip(words) {
+        for (target, byte) in chunk.iter_mut().zip(word.to_ne_bytes()) {
+            *target = byte as std::ffi::c_char;
         }
     }
     id
@@ -528,16 +518,18 @@ impl NcclWire {
     }
 
     /// The communicator, for the health checks and abort of the failure paths.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn comm(&self) -> &Arc<NcclComm> {
         &self.comm
     }
 }
 
 impl DeviceWire for NcclWire {
+    #[cfg(test)]
     fn rank(&self) -> u32 {
         self.comm.rank
     }
+    #[cfg(test)]
     fn size(&self) -> u32 {
         self.comm.size
     }
@@ -555,24 +547,23 @@ impl DeviceWire for NcclWire {
     }
 }
 
-/// Whether the group can start NCCL, the same verdict on every rank. **Collective**: one `allreduce_sum_u64` of `1 + 2 × size` words.
-/// Every rank must `can` (libnccl 2.22+ loads) and no two `device` UUIDs may coincide, since NCCL refuses two ranks on one device.
+/// Whether the group can start NCCL, the same verdict on every rank: every rank `can` (libnccl 2.22+ loads) and no two `device` UUIDs coincide, which NCCL refuses (**collective**: one `allreduce_sum_u64` of `1 + 2 × size` words).
 pub(crate) fn agree_start(
-    coll: &dyn Collectives,
+    collectives: &dyn Collectives,
     can: bool,
     device: [u64; 2],
 ) -> Result<(), GpuError> {
-    let (rank, size) = (coll.rank() as usize, coll.size() as usize);
-    let mut buf = vec![0u64; 1 + 2 * size];
-    buf[0] = u64::from(!can);
-    buf[1 + 2 * rank..3 + 2 * rank].copy_from_slice(&device);
-    coll.allreduce_sum_u64(&mut buf);
-    if buf[0] > 0 {
+    let (rank, size) = (collectives.rank() as usize, collectives.size() as usize);
+    let mut buffer = vec![0u64; 1 + 2 * size];
+    buffer[0] = u64::from(!can);
+    buffer[1 + 2 * rank..3 + 2 * rank].copy_from_slice(&device);
+    collectives.allreduce_sum_u64(&mut buffer);
+    if buffer[0] > 0 {
         return Err(GpuError::Unsupported(
             "an MPI device group exchanges over NCCL, and a rank cannot load libnccl 2.22 or newer",
         ));
     }
-    let ids: Vec<[u64; 2]> = buf[1..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
+    let ids: Vec<[u64; 2]> = buffer[1..].chunks_exact(2).map(|w| [w[0], w[1]]).collect();
     if (0..size).any(|i| ids[i + 1..].contains(&ids[i])) {
         return Err(GpuError::Unsupported(
             "two ranks of an MPI device group share a device, which NCCL refuses; give every rank its own GPU",
@@ -582,351 +573,14 @@ pub(crate) fn agree_start(
 }
 
 /// A device's UUID as the two words [`agree_start`] compares.
-pub(crate) fn device_uuid(ctx: &CudaContext) -> Result<[u64; 2], GpuError> {
-    let id = ctx.uuid()?;
-    let b: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
+pub(crate) fn device_uuid(context: &CudaContext) -> Result<[u64; 2], GpuError> {
+    let id = context.uuid()?;
+    let bytes: [u8; 16] = std::array::from_fn(|i| id.bytes[i] as u8);
     Ok([
-        u64::from_ne_bytes(b[..8].try_into().expect("eight bytes")),
-        u64::from_ne_bytes(b[8..].try_into().expect("eight bytes")),
+        u64::from_ne_bytes(bytes[..8].try_into().expect("eight bytes")),
+        u64::from_ne_bytes(bytes[8..].try_into().expect("eight bytes")),
     ])
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::engine::partitioned::InProcessTransport;
-
-    #[test]
-    fn a_probe_that_never_readies_times_out() {
-        let start = Instant::now();
-        let mut calls = 0;
-        let ready = poll_until(Duration::from_millis(20), || {
-            calls += 1;
-            Ok(false)
-        })
-        .expect("the probe never fails");
-        assert!(!ready);
-        assert!(calls > 1);
-        assert!(start.elapsed() < Duration::from_secs(5));
-    }
-
-    #[test]
-    fn a_probe_error_ends_the_poll() {
-        let err = poll_until(Duration::from_secs(60), || {
-            Err(GpuError::Unsupported("probe"))
-        })
-        .expect_err("the error propagates");
-        assert!(matches!(err, GpuError::Unsupported("probe")));
-    }
-
-    #[test]
-    fn the_unique_id_survives_the_word_packing() {
-        let mut id = sys::ncclUniqueId { internal: [0; 128] };
-        for (i, c) in id.internal.iter_mut().enumerate() {
-            *c = (i as u8).wrapping_mul(37).wrapping_add(11) as std::ffi::c_char;
-        }
-        let mut words = [0u64; ID_WORDS];
-        pack_id(&id, &mut words);
-        assert_eq!(unpack_id(&words), id);
-    }
-
-    #[test]
-    fn the_id_broadcast_reaches_every_rank_over_an_all_reduce() {
-        let mut id = sys::ncclUniqueId { internal: [0; 128] };
-        for (i, c) in id.internal.iter_mut().enumerate() {
-            *c = (255 - i as u8) as std::ffi::c_char;
-        }
-        let got: Vec<sys::ncclUniqueId> = std::thread::scope(|s| {
-            let handles: Vec<_> = InProcessTransport::group(4)
-                .into_iter()
-                .map(|t| {
-                    s.spawn(move || {
-                        let mut buf = [0u64; ID_WORDS + 1];
-                        if t.rank() == 0 {
-                            pack_id(&id, &mut buf[..ID_WORDS]);
-                        }
-                        t.allreduce_sum_u64(&mut buf);
-                        assert_eq!(buf[ID_WORDS], 0);
-                        unpack_id(&buf[..ID_WORDS])
-                    })
-                })
-                .collect();
-            handles.into_iter().map(|h| h.join().unwrap()).collect()
-        });
-        assert!(got.iter().all(|g| *g == id));
-    }
-
-    /// Every readiness and device pattern on two ranks, and a sample on four: one outcome on every rank, an error unless every rank can and no device repeats.
-    #[test]
-    fn the_start_is_agreed_for_every_readiness_and_device() {
-        let run = |ranks: &[(bool, [u64; 2])]| -> Vec<Result<(), String>> {
-            let size = ranks.len() as u32;
-            std::thread::scope(|s| {
-                let hs: Vec<_> = InProcessTransport::group(size)
-                    .into_iter()
-                    .map(|t| {
-                        let (can, id) = ranks[t.rank() as usize];
-                        s.spawn(move || agree_start(&t, can, id).map_err(|e| e.to_string()))
-                    })
-                    .collect();
-                hs.into_iter().map(|h| h.join().unwrap()).collect()
-            })
-        };
-        let mut cases: Vec<Vec<(bool, [u64; 2])>> = Vec::new();
-        for c0 in [false, true] {
-            for c1 in [false, true] {
-                for id1 in [[1, 0], [2, 0]] {
-                    cases.push(vec![(c0, [1, 0]), (c1, id1)]);
-                }
-            }
-        }
-        for mask in 0..32u32 {
-            cases.push(
-                (0..4)
-                    .map(|r| {
-                        let id = if mask & 16 != 0 && r == 3 {
-                            1
-                        } else {
-                            r as u64 + 1
-                        };
-                        ((mask >> r) & 1 == 0, [id, 9])
-                    })
-                    .collect(),
-            );
-        }
-        for ranks in &cases {
-            let got = run(ranks);
-            assert!(
-                got.iter().all(|g| g == &got[0]),
-                "{ranks:?}: ranks disagree: {got:?}"
-            );
-            let ids: Vec<_> = ranks.iter().map(|r| r.1).collect();
-            let shared = (0..ids.len()).any(|i| ids[i + 1..].contains(&ids[i]));
-            let can = ranks.iter().all(|r| r.0);
-            match &got[0] {
-                Ok(()) => assert!(can && !shared, "{ranks:?}"),
-                Err(msg) if !can => assert!(msg.contains("libnccl"), "{msg}"),
-                Err(msg) => assert!(shared && msg.contains("share a device"), "{msg}"),
-            }
-        }
-    }
-
-    #[test]
-    fn the_config_matches_the_initializer_layout() {
-        let c = default_config();
-        assert_eq!(c.size, 48);
-        assert_eq!(c.magic, 0xcafe_beef);
-        assert_eq!(c.blocking, i32::MIN);
-        assert!(c.netName.is_null());
-    }
-
-    /// Held by every test that starts a real communicator, so no two initialize or abort at once in the test binary.
-    static REAL_NCCL: Mutex<()> = Mutex::new(());
-
-    type OneRank = (MutexGuard<'static, ()>, NcclComm, Arc<CudaStream>);
-
-    /// A one-rank NCCL communicator on device 0 and a stream on it, holding [`REAL_NCCL`], or `None` where NCCL is absent.
-    fn one_rank() -> Option<OneRank> {
-        if !crate::engine::gpu::nccl_available() {
-            return None;
-        }
-        let guard = REAL_NCCL.lock().unwrap_or_else(PoisonError::into_inner);
-        let ctx = super::super::device::context(0).expect("a visible device");
-        let t = InProcessTransport::group(1).pop().expect("one rank");
-        let comm = NcclComm::init(&t, &ctx)
-            .unwrap_or_else(|e| panic!("a one-rank communicator fails to initialize: {e}"));
-        comm.set_timeout(Duration::from_secs(60));
-        let stream = ctx.new_stream().expect("a stream");
-        Some((guard, comm, stream))
-    }
-
-    #[test]
-    fn a_one_rank_communicator_warms_up_and_shuts_down_cleanly() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        assert_eq!((comm.rank, comm.size), (0, 1));
-        comm.warm_up(&stream).expect("the warm-up completes");
-        assert!(comm.is_healthy());
-        drop(comm);
-        assert!(
-            ABORTS.lock().unwrap().is_empty(),
-            "a healthy communicator shuts down without an abort"
-        );
-    }
-
-    #[test]
-    fn an_aborted_communicator_refuses_every_later_call() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        comm.abort();
-        comm.abort();
-        assert!(!comm.is_healthy());
-        assert!(matches!(comm.warm_up(&stream), Err(GpuError::Nccl { .. })));
-        drop(comm);
-        assert!(
-            ABORTS.lock().unwrap().is_empty(),
-            "a test build joins every abort thread at drop"
-        );
-    }
-
-    /// Message sizes with distinct contents per message, so any receive matched to the wrong send fails on length or content; one is empty.
-    const SIZES: [usize; 7] = [1, 1000, 3, 65_536 + 5, 0, 17, 257 * 1024];
-
-    fn messages() -> Vec<Vec<u64>> {
-        SIZES
-            .iter()
-            .enumerate()
-            .map(|(m, &n)| {
-                (0..n as u64)
-                    .map(|i| ((m as u64 + 1) << 48) ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15))
-                    .collect()
-            })
-            .collect()
-    }
-
-    fn upload(stream: &Arc<CudaStream>, msgs: &[Vec<u64>]) -> Vec<cudarc::driver::CudaSlice<u64>> {
-        msgs.iter()
-            .map(|m| {
-                let mut s = stream.alloc_zeros::<u64>(m.len().max(1)).expect("alloc");
-                if !m.is_empty() {
-                    stream.memcpy_htod(m, &mut s).expect("upload");
-                }
-                s
-            })
-            .collect()
-    }
-
-    /// Self-sends interleaved with their receives, one receive buffer per message: the rank is its own peer and each receive gets the send posted in its position.
-    #[test]
-    fn interleaved_self_sends_match_in_posting_order() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        let wire = NcclWire::new(Arc::new(comm));
-        assert_eq!((wire.rank(), wire.size()), (0, 1));
-        let msgs = messages();
-        let sends = upload(&stream, &msgs);
-        let mut recvs: Vec<_> = SIZES
-            .iter()
-            .map(|&n| stream.alloc_zeros::<u64>(n + 1).expect("alloc"))
-            .collect();
-        let mut group = WireGroup::new();
-        for ((send, recv), &n) in sends.iter().zip(recvs.iter_mut()).zip(&SIZES) {
-            group.send(send.slice(0..n), 0, &stream);
-            group.recv(recv.slice_mut(0..n), 0, &stream);
-        }
-        assert_eq!(group.ops().len(), 2 * SIZES.len());
-        group.post(&wire).expect("the group posts");
-        wire.wait(&stream).expect("the group completes");
-        for (m, (msg, recv)) in msgs.iter().zip(&recvs).enumerate() {
-            let got = stream.clone_dtoh(recv).expect("download");
-            assert_eq!(
-                &got[..msg.len()],
-                &msg[..],
-                "message {m} of {} u64",
-                msg.len()
-            );
-            assert_eq!(got[msg.len()], 0, "message {m} overran its receive");
-        }
-        assert!(wire.comm().is_healthy());
-    }
-
-    /// Every send first, then every receive carved from one concatenated column, as the exchange's `recv_*` layout is: matching is per peer in posting order across the whole group.
-    #[test]
-    fn self_sends_land_in_one_column_in_posting_order() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        let wire = NcclWire::new(Arc::new(comm));
-        let msgs = messages();
-        let sends = upload(&stream, &msgs);
-        let total: usize = SIZES.iter().sum();
-        let mut recv = stream.alloc_zeros::<u64>(total + 1).expect("alloc");
-        let mut group = WireGroup::new();
-        for (send, &n) in sends.iter().zip(&SIZES) {
-            group.send(send.slice(0..n), 0, &stream);
-        }
-        let parts: Vec<(usize, u32)> = SIZES.iter().map(|&n| (n, 0)).collect();
-        group.recv_parts(recv.as_view_mut(), &parts, &stream);
-        group.post(&wire).expect("the group posts");
-        wire.wait(&stream).expect("the group completes");
-        let got = stream.clone_dtoh(&recv).expect("download");
-        let mut at = 0;
-        for (m, msg) in msgs.iter().enumerate() {
-            assert_eq!(
-                &got[at..at + msg.len()],
-                &msg[..],
-                "message {m} of {} u64",
-                msg.len()
-            );
-            at += msg.len();
-        }
-        assert_eq!(got[total], 0, "nothing lands past the last message");
-        assert!(wire.comm().is_healthy());
-    }
-
-    /// NCCL itself refuses a self-receive with no matching send at group end; the error aborts the communicator.
-    #[test]
-    fn an_unmatched_self_receive_fails_the_group_and_aborts() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        let wire = NcclWire::new(Arc::new(comm));
-        let mut dst = stream.alloc_zeros::<u64>(4).expect("alloc");
-        let mut group = WireGroup::new();
-        group.recv(dst.as_view_mut(), 0, &stream);
-        let posted = group.post(&wire);
-        assert!(
-            matches!(posted, Err(GpuError::Nccl { code: 5, .. })),
-            "{posted:?}"
-        );
-        assert!(!wire.comm().is_healthy());
-        assert!(matches!(wire.wait(&stream), Err(GpuError::Nccl { .. })));
-    }
-
-    /// The forced timeout: a real self send/recv group whose wait is told its work never completes returns `Timeout` within the bound, aborts the communicator, and nothing hangs.
-    #[test]
-    fn a_forced_timeout_returns_within_the_bound_and_aborts() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        let bound = Duration::from_millis(300);
-        comm.set_timeout(bound);
-        comm.force_timeout();
-        let wire = NcclWire::new(Arc::new(comm));
-        let src = stream.alloc_zeros::<u64>(64).expect("alloc");
-        let mut dst = stream.alloc_zeros::<u64>(64).expect("alloc");
-        let mut group = WireGroup::new();
-        group.send(src.as_view(), 0, &stream);
-        group.recv(dst.as_view_mut(), 0, &stream);
-        group.post(&wire).expect("the group posts");
-        let start = Instant::now();
-        let waited = wire.wait(&stream);
-        let elapsed = start.elapsed();
-        assert!(
-            matches!(waited, Err(GpuError::Timeout { .. })),
-            "{waited:?}"
-        );
-        assert!(elapsed >= bound, "{elapsed:?}");
-        assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
-        assert!(!wire.comm().is_healthy());
-        assert!(matches!(wire.wait(&stream), Err(GpuError::Nccl { .. })));
-        stream.synchronize().expect("the stream drains");
-        drop(wire);
-    }
-
-    #[test]
-    fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
-        let Some((_nccl, comm, stream)) = one_rank() else {
-            return;
-        };
-        let wire = NcclWire::new(Arc::new(comm));
-        let src = stream.alloc_zeros::<u8>(8).expect("alloc");
-        let mut group = WireGroup::new();
-        group.send(src.as_view(), 1, &stream);
-        assert!(matches!(group.post(&wire), Err(GpuError::Nccl { .. })));
-        assert!(wire.comm().is_healthy());
-    }
-}
+mod tests;

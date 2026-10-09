@@ -11,23 +11,24 @@ use criterion::{
     PlotConfiguration, Throughput,
 };
 use num_complex::Complex64;
-use paulistrings::accumulator::BuildAccumulator;
-use paulistrings::bucket::{Gf2Hash, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
-use paulistrings::channel::{
+use paulistrings::test_support::{apply_layer_bucketed, coarsen, refine, with_hash};
+use paulistrings::test_support::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
+use paulistrings::BuildAccumulator;
+use paulistrings::Circuit;
+use paulistrings::Gf2Hash;
+use paulistrings::LayerScratch;
+use paulistrings::PauliString;
+use paulistrings::PauliSum;
+use paulistrings::{propagate, Direction};
+use paulistrings::{
     Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
-use paulistrings::circuit::Circuit;
-use paulistrings::engine::bucketed::{apply_layer_bucketed, LayerScratch};
-use paulistrings::engine::{propagate, Direction};
-use paulistrings::pauli_string::PauliString;
-use paulistrings::pauli_sum::PauliSum;
-use paulistrings::phase::Phase;
 // `rand_sum_unmasked` / `tie_heavy_sum_unmasked` are a different draw order from `rand_sum`;
 // the committed criterion baselines are pinned to them specifically.
 use paulistrings::test_support::{
     low_weight_sum, rand_pauli, rand_sum_unmasked, tie_heavy_sum_unmasked, Xs64,
 };
-use paulistrings::truncation::TruncationPolicy;
+use paulistrings::TruncationPolicy;
 use std::hint::black_box;
 use std::time::Duration;
 
@@ -38,27 +39,27 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 /// A weight-2 `ZZ` rotation on qubits `(q0, q1)`, the bond term of a transverse-field Ising
 /// Trotter step. Fanout is data-dependent (1 or 2), so on random input the realized fanout is
 /// ~1.5 and the merge phase has duplicates to combine.
-fn zz_rotation<const W: usize>(q0: u32, q1: u32, theta: f64) -> PauliRotation<W> {
+fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
-    gen.z[(q0 as usize) / 64] |= 1u64 << (q0 % 64);
-    gen.z[(q1 as usize) / 64] |= 1u64 << (q1 % 64);
+    gen.z[q0 / 64] |= 1u64 << (q0 % 64);
+    gen.z[q1 / 64] |= 1u64 << (q1 % 64);
     PauliRotation::new(gen, theta)
 }
 
 /// A Pauli generator of weight 4 on `qubits`, for a rotation whose support exceeds
 /// `MAX_LOCAL_SUPPORT`: the delta set is still `{0, gen}`, but the `i^k` phase is computed
 /// per term rather than looked up.
-fn wide_rotation<const W: usize>(qubits: [u32; 4], theta: f64) -> PauliRotation<W> {
+fn wide_rotation<const W: usize>(qubits: [usize; 4], theta: f64) -> PauliRotation<W> {
     let mut gen = PauliString::<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
     // Mixed X/Z letters so the generator is not a product of commuting Zs.
     for (i, &q) in qubits.iter().enumerate() {
-        let word = (q as usize) / 64;
+        let word = q / 64;
         let bit = 1u64 << (q % 64);
         if i % 2 == 0 {
             gen.z[word] |= bit;
@@ -71,7 +72,7 @@ fn wide_rotation<const W: usize>(qubits: [u32; 4], theta: f64) -> PauliRotation<
 
 /// sqrt(SWAP) on `(q0, q1)`, a fixed non-Clifford two-qubit unitary: the prepared delta set is
 /// wide (up to 16), the maximum bucket fan-in the engine ever sees.
-fn sqrt_swap(q0: u32, q1: u32) -> GeneralUnitary2Q {
+fn sqrt_swap(q0: usize, q1: usize) -> GeneralUnitary2Q {
     let h = Complex64::new(0.5, 0.5);
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
@@ -162,12 +163,12 @@ fn bench_propagate_trotter(c: &mut Criterion) {
 
     let mut circuit = Circuit::<1>::new(num_qubits);
     for q in 0..num_qubits {
-        let q0 = q as u32;
-        let q1 = ((q + 1) % num_qubits) as u32;
+        let q0 = q;
+        let q1 = (q + 1) % num_qubits;
         circuit.push(zz_rotation::<1>(q0, q1, 2.0 * theta));
     }
     for q in 0..num_qubits {
-        let qq = q as u32;
+        let qq = q;
         let gen = PauliString::<1>::x(qq);
         circuit.push(PauliRotation::new(gen, 2.0 * theta));
     }
@@ -193,7 +194,7 @@ fn bench_propagate_trotter(c: &mut Criterion) {
 
 /// Bucket count the engine would pick for `n` terms.
 fn bits_for(n: usize) -> u8 {
-    paulistrings::bucket::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
+    paulistrings::test_support::desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
 }
 
 /// One `apply_layer_bucketed` case, on an already-bucketed sum.
@@ -212,7 +213,7 @@ fn bucketed_layer_case<const W: usize, C>(
 {
     let policy = AlwaysKeep;
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len()), 0xBEEF);
-    let mut sum = input.clone().with_hash(hash);
+    let mut sum = with_hash(input.clone(), hash);
     let prep = ch
         .prepare(sum.hash(), false)
         .expect("channel could not be prepared");
@@ -289,7 +290,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     // Warm `input` to the fixed point once so every thread count clones the same steady state.
     {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut warm = input.clone().with_hash(hash);
+        let mut warm = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&rot, warm.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         for _ in 0..3 {
@@ -308,7 +309,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
             .expect("failed to build rayon pool");
         // Bucket count does not depend on thread count (ARCHITECTURE.md §Bucket-Policy).
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut sum = input.clone().with_hash(hash);
+        let mut sum = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
@@ -340,7 +341,7 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     // Warm `input` to the fixed point once so every thread count clones the same steady state.
     {
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut warm = input.clone().with_hash(hash);
+        let mut warm = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&gu2q, warm.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         for _ in 0..3 {
@@ -359,7 +360,7 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
             .expect("failed to build rayon pool");
         // Same fixed bit count at every thread count as `bench_thread_scaling_bucketed`.
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
-        let mut sum = input.clone().with_hash(hash);
+        let mut sum = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&gu2q, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_with_input(BenchmarkId::from_parameter(t), &t, |bencher, _| {
@@ -395,7 +396,7 @@ fn bench_ingest_finalize(c: &mut Criterion) {
                     let p = rand_pauli::<2>(&mut rng);
                     let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
                     let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-                    acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+                    acc.add_term(p, Complex64::new(re, im));
                 }
                 acc
             },
@@ -422,8 +423,8 @@ fn bench_rebucket(c: &mut Criterion) {
         bencher.iter_batched(
             || input.clone(),
             |mut sum| {
-                sum.refine();
-                sum.coarsen();
+                refine(&mut sum);
+                coarsen(&mut sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -449,9 +450,9 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     let keep = (input.len() * 4) / 5;
     group.bench_function("bucketed/keep80pct", |bencher| {
         bencher.iter_batched_ref(
-            || input.clone().with_hash(hash.clone()),
+            || with_hash(input.clone(), hash.clone()),
             |sum| {
-                paulistrings::truncation::TopN(keep).finalize_layer(sum);
+                paulistrings::TopN(keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -463,7 +464,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
         bencher.iter_batched_ref(
             || input.clone(),
             |sum| {
-                paulistrings::truncation::TopN(keep).finalize_layer(sum);
+                paulistrings::TopN(keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -478,9 +479,9 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     let tied_keep = (tied.len() * 4) / 5;
     group.bench_function("bucketed/tie_heavy_keep80pct", |bencher| {
         bencher.iter_batched_ref(
-            || tied.clone().with_hash(tied_hash.clone()),
+            || with_hash(tied.clone(), tied_hash.clone()),
             |sum| {
-                paulistrings::truncation::TopN(tied_keep).finalize_layer(sum);
+                paulistrings::TopN(tied_keep).finalize_layer(sum);
                 black_box(sum.len())
             },
             BatchSize::LargeInput,
@@ -508,7 +509,7 @@ fn bench_bucket_size_sweep(c: &mut Criterion) {
     for &bits in &[4u8, 6, 8, 10, 12, 14] {
         let per_bucket = n >> bits;
         let hash = Gf2Hash::<2>::new(128, bits, 0xBEEF);
-        let mut sum = input.clone().with_hash(hash);
+        let mut sum = with_hash(input.clone(), hash);
         let prep = Channel::<2>::prepare(&rot, sum.hash(), false).unwrap();
         let mut scratch = LayerScratch::<2>::new();
         group.bench_function(format!("{per_bucket}_per_bucket"), |bencher| {

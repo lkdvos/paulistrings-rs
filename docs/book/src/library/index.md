@@ -11,4 +11,4 @@ Signatures and tables for the Python API. Usage and rationale are in the [Manual
 | [Truncation policies](truncation.md) | `coeff`/`weight`/`topn`/`approx_topn`/`collapse_sample`, `&`/`\|` combinators |
 | [Direction semantics](direction.md) | `"forward"`/`"heisenberg"`, push-order note |
 | [Measurement](measurement.md) | `expectation`, `expectation_stabilizer`, `overlap`, `identity_coefficient`, `anticommute_histogram`, `rotated_overlap` |
-| [Module helpers](module-helpers.md) | `numa_nodes`, `mpi_available`, `DEFAULT_SMALL_SUM_THRESHOLD`, `reset_log_cache`, `diagonal_echo` |
+| [Module helpers](module-helpers.md) | `numa_nodes`, `mpi_available`, `reset_log_cache`, `diagonal_echo` |

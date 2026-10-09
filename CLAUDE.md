@@ -4,23 +4,16 @@ Guidance for Claude Code (claude.ai/code) working in this repository.
 
 ## What this is
 
-`paulistrings-rs` implements **Pauli propagation**: classical simulation by evolving operators in the Pauli basis under gates and noise channels, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
-State-vector, tensor-network, stabilizer and matrix-product-state simulation are explicit non-goals.
+`paulistrings-rs` implements Pauli propagation: evolving operators in the Pauli basis under gates and noise channels, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
+The one storage type is a bucketed `PauliSum<W>`: structure-of-arrays `x`/`z`/coefficient columns partitioned by a GF(2)-linear hash, so a layer's work splits into write-disjoint cosets with no global sort and no synchronization inside a layer.
+`W` is a const generic; the PyO3 bindings monomorphize `W ∈ {1, 2, 4, 8, 16}` (64–1024 qubits).
+The optional partitioned engine splits the sum over `P ≤ 64` NUMA domains, MPI ranks (`mpi` feature) or CUDA devices (`cuda` feature) by GF(2) partition rows, behind a sealed `Transport` seam.
 
-The one storage type is a bucketed `PauliSum<W>`: structure-of-arrays `x`/`z`/coefficient columns partitioned by a GF(2)-linear hash `h(v) = H·v`.
-That makes a channel's output buckets statically predictable and deduplication bucket-local, so the propagation loop contains no global sort.
-The unit of parallel work is a coset of `span(h(D))`, write-disjoint by construction — no atomics, no locks, no synchronization inside a layer.
-The core takes `W` as a const generic; the PyO3 bindings monomorphize widths `{1, 2, 4, 8, 16}` (64–1024 qubits) and dispatch once outside any hot loop.
-Above that sits an optional **partitioned** engine: the sum split across `P ≤ 64` NUMA domains (or, distributed, ranks) by designated GF(2) partition rows, one pinned Rayon pool each, with a push-model exchange and a `Transport` trait as the seam.
-The same layer loop runs distributed, one partition per MPI rank (`DistributedSum`, the off-by-default `mpi` feature), with the transport as the only difference.
-
-`ARCHITECTURE.md` is the design source of truth and code cites its named sections as `ARCHITECTURE.md §Engine`.
-Do not rename its `##` headings without sweeping those citations.
-`research/FINDINGS.md` records what was tried and rejected; `research/HARDWARE.md` holds the measured host facts.
+`ARCHITECTURE.md` is the design source of truth; code cites its sections as `ARCHITECTURE.md §Engine`, so never rename its `##` headings without sweeping the citations.
+`research/FINDINGS.md` records measured and rejected ideas, `research/HARDWARE.md` the measured host facts; both are cited by heading the same way.
 
 ## Comment & prose style
 
-This repository was built with heavy LLM assistance and was drowning in commentary.
 These rules are binding on every file, including markdown.
 
 1. **One sentence per line.** Never reflow a paragraph across lines. A long sentence stays one long line.
@@ -30,84 +23,67 @@ These rules are binding on every file, including markdown.
 5. **Comment the surprise** — a safety invariant, a non-obvious algorithm choice, a contract an implementor must honour. Never the mechanics the code already states.
 6. **Docs on private items are terse.** Multi-paragraph `///` belongs only on the `pub` surface that rustdoc and Python users see.
 
+## Code organisation
+
+- Dependencies point downward only: leaf algebra (`pauli_string`, `phase`, `rng`) → `pauli_sum` → `channel`/`circuit` → `truncation` → `engine` → `engine/partitioned` → `engine/gpu`; `readout` reads `pauli_sum`, never the other way.
+- Modules are private; the user API is re-exported flat at the crate root, `gpu` and `mpi` are public modules behind their features, everything else is `pub(crate)`.
+- Each entry point is one plain call plus one `_with(…, options)` variant (`propagate`/`propagate_with`, `scatter`/`scatter_with`).
+- About 800 production lines per file is a soft cap; split on real seams.
+- No abbreviations in names (`accumulator`, not `acc`); domain acronyms (GF2, PTM, NUMA, MPI, NCCL) stay.
+- A move is its own commit and sweeps `ARCHITECTURE.md` citations and the layout below in the same commit.
+
 ## Commands
 
-End users install a released wheel from GitHub Releases (README's Python quickstart) — no Rust toolchain needed.
-Everything below is the from-source / contributor path.
-
-Python tooling is uv: `uv sync` creates `./.venv` (Python from `.python-version`, dependencies resolved from `pyproject.toml`; the resulting `uv.lock` is local and gitignored) and builds the extension in release mode as an editable install; the Rust toolchain is pinned in `rust-toolchain.toml`.
-`uv run` re-syncs first and rebuilds the extension whenever a Rust source, the build config or `MATURIN_PEP517_ARGS` changed (`[tool.uv] cache-keys`), so prefer it to a bare `python`/`pytest` from an activated venv.
-On Flatiron, `module load uv` gives 0.7.13 under `modules/2.4-20250724` and 0.12.7 under `modules/2.5-20261005`; `scripts/setup.sh` works with either, a bare first `uv sync` needs uv ≥ 0.8.
-Point `UV_CACHE_DIR` at local disk (`/home/$USER/.cache/uv`, with `UV_LINK_MODE=copy`) to keep the cache off the `/mnt/home` inode quota.
+Python tooling is uv; the Rust toolchain is pinned in `rust-toolchain.toml`.
+`uv run` rebuilds the editable extension (release mode, written into `python/paulistrings/`) whenever Rust sources or build config change, so prefer it to a bare `python`/`pytest`.
+On Flatiron `module load uv`; a first `uv sync` needs uv ≥ 0.8.
+Point `UV_CACHE_DIR` at local disk (`/home/$USER/.cache/uv`, `UV_LINK_MODE=copy`) to keep the cache off the `/mnt/home` inode quota.
 
 ```bash
-module load uv
-scripts/setup.sh                              # once: uv sync plus the examples extra (best-effort)
-```
-
-```bash
+scripts/setup.sh                                                 # once: uv sync plus the examples extra
 cargo test --workspace                                           # must be green at every commit
 cargo clippy --workspace --all-targets -- -D warnings
-uv run pytest python/paulistrings/tests                          # rebuilds the extension first if Rust changed
-MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # a debug build; every uv command on that venv must then set it
+uv run pytest python/paulistrings/tests
+MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # debug build; every uv command on that venv must then set it
 ```
 
-The editable install writes the extension into `python/paulistrings/`, so a checkout holds one editable build at a time; a second editable venv in the same checkout would overwrite it unseen by the first.
-
-The release profile uses `lto = "fat"` and `codegen-units = 1`; debug builds are dramatically slower for this workload, so benchmark `--release` only.
-
-The measurement probe, which also drives the partitioned engine (`--partitions` a comma list, `--partition-cpus` one semicolon-separated CPU list per partition, from `scripts/host-topology.sh`):
+Benchmark `--release` only (`lto = "fat"`, `codegen-units = 1`).
+The measurement probe, which also drives the partitioned engine (`--partition-cpus` from `scripts/host-topology.sh`):
 
 ```bash
 cargo run --release --features phase-timing --example phase_breakdown -- \
   --partitions 2 --partition-cpus "0-7,16-23;8-15,24-31" --threads 32 --n 1000000 --layers su4
 ```
 
-The `mpi` feature needs an MPI installation plus `libclang` for rsmpi's bindgen, so every MPI command runs from a shell with the modules loaded:
-
-```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
-export LIBCLANG_PATH=$(llvm-config --libdir)
-
-cargo test -p paulistrings --features mpi        # tests/mpi_ranks.rs as a one-rank world
-scripts/mpi-test.sh --ranks 2,4 [--release]      # the same net under mpirun
-scripts/mpi-test.sh --ranks 2,4 --python         # and the bindings' net
-```
-
-`mpi` is never bundled into a released wheel — no MPI implementation is portable across cluster/vendor combinations — so it stays a source build against the loaded modules, into its own non-editable venv `./.venv-mpi` (gitignored), which `--python` re-syncs and the Slurm templates activate:
+MPI (`mpi` feature) needs the modules loaded and `libclang` for rsmpi's bindgen; it is never in a released wheel, so the bindings build into their own non-editable `./.venv-mpi`, and `uv run` must never target that venv.
 
 ```bash
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
-scripts/sync-mpi-venv.sh [--cuda] [--debug]      # .venv-mpi: --features mpi, mpi4py compiled against this MPI
+cargo test -p paulistrings --features mpi                        # tests/mpi_ranks.rs as a one-rank world
+scripts/mpi-test.sh --ranks 2,4 [--release] [--python]           # under mpirun; --python syncs .venv-mpi
+scripts/sync-mpi-venv.sh [--cuda] [--debug]                      # build .venv-mpi alone
 ```
 
-That is `UV_PROJECT_ENVIRONMENT=.venv-mpi MATURIN_PEP517_ARGS="--features mpi" uv sync --no-editable --extra mpi --python $(which python3)`; never `uv run` against `.venv-mpi`, which would re-sync it as an editable default build.
-Outside uv, `pip install ".[dev]" --config-settings=build-args="--features mpi"` still works.
+Both crates' `build.rs` exist only for `mpi` (the cdylib needs its own link arg to find `libmpi.so.40`).
 
-Both crates carry a `build.rs` that exists only for the `mpi` feature: `cargo:rustc-link-arg` is not inherited from a dependency, so without the py crate's copy the cdylib cannot find `libmpi.so.40` at import time.
-
-The `cuda` feature needs no build-script support and no toolkit to compile: `cudarc` loads `libcuda` and `libnvrtc` at runtime and NVRTC compiles the kernels on first use, so only running needs the module (or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` on `LD_LIBRARY_PATH`):
-NVRTC's PTX output is cached on disk (`$PAULISTRINGS_KERNEL_CACHE`, default `~/.cache/paulistrings/kernels`, `off` to disable) so only the first process to compile a given `(source, options, NVRTC version, crate version)` pays the several-second compile.
+CUDA (`cuda` feature) needs no toolkit to compile; `cudarc` loads `libcuda`/`libnvrtc` at runtime, and NVRTC output is cached in `$PAULISTRINGS_KERNEL_CACHE` (default `~/.cache/paulistrings/kernels`, `off` to disable).
 
 ```bash
-module load cuda/12.8.0                                          # libnvrtc at runtime
-cargo test -p paulistrings --features cuda                       # unit nets + tests/propagate_gpu.rs; pass without a device
+module load cuda/12.8.0
+cargo test -p paulistrings --features cuda                       # passes without a device
 cargo clippy -p paulistrings-py --features cuda -- -D warnings
-MATURIN_PEP517_ARGS="--features cuda" uv run pytest python/paulistrings/tests/test_cuda.py   # skipped unless cuda_available()
+MATURIN_PEP517_ARGS="--features cuda" uv run pytest python/paulistrings/tests/test_cuda.py
 ```
 
-One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features, so both module sets plus the NCCL library its exchange runs over (ARCHITECTURE.md §Partitioning); NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so building needs no toolkit, and every rank above one needs a device of its own:
+One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features plus NCCL (`dlopen`ed), and a device per rank above one:
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
-cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks   # one rank, host and device cases
-scripts/mpi-test.sh --ranks 2,4 --cuda                                    # under mpirun
-scripts/mpi-test.sh --ranks 2,4 --python --cuda                           # the bindings' comm= with device= cases
+cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks
+scripts/mpi-test.sh --ranks 2,4 --cuda [--python]
 cargo clippy -p paulistrings-py --features cuda,mpi -- -D warnings
-cargo build --release --features phase-timing,cuda,mpi --example phase_breakdown
-mpirun -n 2 target/release/examples/phase_breakdown --mpi --device auto --layers rotation_remote
 ```
 
 Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
@@ -115,107 +91,94 @@ Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 
 ## Releasing
 
-Rust and Python release together, one version for both: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml`'s `workspace.package.version` and `pyproject.toml`'s `[project] version` in one step; commit both together, never separately.
-CI's `version-sync` job fails a PR if the two ever disagree.
-Before tagging: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, the `mpi` CI job, and `python` CI job must all be green on `main`; also check `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features phase-timing,test-utils`, which mirrors what docs.rs builds and is not covered by `cargo test`.
-Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag, to catch a wheel-matrix failure before it's user-visible.
-**Pushing the tag is the user's step, never an agent's**: `git tag vX.Y.Z && git push origin vX.Y.Z` triggers `release.yml`, which checks the tag against both version files and publishes wheels (manylinux x86_64, macOS x86_64/arm64) to the GitHub Release.
-Publishing the Rust crate to crates.io is a separate, manual `workflow_dispatch` of `.github/workflows/crates-publish.yml` (defaults to `--dry-run`) — run it after the wheel release for the same version, not instead of it.
-Neither workflow writes a changelog; that stays unautomated today.
+Rust and Python share one version: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml` and `pyproject.toml` together, committed together (CI's `version-sync` job enforces it).
+Before tagging: `cargo test --workspace`, clippy, and the `mpi` and `python` CI jobs green on `main`, plus `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p paulistrings --features phase-timing,test-utils` (what docs.rs builds).
+Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag.
+**Pushing the tag is the user's step, never an agent's**: `git tag vX.Y.Z && git push origin vX.Y.Z` triggers `release.yml`, which publishes wheels to the GitHub Release.
+crates.io publishing is a separate manual `workflow_dispatch` of `.github/workflows/crates-publish.yml` (default `--dry-run`), after the wheel release.
 
 ## Progress logging
 
-The library logs through the `log` facade under the target `paulistrings::propagate`: INFO on entry and exit of each `propagate` call, DEBUG once per layer.
-From Rust install `env_logger` and set `RUST_LOG=paulistrings=debug`.
-From Python the records reach stdlib `logging` via `pyo3-log` on the logger `paulistrings.propagate`; call `paulistrings.reset_log_cache()` after changing levels mid-process, since `pyo3-log` caches each logger's effective level.
+The library logs through `log` under target `paulistrings::propagate`: INFO per `propagate` call, DEBUG per layer (`RUST_LOG=paulistrings=debug` with `env_logger`).
+From Python it reaches `logging` via `pyo3-log`; call `paulistrings.reset_log_cache()` after changing levels mid-process.
 
 ## Testing & TDD policy
 
 Development is test-driven: red (the smallest failing test that pins the behavior), green (the minimum to pass), refactor (only after green).
-Unit tests live in `#[cfg(test)] mod tests` beside the code, cross-module behavior in `crates/paulistrings/tests/`.
 
-- Tests assert hand-computed expected values, not the output of another unimplemented function.
-- Where a reference exists (`XZ = -iY`, `X` anticommutes with `Z`), encode it as a test.
-- Parameterize multi-qubit and multi-word logic over `W ∈ {1, 2}` to exercise the const-generic surface.
-- Property tests (`proptest`) cover the algebraic laws: multiplication associativity, the sortedness/uniqueness invariant after a merge, idempotence of `truncate(0.0)`.
-- The differential oracle for engine work is `test_support::naive_apply_layer`, a direct `Channel::apply` loop independent of the bucketed path.
-- Shared fixtures live in `crates/paulistrings/src/test_support.rs` behind the `test-utils` feature — add helpers there rather than copy-pasting between test files.
-- The partitioned engine's differential nets are `tests/propagate_partitioned.rs` and the per-layer matrices in `engine/partitioned/layer.rs`; every test configuration uses `Placement::Unpinned` so the suite runs on a one-node box.
-- The CUDA backend's differential net is `tests/propagate_gpu.rs` (`required-features = ["cuda", "test-utils"]`) against `propagate`, every device test opening with `test_support::require_cuda!()` so it returns early without a device; the bindings' net is `python/paulistrings/tests/test_cuda.py`, whose device tests skip unless `cuda_available()`.
-- `PAULISTRINGS_GPU_TEST_DEVICES` (csv of ordinals, default `0`) points `tests/propagate_gpu_partitioned.rs` at real devices: with more than one listed, the `P == devices.len()` configurations place one partition per device and every other `P` stays virtual on the first; `scripts/slurm/gpu-devices.sbatch` runs it at `0,1,2,3`.
-- The distributed driver has two nets: `tests/propagate_distributed.rs` over `InProcessTransport` (part of the default `cargo test`) and `tests/mpi_ranks.rs` over `MpiTransport` under `mpirun` (`harness = false`, since the cases are collective and must run in one order on every rank); built with `cuda` as well, `mpi_ranks` adds the one-GPU-per-rank cases, skipped on every rank unless every rank sees a device.
-- No `#[ignore]`d tests, and benchmarks follow tests rather than the reverse.
+- Unit tests live in a sibling `<module>/tests.rs`; the module file keeps one `#[cfg(test)] mod tests;` line, so tests keep private access.
+- Cross-module and integration tests live in `crates/paulistrings/tests/`.
+- Shared fixtures live in `test_support` (`#[doc(hidden)]`, behind `test-utils`), which also exposes the crate-private pieces tests, benches and the probe need: `InProcessTransport`, `Prepared`, `apply_layer_bucketed`, the bucket constants (`DEFAULT_MIN_BUCKETS`, `DEFAULT_TARGET_BUCKET_LEN`) and `TIMER_READ_OVERHEAD_NS`; add helpers there rather than copy-pasting.
+- Tests assert hand-computed expected values; where a reference identity exists (`XZ = -iY`), encode it.
+- Parameterize multi-qubit and multi-word logic over `W ∈ {1, 2}`.
+- Property tests (`proptest`) cover the algebraic laws: multiplication associativity, sortedness/uniqueness after a merge, idempotence of `truncate(0.0)`.
+- The engine's differential oracle is `test_support::naive_apply_layer`, a direct `Channel::apply` loop sharing no code with the bucketed path.
+- The partitioned engine's nets are `tests/propagate_partitioned.rs` and `engine/partitioned/layer/tests.rs`, all under `Placement::Unpinned`.
+- The distributed nets are `tests/propagate_distributed.rs` (`InProcessTransport`, default `cargo test`) and `tests/mpi_ranks.rs` (`MpiTransport` under `mpirun`, `harness = false`, collective cases in one order on every rank).
+- The CUDA nets are `tests/propagate_gpu.rs` and `tests/propagate_gpu_partitioned.rs` (every device test opens with `test_support::require_cuda!()`) and `python/paulistrings/tests/test_cuda.py` (skips unless `cuda_available()`); `PAULISTRINGS_GPU_TEST_DEVICES` (csv of ordinals, default `0`) points the partitioned net at real devices.
+- No `#[ignore]`d tests; benchmarks follow tests.
 - Commit logical units and check in with the user at feature boundaries.
 
 ## Determinism policy
 
 Bitwise output preservation is **not required — anywhere, for anything**.
-The correctness bar is agreement to floating-point tolerance (`test_support::assert_terms_close`); equal-key summation order is unspecified and free to change.
-Tests that pin exact output bits are convenience tripwires for *unintended* perturbation: when one trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit, with a one-line note.
-Never design, constrain, or reject an optimization to keep output bits stable.
-`propagate_partitioned` at `P = 1` is byte-identical to `propagate`; across partition counts the bar is tolerance.
-A device run agrees with the host to tolerance and is bitwise reproducible run-to-run on one device, since no reduction uses a float atomic.
+The correctness bar is agreement to floating-point tolerance (`test_support::assert_terms_close`); equal-key summation order is unspecified.
+A test pinning exact bits is a tripwire: when it trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit.
+Never design, constrain or reject an optimization to keep output bits stable.
+`propagate_partitioned` at `P = 1` is byte-identical to `propagate`; across partition counts the bar is tolerance; a device run is bitwise reproducible on one device.
 
 ## Performance discipline
 
-- **Every cargo feature is off by default and stays that way** — `phase-timing`, `test-utils` and `mpi` alike. The default build must be byte- and performance-identical to one from before the feature existed, which for `mpi` means `build.rs` emits nothing without `CARGO_FEATURE_MPI`.
-- Benchmark `--release` only, keep input generation deterministic and outside the timed region, and report single-thread and multi-thread numbers separately.
-- `scripts/bench-campaign.sh` plus `benchmarks/PROFILING.md` is the canonical change → measure → compare loop; run campaigns with `RUST_LOG` unset.
-- Single-shot campaign noise on the reference host is ±5–8% single-threaded and ±10–26% at 8–32 threads, so smaller effects need `scripts/ab-compare.sh`. Its acceptance criterion is **direction consistency across every pair**, with the median Δ% as the effect size; pairs disagreeing in sign mean "no consistent change", not a small win.
-- A **direction-consistent phase delta is not an effect if the total is flat** — let instruction count settle it.
-- **Any constant tuned by wall-clock A/B before 2026-09-10 is suspect**: four recorded conclusions dissolved on re-measurement, all the same branch-alignment artifact (`research/FINDINGS.md`).
-- A partitioned cell (`P > 1`) runs under **no placement prefix at all** — `numactl --membind` forces every page onto one node, and `taskset`/`--cpunodebind` shrink the mask the engine's `Auto` placement reads. The engine's pinning is the only pinning in effect. `P = 1` under the existing `node0`/`phys8` placements is the one-socket reference.
-- P=1 vs P=2 is a runtime-knob A/B, not a code A/B: `scripts/ab-compare.sh --probe-b '<args with --partitions 2>'` runs one binary both ways and pairs on `(layer, threads)`.
-- The probe's JSON sidecar carries the partition fields on every row, and the sub-phases (`append_ns`, `chunk_wait_ns`) are *contained in* the phase above rather than additional to it — never sum them into a total. Contract (a) in `benchmarks/PROFILING.md` lists the fields and is what to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
-- The JCC erratum (SKX102) costs this engine 9–13% wall on Cascade Lake, but the padding flag is a ~1% tax on every part without the erratum, so it is **not** in `.cargo/config.toml`. Every measurement script sources `scripts/jcc-rustflags.sh`, which detects the erratum from `/proc/cpuinfo` and appends the flag — **anything else that benchmarks must do the same**, and note that an exported `RUSTFLAGS` replaces the config's list wholesale.
-- Roofline denominators come from `crates/membench` + `scripts/bandwidth.sh` against the ceilings in `research/HARDWARE.md`.
-- The device axis is measured on the release `phase-timing,cuda` probe with `--device` (`--device <list>` or `--gpu-partitions <n>` for a device group); record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number, since the workstation's clocks are driver-managed and unlocked rather than fixed.
-- A GPU timing is the second application of a gate on the saturated sum; a dense cell's CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1` runs, never `wall/3`.
-- The device roofline denominator comes from `membench --device` / `scripts/bandwidth.sh --device`.
-- `PAULISTRINGS_GPU_EXCHANGE_BYTES` (the receive cap of `GpuLayerOptions::exchange_bytes`) is the device layer's one runtime knob; the sender-side merge and the Clifford scatter path are `GpuLayerOptions` fields, so an A/B of either is a code A/B.
+- Every cargo feature is off by default, and the default build must be byte- and performance-identical to one without the feature (`build.rs` emits nothing without `CARGO_FEATURE_MPI`).
+- Benchmark `--release` only, keep input generation outside the timed region, and report single- and multi-thread numbers separately.
+- `scripts/bench-campaign.sh` plus `benchmarks/PROFILING.md` is the change → measure → compare loop; run campaigns with `RUST_LOG` unset.
+- Effects below the noise floor (`research/HARDWARE.md §Measurement noise`) need `scripts/ab-compare.sh`, whose criterion is direction consistency across every pair, with the median Δ% as the effect size.
+- A direction-consistent phase delta is not an effect if the total is flat; let instruction count settle it.
+- Re-derive, never inherit, any constant tuned by wall-clock A/B on an unpadded build (`research/FINDINGS.md §Rule: suspect any constant tuned by wall-clock A/B before 2026-09-10`).
+- A partitioned cell (`P > 1`) runs under no `numactl`/`taskset` prefix; the engine's own pinning is the only one in effect. P=1 vs P=2 is a runtime-knob A/B: `scripts/ab-compare.sh --probe-b '<args with --partitions 2>'`.
+- The probe's sub-phases (`append_ns`, `chunk_wait_ns`) are contained in their parent phase, never summed into a total; contract (a) in `benchmarks/PROFILING.md` is what to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
+- Every benchmarking script must source `scripts/jcc-rustflags.sh` (JCC erratum padding, opt-in per CPU); an exported `RUSTFLAGS` replaces `.cargo/config.toml`'s list wholesale.
+- Roofline denominators come from `crates/membench` via `scripts/bandwidth.sh` (`--device` for a GPU) against `research/HARDWARE.md`.
+- Record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number.
+- A GPU timing is the second application of a gate on the saturated sum; its dense CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1`, never `wall/3`.
+- `PAULISTRINGS_GPU_EXCHANGE_BYTES` is the device layer's one runtime knob; the sender-side merge and the Clifford scatter path are `GpuLayerOptions` fields, so an A/B of either is a code A/B.
 
 **Read `research/FINDINGS.md` before re-attempting an optimization idea.**
-It records what was measured and rejected, including several ideas that look obviously good.
 
 ## Known gaps
 
-- The convention is Hermitian everywhere a Pauli string is parsed or read: a coefficient multiplies the literal Pauli string, and `Y` maps to the symplectic key `(x=1, z=1)` with no phase factor. Phases arise only from products, where `mul_assign` returns `i^k` for the caller to fold.
-- `PauliSum::from_strings` is `pub(crate)` + `#[cfg(test)]`, so Rust tests build sums through it or `BuildAccumulator`.
-- A channel with support on more than `MAX_LOCAL_SUPPORT = 2` qubits makes `propagate` **panic**; there is no fallback path. `PauliRotation` is exempt, overriding `prepare` at any generator weight.
-- Partitioned mode rejects exact `TopN` at compile time, since a distributed `k`-th selection has no collective form yet; `ApproxTopN` is partition-exact and is the partitioned default.
-- The device drivers take a `BuiltinTruncation` (`impl Into<BuiltinTruncation>`, which every builtin, combinator and Python policy converts into), so a custom `TruncationPolicy` cannot reach a device at all. Exact `TopN` runs at one partition (`GpuPauliSum`, the one-device `GpuPartitionedSum`, K8 radix-select); above one partition it is `GpuError::Unsupported`, since the `n`-th largest of a split sum has no collective form.
-- A multi-device or one-device-per-rank run from Python (`device=[...]`, `comm=` with `device=`) scatters and gathers on every call; only the one-device `GpuPauliSum` stays resident, while Rust holds a `GpuPartitionedSum` or `MpiGpuSum` across calls.
-- Thread and memory pinning are Linux-only; elsewhere the topology module reports one node and pins nothing, so a partitioned run is correct but unplaced.
-- A distributed run is one partition per rank (`D = 1`), placed by the launcher's affinity mask. There is no domains-per-rank hybrid, the rank count must be a power of two, the input must be replicated on every rank, and the wire format is raw host bytes (same architecture and same `W` everywhere).
-- Partition rows are drawn at random by default, so export volume is a property of the draw — roughly half of a dense two-qubit gate's deltas cross at `P = 2`. `partition_row_blocks=` (a locality cut) and `partition_row_exclude=` (rows that skip chosen x/z coordinates) are the two manual levers; choosing rows automatically is open research.
-- `CollapseSample` counts collapses on rank 0's policy object only in partitioned and MPI runs; `PropagationStats.collapses` reports that count on every rank. It has no device form: every device driver reports `GpuError::Unsupported` before the first layer, and `device=` raises `NotImplementedError`.
-- `DistributedSum::rotated_overlap` needs partition rows that avoid the flipped coordinates (x-bits of the sites for axis X, z-bits for Z) and panics on every rank otherwise; the histogram read-out has no such constraint.
-- The probe replicates its input on every rank, so its `vmhwm_kb` grows with rank count at constant terms per rank. That is a probe artefact; engine-side peak per rank is flat.
-- The debug `paulistrings` test binary aborts with `fatal runtime error: stack overflow` in roughly 1 run in 4 under full parallelism. It is pre-existing and never reproduces with a 16 MiB stack, so `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`; root cause is open.
-- Exchange rows never leave device memory: a partition holds one export volume and one receive volume on its device during a remote layer, which the sender-side merge (ARCHITECTURE.md §Partitioning) shrinks.
-- An MPI device group of more than one rank exchanges only over NCCL: a rank that cannot load libnccl 2.22+, or two ranks on one device, fail the scatter on every rank.
-- `GpuLayerOptions::exchange_bytes` / `PAULISTRINGS_GPU_EXCHANGE_BYTES` caps the receive volume by moving it in power-of-two chunks of positions (the default stays one chunk), but the export volume stays whole and resident until the layer's last chunk moved, and a chunk exceeds the cap when one position alone does.
-- In-process and MPI device groups run one exchange protocol over a `DeviceWire` (`PeerWire` in process, NCCL under MPI); the chunked receive is untested over a multi-rank NCCL communicator, and chunk `k + 1`'s transfer does not overlap chunk `k`'s fused layer.
-- The sender-side merge costs a second fused pass on the sender, which a same-device exchange does not repay at low merge ratios.
-- The deployment rule is one GPU per partition; several partitions sharing a device (where the merge ratio above bites) is a testing configuration, not a performance one.
-- A device partition in a group cannot refine off-schedule: it runs every remote layer at the agreed bucket count and reports `Unsupported` rather than refining when a block or a received segment exceeds the fused kernel's cap.
-- A pooled allocation is reachable from a peer only once the source device's memory pool grants the destination access, on top of context peer access (`try_enable_peer_access` in `engine/gpu/wire/peer.rs`).
-- NCCL across nodes is untested.
+- Pauli strings are Hermitian everywhere they are parsed: `Y` is `(x=1, z=1)` with no phase; phases arise only from products (`mul_assign` returns `i^k`).
+- `PauliSum::from_strings` is test-only (`pauli_sum/tests.rs`); Rust tests otherwise build sums through `BuildAccumulator`.
+- A channel with support above `MAX_LOCAL_SUPPORT = 2` makes `propagate` panic; only `PauliRotation` is exempt.
+- Exact `TopN` runs at one partition only: above it every partitioned driver panics before the first layer (`TruncationPolicy::supports_partitioned`); `ApproxTopN` is partition-exact and the partitioned default.
+- Device drivers take a `BuiltinTruncation`, so a custom `TruncationPolicy` cannot run on a device.
+- From Python, multi-device and `comm=` with `device=` runs scatter and gather on every call; only the one-device `GpuPauliSum` stays resident.
+- Thread and memory pinning are Linux-only.
+- A distributed run is one partition per rank, power-of-two rank count, input replicated on every rank, raw host bytes on the wire (same architecture and `W` everywhere).
+- Partition rows are random by default; `partition_row_blocks=` and `partition_row_exclude=` are the manual levers, and automatic row choice is open (`research/FINDINGS.md §Partition rows without a known lattice`).
+- `CollapseSample` counts collapses on rank 0 only in partitioned and MPI runs, and has no device form (`GpuError::Unsupported`, `NotImplementedError` from `device=`).
+- `DistributedSum::rotated_overlap` panics unless partition rows avoid the flipped coordinates.
+- The debug test binary overflows its stack about 1 run in 4 under full parallelism; `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`, root cause open.
+- A device partition holds one export volume and one receive volume during a remote layer; `exchange_bytes` chunks the receive only.
+- An MPI device group above one rank needs NCCL ≥ 2.22 and one device per rank; the chunked receive is untested over multi-rank NCCL, and NCCL across nodes is untested.
+- A device partition in a group cannot refine off-schedule: an oversize block or segment is `Unsupported`.
+- Peer access to pooled allocations needs the memory-pool grant in `try_enable_peer_access` (`engine/gpu/wire/peer.rs`).
 
 ## Repo layout
 
 ```
 crates/paulistrings/      pure Rust core, no Python deps
-  src/                    pauli_string, phase, pauli_sum, bucket/{hash,sum}, accumulator, circuit,
+  src/                    pauli_string, phase, rng, circuit,
+                          pauli_sum/{storage,partition,hash,accumulator},
                           channel/{clifford,rotation,unitary,noise,identity,prepared},
-                          truncation/builtin, engine/{bucketed,coset,merge,direct,stats},
-                          engine/partitioned/*, engine/gpu/{columns,device,driver,error,export,
-                          finalize,fingerprint,kernels,layer,module,partition,payload,prepared,
-                          rank,scan,staging,sum,truncation,wire} (CUDA, behind `cuda`; `nccl`
-                          behind `cuda` and `mpi`),
-                          stabilizer, echo, rng, test_support
+                          truncation/{builtin,tree},
+                          engine/{bucketed,coset,merge,direct,stats,cuda_context},
+                          engine/partitioned/{backend,distributed,driver,export,layer,mpi,plan,
+                          rows,runtime,sum,topology,trace,transport,truncation},
+                          engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),
+                          readout/{product_state,stabilizer,echo}, examples, test_support
   tests/ benches/ examples/ docs/examples/
-crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39, pyo3 0.22
+crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh
 python/paulistrings/      the shipped package: extension re-export, interop.py, io.py, tests/
 benchmarks/               python/ suites, julia/ baseline, PROFILING.md, gitignored results/
@@ -224,6 +187,3 @@ docs/book/                mdBook site, published by CI; canonical for user-facin
 research/                 FINDINGS.md, HARDWARE.md
 scripts/                  setup, campaign, A/B, profiling, topology, slurm/ templates
 ```
-
-`[tool.maturin]` wires `python-source = "python"` and the module name `paulistrings._paulistrings`, which `python/paulistrings/` re-exports.
-`libc` is a `cfg(target_os = "linux")` target dependency used only for pinning and `set_mempolicy`, and num-complex carries `bytemuck` so exchange blocks cast coefficient columns to bytes without a copy.

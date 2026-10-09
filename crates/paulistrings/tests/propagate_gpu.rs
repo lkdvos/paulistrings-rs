@@ -1,22 +1,20 @@
 //! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance (ARCHITECTURE.md §Determinism).
 //! Every case returns early without a device.
 
-use paulistrings::channel::{
-    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
-};
 use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_terms_close, cancellation_channel, cancellation_sum, differential_channels_w1,
     differential_channels_w2, haar_su4_matrix, or, rand_sum, random_circuit, trotter_circuit,
-    zz_rotation, KeepAll, ShiftX, Xs64,
-};
-use paulistrings::truncation::{
-    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff,
+    with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
-    propagate, propagate_with_options, Circuit, Direction, Gf2Hash, PartitionedTruncation,
-    PauliString, PauliSum, PropagateOptions,
+    propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
+};
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff};
+use paulistrings::{
+    Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
 };
 
 const TOL: f64 = 1e-11;
@@ -37,7 +35,7 @@ fn device_run<const W: usize, T>(
     extra: &[String],
 ) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
 where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
     if let Some(o) = options {
@@ -59,7 +57,7 @@ fn check_with<const W: usize, T>(
     (options, extra): (Option<GpuLayerOptions>, &[String]),
     permuted: Option<bool>,
 ) where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -75,7 +73,7 @@ fn check_with<const W: usize, T>(
 
 fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T, name: &str)
 where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     check_with(circuit, sum, policy, name, (None, &[]), None);
 }
@@ -151,7 +149,6 @@ fn weight_three_rotation_and_a_long_trotter_run() {
     let mut acc = paulistrings::BuildAccumulator::<1>::new(20);
     acc.add_term(
         PauliString::<1>::z(0),
-        paulistrings::Phase::ONE,
         num_complex::Complex64::new(1.0, 0.0),
     );
     let small = acc.finalize();
@@ -193,15 +190,18 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
     assert!(n > 1000, "the fixture must grow");
     let matrix = [
         ("keep", T::Keep),
-        ("coeff 1e-3", T::Coeff(1e-3)),
-        ("coeff negative eps", T::Coeff(-1.0)),
+        ("coeff 1e-3", T::Coefficient(1e-3)),
+        ("coeff negative eps", T::Coefficient(-1.0)),
         ("weight 4", T::Weight(4)),
         ("approx n", T::ApproxTopN(n)),
-        ("coeff & approx", and(T::Coeff(1e-3), T::ApproxTopN(n))),
+        (
+            "coeff & approx",
+            and(T::Coefficient(1e-3), T::ApproxTopN(n)),
+        ),
         ("approx & weight", and(T::ApproxTopN(n), T::Weight(4))),
-        ("coeff | weight", or(T::Coeff(1e-3), T::Weight(4))),
+        ("coeff | weight", or(T::Coefficient(1e-3), T::Weight(4))),
         ("topn n", T::TopN(n)),
-        ("coeff & topn", and(T::Coeff(1e-6), T::TopN(n))),
+        ("coeff & topn", and(T::Coefficient(1e-6), T::TopN(n))),
         ("topn | weight", or(T::TopN(n), T::Weight(0))),
     ];
     for (name, policy) in &matrix {
@@ -265,7 +265,7 @@ fn approx_top_n_bounds_every_layer_like_the_host() {
 
 fn assert_rejected_untouched<T>(policy: &T, what: &str)
 where
-    T: PartitionedTruncation<1> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<1> + Clone + Into<BuiltinTruncation>,
 {
     let input = rand_sum::<1>(100, 8, 0x55);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
@@ -284,7 +284,7 @@ where
 fn unlowerable_policies_are_rejected_before_the_first_layer() {
     require_cuda!();
     use BuiltinTruncation as T;
-    let chain = (1..9).fold(T::Coeff(0.0), |acc, k| and(acc, T::Weight(k)));
+    let chain = (1..9).fold(T::Coefficient(0.0), |acc, k| and(acc, T::Weight(k)));
     assert_rejected_untouched(&chain, "17-node program");
 }
 
@@ -314,8 +314,8 @@ fn exact_top_n_edge_cases_match_the_host() {
 #[test]
 fn exact_top_n_is_unsupported_above_one_partition() {
     require_cuda!();
-    use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
     use paulistrings::gpu::GpuPartitionedSum;
+    use paulistrings::{PartitionConfig, Placement};
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);
     let circuit = one_layer(8, Box::new(Clifford2Q::cnot(0, 1)));
@@ -326,9 +326,7 @@ fn exact_top_n_is_unsupported_above_one_partition() {
         },
         ..PartitionConfig::default()
     };
-    let runtime = PartitionRuntime::new(&config).expect("runtime");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices(&input, runtime, &config).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices(&input, &config).expect("scatter");
     let r = split.propagate(&circuit, T::TopN(10), Direction::Forward);
     assert!(
         matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),
@@ -353,7 +351,7 @@ fn short_fingerprints_still_agree() {
     }
 }
 
-fn su4_layer<const W: usize>(num_qubits: usize, q0: u32, q1: u32) -> Circuit<W> {
+fn su4_layer<const W: usize>(num_qubits: usize, q0: usize, q1: usize) -> Circuit<W> {
     one_layer(
         num_qubits,
         Box::new(GeneralUnitary2Q::from_matrix(q0, q1, haar_su4_matrix())),
@@ -404,7 +402,7 @@ fn a_small_shared_memory_limit_still_agrees() {
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let limit = ["-DTEST_SHARED_LIMIT=40000".to_string()];
     let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &limit);
-    assert!(c.n_cap <= 2048 && c.records_max <= 2048, "{c:?}");
+    assert!(c.record_capacity <= 2048 && c.records_max <= 2048, "{c:?}");
     assert_terms_close(&got, &want, TOL, "small shared limit");
 }
 
@@ -417,13 +415,13 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
     let options = PropagateOptions {
         target_bucket_len: 1 << 20,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
-    let want = propagate_with_options(
+    let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         options,
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
@@ -431,7 +429,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
         ..GpuLayerOptions::default()
     });
-    dev.propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
+    dev.propagate_with(&circuit, KeepAll, Direction::Forward, options)
         .expect("propagate");
     let c = dev.last_layer_counters(0);
     assert!(c.refine_passes > 0, "{c:?}");
@@ -476,7 +474,7 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
     // Two buckets at upload, so the driver's schedule refines before the second layer, which cannot fit at three bits.
     let input = rand_sum::<2>(4000, 128, 0xE44);
     let seed = input.hash().seed();
-    let input = input.with_hash(Gf2Hash::new(128, 1, seed));
+    let input = with_hash(input, Gf2Hash::new(128, 1, seed));
     let su4 = || GeneralUnitary2Q::from_matrix(2, 3, haar_su4_matrix());
     let mut first = Circuit::<2>::new(128);
     first.push(zz_rotation::<2>(0, 1, 0.3));
@@ -602,12 +600,12 @@ fn output_is_bitwise_reproducible_run_to_run() {
 }
 
 /// A CNOT, a rotation with a generator in several words and an SU(4) across words, at `nq` qubits.
-fn wide_words<const W: usize>(nq: u32, seed: u64) {
-    let input = rand_sum::<W>(500, nq as usize, seed);
+fn wide_words<const W: usize>(nq: usize, seed: u64) {
+    let input = rand_sum::<W>(500, nq, seed);
     let mut gen = PauliString::<W>::x(nq - 1);
     gen.z[W / 2] |= 1 << 7;
     gen.x[W - 2] |= 1 << 60;
-    let mut c = Circuit::<W>::new(nq as usize);
+    let mut c = Circuit::<W>::new(nq);
     c.push(Clifford2Q::cnot(3, nq - 100));
     c.push(PauliRotation::new(gen, 0.3));
     c.push(GeneralUnitary2Q::from_matrix(5, nq - 60, haar_su4_matrix()));
@@ -633,7 +631,7 @@ fn propagate_gpu_front_door_and_options() {
     assert_terms_close(&got, &want, TOL, "front door");
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.enable_trace();
-    dev.propagate_with_options(
+    dev.propagate_with(
         &circuit,
         KeepAll,
         Direction::Forward,
@@ -646,7 +644,7 @@ fn propagate_gpu_front_door_and_options() {
 }
 
 /// Every Clifford runs on the permutation path (K12–K14) and agrees with the host under every policy shape, on an input holding exact-zero coefficients too; the knob returns it to the fused layer with the same result, and a rotation, a dense unitary and a key-preserving channel never take it.
-fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
+fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64) {
     use paulistrings::test_support::{random_clifford_circuit, with_zero_coefficients};
     let input = with_zero_coefficients(&rand_sum::<W>(3000, nq, 0xC11F), 7);
     assert!(input
@@ -661,12 +659,12 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
     ];
     let policies: Vec<(&str, BuiltinTruncation)> = vec![
         ("keep", BuiltinTruncation::Keep),
-        ("coeff", BuiltinTruncation::Coeff(0.5)),
+        ("coeff", BuiltinTruncation::Coefficient(0.5)),
         ("weight", BuiltinTruncation::Weight(weight as u32)),
         (
             "and",
             and(
-                BuiltinTruncation::Coeff(0.3),
+                BuiltinTruncation::Coefficient(0.3),
                 BuiltinTruncation::Weight(weight as u32),
             ),
         ),
@@ -687,7 +685,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
     let circuit = random_clifford_circuit::<W>(nq, 24, 0x5EED);
     let last_permutes = !matches!(
         circuit.channels.last().unwrap().prepare(input.hash(), false),
-        Some(paulistrings::channel::prepared::Prepared::Local(p)) if p.is_key_preserving()
+        Some(paulistrings::test_support::Prepared::Local(p)) if p.is_key_preserving()
     );
     for (pname, policy) in &policies {
         let what = format!("random clifford {pname}");
@@ -774,11 +772,10 @@ fn clifford_layers_take_the_permutation_path_w2() {
 #[test]
 fn the_permutation_path_has_no_bucket_length_cap() {
     require_cuda!();
-    let input = rand_sum::<2>(20_000, 128, 0xB16).with_hash(Gf2Hash::new(
-        128,
-        0,
-        rand_sum::<2>(1, 128, 0).hash().seed(),
-    ));
+    let input = with_hash(
+        rand_sum::<2>(20_000, 128, 0xB16),
+        Gf2Hash::new(128, 0, rand_sum::<2>(1, 128, 0).hash().seed()),
+    );
     assert_eq!(input.num_buckets(), 1);
     let opts = GpuLayerOptions {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
@@ -788,27 +785,26 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         128,
         Box::new(Clifford2Q::cnot(3, 90)) as Box<dyn Channel<2>>,
     );
-    let want = propagate_with_options(
+    let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         PropagateOptions {
             target_bucket_len: 1 << 20,
             min_buckets: 1,
-            ..PropagateOptions::default()
         },
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(opts);
-    dev.propagate_with_options(
+    dev.propagate_with(
         &circuit,
         KeepAll,
         Direction::Forward,
         PropagateOptions {
             target_bucket_len: 1 << 20,
             min_buckets: 1,
-            ..PropagateOptions::default()
         },
     )
     .expect("device propagate");

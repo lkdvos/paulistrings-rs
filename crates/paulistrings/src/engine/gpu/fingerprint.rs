@@ -5,7 +5,7 @@
 use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Mixed into the hash seed before drawing the fingerprint rows, so `G` is unrelated to the `Gf2Hash` and `PartitionRows` rows of the same seed.
-pub(crate) const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
+const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 
 /// Rows of `G`, one bit of `g` each.
 pub(crate) const FP_ROWS: usize = 64;
@@ -19,7 +19,7 @@ pub(crate) struct FingerprintRows<const W: usize> {
 
 impl<const W: usize> FingerprintRows<W> {
     /// Rows drawn by splitmix64 from `hash_seed ^ FINGERPRINT_SALT`.
-    /// Not the crate's xorshift: its consecutive outputs are GF(2)-linear in one state, so `rows_z = M·rows_x` and low-weight keys collide.
+    // Not xorshift: research/FINDINGS.md §`Gf2Hash` rows are splitmix64, not xorshift successors
     pub(crate) fn new(hash_seed: u64) -> Self {
         let mut state = hash_seed ^ FINGERPRINT_SALT;
         let mut next = || {
@@ -39,11 +39,11 @@ impl<const W: usize> FingerprintRows<W> {
     pub(crate) fn fingerprint(&self, x: &[u64; W], z: &[u64; W]) -> u64 {
         let mut out = 0u64;
         for r in 0..FP_ROWS {
-            let mut acc = 0u64;
+            let mut parity = 0u64;
             for w in 0..W {
-                acc ^= (x[w] & self.rows_x[r][w]) ^ (z[w] & self.rows_z[r][w]);
+                parity ^= (x[w] & self.rows_x[r][w]) ^ (z[w] & self.rows_z[r][w]);
             }
-            out |= u64::from(acc.count_ones() & 1) << r;
+            out |= u64::from(parity.count_ones() & 1) << r;
         }
         out
     }
@@ -60,82 +60,4 @@ impl<const W: usize> FingerprintRows<W> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::bucket::sum::DEFAULT_HASH_SEED;
-    use crate::test_support::Xs64;
-
-    fn rand_key<const W: usize>(rng: &mut Xs64) -> ([u64; W], [u64; W]) {
-        (rng.next_array::<W>(), rng.next_array::<W>())
-    }
-
-    fn check_linear<const W: usize>(seed: u64) {
-        let fp = FingerprintRows::<W>::new(seed);
-        let mut rng = Xs64::new(seed ^ 0x5EED);
-        for _ in 0..1000 {
-            let (ax, az) = rand_key::<W>(&mut rng);
-            let (bx, bz) = rand_key::<W>(&mut rng);
-            let cx: [u64; W] = std::array::from_fn(|w| ax[w] ^ bx[w]);
-            let cz: [u64; W] = std::array::from_fn(|w| az[w] ^ bz[w]);
-            assert_eq!(
-                fp.fingerprint(&cx, &cz),
-                fp.fingerprint(&ax, &az) ^ fp.fingerprint(&bx, &bz),
-                "W={W}"
-            );
-        }
-    }
-
-    #[test]
-    fn fingerprint_is_gf2_linear_on_random_pairs() {
-        check_linear::<1>(DEFAULT_HASH_SEED);
-        check_linear::<2>(DEFAULT_HASH_SEED);
-        check_linear::<2>(0xF00D);
-    }
-
-    #[test]
-    fn a_single_bit_key_reads_one_column_of_g() {
-        let fp = FingerprintRows::<2>::new(DEFAULT_HASH_SEED);
-        assert_eq!(fp.fingerprint(&[0, 0], &[0, 0]), 0);
-        for q in [0usize, 5, 63, 64, 100, 127] {
-            let (w, b) = (q / 64, q % 64);
-            let mut x = [0u64; 2];
-            x[w] = 1 << b;
-            let want_x: u64 = (0..FP_ROWS)
-                .map(|r| ((fp.rows_x[r][w] >> b) & 1) << r)
-                .sum();
-            assert_eq!(fp.fingerprint(&x, &[0, 0]), want_x, "x on qubit {q}");
-            let want_z: u64 = (0..FP_ROWS)
-                .map(|r| ((fp.rows_z[r][w] >> b) & 1) << r)
-                .sum();
-            assert_eq!(fp.fingerprint(&[0, 0], &x), want_z, "z on qubit {q}");
-        }
-    }
-
-    /// Every distinct key of weight at most two on 64 qubits gets a distinct 64-bit fingerprint.
-    #[test]
-    fn fingerprint_is_injective_on_weight_two_keys_at_64_qubits() {
-        let single: Vec<([u64; 1], [u64; 1])> = (0..64)
-            .flat_map(|q| {
-                let b = 1u64 << q;
-                [([b], [0]), ([0], [b]), ([b], [b])]
-            })
-            .collect();
-        let mut keys: Vec<([u64; 1], [u64; 1])> = vec![([0], [0])];
-        keys.extend(single.iter().copied());
-        for (i, a) in single.iter().enumerate() {
-            for b in &single[i + 1..] {
-                if (a.0[0] | a.1[0]) & (b.0[0] | b.1[0]) == 0 {
-                    keys.push(([a.0[0] | b.0[0]], [a.1[0] | b.1[0]]));
-                }
-            }
-        }
-        assert_eq!(keys.len(), 1 + 64 * 3 + 2016 * 9);
-        for seed in [DEFAULT_HASH_SEED, 0, 1, 0xF00D, 0xC0FFEE] {
-            let fp = FingerprintRows::<1>::new(seed);
-            let mut g: Vec<u64> = keys.iter().map(|(x, z)| fp.fingerprint(x, z)).collect();
-            g.sort_unstable();
-            g.dedup();
-            assert_eq!(g.len(), keys.len(), "seed {seed:#x}: fingerprint collision");
-        }
-    }
-}
+mod tests;

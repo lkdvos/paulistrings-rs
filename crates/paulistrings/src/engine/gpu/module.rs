@@ -45,8 +45,7 @@ const KERNEL_SOURCES: &[&str] = &[
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; must match `CAP` in `kernels/prelude.cuh`.
-/// A device with a smaller opt-in limit loads fewer variants and [`KernelSet::layer_cap`] is lower.
-pub(crate) const LAYER_CAP: usize = 8192;
+const LAYER_CAP: usize = 8192;
 
 /// Test hook: an extra option `-DTEST_SHARED_LIMIT=<bytes>` caps the opt-in shared memory the loader assumes, which is inert to NVRTC.
 const TEST_SHARED_LIMIT: &str = "-DTEST_SHARED_LIMIT=";
@@ -63,9 +62,9 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
     }
 }
 
-/// Dynamic shared bytes the fused layer needs for `n_cap` records, the `carve` layout in `kernels/layer.cu`.
-pub(crate) fn layer_shared_bytes(n_cap: usize, w: usize) -> u32 {
-    (11 * n_cap + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
+/// Dynamic shared bytes the fused layer needs for `capacity` records, the `carve` layout in `kernels/layer.cu`.
+pub(crate) fn layer_shared_bytes(capacity: usize, w: usize) -> u32 {
+    (11 * capacity + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
 }
 
 /// One warp per bucket over `b` buckets, eight warps a block.
@@ -107,11 +106,11 @@ pub(crate) struct KernelSet {
     pub(crate) premerge_copy: CudaFunction,
     pub(crate) compact: CudaFunction,
     pub(crate) rescale: CudaFunction,
-    pub(crate) perm_count: CudaFunction,
-    pub(crate) perm_lens: CudaFunction,
-    pub(crate) perm_scatter: CudaFunction,
-    pub(crate) octave_hist: CudaFunction,
-    pub(crate) radix_hist: CudaFunction,
+    pub(crate) permute_count: CudaFunction,
+    pub(crate) permute_lengths: CudaFunction,
+    pub(crate) permute_scatter: CudaFunction,
+    pub(crate) octave_histogram: CudaFunction,
+    pub(crate) radix_histogram: CudaFunction,
     pub(crate) radix_extract: CudaFunction,
     pub(crate) topn_counts: CudaFunction,
     pub(crate) retain: CudaFunction,
@@ -134,7 +133,6 @@ thread_local! {
 }
 
 /// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook); needs only NVRTC, no device.
-/// A hit on the on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`) skips NVRTC; a miss compiles and writes back, best-effort.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,
@@ -143,25 +141,27 @@ pub(crate) fn compile_ptx(
     if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libnvrtc"));
     }
-    let src = KERNEL_SOURCES.concat();
+    let source = KERNEL_SOURCES.concat();
     let mut options = vec![format!("-DW={w}"), "--std=c++17".to_string()];
     options.extend_from_slice(extra_options);
-    let opts = CompileOptions {
+    let compile_options = CompileOptions {
         arch: Some(arch_static(arch)),
         fmad: Some(false),
         options,
         ..Default::default()
     };
-    if let Some(ptx) = kernel_cache::lookup(&src, &opts) {
+    if let Some(ptx) = kernel_cache::lookup(&source, &compile_options) {
         return Ok(ptx);
     }
     #[cfg(any(test, feature = "test-utils"))]
-    NVRTC_COMPILES.with(|c| c.set(c.get() + 1));
-    let ptx = compile_ptx_with_opts(src.clone(), opts.clone()).map_err(|e| GpuError::Compile {
-        w,
-        log: e.to_string(),
+    NVRTC_COMPILES.with(|count| count.set(count.get() + 1));
+    let ptx = compile_ptx_with_opts(source.clone(), compile_options.clone()).map_err(|e| {
+        GpuError::Compile {
+            width: w,
+            log: e.to_string(),
+        }
     })?;
-    kernel_cache::store(&src, &opts, &ptx.to_src());
+    kernel_cache::store(&source, &compile_options, &ptx.to_src());
     Ok(ptx)
 }
 
@@ -201,35 +201,35 @@ pub(crate) fn kernel_set_with_options(
     {
         return Ok(set.clone());
     }
-    let ctx = device::context(ordinal)?;
-    let (major, minor) = ctx.compute_capability().map_err(GpuError::from)?;
+    let context = device::context(ordinal)?;
+    let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
     let ptx = compile_ptx(w, &arch, extra_options)?;
-    let module = ctx.load_module(ptx).map_err(GpuError::from)?;
-    let f = |name: &str| module.load_function(name).map_err(GpuError::from);
+    let module = context.load_module(ptx).map_err(GpuError::from)?;
+    let load = |name: &str| module.load_function(name).map_err(GpuError::from);
     let threads = layer_threads(w) as usize;
-    let mut limit = ctx
+    let mut limit = context
         .attribute(CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)
         .map_err(GpuError::from)?
         .max(0) as usize;
     if let Some(cap) = extra_options
         .iter()
-        .find_map(|o| o.strip_prefix(TEST_SHARED_LIMIT))
-        .and_then(|v| v.parse::<usize>().ok())
+        .find_map(|option| option.strip_prefix(TEST_SHARED_LIMIT))
+        .and_then(|value| value.parse::<usize>().ok())
     {
         limit = limit.min(cap);
     }
     let mut layer = Vec::new();
     let mut items = 1usize;
     while items * threads <= LAYER_CAP && layer_shared_bytes(items * threads, w) as usize <= limit {
-        let smem = layer_shared_bytes(items * threads, w) as i32;
-        let serial = f(&format!("k_layer_serial_{items}"))?;
-        let segscan = f(&format!("k_layer_segscan_{items}"))?;
+        let shared_bytes = layer_shared_bytes(items * threads, w) as i32;
+        let serial = load(&format!("k_layer_serial_{items}"))?;
+        let segscan = load(&format!("k_layer_segscan_{items}"))?;
         // Opt-in shared memory above the 48 KB default; the attribute is per function.
         for func in [&serial, &segscan] {
             func.set_attribute(
                 CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
-                smem,
+                shared_bytes,
             )
             .map_err(GpuError::from)?;
         }
@@ -246,30 +246,30 @@ pub(crate) fn kernel_set_with_options(
         ));
     }
     let set = Arc::new(KernelSet {
-        fingerprint: f("k_fingerprint")?,
-        scan_block: f("k_scan_block")?,
-        scan_single: f("k_scan_single")?,
-        scan_add: f("k_scan_add")?,
-        refine_count: f("k_refine_count")?,
-        refine_scatter: f("k_refine_scatter")?,
-        check_invariants: f("k_check_invariants")?,
-        count: f("k_count")?,
-        rows: f("k_rows")?,
-        export_counts: f("k_export_counts")?,
-        export_fill: f("k_export_fill")?,
-        premerge_counts: f("k_premerge_counts")?,
-        premerge_split: f("k_premerge_split")?,
-        premerge_copy: f("k_premerge_copy")?,
-        compact: f("k_compact")?,
-        rescale: f("k_rescale")?,
-        perm_count: f("k_perm_count")?,
-        perm_lens: f("k_perm_lens")?,
-        perm_scatter: f("k_perm_scatter")?,
-        octave_hist: f("k_octave_hist")?,
-        radix_hist: f("k_radix_hist")?,
-        radix_extract: f("k_radix_extract")?,
-        topn_counts: f("k_topn_counts")?,
-        retain: f("k_retain")?,
+        fingerprint: load("k_fingerprint")?,
+        scan_block: load("k_scan_block")?,
+        scan_single: load("k_scan_single")?,
+        scan_add: load("k_scan_add")?,
+        refine_count: load("k_refine_count")?,
+        refine_scatter: load("k_refine_scatter")?,
+        check_invariants: load("k_check_invariants")?,
+        count: load("k_count")?,
+        rows: load("k_rows")?,
+        export_counts: load("k_export_counts")?,
+        export_fill: load("k_export_fill")?,
+        premerge_counts: load("k_premerge_counts")?,
+        premerge_split: load("k_premerge_split")?,
+        premerge_copy: load("k_premerge_copy")?,
+        compact: load("k_compact")?,
+        rescale: load("k_rescale")?,
+        permute_count: load("k_perm_count")?,
+        permute_lengths: load("k_perm_lens")?,
+        permute_scatter: load("k_perm_scatter")?,
+        octave_histogram: load("k_octave_hist")?,
+        radix_histogram: load("k_radix_hist")?,
+        radix_extract: load("k_radix_extract")?,
+        topn_counts: load("k_topn_counts")?,
+        retain: load("k_retain")?,
         layer,
         threads,
     });
@@ -281,80 +281,4 @@ pub(crate) fn kernel_set_with_options(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// CI-runnable: needs NVRTC only, no device or driver.
-    #[test]
-    fn kernels_compile_for_every_width() {
-        if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
-            return;
-        }
-        for w in [1usize, 2, 4, 8, 16] {
-            compile_ptx(w, "compute_80", &[]).unwrap_or_else(|e| panic!("W={w}: {e}"));
-        }
-        compile_ptx(2, "compute_80", &["-DFP_BITS=8".to_string()])
-            .unwrap_or_else(|e| panic!("FP_BITS=8: {e}"));
-    }
-
-    #[test]
-    fn layer_variants_cover_the_record_cap_at_every_width() {
-        crate::require_cuda!();
-        for w in [1usize, 2, 4, 8, 16] {
-            let set = kernel_set(0, w).expect("compile+load");
-            let threads = layer_threads(w) as usize;
-            let largest = set.layer.last().expect("at least one variant").items;
-            assert_eq!(largest * threads, LAYER_CAP, "W={w}");
-            assert!(set.layer.windows(2).all(|p| p[1].items == 2 * p[0].items));
-        }
-    }
-
-    /// Every fused-layer variant honours its `__launch_bounds__` register budget and spills at most a few words; `--nocapture` prints the footprint.
-    #[test]
-    fn layer_variants_fit_their_register_budget() {
-        crate::require_cuda!();
-        use cudarc::driver::sys::CUfunction_attribute::{
-            CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, CU_FUNC_ATTRIBUTE_NUM_REGS,
-        };
-        for w in [1usize, 2, 4, 8, 16] {
-            let set = kernel_set(0, w).expect("compile+load");
-            let budget = 65_536 / layer_threads(w) as i32;
-            for v in &set.layer {
-                for (name, f) in [("serial", &v.serial), ("segscan", &v.segscan)] {
-                    let regs = f.get_attribute(CU_FUNC_ATTRIBUTE_NUM_REGS).unwrap();
-                    let local = f.get_attribute(CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES).unwrap();
-                    println!(
-                        "W={w} items={} {name}: {regs} regs, {local} B local",
-                        v.items
-                    );
-                    assert!(
-                        regs <= budget,
-                        "W={w} items={} {name}: {regs} regs",
-                        v.items
-                    );
-                    assert!(
-                        local < 1024,
-                        "W={w} items={} {name}: {local} B local",
-                        v.items
-                    );
-                }
-            }
-        }
-    }
-
-    /// A device with less opt-in shared memory loads fewer variants, and the loader never fails on it.
-    #[test]
-    fn a_small_shared_memory_limit_loads_fewer_variants() {
-        crate::require_cuda!();
-        let set = kernel_set_with_options(0, 2, &["-DTEST_SHARED_LIMIT=40000".to_string()])
-            .expect("load");
-        assert_eq!(set.layer.len(), 2);
-        assert_eq!(set.layer_cap(), 2048);
-        assert!(matches!(
-            kernel_set_with_options(0, 2, &["-DTEST_SHARED_LIMIT=1000".to_string()]),
-            Err(GpuError::Unsupported(_))
-        ));
-        let full = kernel_set(0, 2).expect("load");
-        assert_eq!(full.layer_cap(), LAYER_CAP);
-    }
-}
+mod tests;

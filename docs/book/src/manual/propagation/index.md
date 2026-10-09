@@ -31,7 +31,7 @@ Three arguments carry the physics and one carries the cost.
 The GIL is released for the duration of the call.
 
 `propagate_with_stats` takes the same arguments and returns `(evolved, stats)`, where `stats` is a `PropagationStats` with per-layer term counts and timings; enabling it does not change the evolved sum — [Stats, memory and logging](settings.md#stats).
-The remaining keyword arguments (`engine`, `partitions`, `comm`, `device`, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the [settings](settings.md#engine-selection), [NUMA partitions](partitions.md), [MPI ranks](mpi.md) and [CUDA devices](gpu.md) pages.
+The remaining keyword arguments (`partitions`, `comm`, `device`, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the [settings](settings.md#bucket-sizing), [NUMA partitions](partitions.md), [MPI ranks](mpi.md) and [CUDA devices](gpu.md) pages.
 The full signature is in the [Library](../../library/propagate.md).
 
 ## The loop {#the-loop}

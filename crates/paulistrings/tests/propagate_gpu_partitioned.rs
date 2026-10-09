@@ -2,24 +2,23 @@
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
-use paulistrings::engine::partitioned::{
-    count_remote_deltas, PartitionConfig, PartitionRuntime, Placement,
-};
 use paulistrings::gpu::{
     GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
 };
 use paulistrings::require_cuda;
+use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
     assert_same_terms, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
-    rows_reading_z63, su4_chain, trotter_circuit, x0_terms_identity_on_q63, zz_rotation, KeepAll,
-};
-use paulistrings::truncation::{
-    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff,
+    rows_reading_z63, su4_chain, trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation,
+    KeepAll,
 };
 use paulistrings::{
-    propagate, propagate_with_options, Circuit, Direction, PartitionRows, PartitionedTruncation,
-    PauliSum, PropagateOptions,
+    propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
+use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
+use paulistrings::{ScatterOptions, ScatterRows};
 
 const TOL: f64 = 1e-11;
 const THETA: f64 = 0.1;
@@ -64,8 +63,7 @@ fn config(partitions: usize) -> PartitionConfig {
 
 /// A split of `sum` over `p` partitions.
 fn split_of<const W: usize>(sum: &PauliSum<W>, p: usize) -> GpuPartitionedSum<W> {
-    let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-    GpuPartitionedSum::scatter_to_devices(sum, runtime, &config(p)).expect("scatter")
+    GpuPartitionedSum::scatter_to_devices(sum, &config(p)).expect("scatter")
 }
 
 /// One propagation and gather.
@@ -77,7 +75,7 @@ fn run<const W: usize, T>(
     p: usize,
 ) -> Result<PauliSum<W>, GpuError>
 where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     let mut split = split_of(sum, p);
     split.propagate(circuit, policy, direction)?;
@@ -91,7 +89,7 @@ fn check<const W: usize, T>(
     name: &str,
     partitions: &[usize],
 ) where
-    T: PartitionedTruncation<W> + Clone + Into<BuiltinTruncation>,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -180,7 +178,7 @@ fn a_rotation_crossing_the_partition_agrees() {
     let sum = rand_sum::<1>(2_000, nq, 0xC2055);
     for p in [2usize, 4] {
         let rows = PartitionRows::<1>::from_seed(nq, p.trailing_zeros() as u8, ROW_SEED);
-        let q1 = (1..nq as u32)
+        let q1 = (1..nq)
             .find(|&q1| {
                 let mut c = Circuit::<1>::new(nq);
                 c.push(zz_rotation::<1>(0, q1, 0.3));
@@ -190,9 +188,7 @@ fn a_rotation_crossing_the_partition_agrees() {
         let mut circuit = Circuit::<1>::new(nq);
         for k in 0..4 {
             circuit.push(zz_rotation::<1>(0, q1, 0.3 + 0.1 * k as f64));
-            circuit.push(paulistrings::channel::Clifford1Q::h(
-                (k as u32 + 3) % nq as u32,
-            ));
+            circuit.push(paulistrings::Clifford1Q::h((k + 3) % nq));
         }
         check(&circuit, &sum, &KeepAll, "crossing zz", &[p]);
         check(
@@ -205,7 +201,7 @@ fn a_rotation_crossing_the_partition_agrees() {
     }
 }
 
-/// Cut rows: one qubit block per partition, scattered through `scatter_to_devices_with_rows`.
+/// Cut rows: one qubit block per partition, scattered through `scatter_to_devices_with`.
 #[test]
 fn cut_rows_agree() {
     require_cuda!();
@@ -213,16 +209,21 @@ fn cut_rows_agree() {
     let sum = rand_sum_real::<1>(1_500, nq, 0xC077);
     let circuit = trotter_circuit::<1>(nq, THETA);
     for p in [2usize, 4] {
-        let blocks: Vec<Vec<u32>> = (0..p)
-            .map(|k| ((k * nq / p) as u32..((k + 1) * nq / p) as u32).collect())
+        let blocks: Vec<Vec<usize>> = (0..p)
+            .map(|k| (k * nq / p..(k + 1) * nq / p).collect())
             .collect();
         let rows = PartitionRows::<1>::cut(nq, &blocks);
         for direction in [Direction::Forward, Direction::Heisenberg] {
             let want = propagate(&circuit, sum.clone(), &ApproxTopN(2_500), direction);
             let runtime = PartitionRuntime::new(&config(p)).expect("placement");
-            let mut split =
-                GpuPartitionedSum::scatter_to_devices_with_rows(&sum, rows.clone(), runtime)
-                    .expect("scatter");
+            let mut split = GpuPartitionedSum::scatter_to_devices_with(
+                &sum,
+                ScatterOptions {
+                    runtime,
+                    rows: ScatterRows::Explicit(rows.clone()),
+                },
+            )
+            .expect("scatter");
             split.enable_trace();
             split
                 .propagate(&circuit, ApproxTopN(2_500), direction)
@@ -334,13 +335,19 @@ fn options_are_honoured() {
     let options = PropagateOptions {
         target_bucket_len: 32,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
-    let want = propagate_with_options(&circuit, sum.clone(), &KeepAll, Direction::Forward, options);
+    let want = propagate_with(
+        &circuit,
+        sum.clone(),
+        &KeepAll,
+        Direction::Forward,
+        &mut LayerScratch::new(),
+        options,
+    );
     for &p in &PS {
         let mut split = split_of(&sum, p);
         split
-            .propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
+            .propagate_with(&circuit, KeepAll, Direction::Forward, options)
             .expect("propagate");
         assert_terms_close(
             &split.gather().expect("gather"),
@@ -483,8 +490,8 @@ fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
     let input = x0_terms_identity_on_q63(500, 0xE0);
     let mut circuit = Circuit::<1>::new(64);
     circuit.push(zz_rotation::<1>(0, 63, 0.3));
-    circuit.push(paulistrings::channel::Clifford1Q::h(5));
-    circuit.push(paulistrings::channel::Clifford2Q::cnot(2, 63));
+    circuit.push(paulistrings::Clifford1Q::h(5));
+    circuit.push(paulistrings::Clifford2Q::cnot(2, 63));
     circuit.push(zz_rotation::<1>(7, 63, 0.4));
     let rows = rows_reading_z63();
     assert!(
@@ -493,8 +500,14 @@ fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
     );
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices_with_rows(&input, rows, runtime).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &input,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    )
+    .expect("scatter");
     split
         .propagate(&circuit, KeepAll, Direction::Forward)
         .expect("propagate");
@@ -513,29 +526,34 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     let options = PropagateOptions {
         target_bucket_len: 1 << 20,
         min_buckets: 1,
-        ..PropagateOptions::default()
     };
     let input = x0_terms_identity_on_q63(MAX_BUCKET_LEN + MAX_BUCKET_LEN / 2, 0xF3);
     let seed = input.hash().seed();
-    let input = input.with_hash(paulistrings::Gf2Hash::new(64, 1, seed));
-    let want = propagate_with_options(
+    let input = with_hash(input, paulistrings::Gf2Hash::new(64, 1, seed));
+    let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
+        &mut LayerScratch::new(),
         options,
     );
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices_with_rows(&input, rows_reading_z63(), runtime)
-            .expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &input,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows_reading_z63()),
+        },
+    )
+    .expect("scatter");
     split.set_layer_options(GpuLayerOptions {
         bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
         ..GpuLayerOptions::default()
     });
     split.enable_trace();
     split
-        .propagate_with_options(&circuit, KeepAll, Direction::Forward, options)
+        .propagate_with(&circuit, KeepAll, Direction::Forward, options)
         .expect("a block over two fitting segments is merged");
     let trace = split.take_trace().expect("tracing on");
     let sent: u64 = trace.layers[0].rows_sent[0].iter().sum();
@@ -552,13 +570,14 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
 #[test]
 fn an_agreed_count_below_the_devices_need_is_unsupported() {
     require_cuda!();
-    use paulistrings::channel::GeneralUnitary2Q;
     use paulistrings::test_support::haar_su4_matrix;
+    use paulistrings::GeneralUnitary2Q;
     // One bucket in, so the scatter keeps one bucket and the agreement stays there under the capped proposal.
     let sum = rand_sum::<1>(20_000, 10, 0x1F03);
-    let sum = sum
-        .clone()
-        .with_hash(paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()));
+    let sum = with_hash(
+        sum.clone(),
+        paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()),
+    );
     let mut circuit = Circuit::<1>::new(10);
     circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
     let mut split = split_of(&sum, 2);
@@ -570,9 +589,8 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
     let options = PropagateOptions {
         target_bucket_len: 1 << 20,
         min_buckets: 1,
-        ..PropagateOptions::default()
     };
-    let r = split.propagate_with_options(&circuit, KeepAll, Direction::Forward, options);
+    let r = split.propagate_with(&circuit, KeepAll, Direction::Forward, options);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{r:?}");
 }
 
@@ -591,8 +609,14 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
         Direction::Forward,
     );
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
-    let mut split = GpuPartitionedSum::scatter_to_devices_with_rows(&sum, rows.clone(), runtime)
-        .expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows.clone()),
+        },
+    )
+    .expect("scatter");
     split.enable_trace();
     split
         .propagate(&circuit, ApproxTopN(4_000), Direction::Forward)
@@ -609,11 +633,11 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
 #[test]
 fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     require_cuda!();
-    use paulistrings::channel::{Clifford1Q, Clifford2Q, GeneralUnitary2Q};
     use paulistrings::test_support::haar_su4_matrix;
+    use paulistrings::{Clifford1Q, Clifford2Q, GeneralUnitary2Q};
     let nq = 16;
     let sum = rand_sum::<1>(1_500, nq, 0x1F06);
-    let blocks: Vec<Vec<u32>> = (0..4).map(|k| (4 * k..4 * k + 4).collect()).collect();
+    let blocks: Vec<Vec<usize>> = (0..4).map(|k| (4 * k..4 * k + 4).collect()).collect();
     let rows = PartitionRows::<1>::cut(nq, &blocks);
     let mut circuit = Circuit::<1>::new(nq);
     circuit.push(Clifford2Q::cnot(0, 4));
@@ -627,8 +651,14 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     circuit.push(Clifford2Q::cnot(12, 14));
     circuit.push(zz_rotation::<1>(3, 5, 0.25));
     let runtime = PartitionRuntime::new(&config(4)).expect("placement");
-    let mut split =
-        GpuPartitionedSum::scatter_to_devices_with_rows(&sum, rows, runtime).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(
+        &sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    )
+    .expect("scatter");
     split.enable_trace();
     split
         .propagate(&circuit, ApproxTopN(6_000), Direction::Forward)
@@ -643,13 +673,13 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
         let ch = &circuit.channels[layer.circuit_index as usize];
         let mut deltas = std::collections::HashSet::new();
         match ch.prepare(hash, false).expect("prepared") {
-            paulistrings::channel::prepared::Prepared::Local(ptm) => {
+            paulistrings::test_support::Prepared::Local(ptm) => {
                 for d in ptm.deltas() {
                     deltas.insert(rows.partition_of(&d.mask_x, &d.mask_z));
                 }
             }
-            paulistrings::channel::prepared::Prepared::Rotation(r) => {
-                deltas.insert(rows.partition_of(&r.gen.x, &r.gen.z));
+            paulistrings::test_support::Prepared::Rotation(r) => {
+                deltas.insert(rows.partition_of(&r.generator.x, &r.generator.z));
             }
         }
         for r in 0..4 {
@@ -742,8 +772,8 @@ fn premerge_ships_fewer_rows_on_dense_layers_and_agrees_w2() {
 #[test]
 fn premerge_with_exactly_cancelling_rows_agrees() {
     require_cuda!();
-    use paulistrings::channel::GeneralUnitary2Q;
     use paulistrings::test_support::sqrt_swap_matrix;
+    use paulistrings::GeneralUnitary2Q;
     let nq = 8;
     let base = rand_sum_real::<1>(400, nq, 0x9E3);
     let mut acc = paulistrings::BuildAccumulator::<1>::new(nq);
@@ -758,8 +788,8 @@ fn premerge_with_exactly_cancelling_rows_agrees() {
         if v == w {
             continue;
         }
-        acc.add_term(v, paulistrings::Phase::ONE, c);
-        acc.add_term(w, paulistrings::Phase::ONE, -c);
+        acc.add_term(v, c);
+        acc.add_term(w, -c);
     }
     let sum = acc.finalize();
     let mut circuit = Circuit::<1>::new(nq);
@@ -797,11 +827,11 @@ fn capped_split<const W: usize>(
 fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
     let sum = rand_sum::<W>(n, nq, seed);
     let circuit = su4_chain::<W>(nq);
-    let layers: Vec<Circuit<W>> = [(0u32, 1u32), (1, 2), (0, 1), (2, 3)]
+    let layers: Vec<Circuit<W>> = [(0, 1), (1, 2), (0, 1), (2, 3)]
         .iter()
         .map(|&(a, b)| {
             let mut c = Circuit::<W>::new(nq);
-            c.push(paulistrings::channel::GeneralUnitary2Q::from_matrix(
+            c.push(paulistrings::GeneralUnitary2Q::from_matrix(
                 a,
                 b,
                 paulistrings::test_support::haar_su4_matrix(),
@@ -897,8 +927,8 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
 #[test]
 fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
     require_cuda!();
-    use paulistrings::channel::Clifford1Q;
     use paulistrings::test_support::random_clifford_circuit;
+    use paulistrings::Clifford1Q;
     let nq = 12;
     let sum = rand_sum::<1>(2000, nq, 0xC11F);
     let circuit = random_clifford_circuit::<1>(nq, 30, 0xC1FF);
@@ -913,11 +943,9 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
     for p in [2usize, 4] {
         let mut split = split_of(&sum, p);
         // `H` on `q` has the one delta `X_q Z_q`; local when the partition rows read it as zero.
-        let delta_local = |q: u32| split.rows().partition_of(&[1u64 << q], &[1u64 << q]) == 0;
-        let local = (0..nq as u32).find(|&q| delta_local(q)).expect("a local H");
-        let remote = (0..nq as u32)
-            .find(|&q| !delta_local(q))
-            .expect("a crossing H");
+        let delta_local = |q: usize| split.rows().partition_of(&[1u64 << q], &[1u64 << q]) == 0;
+        let local = (0..nq).find(|&q| delta_local(q)).expect("a local H");
+        let remote = (0..nq).find(|&q| !delta_local(q)).expect("a crossing H");
         let mut c = Circuit::<1>::new(nq);
         c.push(Clifford1Q::h(local));
         split

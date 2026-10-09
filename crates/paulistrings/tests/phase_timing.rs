@@ -4,17 +4,17 @@
 //! passing under `--features phase-timing`.
 #![cfg(feature = "phase-timing")]
 
-use paulistrings::channel::{Depolarizing, PauliRotation};
-use paulistrings::engine::partitioned::{
-    DistributedSum, InProcessTransport, PartitionRuntime, PartitionedSum,
-};
+use paulistrings::test_support::InProcessTransport;
+use paulistrings::{Depolarizing, PauliRotation};
+use paulistrings::{DistributedSum, PartitionRuntime, PartitionedSum, ScatterOptions, ScatterRows};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
-use paulistrings::test_support::{rand_sum_real, unpinned_partitions, zz_rotation, KeepAll};
+use paulistrings::test_support::{
+    partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
+};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PartitionRows, PauliString,
-    PhaseStats,
+    propagate_with, Circuit, Direction, LayerScratch, PauliString, PhaseStats, PropagateOptions,
 };
 
 #[test]
@@ -34,7 +34,14 @@ fn stats_sum_approximates_total() {
         .expect("pool");
     let mut scratch = LayerScratch::<1>::new();
     let out = pool.install(|| {
-        propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Heisenberg, &mut scratch)
+        propagate_with(
+            &circuit,
+            sum,
+            &KeepAll,
+            Direction::Heisenberg,
+            &mut scratch,
+            PropagateOptions::default(),
+        )
     });
     assert!(!out.is_empty());
 
@@ -76,7 +83,14 @@ fn take_stats_drains() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let first = scratch.take_stats();
     assert!(first.layers == 1 && first.coset_loop_ns > 0);
@@ -94,7 +108,14 @@ fn rescale_path_is_attributed() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xACE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let stats = scratch.take_stats();
     assert!(stats.rescale_ns > 0, "{stats:?}");
@@ -136,8 +157,14 @@ fn partitioned_stats_are_attributed() {
 
     let config = unpinned_partitions(2, 1, 0x51A75);
     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
-    let mut split = PartitionedSum::scatter_with_rows(sum, rows, runtime);
+    let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
+    let mut split = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    );
 
     let started = std::time::Instant::now();
     split.propagate(&circuit, &KeepAll, Direction::Forward);
@@ -205,9 +232,15 @@ fn distributed_stats_are_attributed() {
                 scope.spawn(move || {
                     let config = unpinned_partitions(1, 1, 0x51A75);
                     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-                    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
-                    let mut split =
-                        DistributedSum::scatter_with_rows(sum, transport, runtime, rows);
+                    let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
+                    let mut split = DistributedSum::scatter_with(
+                        sum,
+                        transport,
+                        ScatterOptions {
+                            runtime,
+                            rows: ScatterRows::Explicit(rows),
+                        },
+                    );
 
                     let started = std::time::Instant::now();
                     split.propagate(circuit, &KeepAll, Direction::Forward);
@@ -267,7 +300,14 @@ fn the_unpartitioned_engine_reports_no_exchange() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let stats = scratch.take_stats();
     assert_eq!(stats.collective_ns, 0, "{stats:?}");

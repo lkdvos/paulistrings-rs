@@ -9,18 +9,13 @@
 //! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
-use paulistrings::engine::partitioned::{
-    propagate_partitioned, propagate_partitioned_with_options, PartitionConfig, Placement,
-};
 use paulistrings::test_support::{
     assert_terms_close, rand_sum, rand_sum_real, random_circuit, trotter_circuit,
     unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::truncation::{And, ApproxTopN, CoefficientThreshold, WeightCutoff};
-use paulistrings::{
-    propagate, Circuit, Direction, PartitionedTruncation, PauliSum, PropagateOptions,
-    TruncationPolicy,
-};
+use paulistrings::{propagate, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy};
+use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
@@ -42,13 +37,20 @@ fn check<const W: usize, T>(
     name: &str,
     partitions: &[usize],
 ) where
-    T: PartitionedTruncation<W> + ?Sized,
+    T: TruncationPolicy<W> + ?Sized,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
         for &p in partitions {
-            let got = propagate_partitioned(circuit, sum.clone(), policy, direction, &config(p))
-                .expect("topology resolves");
+            let got = propagate_partitioned(
+                circuit,
+                sum.clone(),
+                policy,
+                direction,
+                &config(p),
+                PropagateOptions::default(),
+            )
+            .expect("topology resolves");
             let what = format!("{name} P={p} {direction:?}");
             assert_terms_close(&got, &want, TOL, &what);
             assert_eq!(got.len(), want.len(), "{what}: term count");
@@ -85,10 +87,13 @@ fn trotter_matches_propagate_w2() {
 /// `BuiltinTruncation` drives the partitioned engines through its own `finalize_layer_partitioned`, one collective per layer as the builtin `And` it names.
 #[test]
 fn builtin_truncation_tree_matches_propagate() {
-    use paulistrings::truncation::BuiltinTruncation as T;
+    use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(32, THETA);
     let sum = rand_sum_real::<1>(2_000, 32, 0x71A2);
-    let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(3_000)));
+    let tree = T::And(
+        Box::new(T::Coefficient(1e-9)),
+        Box::new(T::ApproxTopN(3_000)),
+    );
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
@@ -145,6 +150,7 @@ fn one_partition_matches_propagate_bitwise() {
             &ApproxTopN(2_000),
             direction,
             &config(1),
+            PropagateOptions::default(),
         )
         .expect("topology resolves");
         assert_eq!(
@@ -156,13 +162,20 @@ fn one_partition_matches_propagate_bitwise() {
 
     // And with no truncation at all, on a short prefix so the sum stays small.
     let mut short = Circuit::<1>::new(8);
-    for q in 0..6u32 {
+    for q in 0..6 {
         short.push(zz_rotation::<1>(q, (q + 1) % 8, 0.2));
     }
     let small = rand_sum::<1>(500, 8, 0x71A3);
     let want = propagate(&short, small.clone(), &KeepAll, Direction::Forward);
-    let got = propagate_partitioned(&short, small, &KeepAll, Direction::Forward, &config(1))
-        .expect("topology resolves");
+    let got = propagate_partitioned(
+        &short,
+        small,
+        &KeepAll,
+        Direction::Forward,
+        &config(1),
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves");
     assert_eq!(got.to_arrays(), want.to_arrays(), "P=1 keep-all");
 }
 
@@ -175,11 +188,10 @@ fn options_are_honoured() {
     let options = PropagateOptions {
         target_bucket_len: 32,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for &p in &PS {
-        let got = propagate_partitioned_with_options(
+        let got = propagate_partitioned(
             &circuit,
             sum.clone(),
             &KeepAll,
@@ -198,15 +210,29 @@ fn edge_cases() {
     let circuit = random_circuit::<1>(6, 8, 0x9AA1, true);
     for &p in &PS {
         let empty = PauliSum::<1>::empty(6);
-        let out = propagate_partitioned(&circuit, empty, &KeepAll, Direction::Forward, &config(p))
-            .expect("topology resolves");
+        let out = propagate_partitioned(
+            &circuit,
+            empty,
+            &KeepAll,
+            Direction::Forward,
+            &config(p),
+            PropagateOptions::default(),
+        )
+        .expect("topology resolves");
         assert!(out.is_empty(), "P={p}: an empty sum stays empty");
 
         let one = rand_sum::<1>(1, 6, 0x1);
         assert_eq!(one.len(), 1);
         let want = propagate(&circuit, one.clone(), &KeepAll, Direction::Forward);
-        let got = propagate_partitioned(&circuit, one, &KeepAll, Direction::Forward, &config(p))
-            .expect("topology resolves");
+        let got = propagate_partitioned(
+            &circuit,
+            one,
+            &KeepAll,
+            Direction::Forward,
+            &config(p),
+            PropagateOptions::default(),
+        )
+        .expect("topology resolves");
         assert_terms_close(&got, &want, TOL, &format!("single term P={p}"));
 
         // A zero-layer circuit is the identity, bit for bit.
@@ -218,6 +244,7 @@ fn edge_cases() {
             &KeepAll,
             Direction::Heisenberg,
             &config(p),
+            PropagateOptions::default(),
         )
         .expect("topology resolves");
         assert_eq!(
@@ -243,17 +270,21 @@ fn auto_placement_agrees() {
         partition_row_seed: None,
     };
     let want = propagate(&circuit, sum.clone(), &ApproxTopN(400), Direction::Forward);
-    let got = propagate_partitioned(&circuit, sum, &ApproxTopN(400), Direction::Forward, &config)
-        .expect("topology resolves");
+    let got = propagate_partitioned(
+        &circuit,
+        sum,
+        &ApproxTopN(400),
+        Direction::Forward,
+        &config,
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves");
     assert_terms_close(&got, &want, TOL, "auto placement");
 }
 
-/// A policy with a layer finalization and no collective form is a compile-time
-/// error for `TopN` and a panic for a user policy that lies about it — the
-/// `PartitionedTruncation` default body's assertion, reached through the
-/// driver.
+/// A policy with a layer pass and no collective form panics before the first layer.
 #[test]
-#[should_panic(expected = "has a layer finalization but no partitioned one")]
+#[should_panic(expected = "cannot run on 2 partitions")]
 fn a_finalizing_policy_without_a_collective_form_panics() {
     struct Liar;
     impl<const W: usize> TruncationPolicy<W> for Liar {
@@ -261,11 +292,84 @@ fn a_finalizing_policy_without_a_collective_form_panics() {
             true
         }
     }
-    impl<const W: usize> PartitionedTruncation<W> for Liar {}
 
     let circuit = random_circuit::<1>(6, 3, 0x9AA1, false);
     let sum = rand_sum::<1>(100, 6, 0x9AA2);
-    let _ = propagate_partitioned(&circuit, sum, &Liar, Direction::Forward, &config(2));
+    let _ = propagate_partitioned(
+        &circuit,
+        sum,
+        &Liar,
+        Direction::Forward,
+        &config(2),
+        PropagateOptions::default(),
+    );
+}
+
+/// Exact `TopN` runs at one partition, matching `propagate`.
+#[test]
+fn exact_top_n_runs_at_one_partition() {
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = rand_sum_real::<1>(2_000, 32, 0x70B1);
+    let want = propagate(&circuit, sum.clone(), &TopN(1_500), Direction::Forward);
+    let got = propagate_partitioned(
+        &circuit,
+        sum,
+        &TopN(1_500),
+        Direction::Forward,
+        &config(1),
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves");
+    assert_terms_close(&got, &want, TOL, "TopN at P = 1");
+}
+
+/// Exact `TopN` above one partition panics before the first layer, as the bare policy and inside a `BuiltinTruncation` tree.
+#[test]
+fn exact_top_n_above_one_partition_panics_before_the_first_layer() {
+    use paulistrings::BuiltinTruncation as T;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// `TopN` that counts the terms the engine shows it.
+    struct CountingTopN(AtomicUsize);
+    impl<const W: usize> TruncationPolicy<W> for CountingTopN {
+        fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], _c: num_complex::Complex64) -> bool {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+            TopN(10).finalize_layer(sum);
+        }
+    }
+
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = rand_sum_real::<1>(500, 32, 0x70B2);
+    let run = |policy: &dyn TruncationPolicy<1>| {
+        let sum = sum.clone();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            propagate_partitioned(
+                &circuit,
+                sum,
+                policy,
+                Direction::Forward,
+                &config(2),
+                PropagateOptions::default(),
+            )
+        }))
+        .expect_err("a partitioned exact TopN must panic");
+        let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(
+            message.contains("not yet supported") && message.contains("ApproxTopN"),
+            "{message}"
+        );
+    };
+    run(&TopN(10));
+    run(&T::And(
+        Box::new(T::Coefficient(1e-9)),
+        Box::new(T::TopN(10)),
+    ));
+    let counting = CountingTopN(AtomicUsize::new(0));
+    run(&counting);
+    assert_eq!(counting.0.load(Ordering::Relaxed), 0, "no layer may run");
 }
 
 /// A partition that dies mid-run must not leave its partners blocked in a
@@ -282,12 +386,15 @@ fn partner_panic_does_not_hang() {
     struct PanicOnLayer {
         seen: Vec<AtomicUsize>,
     }
-    impl<const W: usize> TruncationPolicy<W> for PanicOnLayer {}
-    impl<const W: usize> PartitionedTruncation<W> for PanicOnLayer {
+    impl<const W: usize> TruncationPolicy<W> for PanicOnLayer {
+        fn supports_partitioned(&self) -> bool {
+            true
+        }
+
         fn finalize_layer_partitioned(
             &self,
             _local: &mut PauliSum<W>,
-            coll: &dyn paulistrings::engine::partitioned::Collectives,
+            coll: &dyn paulistrings::Collectives,
         ) {
             let rank = coll.rank() as usize;
             let k = self.seen[rank].fetch_add(1, Ordering::Relaxed);
@@ -305,7 +412,14 @@ fn partner_panic_does_not_hang() {
             seen: (0..2).map(|_| AtomicUsize::new(0)).collect(),
         };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            propagate_partitioned(&circuit, sum, &policy, Direction::Forward, &config(2))
+            propagate_partitioned(
+                &circuit,
+                sum,
+                &policy,
+                Direction::Forward,
+                &config(2),
+                PropagateOptions::default(),
+            )
         }));
         let _ = tx.send(outcome.is_err());
     });

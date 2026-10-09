@@ -1,17 +1,17 @@
 # propagate / propagate_with_stats
 
 ```text
-sum.propagate(circuit, policy=None, direction=None, engine=None,
-               small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
-               partitions=None, pin_memory=True, partition_row_seed=None,
-               partition_row_blocks=None, partition_row_exclude=None, comm=None,
-               result="gather", device=None) -> PauliSum
+sum.propagate(circuit, policy=None, direction=None, target_bucket_len=None,
+               min_buckets=None, partitions=None, pin_memory=True,
+               partition_row_seed=None, partition_row_blocks=None,
+               partition_row_exclude=None, comm=None, result="gather",
+               device=None) -> PauliSum
 
-sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
-                          small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
-                          partitions=None, pin_memory=True, partition_row_seed=None,
-                          partition_row_blocks=None, partition_row_exclude=None, comm=None,
-                          result="gather", device=None)
+sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=None,
+                          min_buckets=None, partitions=None, pin_memory=True,
+                          partition_row_seed=None, partition_row_blocks=None,
+                          partition_row_exclude=None, comm=None, result="gather",
+                          device=None)
     -> (PauliSum, PropagationStats)
 ```
 
@@ -25,10 +25,8 @@ The GIL is released for the duration of both calls.
 | `circuit` | `Circuit` | required | must share `num_qubits` with `sum` |
 | `policy` | `Truncation \| None` | `None` | `None` applies no per-term filtering beyond the engine's exact-zero drop |
 | `direction` | `"forward" \| "heisenberg" \| None` | `None` = `"forward"` | **the default is not the Heisenberg picture most examples here use** — pass it explicitly; see [Direction semantics](direction.md) |
-| `engine` | `"sorted" \| "auto" \| "direct" \| None` | `None` = `"sorted"` | `"sorted"`: always bucketed. `"auto"`: a term-by-term hash-map path below `small_sum_threshold`, unless the policy has a layer pass (e.g. `topn`). `"direct"`: same threshold, always. All three agree to floating-point tolerance |
-| `small_sum_threshold` | `int \| None` | `None` = `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD` | term-count cutoff for `"auto"`/`"direct"` |
-| `target_bucket_len` | `int \| None` | `None` = `1024` | sorting engine's per-layer bucket-sizing knob |
-| `min_buckets` | `int \| None` | `None` = `128` | sorting engine's per-layer bucket-sizing knob |
+| `target_bucket_len` | `int \| None` | `None` = `1024` | engine's per-layer bucket-sizing knob |
+| `min_buckets` | `int \| None` | `None` = `128` | engine's per-layer bucket-sizing knob |
 | `partitions` | `None \| "auto" \| int \| list[list[int]]` | `None` | splits the sum across NUMA domains; see below |
 | `pin_memory` | `bool` | `True` | binds each partition's allocations to its node |
 | `partition_row_seed` | `int \| None` | `None` = the sum's own hash seed | which GF(2) rows decide a term's partition |

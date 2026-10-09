@@ -23,11 +23,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::channel::PauliRotation;
-use paulistrings::truncation::{And, CoefficientThreshold, TopN};
+use paulistrings::PauliRotation;
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, ProductState,
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, ProductState,
 };
+use paulistrings::{And, CoefficientThreshold, TopN};
 
 /// Ising couplings: H = -J · ΣZZ - h · ΣX.
 const J: f64 = 1.0;
@@ -41,8 +41,8 @@ const EPS: f64 = 1e-10;
 const TOPN_4X4: usize = 50_000;
 const TOPN_6X6: usize = 200_000;
 
-fn qubit_index(x: usize, y: usize, lx: usize) -> u32 {
-    (y * lx + x) as u32
+fn qubit_index(x: usize, y: usize, lx: usize) -> usize {
+    y * lx + x
 }
 
 /// One Trotter step `U(δt) = exp(-i·δt·h·ΣX) · exp(-i·δt·J·ΣZZ)`
@@ -70,7 +70,7 @@ fn trotter_step(lx: usize, ly: usize, dt: f64) -> Circuit<1> {
     }
 
     // Transverse-field X rotations on every site.
-    for site in 0..n as u32 {
+    for site in 0..n {
         let gen = PauliString::<1>::x(site);
         circuit.push(PauliRotation::new(gen, 2.0 * H * dt));
     }
@@ -83,8 +83,8 @@ fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
     let n = lx * ly;
     let inv_n = Complex64::new(1.0 / n as f64, 0.0);
     let mut acc = BuildAccumulator::<1>::new(n);
-    for site in 0..n as u32 {
-        acc.add_term(PauliString::<1>::x(site), Phase::ONE, inv_n);
+    for site in 0..n {
+        acc.add_term(PauliString::<1>::x(site), inv_n);
     }
     acc.finalize()
 }

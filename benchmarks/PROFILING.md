@@ -181,7 +181,7 @@ The `phase-timing` Cargo feature (`crates/paulistrings/src/engine/stats.rs`) gat
 It is measurement-only and never in the default feature set — the default build carries no timing code and no stats fields at all.
 The same bitwise-identity tests (fingerprint net, thread-count/bucket-count/seed determinism) run with the feature enabled in CI, as the acceptance test that instrumentation doesn't perturb output.
 
-Counters are read via `LayerScratch::take_stats()` after driving layers through `propagate_with_scratch`.
+Counters are read via `LayerScratch::take_stats()` after driving layers through `propagate_with`.
 Two clock domains are deliberately mixed in one `PhaseStats`:
 
 - **Wall-clock phases** (`rebucket_ns` … `finalize_ns`) — measured once per layer on the calling thread; they sum to approximately the layer's wall time.
@@ -189,12 +189,12 @@ Two clock domains are deliberately mixed in one `PhaseStats`:
 
 The probe runs each `(layer, threads)` cell twice inside a dedicated Rayon pool: an untimed warm-up call, then a timed call whose input is the warm-up's output, so the timed call measures steady-state cost.
 `trotter` additionally self-caps its input at `TROTTER_MAX_N` regardless of `--n` (64 distinct generators under no truncation grow combinatorially rather than closing).
-The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × stats::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
+The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × test_support::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
 
 ### The partition axis
 
 `--partitions <csv>` (default `1`) sweeps partition counts alongside `--layers` and `--threads`.
-A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with_options`.
+A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with`.
 
 - **`--threads` is the TOTAL thread count** at every `P`: each partition's pool gets `threads / P` workers. A `--threads` value not divisible by `--partitions` is a startup error, and so is `P > threads`.
 - `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` — the same string `host-topology.sh`'s `PARTITION_CPUS` holds.
@@ -203,7 +203,7 @@ A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pool
 - Layers `rotation_local` and `rotation_remote` are a `ZZ` rotation on `(0, q)` with `q` the smallest qubit whose layer has, respectively, no remote delta and at least one, under that cell's partition rows. Both collapse to `rotation_zz` at `P = 1`; the chosen pair goes to stderr and into the sidecar's `gen_qubits`.
 - `--partition-rows random|cut` (default `random`) chooses the rows: `random` is `PartitionRows::from_seed`; `cut` is `PartitionRows::cut` over `P` contiguous qubit blocks, chosen by an exact DP over the layer's own graph to cross as few two-qubit generators as possible at ±25% size balance. Both report `rows_remote_gens` / `rows_remote_weight` in the sidecar.
 - Layers `tfim_step` (a 1D open chain of `--qubits` qubits) and `heavyhex_step` (the fixed 127-qubit Eagle r3 lattice, `--qubits >= 127`) are the rotation-only kicked-Ising Trotter steps the row policies exist for: `--reps` is the step count, both default to `--initial z0`, and both need a truncation policy to converge (`coeff:1.220703125e-4` is `2^-13`).
-- `--truncation topn:<N>` is refused for a partitioned cell: `TopN` has no `PartitionedTruncation` impl. `atopn:<N>`, `coeff:<t>` and `keep` all run.
+- `--truncation topn:<N>` is refused for a partitioned cell: partitioned exact `TopN` is not yet supported. `atopn:<N>`, `coeff:<t>` and `keep` all run.
 
 ### The rank axis
 

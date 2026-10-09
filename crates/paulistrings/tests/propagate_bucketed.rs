@@ -4,17 +4,15 @@
 //! Agreement with the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`) over whole circuits, truncation policies on many-term sums, Heisenberg round trips, and byte-identical output across thread counts (a convenience tripwire, not a correctness requirement — see ARCHITECTURE.md §Determinism).
 
 use num_complex::Complex64;
-use paulistrings::channel::{
+use paulistrings::test_support::{
+    assert_same_terms, assert_terms_close, bucket, canonical_triples, naive_apply_layer, rand_sum,
+};
+use paulistrings::{
     AmplitudeDamping, Channel, Clifford1Q, Clifford2Q, Dephasing, Depolarizing, IdentityChannel,
     PauliRotation,
 };
-use paulistrings::test_support::{
-    assert_same_terms, assert_terms_close, canonical_triples, naive_apply_layer, rand_sum,
-};
-use paulistrings::truncation::{And, CoefficientThreshold, TopN, WeightCutoff};
-use paulistrings::{
-    BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
-};
+use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
+use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
 
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
@@ -38,7 +36,7 @@ fn assert_same_keys<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what:
 
 fn one_term<const W: usize>(p: PauliString<W>, num_qubits: usize, c: Complex64) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
-    acc.add_term(p, Phase::ONE, c);
+    acc.add_term(p, c);
     acc.finalize()
 }
 
@@ -77,8 +75,8 @@ fn weight_cutoff_drops_high_weight_terms() {
     assert!(out.len() < input.len(), "nothing was dropped");
     for i in 0..out.len() {
         let p = PauliString::<1> {
-            x: out.bucket(0).0[i],
-            z: out.bucket(0).1[i],
+            x: bucket(&out, 0).0[i],
+            z: bucket(&out, 0).1[i],
         };
         assert!(p.weight() <= 2, "kept a weight-{} term", p.weight());
     }
@@ -106,16 +104,16 @@ fn rotation_round_trips_via_heisenberg_on_a_single_term() {
     let back = paulistrings::propagate(&circuit, fwd, &NoTruncation, Direction::Heisenberg);
     // Back to X with coefficient 1; the Y component cancels.
     let xs: Vec<usize> = (0..back.len())
-        .filter(|&i| back.bucket(0).2[i].norm() > 1e-9)
+        .filter(|&i| bucket(&back, 0).2[i].norm() > 1e-9)
         .collect();
     assert_eq!(xs.len(), 1, "expected one surviving term, got {back:?}");
     let i = xs[0];
     assert_eq!(
-        (back.bucket(0).0[i], back.bucket(0).1[i]),
+        (bucket(&back, 0).0[i], bucket(&back, 0).1[i]),
         ([0b100], [0]),
         "should be X(2)"
     );
-    assert!((back.bucket(0).2[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
+    assert!((bucket(&back, 0).2[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
 }
 
 #[test]
@@ -171,7 +169,7 @@ fn mixed_channels() -> Vec<Box<dyn Channel<1>>> {
     let mut zz = PauliString::<1>::z(1);
     zz.mul_assign(&PauliString::<1>::z(4));
     let mut wide = PauliString::<1>::z(0);
-    for q in [2u32, 3, 6] {
+    for q in [2, 3, 6] {
         wide.mul_assign(&PauliString::<1>::x(q));
     }
     vec![
@@ -297,7 +295,7 @@ fn output_is_byte_identical_across_thread_counts() {
 /// `lx × ly` periodic lattice: ZZ bond rotations, then single-site X rotations.
 /// Mirrors `examples/ising_2d_quench.rs`.
 fn ising_step_channels(lx: usize, ly: usize, dt: f64) -> Vec<Box<dyn Channel<1>>> {
-    let idx = |x: usize, y: usize| (y * lx + x) as u32;
+    let idx = |x: usize, y: usize| y * lx + x;
     let mut chans: Vec<Box<dyn Channel<1>>> = Vec::new();
     for y in 0..ly {
         for x in 0..lx {
@@ -354,12 +352,8 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
 
     // Observable: uniform X magnetization.
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
-    for q in 0..n as u32 {
-        acc.add_term(
-            PauliString::<1>::x(q),
-            Phase::ONE,
-            Complex64::new(1.0 / n as f64, 0.0),
-        );
+    for q in 0..n {
+        acc.add_term(PauliString::<1>::x(q), Complex64::new(1.0 / n as f64, 0.0));
     }
     let initial = acc.finalize();
 
@@ -403,12 +397,8 @@ fn ising_3x3_with_binding_top_n_matches_the_naive_oracle() {
     let policy = And(CoefficientThreshold(1e-12), TopN(1500));
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
-    for q in 0..n as u32 {
-        acc.add_term(
-            PauliString::<1>::x(q),
-            Phase::ONE,
-            Complex64::new(1.0 / n as f64, 0.0),
-        );
+    for q in 0..n {
+        acc.add_term(PauliString::<1>::x(q), Complex64::new(1.0 / n as f64, 0.0));
     }
     let initial = acc.finalize();
 
@@ -449,12 +439,8 @@ fn ising_quench_with_top_n_matches_the_naive_oracle() {
     let policy = And(CoefficientThreshold(1e-13), TopN(300));
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
-    for q in 0..n as u32 {
-        acc.add_term(
-            PauliString::<1>::x(q),
-            Phase::ONE,
-            Complex64::new(1.0 / n as f64, 0.0),
-        );
+    for q in 0..n {
+        acc.add_term(PauliString::<1>::x(q), Complex64::new(1.0 / n as f64, 0.0));
     }
     let initial = acc.finalize();
 

@@ -54,10 +54,10 @@ pattern generalises to mixed generators).
 
 ```rust,no_run
 use paulistrings::{Circuit, PauliString};
-use paulistrings::channel::PauliRotation;
+use paulistrings::PauliRotation;
 
-fn qubit_index(x: usize, y: usize, lx: usize) -> u32 {
-    (y * lx + x) as u32
+fn qubit_index(x: usize, y: usize, lx: usize) -> usize {
+    y * lx + x
 }
 
 /// One Trotter step `U(dt) = exp(-i·dt·h·ΣX) · exp(-i·dt·J·ΣZZ)`.
@@ -81,7 +81,7 @@ fn trotter_step(lx: usize, ly: usize, dt: f64, j_coupling: f64, h: f64) -> Circu
     }
 
     // Transverse-field X rotations on every site.
-    for site in 0..n as u32 {
+    for site in 0..n {
         let gen = PauliString::<1>::x(site);
         circuit.push(PauliRotation::new(gen, 2.0 * h * dt));
     }
@@ -103,15 +103,15 @@ and X pushed last, the per-step state-evolution operator is
 a time, call `.finalize()` to get a sorted-and-deduplicated `PauliSum`.
 
 ```rust,no_run
-use paulistrings::{BuildAccumulator, PauliString, PauliSum, Phase};
+use paulistrings::{BuildAccumulator, PauliString, PauliSum};
 use num_complex::Complex64;
 
 fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
     let n = lx * ly;
     let inv_n = Complex64::new(1.0 / n as f64, 0.0);
     let mut acc = BuildAccumulator::<1>::new(n);
-    for site in 0..n as u32 {
-        acc.add_term(PauliString::<1>::x(site), Phase::ONE, inv_n);
+    for site in 0..n {
+        acc.add_term(PauliString::<1>::x(site), inv_n);
     }
     acc.finalize()
 }
@@ -156,7 +156,7 @@ expectation after each step.
 
 ```rust,no_run
 use paulistrings::{propagate, Circuit, Direction, PauliSum};
-use paulistrings::truncation::{And, CoefficientThreshold, TopN};
+use paulistrings::{And, CoefficientThreshold, TopN};
 
 # fn trotter_step(_lx: usize, _ly: usize, _dt: f64, _j: f64, _h: f64) -> Circuit<1> { todo!() }
 # fn x_magnetization(_lx: usize, _ly: usize) -> PauliSum<1> { todo!() }
@@ -182,7 +182,7 @@ for k in 1..=steps {
 
 The 4×4 lattice grows from `N = 16` weight-1 terms at `t = 0` to ~10⁴–10⁵
 terms within a handful of Trotter steps. The 6×6 grows much faster. Two
-policies, composed with [`And`](crate::truncation::And), keep this
+policies, composed with [`And`](crate::And), keep this
 tractable:
 
 | Lattice | `CoefficientThreshold` | `TopN`     |

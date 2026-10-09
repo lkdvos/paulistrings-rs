@@ -1,10 +1,9 @@
 //! Scatter and gather of a [`PauliSum`] across the partitions of the partitioned engine (ARCHITECTURE.md §Partitioning).
 
 use num_complex::Complex64;
-use rayon::prelude::*;
 
 use super::hash::{Gf2Hash, PartitionRows};
-use super::storage::{merge_two, BucketColumns, PauliSum, PARALLEL_MIN_TERMS};
+use super::storage::{keys_are_disjoint, map_buckets, merge_sorted, BucketColumns, PauliSum};
 
 /// Copy the terms of one bucket whose partition rank is `rank`.
 // Not reserved up front: research/FINDINGS.md §Reserving a safe upper bound in the merge.
@@ -22,30 +21,20 @@ fn filter_bucket<const W: usize>(
     out
 }
 
-/// Merge key-disjoint sorted runs into one by serial pairwise rounds; the caller is already parallel over buckets.
+/// Merge key-disjoint sorted runs into one by pairwise rounds; the caller is already parallel over buckets.
 fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> BucketColumns<W> {
     while runs.len() > 1 {
         let mut next: Vec<BucketColumns<W>> = Vec::with_capacity(runs.len().div_ceil(2));
         let mut remaining = runs.into_iter();
         while let Some(a) = remaining.next() {
             match remaining.next() {
-                Some(b) => next.push(merge_two(&a, &b)),
+                Some(b) => next.push(merge_sorted(&a, &b, keys_are_disjoint)),
                 None => next.push(a),
             }
         }
         runs = next;
     }
-    let out = runs.pop().unwrap_or_default();
-    #[cfg(debug_assertions)]
-    {
-        for i in 1..out.len() {
-            debug_assert!(
-                (&out.x[i - 1], &out.z[i - 1]) < (&out.x[i], &out.z[i]),
-                "PauliSum::merge_partitions: duplicate key across partitions",
-            );
-        }
-    }
-    out
+    runs.pop().unwrap_or_default()
 }
 
 impl<const W: usize> PauliSum<W> {
@@ -72,17 +61,9 @@ impl<const W: usize> PauliSum<W> {
             (rank as usize) < rows.num_partitions(),
             "PauliSum::filter_partition: rank {rank} out of range",
         );
-        let buckets: Vec<BucketColumns<W>> = if self.len < PARALLEL_MIN_TERMS {
-            self.buckets
-                .iter()
-                .map(|columns| filter_bucket(columns, rows, rank))
-                .collect()
-        } else {
-            self.buckets
-                .par_iter()
-                .map(|columns| filter_bucket(columns, rows, rank))
-                .collect()
-        };
+        let buckets = map_buckets(self.len, &self.buckets, |columns| {
+            filter_bucket(columns, rows, rank)
+        });
         let len = buckets.iter().map(|c| c.len()).sum();
         Self {
             buckets,
@@ -124,11 +105,7 @@ impl<const W: usize> PauliSum<W> {
             }
         }
 
-        let buckets: Vec<BucketColumns<W>> = if len < PARALLEL_MIN_TERMS {
-            runs.into_iter().map(merge_disjoint_runs).collect()
-        } else {
-            runs.into_par_iter().map(merge_disjoint_runs).collect()
-        };
+        let buckets = map_buckets(len, runs, merge_disjoint_runs);
 
         Self {
             buckets,

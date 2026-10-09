@@ -57,7 +57,7 @@ impl<const W: usize> BuildAccumulator<W> {
         let zero = Complex64::new(0.0, 0.0);
         let mut entries: Vec<(PauliString<W>, Complex64)> =
             self.map.into_iter().filter(|(_, c)| *c != zero).collect();
-        entries.sort_by(|a, b| (&a.0.x, &a.0.z).cmp(&(&b.0.x, &b.0.z)));
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let n = entries.len();
         let mut x = Vec::with_capacity(n);
         let mut z = Vec::with_capacity(n);

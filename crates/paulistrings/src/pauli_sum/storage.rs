@@ -6,6 +6,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
+use crate::pauli_string::PauliString;
 
 /// Default seed for the partitioning hash.
 pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -32,7 +33,7 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
 pub(crate) const MIN_TERMS_PER_TASK: usize = 64;
 
 /// Below this many terms the bucket-parallel maintenance passes run serially.
-pub(super) const PARALLEL_MIN_TERMS: usize = DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK;
+const PARALLEL_MIN_TERMS: usize = DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK;
 
 /// Default target terms per bucket (ARCHITECTURE.md §Bucket-Policy).
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
@@ -51,10 +52,14 @@ pub(crate) struct BucketColumns<const W: usize> {
 
 impl<const W: usize> BucketColumns<W> {
     pub(super) fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    pub(super) fn with_capacity(capacity: usize) -> Self {
         Self {
-            x: Vec::new(),
-            z: Vec::new(),
-            coeff: Vec::new(),
+            x: Vec::with_capacity(capacity),
+            z: Vec::with_capacity(capacity),
+            coeff: Vec::with_capacity(capacity),
         }
     }
 
@@ -73,31 +78,41 @@ impl<const W: usize> BucketColumns<W> {
         self.z.push(z);
         self.coeff.push(c);
     }
+
+    fn extend_from(&mut self, other: &Self, start: usize) {
+        self.x.extend_from_slice(&other.x[start..]);
+        self.z.extend_from_slice(&other.z[start..]);
+        self.coeff.extend_from_slice(&other.coeff[start..]);
+    }
 }
 
-/// Split bucket `b` into the half kept in place and the half moving to `upper`, by the hash's new top bit `new_bit`.
+/// `f` over every item, on the Rayon pool once the sum holds `PARALLEL_MIN_TERMS` terms.
+pub(super) fn map_buckets<C, T>(
+    num_terms: usize,
+    items: C,
+    f: impl Fn(<C as IntoParallelIterator>::Item) -> T + Sync + Send,
+) -> Vec<T>
+where
+    C: IntoParallelIterator + IntoIterator<Item = <C as IntoParallelIterator>::Item>,
+    T: Send,
+{
+    if num_terms < PARALLEL_MIN_TERMS {
+        items.into_iter().map(f).collect()
+    } else {
+        items.into_par_iter().map(f).collect()
+    }
+}
+
+/// Split off the terms whose hash row `new_bit` is set, returning them in order and keeping the rest in place.
 fn refine_bucket<const W: usize>(
     columns: &mut BucketColumns<W>,
-    upper_half: &mut BucketColumns<W>,
     hash: &Gf2Hash<W>,
     new_bit: u8,
-    b: u32,
-) {
-    let _ = b;
-    let n = columns.len();
+) -> BucketColumns<W> {
+    let mut upper_half = BucketColumns::new();
     let mut keep = 0usize;
-    for i in 0..n {
-        let bit = hash.row_parity(&columns.x[i], &columns.z[i], new_bit);
-        #[cfg(debug_assertions)]
-        {
-            let full = hash.bucket_of(&columns.x[i], &columns.z[i]);
-            debug_assert_eq!(
-                full & ((1u32 << new_bit) - 1),
-                b,
-                "refine: low bits must be preserved",
-            );
-        }
-        if bit == 1 {
+    for i in 0..columns.len() {
+        if hash.row_parity(&columns.x[i], &columns.z[i], new_bit) == 1 {
             upper_half.push(columns.x[i], columns.z[i], columns.coeff[i]);
         } else {
             columns.x[keep] = columns.x[i];
@@ -109,50 +124,16 @@ fn refine_bucket<const W: usize>(
     columns.x.truncate(keep);
     columns.z.truncate(keep);
     columns.coeff.truncate(keep);
+    upper_half
 }
 
-/// Merge two sorted runs. No coefficient combining: keys are globally unique.
-pub(super) fn merge_two<const W: usize>(
+/// Merge two sorted runs; `on_equal` combines a shared key's coefficients, `None` dropping the key.
+pub(super) fn merge_sorted<const W: usize>(
     a: &BucketColumns<W>,
     b: &BucketColumns<W>,
+    mut on_equal: impl FnMut(Complex64, Complex64) -> Option<Complex64>,
 ) -> BucketColumns<W> {
-    let mut out = BucketColumns::<W>::new();
-    let total = a.len() + b.len();
-    out.x.reserve_exact(total);
-    out.z.reserve_exact(total);
-    out.coeff.reserve_exact(total);
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < a.len() && j < b.len() {
-        if (&a.x[i], &a.z[i]) <= (&b.x[j], &b.z[j]) {
-            out.push(a.x[i], a.z[i], a.coeff[i]);
-            i += 1;
-        } else {
-            out.push(b.x[j], b.z[j], b.coeff[j]);
-            j += 1;
-        }
-    }
-    while i < a.len() {
-        out.push(a.x[i], a.z[i], a.coeff[i]);
-        i += 1;
-    }
-    while j < b.len() {
-        out.push(b.x[j], b.z[j], b.coeff[j]);
-        j += 1;
-    }
-    out
-}
-
-/// Merge two sorted runs, summing equal keys and dropping exact-zero sums.
-fn merge_two_adding<const W: usize>(
-    a: &BucketColumns<W>,
-    b: &BucketColumns<W>,
-) -> BucketColumns<W> {
-    let mut out = BucketColumns::<W>::new();
-    let total = a.len() + b.len();
-    out.x.reserve_exact(total);
-    out.z.reserve_exact(total);
-    out.coeff.reserve_exact(total);
-    let zero = Complex64::new(0.0, 0.0);
+    let mut out = BucketColumns::with_capacity(a.len() + b.len());
     let (mut i, mut j) = (0usize, 0usize);
     while i < a.len() && j < b.len() {
         match (&a.x[i], &a.z[i]).cmp(&(&b.x[j], &b.z[j])) {
@@ -165,8 +146,7 @@ fn merge_two_adding<const W: usize>(
                 j += 1;
             }
             std::cmp::Ordering::Equal => {
-                let c = a.coeff[i] + b.coeff[j];
-                if c != zero {
+                if let Some(c) = on_equal(a.coeff[i], b.coeff[j]) {
                     out.push(a.x[i], a.z[i], c);
                 }
                 i += 1;
@@ -174,33 +154,15 @@ fn merge_two_adding<const W: usize>(
             }
         }
     }
-    while i < a.len() {
-        out.push(a.x[i], a.z[i], a.coeff[i]);
-        i += 1;
-    }
-    while j < b.len() {
-        out.push(b.x[j], b.z[j], b.coeff[j]);
-        j += 1;
-    }
+    out.extend_from(a, i);
+    out.extend_from(b, j);
     out
 }
 
-/// Merge `B` sorted runs into one, by `log2(B)` parallel rounds of pairwise merges rather than a sequential heap merge.
-fn merge_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> BucketColumns<W> {
-    if runs.is_empty() {
-        return BucketColumns::new();
-    }
-    while runs.len() > 1 {
-        runs = runs
-            .par_chunks(2)
-            .map(|pair| match pair {
-                [a, b] => merge_two(a, b),
-                [a] => a.clone(),
-                _ => unreachable!("par_chunks(2) yields 1 or 2 elements"),
-            })
-            .collect();
-    }
-    runs.pop().expect("non-empty by the check above")
+/// The `on_equal` of [`merge_sorted`] for runs whose keys are disjoint.
+pub(super) fn keys_are_disjoint(_: Complex64, _: Complex64) -> Option<Complex64> {
+    debug_assert!(false, "PauliSum: duplicate key across merged runs");
+    None
 }
 
 /// Weighted sum of Pauli strings, stored as structure-of-arrays columns partitioned into buckets by a GF(2)-linear hash.
@@ -255,14 +217,10 @@ impl<const W: usize> PauliSum<W> {
             counts[b as usize] += 1;
         }
 
-        let mut buckets: Vec<BucketColumns<W>> = Vec::with_capacity(num_buckets);
-        for &c in counts.iter() {
-            let mut columns = BucketColumns::<W>::new();
-            columns.x.reserve_exact(c);
-            columns.z.reserve_exact(c);
-            columns.coeff.reserve_exact(c);
-            buckets.push(columns);
-        }
+        let mut buckets: Vec<BucketColumns<W>> = counts
+            .iter()
+            .map(|&c| BucketColumns::with_capacity(c))
+            .collect();
 
         for i in 0..n {
             buckets[bucket_indices[i] as usize].push(x[i], z[i], coeff[i]);
@@ -304,9 +262,36 @@ impl<const W: usize> PauliSum<W> {
             hash.num_qubits(),
             "PauliSum::with_hash: num_qubits mismatch",
         );
-        let num_qubits = self.num_qubits;
-        let merged = merge_runs(self.buckets);
-        Self::from_key_sorted(&merged.x, &merged.z, &merged.coeff, hash, num_qubits)
+        let targets: Vec<Vec<u32>> = map_buckets(self.len, &self.buckets, |columns| {
+            (0..columns.len())
+                .map(|i| hash.bucket_of(&columns.x[i], &columns.z[i]))
+                .collect()
+        });
+        let mut scattered: Vec<Vec<(PauliString<W>, Complex64)>> =
+            (0..hash.num_buckets()).map(|_| Vec::new()).collect();
+        for (columns, targets) in self.buckets.iter().zip(&targets) {
+            for (i, &b) in targets.iter().enumerate() {
+                let key = PauliString {
+                    x: columns.x[i],
+                    z: columns.z[i],
+                };
+                scattered[b as usize].push((key, columns.coeff[i]));
+            }
+        }
+        let buckets = map_buckets(self.len, scattered, |mut terms| {
+            terms.sort_unstable_by(|p, q| p.0.cmp(&q.0));
+            let mut columns = BucketColumns::with_capacity(terms.len());
+            for (key, c) in terms {
+                columns.push(key.x, key.z, c);
+            }
+            columns
+        });
+        Self {
+            buckets,
+            hash,
+            num_qubits: self.num_qubits,
+            len: self.len,
+        }
     }
 
     /// `self` partitioned exactly as `target` partitions, borrowed when it already is.
@@ -373,55 +358,26 @@ impl<const W: usize> PauliSum<W> {
 
     /// Double the bucket count, splitting each bucket in two by the hash's new row.
     pub(crate) fn refine(&mut self) {
-        let old_num_buckets = self.buckets.len();
         self.hash.refine();
         let new_bit = self.hash.bits() - 1;
         let hash = &self.hash;
-
-        let mut old = std::mem::take(&mut self.buckets);
-        let mut upper: Vec<BucketColumns<W>> =
-            (0..old_num_buckets).map(|_| BucketColumns::new()).collect();
-
-        if self.len < PARALLEL_MIN_TERMS {
-            for (b, (columns, upper_half)) in old.iter_mut().zip(upper.iter_mut()).enumerate() {
-                refine_bucket(columns, upper_half, hash, new_bit, b as u32);
-            }
-        } else {
-            old.par_iter_mut()
-                .zip(upper.par_iter_mut())
-                .enumerate()
-                .for_each(|(b, (columns, upper_half))| {
-                    refine_bucket(columns, upper_half, hash, new_bit, b as u32);
-                });
-        }
-
-        old.extend(upper);
-        self.buckets = old;
+        let mut buckets = std::mem::take(&mut self.buckets);
+        let upper = map_buckets(self.len, &mut buckets, |columns| {
+            refine_bucket(columns, hash, new_bit)
+        });
+        buckets.extend(upper);
+        self.buckets = buckets;
+        #[cfg(debug_assertions)]
+        self.assert_invariants();
     }
 
     /// Halve the bucket count, merging bucket pairs `(i, i + B/2)`.
     pub(crate) fn coarsen(&mut self) {
         self.hash.coarsen();
-        let new_num_buckets = self.buckets.len() / 2;
-
-        let old = std::mem::take(&mut self.buckets);
-        let (lower, upper) = old.split_at(new_num_buckets);
-
-        let merged: Vec<BucketColumns<W>> = if self.len < PARALLEL_MIN_TERMS {
-            lower
-                .iter()
-                .zip(upper.iter())
-                .map(|(low, high)| merge_two(low, high))
-                .collect()
-        } else {
-            lower
-                .par_iter()
-                .zip(upper.par_iter())
-                .map(|(low, high)| merge_two(low, high))
-                .collect()
-        };
-
-        self.buckets = merged;
+        let (lower, upper) = self.buckets.split_at(self.buckets.len() / 2);
+        self.buckets = map_buckets(self.len, 0..lower.len(), |b| {
+            merge_sorted(&lower[b], &upper[b], keys_are_disjoint)
+        });
     }
 
     /// Refine until the bucket count suits `len()` terms at `target` per bucket, with the `min_buckets` floor once the sum is large enough; never coarsens.
@@ -575,11 +531,12 @@ impl<const W: usize> PauliSum<W> {
             self.num_qubits, other.num_qubits,
         );
         let rhs = other.align_to(&self.hash);
+        let zero = Complex64::new(0.0, 0.0);
         let buckets: Vec<BucketColumns<W>> = self
             .buckets
             .par_iter()
             .zip(rhs.buckets.par_iter())
-            .map(|(a, b)| merge_two_adding(a, b))
+            .map(|(a, b)| merge_sorted(a, b, |p, q| Some(p + q).filter(|c| *c != zero)))
             .collect();
         let len = buckets.iter().map(|c| c.len()).sum();
         Self {
@@ -609,7 +566,7 @@ impl<const W: usize> PauliSum<W> {
                     got as usize, b,
                     "PauliSum: term {i} of bucket {b} hashes to {got}",
                 );
-                let term = crate::pauli_string::PauliString::<W> {
+                let term = PauliString::<W> {
                     x: columns.x[i],
                     z: columns.z[i],
                 };

@@ -1,6 +1,6 @@
 //! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`] (ARCHITECTURE.md §Hash, §Partitioning).
 
-use crate::pauli_string::{word_mask, PauliString};
+use crate::pauli_string::word_mask;
 use crate::rng::{mix64, SPLITMIX_GAMMA};
 
 /// Maximum number of bucket bits; all rows are drawn up front so the active hash is a prefix of one fixed matrix.
@@ -197,11 +197,6 @@ impl<const W: usize> Gf2Hash<W> {
     /// Bit `row` of `H·v`, as `0` or `1`.
     pub(super) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: u8) -> u32 {
         self.matrix.row_parity(x, z, row as usize)
-    }
-
-    /// `h(v)` for a [`PauliString`].
-    pub fn bucket_of_pauli(&self, p: &PauliString<W>) -> u32 {
-        self.bucket_of(&p.x, &p.z)
     }
 
     /// Double the bucket count: `B → 2B`.
@@ -427,11 +422,6 @@ impl<const W: usize> PartitionRows<W> {
     /// `part(v)` for a key given as separate `x` and `z` words.
     pub fn partition_of(&self, x: &[u64; W], z: &[u64; W]) -> u32 {
         self.matrix.apply(x, z, self.matrix.num_rows())
-    }
-
-    /// `part(v)` for a [`PauliString`].
-    pub fn partition_of_pauli(&self, p: &PauliString<W>) -> u32 {
-        self.partition_of(&p.x, &p.z)
     }
 
     /// The rows as `(x-masks, z-masks)`, already masked to the live columns.

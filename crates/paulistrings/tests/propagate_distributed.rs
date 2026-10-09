@@ -537,7 +537,7 @@ fn collapse_sample_distributed_picks_by_weight() {
         let rows =
             paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
         let owners: std::collections::HashSet<u32> =
-            keys.iter().map(|p| rows.partition_of_pauli(p)).collect();
+            keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
         assert!(
             owners.len() > 1,
             "ranks={size}: the fixture must span ranks"

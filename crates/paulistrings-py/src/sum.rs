@@ -2501,14 +2501,14 @@ mod partition_row_knob_tests {
 
         // Round-trip: qubit 2 sits in block 1 under `half_low`, block 0 under `half_alt`.
         let z2 = PauliString::<1>::z(2);
-        assert_eq!(rows_low.partition_of_pauli(&z2), 1);
-        assert_eq!(rows_alt.partition_of_pauli(&z2), 0);
+        assert_eq!(rows_low.partition_of(&z2.x, &z2.z), 1);
+        assert_eq!(rows_alt.partition_of(&z2.x, &z2.z), 0);
 
         // The two cuts disagree on at least this term, so they are genuinely different row
         // sets, not two spellings of the same partition.
         assert_ne!(
-            rows_low.partition_of_pauli(&z2),
-            rows_alt.partition_of_pauli(&z2)
+            rows_low.partition_of(&z2.x, &z2.z),
+            rows_alt.partition_of(&z2.x, &z2.z)
         );
     }
 

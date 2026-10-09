@@ -131,7 +131,7 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
             cos,
             sin,
             bucket_delta_identity: 0,
-            bucket_delta_generator: hash.bucket_of_pauli(&generator),
+            bucket_delta_generator: hash.bucket_of(&generator.x, &generator.z),
         }))
     }
 }

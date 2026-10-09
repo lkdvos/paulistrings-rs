@@ -1,4 +1,5 @@
 use super::*;
+use crate::pauli_string::PauliString;
 use crate::test_support::Xs64;
 
 /// XOR two Pauli keys — the group operation on the key space.
@@ -22,6 +23,14 @@ fn rand_key<const W: usize>(rng: &mut Xs64, num_qubits: usize) -> PauliString<W>
         p.z[w] = rng.next_u64() & mask;
     }
     p
+}
+
+fn bucket<const W: usize>(hash: &Gf2Hash<W>, p: &PauliString<W>) -> u32 {
+    hash.bucket_of(&p.x, &p.z)
+}
+
+fn partition<const W: usize>(rows: &PartitionRows<W>, p: &PauliString<W>) -> u32 {
+    rows.partition_of(&p.x, &p.z)
 }
 
 fn low_weight_key<const W: usize>(
@@ -54,7 +63,7 @@ fn bucket_is_within_range_w1() {
     let mut rng = Xs64::new(1);
     for _ in 0..2000 {
         let p = rand_key::<1>(&mut rng, 64);
-        assert!((h.bucket_of_pauli(&p) as usize) < h.num_buckets());
+        assert!((bucket(&h, &p) as usize) < h.num_buckets());
     }
 }
 
@@ -64,7 +73,7 @@ fn bucket_is_within_range_w2() {
     let mut rng = Xs64::new(2);
     for _ in 0..2000 {
         let p = rand_key::<2>(&mut rng, 128);
-        assert!((h.bucket_of_pauli(&p) as usize) < h.num_buckets());
+        assert!((bucket(&h, &p) as usize) < h.num_buckets());
     }
 }
 
@@ -81,7 +90,7 @@ fn zero_bits_is_a_single_bucket() {
     assert_eq!(h.num_buckets(), 1);
     let mut rng = Xs64::new(3);
     for _ in 0..100 {
-        assert_eq!(h.bucket_of_pauli(&rand_key::<1>(&mut rng, 64)), 0);
+        assert_eq!(bucket(&h, &rand_key::<1>(&mut rng, 64)), 0);
     }
 }
 
@@ -90,10 +99,7 @@ fn linearity_hand_checked_w1() {
     let h = Gf2Hash::<1>::new(64, 8, 0xFEED);
     let v = PauliString::<1>::x(3);
     let w = PauliString::<1>::z(11);
-    assert_eq!(
-        h.bucket_of_pauli(&xor(&v, &w)),
-        h.bucket_of_pauli(&v) ^ h.bucket_of_pauli(&w)
-    );
+    assert_eq!(bucket(&h, &xor(&v, &w)), bucket(&h, &v) ^ bucket(&h, &w));
 }
 
 #[test]
@@ -103,10 +109,7 @@ fn linearity_random_w1() {
     for _ in 0..2000 {
         let v = rand_key::<1>(&mut rng, 64);
         let w = rand_key::<1>(&mut rng, 64);
-        assert_eq!(
-            h.bucket_of_pauli(&xor(&v, &w)),
-            h.bucket_of_pauli(&v) ^ h.bucket_of_pauli(&w),
-        );
+        assert_eq!(bucket(&h, &xor(&v, &w)), bucket(&h, &v) ^ bucket(&h, &w),);
     }
 }
 
@@ -117,10 +120,7 @@ fn linearity_random_w2_crosses_word_boundary() {
     for _ in 0..2000 {
         let v = rand_key::<2>(&mut rng, 128);
         let w = rand_key::<2>(&mut rng, 128);
-        assert_eq!(
-            h.bucket_of_pauli(&xor(&v, &w)),
-            h.bucket_of_pauli(&v) ^ h.bucket_of_pauli(&w),
-        );
+        assert_eq!(bucket(&h, &xor(&v, &w)), bucket(&h, &v) ^ bucket(&h, &w),);
     }
 }
 
@@ -136,7 +136,7 @@ fn bits_beyond_num_qubits_do_not_affect_the_bucket() {
         let dead = !((1u64 << (100 - 64)) - 1);
         polluted.x[1] |= dead;
         polluted.z[1] |= dead;
-        assert_eq!(h.bucket_of_pauli(&p), h.bucket_of_pauli(&polluted));
+        assert_eq!(bucket(&h, &p), bucket(&h, &polluted));
     }
 }
 
@@ -187,7 +187,7 @@ fn row_parity_matches_bucket_of_bit_extraction() {
     let mut rng = Xs64::new(81);
     for _ in 0..500 {
         let p = rand_key::<2>(&mut rng, 128);
-        let full = h.bucket_of_pauli(&p);
+        let full = bucket(&h, &p);
         for row in 0..B_MAX_BITS {
             let bit = h.row_parity(&p.x, &p.z, row);
             assert!(bit == 0 || bit == 1, "row_parity must return 0 or 1");
@@ -205,14 +205,14 @@ fn refine_preserves_the_low_bits() {
     let mut h = Gf2Hash::<2>::new(128, 6, 0xB0B);
     let mut rng = Xs64::new(31);
     let keys: Vec<PauliString<2>> = (0..500).map(|_| rand_key::<2>(&mut rng, 128)).collect();
-    let before: Vec<u32> = keys.iter().map(|k| h.bucket_of_pauli(k)).collect();
+    let before: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
 
     h.refine();
     assert_eq!(h.num_buckets(), 128);
     let mask = (1u32 << 6) - 1;
     for (k, &b) in keys.iter().zip(before.iter()) {
         // The refined index agrees with the old one on the low `bits` bits.
-        assert_eq!(h.bucket_of_pauli(k) & mask, b);
+        assert_eq!(bucket(&h, k) & mask, b);
     }
 }
 
@@ -221,12 +221,12 @@ fn coarsen_inverts_refine() {
     let mut h = Gf2Hash::<1>::new(64, 8, 0xCAFE);
     let mut rng = Xs64::new(41);
     let keys: Vec<PauliString<1>> = (0..500).map(|_| rand_key::<1>(&mut rng, 64)).collect();
-    let before: Vec<u32> = keys.iter().map(|k| h.bucket_of_pauli(k)).collect();
+    let before: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
 
     h.refine();
     h.coarsen();
     assert_eq!(h.bits(), 8);
-    let after: Vec<u32> = keys.iter().map(|k| h.bucket_of_pauli(k)).collect();
+    let after: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
     assert_eq!(before, after);
 }
 
@@ -235,12 +235,12 @@ fn coarsen_merges_bucket_pairs() {
     let mut h = Gf2Hash::<1>::new(64, 8, 0xDEAD);
     let mut rng = Xs64::new(51);
     let keys: Vec<PauliString<1>> = (0..500).map(|_| rand_key::<1>(&mut rng, 64)).collect();
-    let fine: Vec<u32> = keys.iter().map(|k| h.bucket_of_pauli(k)).collect();
+    let fine: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
 
     h.coarsen();
     for (k, &f) in keys.iter().zip(fine.iter()) {
         // Dropping the top bit merges (b, b + B/2).
-        assert_eq!(h.bucket_of_pauli(k), f & ((1 << 7) - 1));
+        assert_eq!(bucket(&h, k), f & ((1 << 7) - 1));
     }
 }
 
@@ -272,7 +272,7 @@ fn same_seed_gives_the_same_hash() {
     let mut rng = Xs64::new(61);
     for _ in 0..500 {
         let p = rand_key::<2>(&mut rng, 128);
-        assert_eq!(a.bucket_of_pauli(&p), b.bucket_of_pauli(&p));
+        assert_eq!(bucket(&a, &p), bucket(&b, &p));
     }
 }
 
@@ -284,7 +284,7 @@ fn different_seeds_give_different_hashes() {
     let mut rng = Xs64::new(71);
     let differs = (0..500)
         .map(|_| rand_key::<2>(&mut rng, 128))
-        .filter(|p| a.bucket_of_pauli(p) != b.bucket_of_pauli(p))
+        .filter(|p| bucket(&a, p) != bucket(&b, p))
         .count();
     // Two independent hashes agree on a given key with probability 2^-10.
     assert!(
@@ -451,7 +451,7 @@ fn occupancy_is_balanced_on_low_weight_keys() {
     while seen.len() < target {
         let p = low_weight_key::<1>(&mut rng, num_qubits, 4);
         if seen.insert((p.x, p.z)) {
-            counts[h.bucket_of_pauli(&p) as usize] += 1;
+            counts[bucket(&h, &p) as usize] += 1;
         }
     }
 
@@ -570,7 +570,7 @@ fn order_broken_by_some_delta<const W: usize>(
         }
         for combo in 0..(1usize << gens.len()) {
             let p = xor(&rest, &local(combo));
-            buckets[h.bucket_of_pauli(&p) as usize].push((p.x, p.z));
+            buckets[bucket(&h, &p) as usize].push((p.x, p.z));
         }
     }
     for columns in buckets.iter_mut() {
@@ -606,7 +606,7 @@ fn occupancy_is_balanced_on_dense_keys() {
     let mut counts = vec![0usize; b];
     let target = 32768usize;
     for _ in 0..target {
-        counts[h.bucket_of_pauli(&rand_key::<2>(&mut rng, 128)) as usize] += 1;
+        counts[bucket(&h, &rand_key::<2>(&mut rng, 128)) as usize] += 1;
     }
     let mean = target / b; // 128
     let max = *counts.iter().max().unwrap();
@@ -625,9 +625,9 @@ fn partition_of_hand_checked_w1() {
     assert_eq!(p.num_partitions(), 4);
     assert_eq!(p.num_qubits(), 8);
     // X_0: bit 0 = parity(0b001 & 0b011) = 1, bit 1 = 0.
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::x(0)), 1);
+    assert_eq!(partition(&p, &PauliString::<1>::x(0)), 1);
     // Z_0: bit 0 = 0, bit 1 = parity(0b001 & 0b101) = 1.
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(0)), 2);
+    assert_eq!(partition(&p, &PauliString::<1>::z(0)), 2);
     // Y_0 = X_0 ⊕ Z_0.
     assert_eq!(p.partition_of(&[1], &[1]), 3);
     // X_0 X_1: parity(0b011 & 0b011) = 0.
@@ -647,7 +647,7 @@ fn partition_is_within_range_and_the_identity_key_is_partition_zero() {
     let mut rng = Xs64::new(101);
     for _ in 0..2000 {
         let k = rand_key::<2>(&mut rng, 128);
-        assert!((p.partition_of_pauli(&k) as usize) < p.num_partitions());
+        assert!((partition(&p, &k) as usize) < p.num_partitions());
     }
 }
 
@@ -661,7 +661,7 @@ fn zero_partition_bits_is_a_single_partition() {
     assert!(rx.is_empty() && rz.is_empty());
     let mut rng = Xs64::new(102);
     for _ in 0..200 {
-        assert_eq!(p.partition_of_pauli(&rand_key::<1>(&mut rng, 64)), 0);
+        assert_eq!(partition(&p, &rand_key::<1>(&mut rng, 64)), 0);
     }
     // `from_seed` at zero bits is the same object.
     assert_eq!(PartitionRows::<1>::from_seed(64, 0, 0x1234), p);
@@ -677,7 +677,7 @@ fn partition_bits_beyond_num_qubits_do_not_affect_the_partition() {
         let mut polluted = k;
         polluted.x[1] |= dead;
         polluted.z[1] |= dead;
-        assert_eq!(p.partition_of_pauli(&k), p.partition_of_pauli(&polluted));
+        assert_eq!(partition(&p, &k), partition(&p, &polluted));
     }
 }
 
@@ -806,10 +806,10 @@ fn cut_two_blocks_is_one_z_row_over_the_second_block() {
     assert_eq!(rz, [[0b1100u64]]);
 
     // A term's label is the XOR of the labels of the blocks it has odd z-weight in. Z0 sits in block 0, label 0; Z2 in block 1, label 1.
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(0)), 0);
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(2)), 1);
+    assert_eq!(partition(&p, &PauliString::<1>::z(0)), 0);
+    assert_eq!(partition(&p, &PauliString::<1>::z(2)), 1);
     // X rotation generators are x-only, so a cut row never reads them.
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::x(2)), 0);
+    assert_eq!(partition(&p, &PauliString::<1>::x(2)), 0);
     // Bond generators: ZZ(0,1) is inside block 0, ZZ(1,2) crosses the cut,
     // ZZ(2,3) is inside block 1 and so has even z-weight there.
     assert_eq!(p.partition_of(&[0], &[0b0011]), 0);
@@ -835,11 +835,7 @@ fn cut_four_blocks_labels_each_block_by_its_index() {
         (6, 3),
         (7, 3),
     ] {
-        assert_eq!(
-            p.partition_of_pauli(&PauliString::<1>::z(q)),
-            want,
-            "qubit {q}",
-        );
+        assert_eq!(partition(&p, &PauliString::<1>::z(q)), want, "qubit {q}",);
     }
     // Two odd blocks XOR their labels: Z2·Z4 -> 1 ^ 2 = 3.
     assert_eq!(p.partition_of(&[0], &[0b0001_0100]), 3);
@@ -851,8 +847,8 @@ fn cut_four_blocks_labels_each_block_by_its_index() {
 fn cut_leaves_uncovered_qubits_in_the_zero_label() {
     let p = PartitionRows::<1>::cut(4, &[vec![0], vec![1]]);
     assert_eq!(p.rows().1, [[0b0010u64]]);
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(2)), 0);
-    assert_eq!(p.partition_of_pauli(&PauliString::<1>::z(3)), 0);
+    assert_eq!(partition(&p, &PauliString::<1>::z(2)), 0);
+    assert_eq!(partition(&p, &PauliString::<1>::z(3)), 0);
 }
 
 #[test]
@@ -870,8 +866,8 @@ fn cut_rows_round_trip_across_the_word_boundary() {
     let p = PartitionRows::<2>::cut(70, &[lo, hi]);
     assert_eq!(p.rows().0, [[0u64, 0]]);
     assert_eq!(p.rows().1, [[0u64, 0b11_1111]]);
-    assert_eq!(p.partition_of_pauli(&PauliString::<2>::z(63)), 0);
-    assert_eq!(p.partition_of_pauli(&PauliString::<2>::z(64)), 1);
+    assert_eq!(partition(&p, &PauliString::<2>::z(63)), 0);
+    assert_eq!(partition(&p, &PauliString::<2>::z(64)), 1);
 }
 
 #[test]
@@ -909,7 +905,7 @@ fn partition_occupancy_is_balanced_on_low_weight_keys() {
     for _ in 0..target {
         let weight = 1 + (rng.next_u64() % 3) as usize;
         let k = low_weight_key::<2>(&mut rng, num_qubits, weight);
-        counts[p.partition_of_pauli(&k) as usize] += 1;
+        counts[partition(&p, &k) as usize] += 1;
     }
     let mean = target / p.num_partitions(); // 1000
     let max = *counts.iter().max().unwrap();

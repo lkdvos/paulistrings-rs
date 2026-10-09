@@ -230,7 +230,7 @@ fn collapse_sample_partitioned_draws_one_string_by_weight() {
     for pbits in [1u8, 2] {
         let rows = PartitionRows::<2>::from_seed(8, pbits, PSEED);
         let owners: std::collections::HashSet<u32> =
-            keys.iter().map(|p| rows.partition_of_pauli(p)).collect();
+            keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
         assert!(
             owners.len() > 1,
             "P=2^{pbits}: the fixture must span partitions"

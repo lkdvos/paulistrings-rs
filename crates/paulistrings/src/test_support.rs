@@ -680,8 +680,9 @@ pub fn support_delta_rank<const W: usize>(
 ) -> usize {
     let mut imgs: Vec<u32> = Vec::with_capacity(2 * qubits.len());
     for &q in qubits {
-        imgs.push(h.bucket_of_pauli(&PauliString::<W>::x(q)));
-        imgs.push(h.bucket_of_pauli(&PauliString::<W>::z(q)));
+        let (x, z) = (PauliString::<W>::x(q), PauliString::<W>::z(q));
+        imgs.push(h.bucket_of(&x.x, &x.z));
+        imgs.push(h.bucket_of(&z.x, &z.z));
     }
     gf2_rank(&imgs)
 }

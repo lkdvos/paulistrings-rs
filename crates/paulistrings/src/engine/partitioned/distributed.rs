@@ -6,7 +6,7 @@ use std::time::Instant;
 use num_complex::Complex64;
 
 use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
-use super::driver::{run_layers, scatter_local, PartitionCtx, PartitionWork};
+use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
@@ -286,7 +286,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
                 let rows = &self.rows;
                 let transport = &self.transport;
                 let work = &mut work;
-                let context = PartitionCtx {
+                let context = PartitionContext {
                     rows,
                     rank,
                     size,

@@ -286,7 +286,7 @@ enum Format {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TruncSpec {
     Keep,
-    Coeff(f64),
+    Coefficient(f64),
     TopN(usize),
     ApproxTopN(usize),
 }
@@ -296,7 +296,7 @@ impl TruncSpec {
     fn label(self) -> String {
         match self {
             TruncSpec::Keep => "keep".to_string(),
-            TruncSpec::Coeff(t) => format!("coeff:{t}"),
+            TruncSpec::Coefficient(t) => format!("coeff:{t}"),
             TruncSpec::TopN(n) => format!("topn:{n}"),
             TruncSpec::ApproxTopN(n) => format!("atopn:{n}"),
         }
@@ -316,7 +316,7 @@ impl TruncSpec {
                     "--truncation coeff:<t> expects a finite, non-negative threshold, got '{v}'"
                 ));
             }
-            return Ok(TruncSpec::Coeff(thr));
+            return Ok(TruncSpec::Coefficient(thr));
         }
         if let Some(v) = t.strip_prefix("topn:") {
             return Ok(TruncSpec::TopN(parse_usize(v, "--truncation topn:<N>")?));
@@ -1436,7 +1436,7 @@ where
 fn device_truncation(spec: TruncSpec) -> BuiltinTruncation {
     match spec {
         TruncSpec::Keep => BuiltinTruncation::Keep,
-        TruncSpec::Coeff(t) => BuiltinTruncation::Coeff(t),
+        TruncSpec::Coefficient(t) => BuiltinTruncation::Coefficient(t),
         TruncSpec::TopN(n) => BuiltinTruncation::TopN(n),
         TruncSpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(n),
     }
@@ -2835,7 +2835,7 @@ fn print_tsv_row(cell: &CellResult) {
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
         TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
-        TruncSpec::Coeff(t) => run_cells::<W, _, _>(
+        TruncSpec::Coefficient(t) => run_cells::<W, _, _>(
             cfg,
             &CoefficientThreshold(t),
             Some(&CoefficientThreshold(t)),

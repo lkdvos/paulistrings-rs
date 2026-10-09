@@ -30,9 +30,9 @@ fn a_layer_pass_issues_the_hosts_collectives() {
     let input = rand_sum_real::<1>(4000, 32, 0xC011);
     let cases = [
         (T::ApproxTopN(1000), 1),
-        (and(T::Coeff(1e-3), T::ApproxTopN(1000)), 1),
+        (and(T::Coefficient(1e-3), T::ApproxTopN(1000)), 1),
         (and(T::ApproxTopN(2000), T::ApproxTopN(500)), 2),
-        (or(T::ApproxTopN(10), T::Coeff(1e-3)), 0),
+        (or(T::ApproxTopN(10), T::Coefficient(1e-3)), 0),
     ];
     for (tree, want) in cases {
         let device = one_rank();
@@ -61,9 +61,9 @@ fn a_lone_partition_runs_exact_topn_with_no_collective() {
     let input = rand_sum_real::<1>(4000, 32, 0xC012);
     let cases = [
         T::TopN(1000),
-        and(T::Coeff(1e-3), T::TopN(1000)),
+        and(T::Coefficient(1e-3), T::TopN(1000)),
         and(T::TopN(2000), T::Weight(20)),
-        or(T::TopN(10), T::Coeff(1e-3)),
+        or(T::TopN(10), T::Coefficient(1e-3)),
     ];
     for tree in cases {
         let device = one_rank();

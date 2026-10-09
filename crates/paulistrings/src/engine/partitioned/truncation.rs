@@ -146,7 +146,7 @@ impl<const W: usize> PartitionedTruncation<W> for BuiltinTruncation {
             Self::TopN(_) => panic!(
                 "BuiltinTruncation::TopN has no partitioned layer pass: exact top-n is a distributed k-th selection; use ApproxTopN"
             ),
-            Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::Or(_, _) => {}
+            Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => {}
         }
     }
 }

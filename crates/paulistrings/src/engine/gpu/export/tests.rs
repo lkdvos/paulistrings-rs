@@ -473,7 +473,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
             let (da, db) = (&d[a.entry], &d[b.entry]);
             for sa in (0..16usize).step_by(2) {
                 let sb = sa ^ (da.local_delta ^ db.local_delta) as usize;
-                let (aa, ab) = (da.amp[sa], db.amp[sb]);
+                let (aa, ab) = (da.amplitude[sa], db.amplitude[sb]);
                 if sb & 1 == 0 && aa != zero && (aa == ab || aa == -ab) {
                     pick = Some((a.entry, sa, b.entry, sb));
                     break 'outer;
@@ -488,7 +488,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
         let z = ((s >> 1) & 1) as u64 | (((s >> 3) & 1) as u64) << 1;
         crate::pauli_string::PauliString::<1> { x: [x], z: [z] }
     };
-    let (aa, ab) = (d[ea].amp[sa], d[eb].amp[sb]);
+    let (aa, ab) = (d[ea].amplitude[sa], d[eb].amplitude[sb]);
     let cb = if aa == ab { -1.0 } else { 1.0 };
     let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(nq);
     accumulator.add_term(key(sa), crate::phase::Phase::ONE, Complex64::new(1.0, 0.0));

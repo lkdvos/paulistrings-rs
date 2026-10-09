@@ -165,7 +165,7 @@ fn a_chunk_never_splits_a_coset() {
                 );
             }
             for beta in 0..(1u32 << bits) {
-                let want = map.chunk_of_position(map.position_of(span.rep_of(beta)));
+                let want = map.chunk_of_position(map.position_of(span.representative_of(beta)));
                 assert_eq!(
                     map.chunk_of_position(map.position_of(beta)),
                     want,

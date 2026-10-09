@@ -52,7 +52,7 @@ fn via_prepared<const W: usize>(
         Prepared::Local(p) => {
             let s = p.support_bits(x, z);
             for m in p.deltas() {
-                let a = m.amp[s];
+                let a = m.amplitude[s];
                 if a == ZERO {
                     continue;
                 }
@@ -67,12 +67,12 @@ fn via_prepared<const W: usize>(
         }
         Prepared::Rotation(r) => {
             let input = PauliString::<W> { x: *x, z: *z };
-            if input.commutes_with(&r.gen) {
+            if input.commutes_with(&r.generator) {
                 out.push((*x, *z, coeff));
             } else {
                 out.push((*x, *z, coeff * r.cos));
                 let mut prod = input;
-                let phase = prod.mul_assign(&r.gen);
+                let phase = prod.mul_assign(&r.generator);
                 let total = crate::phase::Phase::I + phase;
                 out.push((prod.x, prod.z, total.apply(coeff) * r.sin));
             }
@@ -224,7 +224,7 @@ fn functional_form_matches_apply_for_a_wide_rotation() {
 }
 
 /// The same outputs, reconstructed one entry at a time through the emitters.
-/// Mirrors `via_prepared`, but routes every row through [`DeltaEntry::emit`] / [`RotationPrep::emit_gen`].
+/// Mirrors `via_prepared`, but routes every row through [`DeltaEntry::emit`] / [`PreparedRotation::emit_generator`].
 fn via_emit<const W: usize>(
     prepared: &Prepared<W>,
     x: &[u64; W],
@@ -244,13 +244,13 @@ fn via_emit<const W: usize>(
         Prepared::Rotation(r) => {
             // Entry 0, the identity pass, has no `DeltaEntry`: every term emits one such row, full coefficient when it commutes and `cos`-scaled when it does not.
             let input = PauliString::<W> { x: *x, z: *z };
-            let commutes = input.commutes_with(&r.gen);
+            let commutes = input.commutes_with(&r.generator);
             out.push((*x, *z, if commutes { coeff } else { coeff * r.cos }));
-            let gen_row = r.emit_gen(x, z, coeff);
+            let gen_row = r.emit_generator(x, z, coeff);
             assert_eq!(
                 gen_row.is_none(),
                 commutes,
-                "emit_gen must be None exactly when the term commutes",
+                "emit_generator must be None exactly when the term commutes",
             );
             if let Some(row) = gen_row {
                 out.push(row);
@@ -358,7 +358,7 @@ fn emit_matches_apply_for_rotations_at_every_width() {
     let mut zz = PauliString::<2>::z(9);
     zz.mul_assign(&PauliString::<2>::z(70));
     check_emit_agrees_on_random_inputs::<2, _>(&PauliRotation::new(zz, 0.37), 128, "rot_zz");
-    // ...weight 4 takes `Prepared::Rotation`, so `emit_gen` is exercised.
+    // ...weight 4 takes `Prepared::Rotation`, so `emit_generator` is exercised.
     let mut gen = PauliString::<2>::z(1);
     for q in [5u32, 66, 100] {
         gen.mul_assign(&PauliString::<2>::z(q));
@@ -385,7 +385,7 @@ fn emit_returns_none_exactly_on_a_zero_amplitude() {
             let got = m.emit(s, &x, &z, one);
             assert_eq!(
                 got.is_none(),
-                m.amp[s] == ZERO,
+                m.amplitude[s] == ZERO,
                 "emit must be None exactly on a zero amplitude",
             );
             if got.is_none() {
@@ -419,7 +419,7 @@ fn rotation_gen_mask_is_the_generator() {
     let Prepared::Rotation(r) = PauliRotation::new(gen, 0.41).prepare(&hash, false).unwrap() else {
         panic!("expected Rotation")
     };
-    assert_eq!(r.gen_mask(), (gen.x, gen.z));
+    assert_eq!(r.generator_mask(), (gen.x, gen.z));
 }
 
 fn assert_entry_eq<const W: usize>(a: &DeltaEntry<W>, b: &DeltaEntry<W>, what: &str) {
@@ -427,7 +427,7 @@ fn assert_entry_eq<const W: usize>(a: &DeltaEntry<W>, b: &DeltaEntry<W>, what: &
     assert_eq!(a.local_delta, b.local_delta, "{what}: local_delta");
     assert_eq!(a.mask_x, b.mask_x, "{what}: mask_x");
     assert_eq!(a.mask_z, b.mask_z, "{what}: mask_z");
-    assert_eq!(a.amp, b.amp, "{what}: amp");
+    assert_eq!(a.amplitude, b.amplitude, "{what}: amplitude");
 }
 
 #[test]

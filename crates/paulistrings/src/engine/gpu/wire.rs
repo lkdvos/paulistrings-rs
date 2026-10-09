@@ -303,17 +303,17 @@ impl<const W: usize> Payload for BlockSkeletons<W> {
 pub(crate) enum WireColumn {
     X,
     Z,
-    Coeff,
+    Coefficient,
 }
 
 impl WireColumn {
-    const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coeff];
+    const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coefficient];
 
     /// Device elements per row at width `W`: `u64` words for a key column, `f64` halves for the coefficient.
     pub(crate) fn elems_per_row<const W: usize>(self) -> usize {
         match self {
             WireColumn::X | WireColumn::Z => W,
-            WireColumn::Coeff => 2,
+            WireColumn::Coefficient => 2,
         }
     }
 }

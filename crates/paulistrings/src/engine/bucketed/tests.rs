@@ -422,12 +422,12 @@ fn local_gather_orders_agree_to_fp_tolerance() {
     let m = span.coset_size();
 
     // Assemble the rank-0 coset's member columns, ascending by coordinate.
-    let mut old: Vec<BucketCols<1>> = (0..m).map(|_| BucketCols::default()).collect();
+    let mut old: Vec<BucketColumns<1>> = (0..m).map(|_| BucketColumns::default()).collect();
     for beta in 0..sum.num_buckets() as u32 {
-        let p = span.perm_index(beta) as usize;
+        let p = span.permuted_index(beta) as usize;
         if p < m {
             let (bx, bz, bc) = sum.bucket(beta as usize);
-            old[p] = BucketCols {
+            old[p] = BucketColumns {
                 x: bx.to_vec(),
                 z: bz.to_vec(),
                 coeff: bc.to_vec(),
@@ -438,7 +438,8 @@ fn local_gather_orders_agree_to_fp_tolerance() {
     let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
     // gu2q's identity is dense: only id coefficients are gathered and the merge borrows the source keys.
     let dim = 1usize << (2 * ptm.k());
-    let dense_identity = has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
+    let dense_identity =
+        has_identity && ptm.deltas()[0].amplitude[..dim].iter().all(|a| *a != ZERO);
     assert!(dense_identity, "gu2q's identity amplitude must be dense");
     let gather = |output_major: bool| {
         let mut runs: Vec<GatherRun<1>> = (0..m).map(|_| GatherRun::default()).collect();
@@ -987,7 +988,7 @@ fn wide_rotation_with_colliding_bucket_delta() {
     match &prepared {
         Prepared::Rotation(r) => {
             assert_eq!(
-                r.bucket_delta_gen, r.bucket_delta_identity,
+                r.bucket_delta_generator, r.bucket_delta_identity,
                 "seed search failed to produce the collision"
             );
         }

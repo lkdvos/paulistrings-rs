@@ -133,12 +133,12 @@ The engine **prepares** a channel once per layer into one of two forms, so no la
 ```rust
 pub enum Prepared<const W: usize> {
     Local(LocalPtm<W>),        // support on ≤ MAX_LOCAL_SUPPORT qubits
-    Rotation(RotationPrep<W>), // exp(-iθP/2), any generator weight
+    Rotation(PreparedRotation<W>), // exp(-iθP/2), any generator weight
 }
 ```
 
-`LocalPtm` is the channel's local Pauli-transfer matrix over its support: a list of `DeltaEntry`s, each carrying the bucket delta `δ = H·d`, the delta in local support coordinates, full-width XOR masks, and an amplitude per input support pattern (`amp[s]` takes pattern `s` to `s ⊕ d`; exact zero means "no output").
-The `i^k` phase is folded into `amp` at prepare time.
+`LocalPtm` is the channel's local Pauli-transfer matrix over its support: a list of `DeltaEntry`s, each carrying the bucket delta `δ = H·d`, the delta in local support coordinates, full-width XOR masks, and an amplitude per input support pattern (`amplitude[s]` takes pattern `s` to `s ⊕ d`; exact zero means "no output").
+The `i^k` phase is folded into `amplitude` at prepare time.
 `MAX_LOCAL_SUPPORT = 2` bounds the dense table at `16 × 16` amplitudes, 4 KB per layer; a support-3 table would be 64 KB with a 1 KB amplitude row inlined per entry, which is why wider supports take a different route.
 
 `Channel::prepare` has a **default implementation that is automatic and complete for any channel with support on ≤ 2 qubits**: `derive_local` calls the channel's own `apply` on each of the ≤ 16 local basis Paulis and reads the PTM off the results.
@@ -244,14 +244,14 @@ A delta with `pd ≠ 0` is **remote**: every row it produces from local bucket `
 The identity delta has mask `0`, so a partition never ships to itself, and remoteness is a property of the mask alone, so every partition reaches the same verdict without a vote — which is what lets the transport pair calls positionally.
 
 **The wire unit is one CSR block per remote delta, indexed by the receiver's destination position.**
-`Gf2Span::perm_index` renumbers the bucket index so a receiver's coset occupies a contiguous run of *positions* (§Engine); both sides can compute that renumbering, so the **sender** lays the block out in it: segment `p` holds the rows for the receiver's position `p`, generated from the sender's own bucket `bucket_at(p) ⊕ bd`, and the receiver filling output bucket `β′` reads `segment(position_of(β′))` through a table.
+`Gf2Span::permuted_index` renumbers the bucket index so a receiver's coset occupies a contiguous run of *positions* (§Engine); both sides can compute that renumbering, so the **sender** lays the block out in it: segment `p` holds the rows for the receiver's position `p`, generated from the sender's own bucket `bucket_at(p) ⊕ bd`, and the receiver filling output bucket `β′` reads `segment(position_of(β′))` through a table.
 A coset's rows are then **contiguous**, so a prefix of the transfer is a whole unit of the receiver's work — what the pipelined receive waits on (`ChunkMap` carries both the order and the chunk edges).
 A `PartnerPayload` is that partner's blocks in ascending remote-delta index, walked in lockstep with the receiver's own plan, so a delta with no rows still ships its empty block.
 
 A layer is **export → exchange → local coset loop**, a push model, and the last two overlap:
 
 1. Two passes over the local buckets build one block per remote delta — count rows per (delta, source bucket), then fill each block's CSR segments in destination-position order.
-   The row arithmetic is the engine's own gather at row granularity (`DeltaEntry::emit`, `RotationPrep::emit_gen`), so an exported row is bitwise the row a local gather would have produced.
+   The row arithmetic is the engine's own gather at row granularity (`DeltaEntry::emit`, `PreparedRotation::emit_generator`), so an exported row is bitwise the row a local gather would have produced.
 2. One all-to-all `Transport::exchange_layer`, which is **two-phase**: the *early* parts (block headers and CSR offsets) are waited out before the caller's body runs, while the *bulk* parts (key and coefficient columns) are cut at the chunk edges, posted chunk-major, and still in flight while the coset loop runs inside the call.
    `ExtraRows::count` needs only the offsets, so a gather run can be sized before a row has landed.
 3. The bucketed coset loop (§Engine) over the *local* deltas only, with the received rows entering each output bucket's gather run through `ExtraRows`.
@@ -470,7 +470,7 @@ The extension to distributed memory is no longer forward-looking: §Partitioning
 Within a bucket the device keeps unique keys in no particular order; `to_host` re-sorts each bucket to the host's lexicographic order.
 
 **The fused layer.**
-One block per output position `p`, the coset-contiguous renumbering `Gf2Span::perm_index` of a bucket `β`.
+One block per output position `p`, the coset-contiguous renumbering `Gf2Span::permuted_index` of a bucket `β`.
 For every entry `e` of the prepared table and every row `r` of source bucket `β ⊕ δ_e` that the entry emits (`amp_e[s] ≠ 0` on the table entry, never on the product), the block builds a record `(g_lo32, tag)` in shared memory with `tag = e:4 | r:12`.
 A 16-bit index array is radix-sorted by `g_lo32`; adjacent equal-`g_lo32` records with different keys trigger eight more passes over `g_hi32`, and a pair still colliding a full lex-key sort, so equal keys always end adjacent.
 A segmented sum over each equal-key run (a warp-shuffle block scan on dense tables, a head-serial walk on sparse ones) gives the coefficient; a row survives if the sum is not exactly zero and `keep_term` accepts it, and its key and coefficient are recomputed from the input at write time.

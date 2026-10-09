@@ -11,8 +11,8 @@ use super::coset::Gf2Span;
 use super::merge::{
     RADIX_MAX_REST_ROWS_PER_KEY, RADIX_MIN_DISJOINT_STREAMS, RADIX_MIN_REST_STREAMS,
 };
-use crate::channel::prepared::{LocalPtm, Prepared, RotationPrep};
-use crate::pauli_sum::storage::{BucketCols, PauliSum};
+use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
+use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 #[cfg(feature = "phase-timing")]
@@ -31,12 +31,12 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 pub struct LayerScratch<const W: usize> {
     /// The serial path's coset working set.
     pub(super) task: CosetScratch<W>,
-    /// The layer's handle permutation, `permutation[β] = span.perm_index(β)`.
+    /// The layer's handle permutation, `permutation[β] = span.permuted_index(β)`.
     pub(super) permutation: Vec<u32>,
     /// The inverse of [`Self::permutation`], filled only under [`ExtraRows::NEEDS_BETA`]; empty means the identity.
     pub(super) inverse_permutation: Vec<u32>,
     /// Bucket handles in coset-contiguous order while a layer runs.
-    pub(super) staging: Vec<BucketCols<W>>,
+    pub(super) staging: Vec<BucketColumns<W>>,
     /// One coset working set per Rayon worker, indexed by `rayon::current_thread_index()`, so each mutex is uncontended.
     pub(super) workers: Vec<Mutex<CosetScratch<W>>>,
     /// Layer-level wall-clock counters; per-coset busy time lives in each `CosetScratch`.
@@ -142,11 +142,11 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
     },
     /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
-        rotation: &'p RotationPrep<W>,
+        rotation: &'p PreparedRotation<W>,
         coord_identity: u32,
-        coord_gen: u32,
-        /// Whether the generator pass emits here ([`LayerKnobs::gen_local`]); `coord_gen` is 0 when not.
-        gen_local: bool,
+        generator_coordinate: u32,
+        /// Whether the generator pass emits here ([`LayerKnobs::generator_local`]); `generator_coordinate` is 0 when not.
+        generator_local: bool,
     },
 }
 
@@ -160,7 +160,7 @@ pub(crate) struct LayerKnobs<'k> {
     /// The unrestricted channel's [`rest_rows_per_key`], since a PTM cut down to local entries can look more disjoint than the channel is.
     pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
-    pub gen_local: bool,
+    pub generator_local: bool,
 }
 
 impl Default for LayerKnobs<'_> {
@@ -169,7 +169,7 @@ impl Default for LayerKnobs<'_> {
             bucket_deltas: None,
             rest_streams: None,
             rows_per_key: None,
-            gen_local: true,
+            generator_local: true,
         }
     }
 }
@@ -182,7 +182,7 @@ pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
     for output in 0..dim {
         let rows_here = ptm.deltas()[rest_start..]
             .iter()
-            .filter(|delta| delta.amp[output ^ delta.local_delta as usize] != ZERO)
+            .filter(|delta| delta.amplitude[output ^ delta.local_delta as usize] != ZERO)
             .count() as u32;
         rows += rows_here;
         keys += u32::from(rows_here > 0);
@@ -205,10 +205,10 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                     .collect();
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
                 debug_assert!(!has_identity || coords[0] == 0);
-                // `amp` is sized LOCAL_DIM but only `4^k` entries are populated.
+                // `amplitude` is sized LOCAL_DIM but only `4^k` entries are populated.
                 let dim = 1usize << (2 * ptm.k());
                 let dense_identity =
-                    has_identity && ptm.deltas()[0].amp[..dim].iter().all(|a| *a != ZERO);
+                    has_identity && ptm.deltas()[0].amplitude[..dim].iter().all(|a| *a != ZERO);
                 let rest_streams = knobs
                     .rest_streams
                     .unwrap_or(ptm.deltas().len() - has_identity as usize);
@@ -228,12 +228,12 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 rotation,
                 coord_identity: span.coord_of(rotation.bucket_delta_identity),
                 // `coord_of` demands its argument be in the span, and a remote generator's bucket delta is not.
-                coord_gen: if knobs.gen_local {
-                    span.coord_of(rotation.bucket_delta_gen)
+                generator_coordinate: if knobs.generator_local {
+                    span.coord_of(rotation.bucket_delta_generator)
                 } else {
                     0
                 },
-                gen_local: knobs.gen_local,
+                generator_local: knobs.generator_local,
             },
         }
     }
@@ -336,10 +336,10 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         scratch.permutation.clear();
         scratch
             .permutation
-            .extend((0..buckets.len() as u32).map(|beta| span.perm_index(beta)));
+            .extend((0..buckets.len() as u32).map(|beta| span.permuted_index(beta)));
         scratch
             .staging
-            .resize_with(buckets.len(), BucketCols::default);
+            .resize_with(buckets.len(), BucketColumns::default);
         for (beta, columns) in buckets.iter_mut().enumerate() {
             scratch.staging[scratch.permutation[beta] as usize] = std::mem::take(columns);
         }
@@ -368,7 +368,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         }
         let workers = &scratch.workers;
         let inverse_permutation: &[u32] = &scratch.inverse_permutation;
-        let chunks: &mut [BucketCols<W>] = if identity_perm {
+        let chunks: &mut [BucketColumns<W>] = if identity_perm {
             sum.buckets_mut()
         } else {
             scratch.staging.as_mut_slice()
@@ -446,7 +446,7 @@ fn rescale_in_place<const W: usize, T>(sum: &mut PauliSum<W>, ptm: &LocalPtm<W>,
 where
     T: TruncationPolicy<W> + ?Sized,
 {
-    let amplitude = &ptm.deltas()[0].amp;
+    let amplitude = &ptm.deltas()[0].amplitude;
     sum.buckets_mut().par_iter_mut().for_each(|columns| {
         let len = columns.len();
         let mut keep = 0usize;

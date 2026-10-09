@@ -42,13 +42,13 @@ pub const DEFAULT_MIN_BUCKETS: usize = 128;
 
 /// One bucket's columns, whose capacity is retained across layers (ARCHITECTURE.md §Data-Model).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct BucketCols<const W: usize> {
+pub(crate) struct BucketColumns<const W: usize> {
     pub(crate) x: Vec<[u64; W]>,
     pub(crate) z: Vec<[u64; W]>,
     pub(crate) coeff: Vec<Complex64>,
 }
 
-impl<const W: usize> BucketCols<W> {
+impl<const W: usize> BucketColumns<W> {
     pub(super) fn new() -> Self {
         Self {
             x: Vec::new(),
@@ -79,8 +79,8 @@ impl<const W: usize> BucketCols<W> {
 
 /// Split bucket `b` into the half kept in place and the half moving to `upper`, by the hash's new top bit `new_bit`.
 fn refine_bucket<const W: usize>(
-    columns: &mut BucketCols<W>,
-    upper_half: &mut BucketCols<W>,
+    columns: &mut BucketColumns<W>,
+    upper_half: &mut BucketColumns<W>,
     hash: &Gf2Hash<W>,
     new_bit: u8,
     b: u32,
@@ -114,8 +114,11 @@ fn refine_bucket<const W: usize>(
 }
 
 /// Merge two sorted runs. No coefficient combining: keys are globally unique.
-pub(super) fn merge_two<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> BucketCols<W> {
-    let mut out = BucketCols::<W>::new();
+pub(super) fn merge_two<const W: usize>(
+    a: &BucketColumns<W>,
+    b: &BucketColumns<W>,
+) -> BucketColumns<W> {
+    let mut out = BucketColumns::<W>::new();
     let total = a.len() + b.len();
     out.x.reserve_exact(total);
     out.z.reserve_exact(total);
@@ -142,8 +145,11 @@ pub(super) fn merge_two<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) ->
 }
 
 /// Merge two sorted runs, summing equal keys and dropping exact-zero sums.
-fn merge_two_adding<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> BucketCols<W> {
-    let mut out = BucketCols::<W>::new();
+fn merge_two_adding<const W: usize>(
+    a: &BucketColumns<W>,
+    b: &BucketColumns<W>,
+) -> BucketColumns<W> {
+    let mut out = BucketColumns::<W>::new();
     let total = a.len() + b.len();
     out.x.reserve_exact(total);
     out.z.reserve_exact(total);
@@ -182,9 +188,9 @@ fn merge_two_adding<const W: usize>(a: &BucketCols<W>, b: &BucketCols<W>) -> Buc
 }
 
 /// Merge `B` sorted runs into one, by `log2(B)` parallel rounds of pairwise merges rather than a sequential heap merge.
-fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
+fn merge_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> BucketColumns<W> {
     if runs.is_empty() {
-        return BucketCols::new();
+        return BucketColumns::new();
     }
     while runs.len() > 1 {
         runs = runs
@@ -224,7 +230,7 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
 /// ```
 #[derive(Clone, Debug)]
 pub struct PauliSum<const W: usize> {
-    pub(super) buckets: Vec<BucketCols<W>>,
+    pub(super) buckets: Vec<BucketColumns<W>>,
     pub(super) hash: Gf2Hash<W>,
     pub(super) num_qubits: usize,
     pub(super) len: usize,
@@ -251,9 +257,9 @@ impl<const W: usize> PauliSum<W> {
             counts[b as usize] += 1;
         }
 
-        let mut buckets: Vec<BucketCols<W>> = Vec::with_capacity(num_buckets);
+        let mut buckets: Vec<BucketColumns<W>> = Vec::with_capacity(num_buckets);
         for &c in counts.iter() {
-            let mut columns = BucketCols::<W>::new();
+            let mut columns = BucketColumns::<W>::new();
             columns.x.reserve_exact(c);
             columns.z.reserve_exact(c);
             columns.coeff.reserve_exact(c);
@@ -286,7 +292,7 @@ impl<const W: usize> PauliSum<W> {
     pub(crate) fn empty_with_hash(num_qubits: usize, hash: Gf2Hash<W>) -> Self {
         let num_buckets = hash.num_buckets();
         Self {
-            buckets: (0..num_buckets).map(|_| BucketCols::new()).collect(),
+            buckets: (0..num_buckets).map(|_| BucketColumns::new()).collect(),
             hash,
             num_qubits,
             len: 0,
@@ -385,8 +391,8 @@ impl<const W: usize> PauliSum<W> {
         let hash = &self.hash;
 
         let mut old = std::mem::take(&mut self.buckets);
-        let mut upper: Vec<BucketCols<W>> =
-            (0..old_num_buckets).map(|_| BucketCols::new()).collect();
+        let mut upper: Vec<BucketColumns<W>> =
+            (0..old_num_buckets).map(|_| BucketColumns::new()).collect();
 
         if self.len < PARALLEL_MIN_TERMS {
             for (b, (columns, upper_half)) in old.iter_mut().zip(upper.iter_mut()).enumerate() {
@@ -413,7 +419,7 @@ impl<const W: usize> PauliSum<W> {
         let old = std::mem::take(&mut self.buckets);
         let (lower, upper) = old.split_at(new_num_buckets);
 
-        let merged: Vec<BucketCols<W>> = if self.len < PARALLEL_MIN_TERMS {
+        let merged: Vec<BucketColumns<W>> = if self.len < PARALLEL_MIN_TERMS {
             lower
                 .iter()
                 .zip(upper.iter())
@@ -442,12 +448,12 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// The buckets' columns, for read-outs that scan them.
-    pub(crate) fn buckets(&self) -> &[BucketCols<W>] {
+    pub(crate) fn buckets(&self) -> &[BucketColumns<W>] {
         &self.buckets
     }
 
     /// Mutable access to the buckets, for layers that are applied in place.
-    pub(crate) fn buckets_mut(&mut self) -> &mut [BucketCols<W>] {
+    pub(crate) fn buckets_mut(&mut self) -> &mut [BucketColumns<W>] {
         &mut self.buckets
     }
 
@@ -586,7 +592,7 @@ impl<const W: usize> PauliSum<W> {
             self.num_qubits, other.num_qubits,
         );
         let rhs = other.align_to(&self.hash);
-        let buckets: Vec<BucketCols<W>> = self
+        let buckets: Vec<BucketColumns<W>> = self
             .buckets
             .par_iter()
             .zip(rhs.buckets.par_iter())

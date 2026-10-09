@@ -31,7 +31,7 @@ impl KeepProgram {
         let mut stack: Vec<T> = Vec::new();
         for i in 0..self.len as usize {
             let node = match self.op[i] {
-                OP_COEFF => T::Coeff(f64::from_bits(self.arg[i])),
+                OP_COEFF => T::Coefficient(f64::from_bits(self.arg[i])),
                 OP_WEIGHT => T::Weight(self.arg[i] as u32),
                 OP_AND | OP_OR => {
                     let b = Box::new(stack.pop().expect("operand"));
@@ -61,13 +61,16 @@ impl KeepProgram {
 fn lowering_emits_the_hand_written_postfix() {
     let lower = |t: &T| KeepProgram::lower(t).unwrap().nodes();
     assert_eq!(lower(&T::Keep), vec![(OP_KEEP, 0)]);
-    assert_eq!(lower(&T::Coeff(1e-3)), vec![(OP_COEFF, 1e-3f64.to_bits())]);
     assert_eq!(
-        lower(&and(T::Coeff(0.5), T::Weight(4))),
+        lower(&T::Coefficient(1e-3)),
+        vec![(OP_COEFF, 1e-3f64.to_bits())]
+    );
+    assert_eq!(
+        lower(&and(T::Coefficient(0.5), T::Weight(4))),
         vec![(OP_COEFF, 0.5f64.to_bits()), (OP_WEIGHT, 4), (OP_AND, 0)]
     );
     assert_eq!(
-        lower(&or(T::Weight(1), and(T::Coeff(0.25), T::Weight(3)))),
+        lower(&or(T::Weight(1), and(T::Coefficient(0.25), T::Weight(3)))),
         vec![
             (OP_WEIGHT, 1),
             (OP_COEFF, 0.25f64.to_bits()),
@@ -77,14 +80,17 @@ fn lowering_emits_the_hand_written_postfix() {
         ]
     );
     assert_eq!(
-        lower(&and(T::Coeff(1e-3), T::ApproxTopN(10))),
+        lower(&and(T::Coefficient(1e-3), T::ApproxTopN(10))),
         vec![(OP_COEFF, 1e-3f64.to_bits())]
     );
     assert_eq!(
         lower(&and(T::ApproxTopN(10), T::ApproxTopN(3))),
         vec![(OP_KEEP, 0)]
     );
-    assert_eq!(lower(&or(T::Coeff(1e-3), T::TopN(10))), vec![(OP_KEEP, 0)]);
+    assert_eq!(
+        lower(&or(T::Coefficient(1e-3), T::TopN(10))),
+        vec![(OP_KEEP, 0)]
+    );
     assert_eq!(KeepProgram::lower(&T::Keep).unwrap(), KeepProgram::KEEP);
 }
 
@@ -106,20 +112,20 @@ fn grid() -> Vec<([u64; 2], [u64; 2], Complex64)> {
 fn lowering_round_trips_and_evaluates_as_the_tree() {
     let trees = [
         T::Keep,
-        T::Coeff(0.1),
-        T::Coeff(-1.0),
+        T::Coefficient(0.1),
+        T::Coefficient(-1.0),
         T::Weight(2),
-        and(T::Coeff(0.1), T::Weight(1)),
-        or(T::Coeff(0.5), T::Weight(0)),
+        and(T::Coefficient(0.1), T::Weight(1)),
+        or(T::Coefficient(0.5), T::Weight(0)),
         or(
-            and(T::Coeff(0.1), T::ApproxTopN(3)),
-            and(T::Weight(2), T::Coeff(0.3)),
+            and(T::Coefficient(0.1), T::ApproxTopN(3)),
+            and(T::Weight(2), T::Coefficient(0.3)),
         ),
         and(
-            or(T::Weight(0), T::Coeff(1.0)),
+            or(T::Weight(0), T::Coefficient(1.0)),
             or(T::TopN(3), T::Weight(3)),
         ),
-        and(T::Keep, or(T::Keep, T::Coeff(0.2))),
+        and(T::Keep, or(T::Keep, T::Coefficient(0.2))),
     ];
     for tree in &trees {
         let p = KeepProgram::lower(tree).unwrap();
@@ -136,8 +142,9 @@ fn lowering_round_trips_and_evaluates_as_the_tree() {
 
 #[test]
 fn a_program_past_fifteen_nodes_is_unsupported() {
-    let chain =
-        |leaves: usize| (1..leaves).fold(T::Coeff(0.0), |acc, i| and(acc, T::Weight(i as u32)));
+    let chain = |leaves: usize| {
+        (1..leaves).fold(T::Coefficient(0.0), |acc, i| and(acc, T::Weight(i as u32)))
+    };
     assert_eq!(KeepProgram::lower(&chain(8)).unwrap().len, 15);
     assert!(matches!(
         KeepProgram::lower(&chain(9)),
@@ -155,7 +162,7 @@ fn every_builtin_lowers_including_top_n() {
         And(ApproxTopN(500), WeightCutoff(4)),
     ));
     let p = KeepProgram::lower(&tree).unwrap();
-    assert_eq!(p.decode(), and(T::Coeff(1e-3), T::Weight(4)));
+    assert_eq!(p.decode(), and(T::Coefficient(1e-3), T::Weight(4)));
     assert_eq!(
         KeepProgram::lower(&T::from(TopN(10))).unwrap(),
         KeepProgram::KEEP
@@ -171,18 +178,18 @@ fn layer_pass_leaves_follow_and_and_skip_or() {
     };
     assert_eq!(leaves(&T::ApproxTopN(3)), vec![T::ApproxTopN(3)]);
     assert_eq!(
-        leaves(&and(T::Coeff(0.1), T::ApproxTopN(3))),
+        leaves(&and(T::Coefficient(0.1), T::ApproxTopN(3))),
         vec![T::ApproxTopN(3)]
     );
     assert_eq!(
         leaves(&and(T::ApproxTopN(9), and(T::Weight(2), T::ApproxTopN(3)))),
         vec![T::ApproxTopN(9), T::ApproxTopN(3)]
     );
-    assert!(leaves(&or(T::ApproxTopN(3), T::Coeff(0.1))).is_empty());
-    assert!(leaves(&T::Coeff(0.1)).is_empty());
+    assert!(leaves(&or(T::ApproxTopN(3), T::Coefficient(0.1))).is_empty());
+    assert!(leaves(&T::Coefficient(0.1)).is_empty());
     let collapse = T::from(crate::truncation::CollapseSample::new(4, 1));
     assert_eq!(
-        leaves(&and(T::Coeff(0.1), collapse.clone())),
+        leaves(&and(T::Coefficient(0.1), collapse.clone())),
         vec![collapse.clone()]
     );
     assert_eq!(KeepProgram::lower(&collapse).unwrap(), KeepProgram::KEEP);

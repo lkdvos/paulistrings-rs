@@ -38,7 +38,7 @@ fn assert_keeps_like<P: TruncationPolicy<1>>(tree: &T, builtin: &P, what: &str) 
 fn keep_term_and_the_layer_hint_equal_the_builtin_each_variant_names() {
     assert_keeps_like(&T::Keep, &KeepAll, "keep");
     for eps in [-1.0, 0.0, 0.1, 0.5] {
-        assert_keeps_like(&T::Coeff(eps), &CoefficientThreshold(eps), "coeff");
+        assert_keeps_like(&T::Coefficient(eps), &CoefficientThreshold(eps), "coeff");
     }
     for k in [0u32, 1, 2, 3] {
         assert_keeps_like(&T::Weight(k), &WeightCutoff(k), "weight");
@@ -46,17 +46,17 @@ fn keep_term_and_the_layer_hint_equal_the_builtin_each_variant_names() {
     assert_keeps_like(&T::TopN(3), &TopN(3), "topn");
     assert_keeps_like(&T::ApproxTopN(3), &ApproxTopN(3), "approx");
     assert_keeps_like(
-        &and(T::Coeff(0.1), T::Weight(1)),
+        &and(T::Coefficient(0.1), T::Weight(1)),
         &And(CoefficientThreshold(0.1), WeightCutoff(1)),
         "and",
     );
     assert_keeps_like(
-        &or(T::Coeff(0.5), T::Weight(0)),
+        &or(T::Coefficient(0.5), T::Weight(0)),
         &Or(CoefficientThreshold(0.5), WeightCutoff(0)),
         "or",
     );
     assert_keeps_like(
-        &or(and(T::Coeff(0.1), T::ApproxTopN(9)), T::Weight(1)),
+        &or(and(T::Coefficient(0.1), T::ApproxTopN(9)), T::Weight(1)),
         &Or(
             And(CoefficientThreshold(0.1), ApproxTopN(9)),
             WeightCutoff(1),
@@ -70,26 +70,32 @@ fn keep_term_and_the_layer_hint_equal_the_builtin_each_variant_names() {
 fn finalizes_layer_truth_table() {
     let f = |t: &T| <T as TruncationPolicy<2>>::finalizes_layer(t);
     assert!(!f(&T::Keep));
-    assert!(!f(&T::Coeff(1e-3)));
+    assert!(!f(&T::Coefficient(1e-3)));
     assert!(!f(&T::Weight(4)));
     assert!(f(&T::TopN(4)));
     assert!(f(&T::ApproxTopN(4)));
-    assert!(f(&and(T::Coeff(1e-3), T::ApproxTopN(4))));
+    assert!(f(&and(T::Coefficient(1e-3), T::ApproxTopN(4))));
     assert!(f(&and(T::ApproxTopN(4), T::Weight(2))));
     assert!(f(&and(T::ApproxTopN(4), T::ApproxTopN(2))));
-    assert!(f(&and(T::Keep, and(T::Coeff(0.1), T::TopN(3)))));
-    assert!(!f(&and(T::Coeff(1e-3), T::Weight(2))));
-    assert!(!f(&or(T::ApproxTopN(4), T::Coeff(1e-3))));
+    assert!(f(&and(T::Keep, and(T::Coefficient(0.1), T::TopN(3)))));
+    assert!(!f(&and(T::Coefficient(1e-3), T::Weight(2))));
+    assert!(!f(&or(T::ApproxTopN(4), T::Coefficient(1e-3))));
     assert!(!f(&or(T::TopN(4), T::ApproxTopN(4))));
-    assert!(!f(&and(or(T::TopN(4), T::Keep), T::Coeff(0.5))));
+    assert!(!f(&and(or(T::TopN(4), T::Keep), T::Coefficient(0.5))));
     assert!(f(&T::from(CollapseSample::new(4, 1))));
-    assert!(f(&and(T::Coeff(1e-3), T::from(CollapseSample::new(4, 1)))));
-    assert!(!f(&or(T::from(CollapseSample::new(4, 1)), T::Coeff(1e-3))));
+    assert!(f(&and(
+        T::Coefficient(1e-3),
+        T::from(CollapseSample::new(4, 1))
+    )));
+    assert!(!f(&or(
+        T::from(CollapseSample::new(4, 1)),
+        T::Coefficient(1e-3)
+    )));
 }
 
 #[test]
 fn every_builtin_converts_node_for_node() {
-    let tree = and(T::Coeff(1e-3), or(T::ApproxTopN(7), T::Weight(2)));
+    let tree = and(T::Coefficient(1e-3), or(T::ApproxTopN(7), T::Weight(2)));
     let builtin = And(
         CoefficientThreshold(1e-3),
         Or(ApproxTopN(7), WeightCutoff(2)),
@@ -107,7 +113,7 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
     let input = rand_sum_real::<1>(200, 16, 0xC011);
     let mut want = input.clone();
     CollapseSample::new(10, 7).finalize_layer(&mut want);
-    let tree = and(T::Coeff(0.0), T::from(CollapseSample::new(10, 7)));
+    let tree = and(T::Coefficient(0.0), T::from(CollapseSample::new(10, 7)));
     let twin = tree.clone();
     let mut got = input.clone();
     <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut got);
@@ -132,7 +138,7 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
 #[test]
 fn contains_exact_top_n_looks_through_or() {
     assert!(T::TopN(1).contains_exact_top_n());
-    assert!(or(T::Coeff(0.1), T::TopN(1)).contains_exact_top_n());
+    assert!(or(T::Coefficient(0.1), T::TopN(1)).contains_exact_top_n());
     assert!(and(T::Keep, and(T::TopN(1), T::Weight(2))).contains_exact_top_n());
     assert!(!and(T::ApproxTopN(1), T::Weight(2)).contains_exact_top_n());
 }
@@ -141,7 +147,10 @@ fn contains_exact_top_n_looks_through_or() {
 #[test]
 fn finalize_layer_equals_the_builtin_composition() {
     let input = rand_sum_real::<1>(1500, 32, 0xB117);
-    let tree = and(T::Coeff(1e-3), and(T::ApproxTopN(900), T::ApproxTopN(400)));
+    let tree = and(
+        T::Coefficient(1e-3),
+        and(T::ApproxTopN(900), T::ApproxTopN(400)),
+    );
     let builtin = And(
         CoefficientThreshold(1e-3),
         And(ApproxTopN(900), ApproxTopN(400)),
@@ -153,7 +162,7 @@ fn finalize_layer_equals_the_builtin_composition() {
     <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut got);
     assert_same_terms(&got, &want, "host");
 
-    let ored = or(T::ApproxTopN(5), T::Coeff(0.5));
+    let ored = or(T::ApproxTopN(5), T::Coefficient(0.5));
     let mut untouched = input.clone();
     <T as TruncationPolicy<1>>::finalize_layer(&ored, &mut untouched);
     assert_eq!(untouched.len(), input.len(), "Or runs no layer pass");
@@ -169,6 +178,6 @@ fn finalize_layer_equals_the_builtin_composition() {
 fn a_reached_top_n_panics_in_partitioned_mode() {
     let group = InProcessTransport::group(1);
     let mut sum = rand_sum_real::<1>(10, 32, 0x1);
-    let tree = and(T::Coeff(0.1), T::TopN(3));
+    let tree = and(T::Coefficient(0.1), T::TopN(3));
     <T as PartitionedTruncation<1>>::finalize_layer_partitioned(&tree, &mut sum, &group[0]);
 }

@@ -321,7 +321,7 @@ impl<const W: usize> LayerScratch<W> {
             self.bucket_at_host.clear();
             self.bucket_at_host.resize(b, 0);
             for beta in 0..b as u32 {
-                self.bucket_at_host[span.perm_index(beta) as usize] = beta;
+                self.bucket_at_host[span.permuted_index(beta) as usize] = beta;
             }
             grow(stream, &mut self.bucket_at, b, ordinal)?;
         }

@@ -9,7 +9,7 @@ use pyo3::prelude::*;
 
 #[pyfunction]
 fn coeff(epsilon: f64) -> PyTruncation {
-    PyTruncation::new(BuiltinTruncation::Coeff(epsilon))
+    PyTruncation::new(BuiltinTruncation::Coefficient(epsilon))
 }
 
 #[pyfunction]

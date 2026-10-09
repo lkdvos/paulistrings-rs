@@ -106,7 +106,7 @@ fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
 }
 
 /// What a partition knows about itself while it walks the layers.
-pub(super) struct PartitionCtx<'a, const W: usize> {
+pub(super) struct PartitionContext<'a, const W: usize> {
     pub(super) rows: &'a PartitionRows<W>,
     pub(super) rank: usize,
     pub(super) size: usize,
@@ -139,7 +139,7 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
     policy: &T,
     direction: Direction,
     options: PropagateOptions,
-    context: PartitionCtx<'_, W>,
+    context: PartitionContext<'_, W>,
     work: &mut PartitionWork<B>,
     transport: &X,
 ) where
@@ -147,7 +147,7 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
     X: Transport,
     B: PartitionBackend<W, T>,
 {
-    let PartitionCtx {
+    let PartitionContext {
         rows,
         rank,
         size,

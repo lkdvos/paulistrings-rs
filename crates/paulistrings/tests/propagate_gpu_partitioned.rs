@@ -652,7 +652,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
                 }
             }
             paulistrings::test_support::Prepared::Rotation(r) => {
-                deltas.insert(rows.partition_of(&r.gen.x, &r.gen.z));
+                deltas.insert(rows.partition_of(&r.generator.x, &r.generator.z));
             }
         }
         for r in 0..4 {

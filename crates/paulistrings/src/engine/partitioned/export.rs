@@ -5,7 +5,7 @@ use rayon::prelude::*;
 
 use super::plan::PartitionPlan;
 use super::transport::{ChunkMap, ExchangeBlock, PartnerPayload};
-use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, RotationPrep};
+use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::PauliSum;
 
@@ -42,16 +42,16 @@ enum RowEmitter<'p, const W: usize> {
         entry: &'p DeltaEntry<W>,
     },
     /// The identity pass of a rotation is never remote.
-    Generator { rotation: &'p RotationPrep<W> },
+    Generator { rotation: &'p PreparedRotation<W> },
 }
 
 impl<const W: usize> RowEmitter<'_, W> {
-    /// Whether every term emits a row; `amp` is sized `LOCAL_DIM` but only `4^k` entries are populated.
+    /// Whether every term emits a row; `amplitude` is sized `LOCAL_DIM` but only `4^k` entries are populated.
     fn is_dense(&self) -> bool {
         match self {
             RowEmitter::Tabulated { ptm, entry } => {
                 let dim = 1usize << (2 * ptm.k());
-                entry.amp[..dim].iter().all(|a| *a != ZERO)
+                entry.amplitude[..dim].iter().all(|a| *a != ZERO)
             }
             RowEmitter::Generator { .. } => false,
         }
@@ -66,7 +66,7 @@ impl<const W: usize> RowEmitter<'_, W> {
     ) -> Option<([u64; W], [u64; W], Complex64)> {
         match self {
             RowEmitter::Tabulated { ptm, entry } => entry.emit(ptm.support_bits(x, z), x, z, c),
-            RowEmitter::Generator { rotation } => rotation.emit_gen(x, z, c),
+            RowEmitter::Generator { rotation } => rotation.emit_generator(x, z, c),
         }
     }
 }
@@ -214,7 +214,7 @@ fn count_bucket<const W: usize>(
             for t in 0..n {
                 let s = ptm.support_bits(&bx[t], &bz[t]);
                 for (k, r) in plan.remote.iter().enumerate() {
-                    if !dense[k] && ptm.deltas()[r.entry].amp[s] != ZERO {
+                    if !dense[k] && ptm.deltas()[r.entry].amplitude[s] != ZERO {
                         out[k] += 1;
                     }
                 }
@@ -225,7 +225,7 @@ fn count_bucket<const W: usize>(
             let mut anticommuting = 0u32;
             for t in 0..n {
                 let v = PauliString::<W> { x: bx[t], z: bz[t] };
-                if !v.commutes_with(&rotation.gen) {
+                if !v.commutes_with(&rotation.generator) {
                     anticommuting += 1;
                 }
             }

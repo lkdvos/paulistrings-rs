@@ -223,7 +223,7 @@ where
             retained = Prepared::Local(ptm.retain_entries(&plan.local_entries));
             &retained
         }
-        // A rotation's identity entry is always local, so the generator crosses; `gen_local` switches its pass off.
+        // A rotation's identity entry is always local, so the generator crosses; `generator_local` switches its pass off.
         Prepared::Rotation(_) => prepared,
     };
     let knobs = LayerKnobs {
@@ -234,7 +234,7 @@ where
             Prepared::Local(ptm) => Some(rest_rows_per_key(ptm)),
             Prepared::Rotation(_) => None,
         },
-        gen_local: match prepared {
+        generator_local: match prepared {
             Prepared::Rotation(_) => plan.local_entries[1],
             Prepared::Local(_) => true,
         },

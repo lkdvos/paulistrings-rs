@@ -59,7 +59,7 @@ impl ChunkMap {
         self.perm.reserve(num_buckets);
         self.inv.resize(num_buckets, 0);
         for beta in 0..positions {
-            let p = span.perm_index(beta);
+            let p = span.permuted_index(beta);
             self.perm.push(p);
             self.inv[p as usize] = beta;
         }

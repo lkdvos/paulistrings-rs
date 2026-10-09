@@ -57,10 +57,10 @@ impl PartitionPlan {
                 })
                 .collect(),
             Prepared::Rotation(rotation) => {
-                let (gx, gz) = rotation.gen_mask();
+                let (gx, gz) = rotation.generator_mask();
                 vec![
                     ([0u64; W], [0u64; W], rotation.bucket_delta_identity),
-                    (gx, gz, rotation.bucket_delta_gen),
+                    (gx, gz, rotation.bucket_delta_generator),
                 ]
             }
         };

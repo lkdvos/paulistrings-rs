@@ -268,7 +268,7 @@ fn move_chunk<const W: usize>(
         match op.column {
             WireColumn::X => group.send(block.x.slice(r0 * e..r1 * e), op.peer, stream),
             WireColumn::Z => group.send(block.z.slice(r0 * e..r1 * e), op.peer, stream),
-            WireColumn::Coeff => group.send(block.c.slice(r0 * e..r1 * e), op.peer, stream),
+            WireColumn::Coefficient => group.send(block.c.slice(r0 * e..r1 * e), op.peer, stream),
         }
     }
     let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
@@ -291,7 +291,7 @@ fn move_chunk<const W: usize>(
     );
     group.recv_parts(
         recv_c.slice_mut(0..2 * n),
-        &recv_parts(WireColumn::Coeff),
+        &recv_parts(WireColumn::Coefficient),
         stream,
     );
     if let Err(e) = group.post(&*wire).and_then(|()| wire.wait(stream)) {

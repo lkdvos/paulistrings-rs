@@ -37,7 +37,7 @@ pub(crate) fn collapse_count(tree: &BuiltinTruncation) -> Option<u64> {
                 walk(b, out);
             }
             BuiltinTruncation::Keep
-            | BuiltinTruncation::Coeff(_)
+            | BuiltinTruncation::Coefficient(_)
             | BuiltinTruncation::Weight(_)
             | BuiltinTruncation::TopN(_)
             | BuiltinTruncation::ApproxTopN(_) => {}
@@ -83,7 +83,17 @@ impl PyTruncation {
     }
 
     fn __repr__(&self) -> String {
-        format!("Truncation({:?})", self.tree)
+        format!("Truncation({})", tree_repr(&self.tree))
+    }
+}
+
+/// The tree's `Debug` form with the Python spelling `Coeff` for [`BuiltinTruncation::Coefficient`].
+fn tree_repr(tree: &BuiltinTruncation) -> String {
+    match tree {
+        BuiltinTruncation::Coefficient(eps) => format!("Coeff({eps:?})"),
+        BuiltinTruncation::And(a, b) => format!("And({}, {})", tree_repr(a), tree_repr(b)),
+        BuiltinTruncation::Or(a, b) => format!("Or({}, {})", tree_repr(a), tree_repr(b)),
+        other => format!("{other:?}"),
     }
 }
 

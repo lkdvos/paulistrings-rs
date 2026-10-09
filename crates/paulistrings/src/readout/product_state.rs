@@ -46,11 +46,11 @@ impl PauliAxis {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductBasis<const W: usize> {
     /// `x`-bit of each qubit's axis Pauli.
-    pub ax_x: [u64; W],
+    pub axis_x: [u64; W],
     /// `z`-bit of each qubit's axis Pauli.
-    pub ax_z: [u64; W],
+    pub axis_z: [u64; W],
     /// Sign bit per qubit: `1` selects the `-1` eigenstate.
-    pub neg: [u64; W],
+    pub negative: [u64; W],
 }
 
 impl<const W: usize> ProductBasis<W> {
@@ -64,9 +64,9 @@ impl<const W: usize> ProductBasis<W> {
         let (axis_x, axis_z) = axis.bits();
         let all = |b: bool| if b { [!0u64; W] } else { [0u64; W] };
         Self {
-            ax_x: all(axis_x),
-            ax_z: all(axis_z),
-            neg: [0u64; W],
+            axis_x: all(axis_x),
+            axis_z: all(axis_z),
+            negative: [0u64; W],
         }
     }
 
@@ -82,9 +82,9 @@ impl<const W: usize> ProductBasis<W> {
         I: IntoIterator<Item = (PauliAxis, bool)>,
     {
         let mut out = Self {
-            ax_x: [0u64; W],
-            ax_z: [0u64; W],
-            neg: [0u64; W],
+            axis_x: [0u64; W],
+            axis_z: [0u64; W],
+            negative: [0u64; W],
         };
         for (q, (axis, minus)) in axes.into_iter().enumerate() {
             assert!(
@@ -95,13 +95,13 @@ impl<const W: usize> ProductBasis<W> {
             let bit = 1u64 << (q % 64);
             let (axis_x, axis_z) = axis.bits();
             if axis_x {
-                out.ax_x[word] |= bit;
+                out.axis_x[word] |= bit;
             }
             if axis_z {
-                out.ax_z[word] |= bit;
+                out.axis_z[word] |= bit;
             }
             if minus {
-                out.neg[word] |= bit;
+                out.negative[word] |= bit;
             }
         }
         out
@@ -129,8 +129,8 @@ impl<const W: usize> PauliSum<W> {
                         let z = columns.z[i][w];
                         let support = x | z;
                         mismatch |=
-                            (x ^ (support & basis.ax_x[w])) | (z ^ (support & basis.ax_z[w]));
-                        sign_bits += (support & basis.neg[w]).count_ones();
+                            (x ^ (support & basis.axis_x[w])) | (z ^ (support & basis.axis_z[w]));
+                        sign_bits += (support & basis.negative[w]).count_ones();
                     }
                     if mismatch == 0 {
                         if sign_bits & 1 == 0 {

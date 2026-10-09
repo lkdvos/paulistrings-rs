@@ -169,7 +169,10 @@ fn builtin_truncation_tree_matches_propagate() {
     use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(24, THETA);
     let sum = rand_sum_real::<1>(1_200, 24, 0x0D17);
-    let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(2_000)));
+    let tree = T::And(
+        Box::new(T::Coefficient(1e-9)),
+        Box::new(T::ApproxTopN(2_000)),
+    );
     check(&circuit, &sum, &tree, "trotter tree w1");
 }
 

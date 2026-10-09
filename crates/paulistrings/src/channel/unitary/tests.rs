@@ -271,10 +271,10 @@ fn derive_local_recovers_the_table() {
         for s in 0..4usize {
             let t = s ^ d.local_delta as usize;
             assert!(
-                (d.amp[s] - h.table[s][t]).norm() < TOL,
-                "amp[{s}] for delta {} is {} but table[{s}][{t}] is {}",
+                (d.amplitude[s] - h.table[s][t]).norm() < TOL,
+                "amplitude[{s}] for delta {} is {} but table[{s}][{t}] is {}",
                 d.local_delta,
-                d.amp[s],
+                d.amplitude[s],
                 h.table[s][t],
             );
         }

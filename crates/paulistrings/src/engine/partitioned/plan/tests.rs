@@ -131,7 +131,7 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
         vec![RemoteDelta {
             entry: 1,
             partner: 0,
-            bucket_delta: r.bucket_delta_gen,
+            bucket_delta: r.bucket_delta_generator,
             partition_delta: 1,
         }],
     );

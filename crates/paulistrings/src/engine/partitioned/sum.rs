@@ -6,7 +6,7 @@ use std::time::Instant;
 use num_complex::Complex64;
 
 use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
-use super::driver::{run_layers, scatter_local, PartitionCtx, PartitionWork, LOG_TARGET};
+use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, LOG_TARGET};
 use super::runtime::PartitionRuntime;
 use super::topology::PartitionConfig;
 use super::trace::{assemble, PartitionTrace};
@@ -149,7 +149,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
             let runtime = Arc::clone(&self.runtime);
             let rows = &self.rows;
             let done = runtime.map_partitions(items, |rank, mut work, transport| {
-                let context = PartitionCtx {
+                let context = PartitionContext {
                     rows,
                     rank,
                     size,

@@ -2192,7 +2192,7 @@ impl<const W: usize> PauliSum<W> {
         let n = coeff.len();
         let hash = Gf2Hash::new(num_qubits, 0, DEFAULT_HASH_SEED);
         Self {
-            buckets: vec![BucketCols { x, z, coeff }],
+            buckets: vec![BucketColumns { x, z, coeff }],
             hash,
             num_qubits,
             len: n,

@@ -1,6 +1,6 @@
 //! [`PauliRotation`], the rotation `exp(-i·θ·P/2)` about a Pauli generator.
 
-use super::prepared::{Prepared, RotationPrep, MAX_LOCAL_SUPPORT};
+use super::prepared::{Prepared, PreparedRotation, MAX_LOCAL_SUPPORT};
 use super::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -134,12 +134,12 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         }
         let (sin, cos) = sin_cos(if adjoint { -self.theta } else { self.theta });
         let generator = self.generator();
-        Some(Prepared::Rotation(RotationPrep {
-            gen: generator,
+        Some(Prepared::Rotation(PreparedRotation {
+            generator,
             cos,
             sin,
             bucket_delta_identity: 0,
-            bucket_delta_gen: hash.bucket_of_pauli(&generator),
+            bucket_delta_generator: hash.bucket_of_pauli(&generator),
         }))
     }
 }

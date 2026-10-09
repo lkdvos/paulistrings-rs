@@ -25,11 +25,11 @@ fn span_of_zero_is_trivial() {
     assert_eq!(span.num_cosets(), 16);
     for beta in 0u32..16 {
         assert!(span.is_representative(beta));
-        assert_eq!(span.rep_of(beta), beta);
+        assert_eq!(span.representative_of(beta), beta);
         assert_eq!(span.member(beta, 0), beta);
         assert_eq!(span.coord_of(0), 0);
         assert_eq!(span.rank_of_representative(beta), beta);
-        assert_eq!(span.perm_index(beta), beta);
+        assert_eq!(span.permuted_index(beta), beta);
     }
 }
 
@@ -63,13 +63,13 @@ fn rep_of_reduces_rather_than_masks() {
     assert_eq!(span.r(), 1);
 
     // The coset of 0b100 is {0b100, 0b010}; the mask `beta & !0b100` would give 0b000, in a different coset.
-    assert_eq!(span.rep_of(0b100), 0b010);
-    assert_ne!(span.rep_of(0b100), 0b100 & !(1 << 2));
+    assert_eq!(span.representative_of(0b100), 0b010);
+    assert_ne!(span.representative_of(0b100), 0b100 & !(1 << 2));
     assert!(span.is_representative(0b010));
     assert_eq!(span.member(0b010, 1), 0b100);
     // 0b000 is its own coset's rep, and that coset is {0b000, 0b110}.
-    assert_eq!(span.rep_of(0b000), 0b000);
-    assert_eq!(span.rep_of(0b110), 0b000);
+    assert_eq!(span.representative_of(0b000), 0b000);
+    assert_eq!(span.representative_of(0b110), 0b000);
 }
 
 #[test]
@@ -81,7 +81,11 @@ fn non_subspace_input_is_covered() {
     assert_eq!(span.coset_size(), 4);
 
     let ab = a ^ b;
-    assert_eq!(span.rep_of(ab), 0, "a ^ b = {ab:#b} must be in the span");
+    assert_eq!(
+        span.representative_of(ab),
+        0,
+        "a ^ b = {ab:#b} must be in the span"
+    );
     assert_eq!(span.member(0, span.coord_of(ab)), ab);
 
     // The partition is still a partition: 4 cosets of 4, covering 0..16.
@@ -108,7 +112,7 @@ proptest! {
         prop_assert_eq!(reps.len(), span.num_cosets());
 
         for beta in 0..n {
-            let rep = span.rep_of(beta);
+            let rep = span.representative_of(beta);
             prop_assert!(span.is_representative(rep));
             prop_assert!(rep < n);
             let i = span.coord_of(beta ^ rep);
@@ -122,7 +126,7 @@ proptest! {
             for i in 0..span.coset_size() as u32 {
                 let m = span.member(rep, i);
                 prop_assert!(m < n);
-                prop_assert_eq!(span.rep_of(m), rep);
+                prop_assert_eq!(span.representative_of(m), rep);
                 prop_assert!(seen.insert(m));
             }
         }
@@ -158,21 +162,21 @@ proptest! {
         }
     }
 
-    /// `perm_index` is a bijection that makes each coset a contiguous run of `2^r` slots.
+    /// `permuted_index` is a bijection that makes each coset a contiguous run of `2^r` slots.
     #[test]
     fn perm_index_is_a_bijection((bits, deltas) in span_input()) {
         let span = Gf2Span::new(&deltas, bits);
         let n = 1u32 << bits;
         let mut hit = vec![false; n as usize];
         for beta in 0..n {
-            let p = span.perm_index(beta);
+            let p = span.permuted_index(beta);
             prop_assert!(p < n);
-            prop_assert!(!hit[p as usize], "perm_index collision at {}", beta);
+            prop_assert!(!hit[p as usize], "permuted_index collision at {}", beta);
             hit[p as usize] = true;
             // The run a bucket lands in is its coset's rank.
             prop_assert_eq!(
                 p >> span.r(),
-                span.rank_of_representative(span.rep_of(beta))
+                span.rank_of_representative(span.representative_of(beta))
             );
         }
     }

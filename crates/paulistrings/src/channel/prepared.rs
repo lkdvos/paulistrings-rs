@@ -26,8 +26,8 @@ pub struct DeltaEntry<const W: usize> {
     pub mask_x: [u64; W],
     /// Z-part of `d` as a full-width XOR mask.
     pub mask_z: [u64; W],
-    /// `amp[s]` takes support pattern `s` to `s ^ local_delta`; exactly zero means no output.
-    pub(crate) amp: [Complex64; LOCAL_DIM],
+    /// `amplitude[s]` takes support pattern `s` to `s ^ local_delta`; exactly zero means no output.
+    pub(crate) amplitude: [Complex64; LOCAL_DIM],
 }
 
 impl<const W: usize> DeltaEntry<W> {
@@ -40,7 +40,7 @@ impl<const W: usize> DeltaEntry<W> {
         z: &[u64; W],
         c: Complex64,
     ) -> Option<([u64; W], [u64; W], Complex64)> {
-        let a = self.amp[s];
+        let a = self.amplitude[s];
         if a == ZERO {
             return None;
         }
@@ -164,9 +164,9 @@ impl<const W: usize> LocalPtm<W> {
 
 /// A rotation with support wider than [`MAX_LOCAL_SUPPORT`], whose amplitudes are computed per term.
 #[derive(Clone, Debug)]
-pub struct RotationPrep<const W: usize> {
+pub struct PreparedRotation<const W: usize> {
     /// The generator `P`.
-    pub gen: PauliString<W>,
+    pub generator: PauliString<W>,
     /// `cos(θ)`.
     pub(crate) cos: f64,
     /// `sin(θ)`.
@@ -174,31 +174,31 @@ pub struct RotationPrep<const W: usize> {
     /// Bucket delta of the identity output, `H·0 = 0`.
     pub(crate) bucket_delta_identity: u32,
     /// Bucket delta of the `v ⊕ P` output, `H·P`.
-    pub(crate) bucket_delta_gen: u32,
+    pub(crate) bucket_delta_generator: u32,
 }
 
-impl<const W: usize> RotationPrep<W> {
+impl<const W: usize> PreparedRotation<W> {
     /// The generator-pass row, computed operation for operation as the gather does; `None` if the term commutes with the generator.
     #[inline]
-    pub(crate) fn emit_gen(
+    pub(crate) fn emit_generator(
         &self,
         x: &[u64; W],
         z: &[u64; W],
         c: Complex64,
     ) -> Option<([u64; W], [u64; W], Complex64)> {
         let v = PauliString::<W> { x: *x, z: *z };
-        if v.commutes_with(&self.gen) {
+        if v.commutes_with(&self.generator) {
             return None;
         }
         let mut product = v;
-        let phase = product.mul_assign(&self.gen);
+        let phase = product.mul_assign(&self.generator);
         let total = Phase::I + phase;
         Some((product.x, product.z, total.apply(c) * self.sin))
     }
 
     /// The generator as an XOR mask pair, the one non-identity key delta.
-    pub(crate) fn gen_mask(&self) -> ([u64; W], [u64; W]) {
-        (self.gen.x, self.gen.z)
+    pub(crate) fn generator_mask(&self) -> ([u64; W], [u64; W]) {
+        (self.generator.x, self.generator.z)
     }
 }
 
@@ -208,7 +208,7 @@ pub enum Prepared<const W: usize> {
     /// Support on at most `MAX_LOCAL_SUPPORT` qubits, tabulated.
     Local(LocalPtm<W>),
     /// A `PauliRotation` with wider support.
-    Rotation(RotationPrep<W>),
+    Rotation(PreparedRotation<W>),
 }
 
 impl<const W: usize> Prepared<W> {
@@ -217,10 +217,10 @@ impl<const W: usize> Prepared<W> {
         match self {
             Prepared::Local(p) => p.bucket_deltas(),
             Prepared::Rotation(r) => {
-                if r.bucket_delta_gen == r.bucket_delta_identity {
+                if r.bucket_delta_generator == r.bucket_delta_identity {
                     vec![r.bucket_delta_identity]
                 } else {
-                    vec![r.bucket_delta_identity, r.bucket_delta_gen]
+                    vec![r.bucket_delta_identity, r.bucket_delta_generator]
                 }
             }
         }
@@ -293,7 +293,7 @@ impl<const W: usize> Prepared<W> {
                 local_delta: d as u8,
                 mask_x,
                 mask_z,
-                amp,
+                amplitude: amp,
             });
         }
 

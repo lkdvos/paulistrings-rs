@@ -16,7 +16,7 @@ const OP_OR: u32 = 4;
 
 /// The per-term half of a tree as a postfix program, passed to K3 and K5 by value as `KeepProg`.
 ///
-/// Node `i` is `op[i]` with operand `arg[i]`: `Coeff` carries `eps.to_bits()`, `Weight` carries `k`, `Keep`/`And`/`Or` none.
+/// Node `i` is `op[i]` with operand `arg[i]`: `Coefficient` carries `eps.to_bits()`, `Weight` carries `k`, `Keep`/`And`/`Or` none.
 /// `TopN`/`ApproxTopN`/`CollapseSample` leaves are `Keep` here, and `Keep` operands of `And`/`Or` are folded away, so a tree with no per-term filter is the one-node `Keep`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,7 +34,7 @@ fn per_term(tree: &BuiltinTruncation) -> BuiltinTruncation {
     use BuiltinTruncation as T;
     match tree {
         T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => T::Keep,
-        T::Coeff(eps) => T::Coeff(*eps),
+        T::Coefficient(eps) => T::Coefficient(*eps),
         T::Weight(k) => T::Weight(*k),
         T::And(a, b) => match (per_term(a), per_term(b)) {
             (T::Keep, x) | (x, T::Keep) => x,
@@ -50,7 +50,7 @@ fn per_term(tree: &BuiltinTruncation) -> BuiltinTruncation {
 fn emit(tree: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
     use BuiltinTruncation as T;
     match tree {
-        T::Coeff(eps) => out.push((OP_COEFF, eps.to_bits())),
+        T::Coefficient(eps) => out.push((OP_COEFF, eps.to_bits())),
         T::Weight(k) => out.push((OP_WEIGHT, u64::from(*k))),
         T::And(a, b) | T::Or(a, b) => {
             emit(a, out);
@@ -110,7 +110,7 @@ pub(crate) fn layer_pass_leaves(
             layer_pass_leaves(a, visit);
             layer_pass_leaves(b, visit);
         }
-        T::Keep | T::Coeff(_) | T::Weight(_) | T::Or(_, _) => {}
+        T::Keep | T::Coefficient(_) | T::Weight(_) | T::Or(_, _) => {}
     }
 }
 

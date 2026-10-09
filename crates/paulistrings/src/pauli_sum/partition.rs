@@ -4,16 +4,16 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::hash::{Gf2Hash, PartitionRows};
-use super::storage::{merge_two, BucketCols, PauliSum, PARALLEL_MIN_TERMS};
+use super::storage::{merge_two, BucketColumns, PauliSum, PARALLEL_MIN_TERMS};
 
 /// Copy the terms of one bucket whose partition rank is `rank`.
 // Not reserved up front: research/FINDINGS.md §Reserving a safe upper bound in the merge.
 fn filter_bucket<const W: usize>(
-    columns: &BucketCols<W>,
+    columns: &BucketColumns<W>,
     rows: &PartitionRows<W>,
     rank: u32,
-) -> BucketCols<W> {
-    let mut out = BucketCols::<W>::new();
+) -> BucketColumns<W> {
+    let mut out = BucketColumns::<W>::new();
     for i in 0..columns.len() {
         if rows.partition_of(&columns.x[i], &columns.z[i]) == rank {
             out.push(columns.x[i], columns.z[i], columns.coeff[i]);
@@ -23,9 +23,9 @@ fn filter_bucket<const W: usize>(
 }
 
 /// Merge key-disjoint sorted runs into one by serial pairwise rounds; the caller is already parallel over buckets.
-fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketCols<W>>) -> BucketCols<W> {
+fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> BucketColumns<W> {
     while runs.len() > 1 {
-        let mut next: Vec<BucketCols<W>> = Vec::with_capacity(runs.len().div_ceil(2));
+        let mut next: Vec<BucketColumns<W>> = Vec::with_capacity(runs.len().div_ceil(2));
         let mut remaining = runs.into_iter();
         while let Some(a) = remaining.next() {
             match remaining.next() {
@@ -72,7 +72,7 @@ impl<const W: usize> PauliSum<W> {
             (rank as usize) < rows.num_partitions(),
             "PauliSum::filter_partition: rank {rank} out of range",
         );
-        let buckets: Vec<BucketCols<W>> = if self.len < PARALLEL_MIN_TERMS {
+        let buckets: Vec<BucketColumns<W>> = if self.len < PARALLEL_MIN_TERMS {
             self.buckets
                 .iter()
                 .map(|columns| filter_bucket(columns, rows, rank))
@@ -115,7 +115,7 @@ impl<const W: usize> PauliSum<W> {
         let num_parts = parts.len();
         let len: usize = parts.iter().map(|p| p.len).sum();
 
-        let mut runs: Vec<Vec<BucketCols<W>>> = (0..num_buckets)
+        let mut runs: Vec<Vec<BucketColumns<W>>> = (0..num_buckets)
             .map(|_| Vec::with_capacity(num_parts))
             .collect();
         for p in parts {
@@ -124,7 +124,7 @@ impl<const W: usize> PauliSum<W> {
             }
         }
 
-        let buckets: Vec<BucketCols<W>> = if len < PARALLEL_MIN_TERMS {
+        let buckets: Vec<BucketColumns<W>> = if len < PARALLEL_MIN_TERMS {
             runs.into_iter().map(merge_disjoint_runs).collect()
         } else {
             runs.into_par_iter().map(merge_disjoint_runs).collect()
@@ -174,7 +174,7 @@ impl<const W: usize> PauliSum<W> {
         let mut coeff = coeff.into_iter();
         let buckets = lens
             .iter()
-            .map(|&n| BucketCols {
+            .map(|&n| BucketColumns {
                 x: x.by_ref().take(n).collect(),
                 z: z.by_ref().take(n).collect(),
                 coeff: coeff.by_ref().take(n).collect(),
@@ -192,7 +192,7 @@ impl<const W: usize> PauliSum<W> {
     /// Wrap per-bucket columns that already satisfy the invariant, one entry per bucket of `hash`.
     #[cfg(feature = "cuda")]
     pub(crate) fn from_buckets(
-        buckets: Vec<BucketCols<W>>,
+        buckets: Vec<BucketColumns<W>>,
         hash: Gf2Hash<W>,
         num_qubits: usize,
     ) -> Self {
@@ -203,7 +203,7 @@ impl<const W: usize> PauliSum<W> {
             buckets.len(),
             hash.num_buckets(),
         );
-        let len = buckets.iter().map(BucketCols::len).sum();
+        let len = buckets.iter().map(BucketColumns::len).sum();
         Self {
             buckets,
             hash,

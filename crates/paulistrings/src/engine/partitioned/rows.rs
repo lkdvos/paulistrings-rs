@@ -43,7 +43,7 @@ pub fn circuit_generators<const W: usize>(
         // One layer's masks are distinct, so a repeat is a second layer.
         let masks: Vec<Mask<W>> = match &prepared {
             Prepared::Local(ptm) => ptm.deltas().iter().map(|d| d.mask()).collect(),
-            Prepared::Rotation(rotation) => vec![rotation.gen_mask()],
+            Prepared::Rotation(rotation) => vec![rotation.generator_mask()],
         };
         for m in masks {
             if mask_is_zero(&m) {

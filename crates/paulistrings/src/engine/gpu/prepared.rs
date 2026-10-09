@@ -75,9 +75,9 @@ impl<const W: usize> DevicePrepared<W> {
                 one_entry_per_pattern = true;
                 for (e, d) in ptm.deltas().iter().enumerate() {
                     for s in 0..LOCAL_DIM {
-                        amp[(e * LOCAL_DIM + s) * 2] = d.amp[s].re;
-                        amp[(e * LOCAL_DIM + s) * 2 + 1] = d.amp[s].im;
-                        if d.amp[s] != Complex64::new(0.0, 0.0) {
+                        amp[(e * LOCAL_DIM + s) * 2] = d.amplitude[s].re;
+                        amp[(e * LOCAL_DIM + s) * 2 + 1] = d.amplitude[s].im;
+                        if d.amplitude[s] != Complex64::new(0.0, 0.0) {
                             nz[e] |= 1 << s;
                             if s < dim {
                                 rows += 1;
@@ -102,7 +102,7 @@ impl<const W: usize> DevicePrepared<W> {
             }
             Prepared::Rotation(r) => {
                 masks.push(([0u64; W], [0u64; W]));
-                masks.push(r.gen_mask());
+                masks.push(r.generator_mask());
                 nz[0] = u32::MAX;
                 nz[1] = u32::MAX;
                 mode = 1;

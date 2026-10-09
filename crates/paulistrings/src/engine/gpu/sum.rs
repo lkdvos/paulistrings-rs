@@ -14,7 +14,7 @@ use super::module::{self, thread_per, warp_per_bucket, KernelSet};
 use super::scan::{exclusive_scan, ScanScratch};
 use super::staging::HostStaging;
 use crate::pauli_sum::hash::{Gf2Hash, B_MAX_BITS};
-use crate::pauli_sum::storage::BucketCols;
+use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
 
 /// Hash bits one refine pass adds at most; must match `REFINE_MAX_DELTA` in `kernels/refine.cu`.
@@ -434,7 +434,7 @@ fn gather_sorted<const W: usize>(
     staged_x: &[u64],
     staged_z: &[u64],
     staged_coeff: &[f64],
-) -> Vec<BucketCols<W>> {
+) -> Vec<BucketColumns<W>> {
     (0..lens.len())
         .into_par_iter()
         .map(|bucket| {
@@ -447,7 +447,7 @@ fn gather_sorted<const W: usize>(
                 (key(staged_x, r - 1), key(staged_z, r - 1)) < (key(staged_x, r), key(staged_z, r))
             });
             let build = |rows: &mut dyn Iterator<Item = usize>| {
-                let mut cols = BucketCols::<W>::default();
+                let mut cols = BucketColumns::<W>::default();
                 cols.x.reserve_exact(len);
                 cols.z.reserve_exact(len);
                 cols.coeff.reserve_exact(len);

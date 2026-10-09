@@ -191,15 +191,18 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
     assert!(n > 1000, "the fixture must grow");
     let matrix = [
         ("keep", T::Keep),
-        ("coeff 1e-3", T::Coeff(1e-3)),
-        ("coeff negative eps", T::Coeff(-1.0)),
+        ("coeff 1e-3", T::Coefficient(1e-3)),
+        ("coeff negative eps", T::Coefficient(-1.0)),
         ("weight 4", T::Weight(4)),
         ("approx n", T::ApproxTopN(n)),
-        ("coeff & approx", and(T::Coeff(1e-3), T::ApproxTopN(n))),
+        (
+            "coeff & approx",
+            and(T::Coefficient(1e-3), T::ApproxTopN(n)),
+        ),
         ("approx & weight", and(T::ApproxTopN(n), T::Weight(4))),
-        ("coeff | weight", or(T::Coeff(1e-3), T::Weight(4))),
+        ("coeff | weight", or(T::Coefficient(1e-3), T::Weight(4))),
         ("topn n", T::TopN(n)),
-        ("coeff & topn", and(T::Coeff(1e-6), T::TopN(n))),
+        ("coeff & topn", and(T::Coefficient(1e-6), T::TopN(n))),
         ("topn | weight", or(T::TopN(n), T::Weight(0))),
     ];
     for (name, policy) in &matrix {
@@ -282,7 +285,7 @@ where
 fn unlowerable_policies_are_rejected_before_the_first_layer() {
     require_cuda!();
     use BuiltinTruncation as T;
-    let chain = (1..9).fold(T::Coeff(0.0), |acc, k| and(acc, T::Weight(k)));
+    let chain = (1..9).fold(T::Coefficient(0.0), |acc, k| and(acc, T::Weight(k)));
     assert_rejected_untouched(&chain, "17-node program");
 }
 
@@ -660,12 +663,12 @@ fn clifford_layers<const W: usize>(nq: usize, q0: u32, q1: u32, weight: u64) {
     ];
     let policies: Vec<(&str, BuiltinTruncation)> = vec![
         ("keep", BuiltinTruncation::Keep),
-        ("coeff", BuiltinTruncation::Coeff(0.5)),
+        ("coeff", BuiltinTruncation::Coefficient(0.5)),
         ("weight", BuiltinTruncation::Weight(weight as u32)),
         (
             "and",
             and(
-                BuiltinTruncation::Coeff(0.3),
+                BuiltinTruncation::Coefficient(0.3),
                 BuiltinTruncation::Weight(weight as u32),
             ),
         ),

@@ -117,10 +117,10 @@ impl Gf2Span {
     /// The representative of `beta`'s coset.
     // Not `beta & !pivot_mask`: basis vectors carry non-pivot bits too, so masking can leave the coset.
     #[inline]
-    pub(crate) fn rep_of(&self, beta: u32) -> u32 {
+    pub(crate) fn representative_of(&self, beta: u32) -> u32 {
         debug_assert!(
             beta & !self.space_mask == 0,
-            "Gf2Span::rep_of: beta outside the bucket space"
+            "Gf2Span::representative_of: beta outside the bucket space"
         );
         let mut reduced = beta;
         for &vector in &self.basis {
@@ -135,7 +135,7 @@ impl Gf2Span {
     #[inline]
     pub(crate) fn coord_of(&self, delta: u32) -> u32 {
         debug_assert!(
-            self.rep_of(delta) == 0,
+            self.representative_of(delta) == 0,
             "Gf2Span::coord_of: delta {delta} is not in the span"
         );
         pext(delta, self.pivot_mask)
@@ -153,8 +153,8 @@ impl Gf2Span {
 
     /// `beta` renumbered so coset `c` owns `c << r .. (c + 1) << r`, with the member coordinate in the low `r` bits.
     #[inline]
-    pub(crate) fn perm_index(&self, beta: u32) -> u32 {
-        let representative = self.rep_of(beta);
+    pub(crate) fn permuted_index(&self, beta: u32) -> u32 {
+        let representative = self.representative_of(beta);
         (self.rank_of_representative(representative) << self.basis.len())
             | self.coord_of(beta ^ representative)
     }

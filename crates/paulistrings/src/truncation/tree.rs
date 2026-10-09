@@ -18,7 +18,7 @@ pub enum BuiltinTruncation {
     /// No truncation.
     Keep,
     /// [`CoefficientThreshold`]`(eps)`.
-    Coeff(f64),
+    Coefficient(f64),
     /// [`WeightCutoff`]`(k)`.
     Weight(u32),
     /// [`TopN`]`(n)`.
@@ -42,7 +42,7 @@ impl BuiltinTruncation {
                 a.contains_exact_top_n() || b.contains_exact_top_n()
             }
             Self::Keep
-            | Self::Coeff(_)
+            | Self::Coefficient(_)
             | Self::Weight(_)
             | Self::ApproxTopN(_)
             | Self::CollapseSample(_) => false,
@@ -56,9 +56,11 @@ impl BuiltinTruncation {
             Self::And(a, b) | Self::Or(a, b) => {
                 a.contains_collapse_sample() || b.contains_collapse_sample()
             }
-            Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::TopN(_) | Self::ApproxTopN(_) => {
-                false
-            }
+            Self::Keep
+            | Self::Coefficient(_)
+            | Self::Weight(_)
+            | Self::TopN(_)
+            | Self::ApproxTopN(_) => false,
         }
     }
 }
@@ -68,7 +70,7 @@ impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
         match self {
             Self::Keep => true,
-            Self::Coeff(eps) => CoefficientThreshold(*eps).keep_term(x, z, c),
+            Self::Coefficient(eps) => CoefficientThreshold(*eps).keep_term(x, z, c),
             Self::Weight(k) => WeightCutoff(*k).keep_term(x, z, c),
             Self::TopN(n) => <TopN as TruncationPolicy<W>>::keep_term(&TopN(*n), x, z, c),
             Self::ApproxTopN(n) => {
@@ -93,7 +95,7 @@ impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
                 a.finalize_layer(sum);
                 b.finalize_layer(sum);
             }
-            Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::Or(_, _) => {}
+            Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => {}
         }
     }
 
@@ -104,14 +106,14 @@ impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
                 <Self as TruncationPolicy<W>>::finalizes_layer(a)
                     || <Self as TruncationPolicy<W>>::finalizes_layer(b)
             }
-            Self::Keep | Self::Coeff(_) | Self::Weight(_) | Self::Or(_, _) => false,
+            Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => false,
         }
     }
 }
 
 impl From<CoefficientThreshold> for BuiltinTruncation {
     fn from(p: CoefficientThreshold) -> Self {
-        Self::Coeff(p.0)
+        Self::Coefficient(p.0)
     }
 }
 

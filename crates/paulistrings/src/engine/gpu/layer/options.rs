@@ -112,7 +112,7 @@ pub(crate) fn prepared_fanout<const W: usize>(prepared: &Prepared<W>) -> usize {
             .deltas()
             .iter()
             .filter(|d| {
-                d.amp
+                d.amplitude
                     .iter()
                     .any(|a| *a != num_complex::Complex64::new(0.0, 0.0))
             })

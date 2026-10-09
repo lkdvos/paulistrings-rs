@@ -259,7 +259,7 @@ A four-rank hang on workergpu047 is attributed to that node; every job step is b
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
 
 Non-rotation channels on more than two qubits panic in `propagate`.
-Sketch: a heap `DeltaEntry::amp` variant for `k > 2`, `O(16^k)` probe cost, practical ceiling `k ≈ 4–5`; it would also first exercise `GATHER_OUTPUT_MAJOR_MIN_R`'s output-major branch.
+Sketch: a heap `DeltaEntry::amp` variant for `k > 2`, `O(16^k)` probe cost, practical ceiling `k ≈ 4–5`.
 
 ### Partition rows without a known lattice
 

@@ -179,7 +179,7 @@ Bucket *handles* are permuted into coset-contiguous order once per layer (two `O
 2. **Size** each per-member gather run exactly from the swapped-out lengths, plus one spare slot per column for the gather's branchless zero-amplitude filter to discard into.
 3. **Gather input-major**: each term is loaded once and its whole fanout scattered to runs via the O(1) index identity `member(i) ⊕ δ = member(i ⊕ coord(δ))`, so the gather visits each input term exactly once with no read amplification.
    Rows whose PTM amplitude is exactly zero are filtered **branchlessly** — always materialized, published only by `len += (amp != 0)` — because which entries vanish depends on the term's support pattern.
-   (An output-major variant guards rank ≥ 3 custom channels, selected by `GATHER_OUTPUT_MAJOR_MIN_R`; no built-in reaches it.)
+   (An output-major variant takes over at coset dimension `r ≥ GATHER_OUTPUT_MAJOR_MIN_R = 3`, which a dense two-qubit gate reaches at `r = 4`.)
 4. Per run, **sort the rest stream and merge**, straight into the member's live slot.
 
 **Split streams.**

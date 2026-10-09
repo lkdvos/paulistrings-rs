@@ -367,7 +367,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
 }
 
 /// Coset dimension at or above which the gather switches to output-major, trading re-reads for fewer open write streams.
-/// Both orders gather the same rows, so the choice is performance only; no built-in channel reaches it.
+/// Both orders gather the same rows, so the choice is performance only; a dense two-qubit gate takes output-major at `r = 4`.
 const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
 /// Input-major gather for a `Local` plan: each term is loaded once and scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`.

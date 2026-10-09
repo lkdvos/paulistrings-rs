@@ -79,7 +79,7 @@ MATURIN_PEP517_ARGS="--features cuda" uv run pytest python/paulistrings/tests/te
 One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features plus NCCL (`dlopen`ed), and a device per rank above one:
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
+module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1 python-mpi/3.12.9 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks
 scripts/mpi-test.sh --ranks 2,4 --cuda [--python]

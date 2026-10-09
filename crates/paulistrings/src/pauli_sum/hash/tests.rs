@@ -168,7 +168,7 @@ fn xor_fold_parity_matches_per_word_popcount() {
             for row in 0..B_MAX_BITS {
                 assert_eq!(
                     h.row_parity(&p.x, &p.z, row),
-                    naive(&p.x, &p.z, &h.rows_x[row as usize], &h.rows_z[row as usize]),
+                    naive(&p.x, &p.z, &h.row(row as usize).0, &h.row(row as usize).1),
                     "W={W} row={row}: XOR-fold disagrees with per-word popcount"
                 );
             }
@@ -299,7 +299,7 @@ fn no_row_masks_to_zero_even_at_one_qubit() {
     let h = Gf2Hash::<1>::new(1, 2, 0x1);
     for i in 0..B_MAX_BITS as usize {
         assert!(
-            (h.rows_x[i][0] | h.rows_z[i][0]) != 0,
+            (h.row(i).0[0] | h.row(i).1[0]) != 0,
             "row {i} masked to zero",
         );
     }
@@ -334,10 +334,10 @@ fn row_words_are_not_one_xorshift_step_apart() {
         let h = Gf2Hash::<2>::new(128, B_MAX_BITS, seed);
         let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
         let (px, pz) = p.rows();
-        let linked = h
-            .rows_x
+        let (hx, hz) = h.matrix.rows();
+        let linked = hx
             .iter()
-            .zip(&h.rows_z)
+            .zip(hz)
             .chain(px.iter().zip(pz))
             .flat_map(|(rx, rz)| (0..2).map(move |w| xorshift64_step(rx[w]) == rz[w]))
             .filter(|&linked| linked)
@@ -374,13 +374,14 @@ fn xorshift_kernel_deltas_do_not_share_bucket_zero() {
 /// 64 rows over 64 qubits as a fingerprint must separate the 18 337 keys of weight ≤ 2; a random linear map collides on some pair with probability ~2^-37.
 #[test]
 fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
-    let (rx, rz) = draw_rows::<1>(
+    let matrix = Gf2Matrix::<1>::draw(
         64,
         64,
         crate::pauli_sum::storage::DEFAULT_HASH_SEED,
         &[0],
         &[0],
     );
+    let (rx, rz) = matrix.rows();
     let image = |x: u64, z: u64| {
         (0..64).fold(0u64, |bits, i| {
             bits | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)

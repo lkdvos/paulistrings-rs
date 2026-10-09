@@ -129,7 +129,7 @@ __device__ __forceinline__ u64 fp_mask() {
 #endif
 }
 
-// Live-qubit mask of word w, as `word_mask` in pauli_sum/hash.rs.
+// Live-qubit mask of word w, as `word_mask` in pauli_string.rs.
 __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
     const u32 lo = 64u * (u32)w;
     if (num_qubits >= lo + 64u) return ~0ull;

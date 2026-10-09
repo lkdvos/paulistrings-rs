@@ -44,9 +44,9 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | done (A/B pending) |
 | 1 | Leaf algebra | phase, rng, pauli_string | done |
 | 2 | Partition hash | pauli_sum/hash | done |
-| 3 | Storage | pauli_sum/{storage,partition,accumulator} | D27–D29 implementing |
-| 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | pending |
-| 5 | Channels II | channel/noise, unitary, prepared | pending |
+| 3 | Storage | pauli_sum/{storage,partition,accumulator} | done |
+| 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | D15, D30–D36 implementing |
+| 5 | Channels II | channel/noise, unitary, prepared | D15, D30–D36 implementing |
 | 6 | Truncation | truncation/* | pending |
 | 7 | Sort/merge kernels | engine/merge, engine/coset | pending |
 | 8 | Bucketed layer | engine/bucketed, engine/stats | pending |
@@ -118,6 +118,24 @@ Chunk 3 (2026-10-09):
 - **D28 Partition management is internal.** `refine`, `coarsen`, `rebucket`, `with_hash`, `bucket(b)`, `bucket_len` become crate-private (tests via `test_support`); `num_buckets` and `hash()` stay read-only.
 - **D29 Storage cleanups.** One `merge_sorted(a, b, on_equal)` two-pointer helper (overlap keeps its scalar loop); one run-merger; `with_hash` scatters then sorts per bucket instead of a global merge; one serial-or-parallel helper; `refine_bucket` takes `b` only under `debug_assertions`; accumulator sorts with `sort_unstable_by` on the derived order.
 
+Chunk 4 (2026-10-09):
+
+- **D30** Drop `Channel::max_fanout`; `OutputBuffer` becomes opaque (private growable storage, public `push`, crate-private constructor). Its fixed capacity only served the deleted direct path.
+- **D31** `apply_adjoint` is a required trait method (the silent default was correct only for self-adjoint channels).
+- **D32** (superseded by D35) shared Clifford table inversion, a real `Clifford2Q` adjoint, private table fields, no `from_table`.
+- **D33** `PauliRotation` stores `generator: PauliString<W>`; `Circuit::push` asserts the channel's support lies within `num_qubits`; `Circuit` fields crate-private with `num_qubits()`/`channels()` accessors.
+- **D34** `IdentityChannel` moves to `test_support`.
+
+Chunk 5 (2026-10-09):
+
+- **D35 One PTM built-in.** `PtmChannel` (support qubits plus compact PTM storage: permutation and signs for Cliffords, the diagonal for diagonal noise, sparse entries otherwise) replaces `Clifford1Q`, `Clifford2Q`, `GeneralUnitary1Q/2Q`, `Depolarizing`, `Dephasing`, `PauliChannel`, `Depolarizing2Q`, `AmplitudeDamping`, with named constructors; adjoint is the transpose; its `prepare` builds the delta list directly without probing `apply`. Python keeps its names. Check memory per gate and `prepare` cost per layer before/after.
+- **D36 Validating constructors.** Real `assert!`s for distinct qubits and `p, γ ∈ [0, 1]` (the release-mode `Depolarizing2Q` equal-qubit hole), no public fields.
+
+### As applied, chunk 3
+
+`6072ee6` D27 (red→green: two Rust tests and one Python test failed with "bucket count mismatch" before the fix; `align_to` returns `Cow`, so neither `add` nor `overlap` clones an already-aligned operand), `b6f21d9` D28 (`test_support` wrappers `with_hash`, `bucket`, `bucket_len`, `refine`, `coarsen`), `e49da4b` D29 (`storage.rs` 632 → 589, `partition.rs` 228 → 205; `merge_sorted` with `keys_are_disjoint`; `merge_runs` deleted; `with_hash` scatters then sorts per bucket; `map_buckets` helper). Deviation accepted: `refine` runs `assert_invariants()` under debug instead of passing `b` to `refine_bucket` (stronger check, same debug test time). Note: on corrupted input a disjoint merge in release drops both duplicate terms where the old code kept both.
+Equivalence vs `12a6979`: 404 cases bitwise identical (316 new storage cases: `with_hash` to 7 hashes ± bits, `add` over 7×7 partitions, `overlap`; full bucket contents compared). Verified: fmt/clippy matrix, rustdoc, 739 workspace tests, `cuda` 869 on the A6000, pytest 486/101, `mpi-test.sh --ranks 2,4` Rust and `--python`.
+
 ### As applied, chunks 0–2 follow-ups
 
 `26595cf` D22; `74aa287` D23 (`TruncationPolicy::finalize_layer_partitioned` default + `supports_partitioned` fail-fast checked in `PartitionedSum`/`DistributedSum::propagate_on_backend` before anything detaches; `ApproxTopN`/`CollapseSample` call plain `finalize_layer` at one partition, so P=1 traces count fewer collectives; exact `TopN` now runs at P=1 and one-rank `DistributedSum`; `Collectives` in `src/collectives.rs`); `24a76d7` D24; `f3c2c3b` D25; `e8b6587` D26; `2e5ba53` CLAUDE.md GPU-per-rank recipe loads `python-mpi`/`uv`.
@@ -180,7 +198,6 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - `ApproxTopN` wipes a sum whose top octave alone exceeds `n` to empty (documented contract; seen at 1e5-start cases with `ApproxTopN(4000)`): surprising behaviour to revisit in chunk 6.
 - `benchmarks/python/jl_performance/README.md` and `post-optimization-auto/` still describe `engine="auto"` as historical records (chunk 23).
 
-- Release-mode guard: `Depolarizing2Q` with equal qubits is only `debug_assert`ed (chunk 5).
 - `PAULISTRINGS_NCCL_TIMEOUT_S` also bounds the in-process `PeerWire` (misleading env-var name; chunk 19).
 - `GpuDistributedSum::propagate_with` only `debug_assert!`s a stale device error, `GpuPartitionedSum` returns it (chunk 20).
 - `Prepared` is the public return type of `Channel::prepare` but unnameable outside `test_support`, so custom `prepare` overrides cannot be written (chunk 5/9).

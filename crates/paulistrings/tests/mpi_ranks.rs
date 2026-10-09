@@ -436,10 +436,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
 
     r.case(&format!("{tag}w1 trotter, 32 layers"), |r| {
         let circuit = trotter_circuit::<1>(16, THETA);
-        assert!(
-            circuit.channels.len() >= 20,
-            "the bits collective must move"
-        );
+        assert!(circuit.len() >= 20, "the bits collective must move");
         let sum = rand_sum_real::<1>(800, 16, 0xA004);
         r.both_directions(
             backend,
@@ -613,7 +610,7 @@ fn run_host_cases(r: &mut Runner) {
         split.propagate(&circuit, &KeepAll, Direction::Forward);
         let trace = split.take_trace().expect("tracing is on");
 
-        assert_eq!(trace.layers.len(), circuit.channels.len());
+        assert_eq!(trace.layers.len(), circuit.len());
         assert_eq!(
             trace.remote_layers(),
             0,
@@ -637,7 +634,7 @@ fn run_host_cases(r: &mut Runner) {
     r.case("a long local run skips the bucket-count collective", |r| {
         const NQ: usize = 16;
         let circuit = local_run_then_one_crossing::<1>(NQ);
-        let layers = circuit.channels.len();
+        let layers = circuit.len();
         assert!(
             layers > 2 * BITS_AGREE_EVERY,
             "the schedule must have something to skip: {layers} layers",

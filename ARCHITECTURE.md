@@ -452,6 +452,7 @@ Built-ins: `PauliRotation` (`exp(-iθP/2)`, any generator weight; support derive
 `PtmChannel` stores the PTM in the cheapest exact form its constructor knows: a signed permutation for the Cliffords (`hadamard`, `phase_gate`, `pauli_x/y/z`, `cnot`, `cz`, `swap`), the diagonal for the Pauli-diagonal noise (`depolarizing`, `dephasing`, `pauli_channel`, `depolarizing_2q`), and sparse `(s, t, amplitude)` entries for `amplitude_damping` (genuine fanout 2) and the general unitaries `unitary_1q` / `unitary_2q` (PTM derived from the matrix).
 `apply` reads a PTM row, `apply_adjoint` its transpose, and `adjoint()` returns the transposed channel.
 `IdentityChannel` exists for tests and composition.
+`Circuit::push` (and `push_boxed`) asserts that the channel's support lies below `num_qubits`, naming the channel by `debug_name`; the channel list is read through `channels()`.
 
 ## Ingestion
 

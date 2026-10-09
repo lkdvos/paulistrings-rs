@@ -20,7 +20,7 @@ impl CircuitImpl {
     }
 
     pub fn num_qubits(&self) -> usize {
-        for_each_width!(self, |c| c.num_qubits)
+        for_each_width!(self, |c| c.num_qubits())
     }
 
     pub fn len(&self) -> usize {

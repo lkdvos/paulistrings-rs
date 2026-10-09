@@ -66,7 +66,7 @@ fn a_trace_records_every_layer() {
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
 
     let trace = ps.take_trace().expect("tracing is on");
-    assert_eq!(trace.layers.len(), circuit.channels.len());
+    assert_eq!(trace.layers.len(), circuit.len());
     assert_eq!(
         trace.local_layers() + trace.remote_layers(),
         trace.layers.len(),
@@ -107,7 +107,7 @@ fn a_trace_records_every_layer() {
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     assert_eq!(
         ps.take_trace().expect("still tracing").layers.len(),
-        circuit.channels.len(),
+        circuit.len(),
     );
 }
 
@@ -247,7 +247,7 @@ fn gate_identity_and_timing_are_recorded_per_layer() {
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
 
-    assert_eq!(trace.layers.len(), circuit.channels.len());
+    assert_eq!(trace.layers.len(), circuit.len());
     for (k, layer) in trace.layers.iter().enumerate() {
         assert_eq!(layer.circuit_index, k as u32, "layer {k}");
         assert_eq!(layer.application_index, k as u32, "layer {k}");
@@ -264,7 +264,7 @@ fn gate_identity_and_timing_are_recorded_per_layer() {
 #[test]
 fn heisenberg_reverses_circuit_index_not_application_index() {
     let circuit = circuit();
-    let n = circuit.channels.len();
+    let n = circuit.len();
     let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x5), &config(2))
         .expect("topology resolves");
     ps.enable_trace();

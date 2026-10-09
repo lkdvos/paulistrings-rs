@@ -377,7 +377,7 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
             .propagate(&circuit, ApproxTopN(6_000), Direction::Forward)
             .expect("propagate");
         let trace = split.take_trace().expect("tracing on");
-        assert_eq!(trace.layers.len(), circuit.channels.len());
+        assert_eq!(trace.layers.len(), circuit.len());
         assert!(trace.remote_layers() > 0 && trace.local_layers() > 0);
         for (k, layer) in trace.layers.iter().enumerate() {
             assert_eq!(layer.rows_sent.len(), p, "layer {k}");
@@ -668,7 +668,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     let mut zero_pairs = 0usize;
     let mut sent = 0u64;
     for layer in &trace.layers {
-        let ch = &circuit.channels[layer.circuit_index as usize];
+        let ch = &circuit.channels()[layer.circuit_index as usize];
         let mut deltas = std::collections::HashSet::new();
         for (mask_x, mask_z) in paulistrings::test_support::key_delta_masks(ch.as_ref(), hash) {
             deltas.insert(rows.partition_of(&mask_x, &mask_z));

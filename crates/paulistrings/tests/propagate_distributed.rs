@@ -270,7 +270,7 @@ fn gather_is_repeatable_and_non_destructive() {
 fn the_trace_is_this_ranks_view_of_every_layer() {
     let circuit = mixed_circuit::<1>(6);
     let sum = rand_sum::<1>(200, 6, 0x0D1C);
-    let layers = circuit.channels.len();
+    let layers = circuit.len();
 
     let traces = on_ranks(2, |transport| {
         let mut split =

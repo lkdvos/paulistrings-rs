@@ -19,7 +19,7 @@ const TOL: f64 = 1e-11;
 
 fn one_layer<const W: usize>(num_qubits: usize, ch: Box<dyn Channel<W>>) -> Circuit<W> {
     let mut c = Circuit::<W>::new(num_qubits);
-    c.channels.push(ch);
+    c.push_boxed(ch);
     c
 }
 
@@ -634,7 +634,7 @@ fn propagate_gpu_front_door_and_options() {
     )
     .expect("with options");
     let trace = dev.take_trace().expect("tracing on");
-    assert_eq!(trace.layers.len(), circuit.channels.len());
+    assert_eq!(trace.layers.len(), circuit.len());
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "traced");
 }
 
@@ -679,7 +679,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
     }
     let circuit = random_clifford_circuit::<W>(nq, 24, 0x5EED);
     let last_permutes = !paulistrings::test_support::is_key_preserving(
-        circuit.channels.last().unwrap().as_ref(),
+        circuit.channels().last().unwrap().as_ref(),
         input.hash(),
     );
     for (pname, policy) in &policies {

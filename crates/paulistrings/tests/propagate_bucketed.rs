@@ -218,7 +218,7 @@ fn eleven_channel_circuit_matches_the_naive_oracle() {
     let chans = mixed_channels();
     let mut circuit = Circuit::<1>::new(8);
     for ch in mixed_channels() {
-        circuit.channels.push(ch);
+        circuit.push_boxed(ch);
     }
 
     for direction in [Direction::Forward, Direction::Heisenberg] {
@@ -234,7 +234,7 @@ fn eleven_channel_circuit_matches_the_naive_oracle_under_truncation() {
     let chans = mixed_channels();
     let mut circuit = Circuit::<1>::new(8);
     for ch in mixed_channels() {
-        circuit.channels.push(ch);
+        circuit.push_boxed(ch);
     }
     let policy = And(CoefficientThreshold(1e-9), TopN(400));
     let want = replay_naive(&input, &chans, &policy, Direction::Heisenberg);
@@ -256,7 +256,7 @@ fn output_is_byte_identical_across_thread_counts() {
     let input = rand_sum::<1>(2000, 8, 0x8D);
     let mut circuit = Circuit::<1>::new(8);
     for ch in mixed_channels() {
-        circuit.channels.push(ch);
+        circuit.push_boxed(ch);
     }
     let policy = And(CoefficientThreshold(1e-12), TopN(900));
 
@@ -347,7 +347,7 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
 
     let mut circuit = Circuit::<1>::new(n);
     for ch in ising_step_channels(lx, ly, dt) {
-        circuit.channels.push(ch);
+        circuit.push_boxed(ch);
     }
     let chans = ising_step_channels(lx, ly, dt);
 
@@ -392,7 +392,7 @@ fn ising_3x3_with_binding_top_n_matches_the_naive_oracle() {
 
     let mut circuit = Circuit::<1>::new(n);
     for ch in ising_step_channels(lx, ly, dt) {
-        circuit.channels.push(ch);
+        circuit.push_boxed(ch);
     }
     let chans = ising_step_channels(lx, ly, dt);
 
@@ -434,7 +434,7 @@ fn ising_quench_with_top_n_matches_the_naive_oracle() {
 
     let mut circuit = Circuit::<1>::new(n);
     for ch in ising_step_channels(lx, ly, dt) {
-        circuit.channels.push(ch);
+        circuit.push_boxed(ch);
     }
     let chans = ising_step_channels(lx, ly, dt);
 

@@ -41,7 +41,7 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 
 | # | Chunk | Files | Status |
 |---|---|---|---|
-| 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | pending |
+| 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | done; D16/D17 implementing |
 | 1 | Leaf algebra | phase, rng, pauli_string | pending |
 | 2 | Partition hash | bucket/hash | pending |
 | 3 | Storage | bucket/sum, pauli_sum, accumulator | pending |
@@ -87,6 +87,16 @@ Conventions (2026-10-08), applied first by a preparatory pass before the chunk 0
 - **D14 Collapse method pairs.** `propagate`/`propagate_with_options` on `PartitionedSum`, `DistributedSum`, `GpuPartitionedSum`, `GpuDistributedSum`, and the four `DistributedSum::scatter*`, each to one plain call plus one taking options.
 - Feature-level cuts (D7 candidates: direct path, `TermTrace`/`GateTrace`, bucket knobs, partition-row diagnostics, GPU fault hooks) are decided in the chunk that tours them (8, 9, 14).
 
+Chunk 0 (2026-10-09):
+
+- **D15 `prepare` is crate-internal.** `Channel` keeps `max_fanout`, `support`, `apply`, `apply_adjoint`, `debug_name`; `prepare` moves to a crate-private extension trait, so `Prepared`/`LocalPtm`/`DeltaEntry`/`PreparedRotation` leave the public surface. Applied in chunk 5.
+- **D16 One layer loop.** `propagate`/`propagate_with` run `partitioned::driver::run_layers` with one partition on the caller's Rayon pool and a trivial transport; a solo fast path keeps rebucket-before-prepare (no second `prepare` on growth layers). Gated on an A/B against `89bdcca`; if it regresses, fall back to a shared per-layer helper.
+- **D17 Cut the small-sum direct path now.** Delete `engine/direct.rs`, `EngineSelection`, `small_sum_threshold`, `DEFAULT_SMALL_SUM_THRESHOLD`, Python `engine=`/`small_sum_threshold=`, `tests/small_sum_path.rs`; opt-in users lose up to 2.3× at small `m` (FINDINGS §Direct-apply path for small sums). Default users are unaffected.
+
+### As applied, chunk 0
+
+`c2411cb`: a probe over `Gf2Hash` seeds 1–3 at 4/7/10 bits gave `haar_su4` coset dimension `r = 4` (output-major gather) at 7 and 10 bits, `cnot` `r = 2`, `rotation_zz` `r = 1`; three docs that said no built-in reaches output-major fixed.
+
 ### As applied, stage A (D4, D5, D6)
 
 `5f44228`..`0b0f466` (16 commits): `pauli_sum/{storage,partition,hash,accumulator}`, `readout/{product_state,stabilizer,echo}`, the four wrong-way edges fixed (read-out methods as `impl PauliSum` blocks in `readout/`, `keeps_flip_classes` to `readout/echo`, `PartitionedTruncation for BuiltinTruncation` to `engine/partitioned/truncation`, new `engine/cuda_context` breaks the topology↔gpu cycle), seven files split on seams, 54 sibling `tests.rs` files, private modules with flat root re-exports, `propagate` + `propagate_with(…, &mut scratch, options)`, `propagate_partitioned` takes options.
@@ -115,6 +125,8 @@ Verified at `2489250`: fmt/clippy (default, `cuda,phase-timing,test-utils`, py `
 Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Possible improvements
+
+- Cache the hash-independent part of a channel's prepared table (probe + masks) so a layer recomputes only `δ = H·d`; `prepare` is 4.2–5.7 µs per dense two-qubit gate and dominates small-`m` runs now that the direct path is gone (issue to open).
 
 ## Open items
 

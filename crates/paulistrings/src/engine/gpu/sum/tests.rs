@@ -2,7 +2,6 @@ use super::*;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
-use crate::phase::Phase;
 use crate::test_support::{assert_same_terms, low_weight_sum, rand_sum};
 
 /// The device columns in storage order, gathered by nothing: valid while the columns are compact.
@@ -65,7 +64,6 @@ fn one_term<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     let mut accumulator = BuildAccumulator::<W>::new(num_qubits);
     accumulator.add_term(
         PauliString::<W>::y(num_qubits - 1),
-        Phase::ONE,
         Complex64::new(0.5, -0.25),
     );
     accumulator.finalize()

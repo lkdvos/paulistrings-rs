@@ -82,7 +82,7 @@ impl Default for PropagateOptions {
 /// use num_complex::Complex64;
 ///
 /// let mut accumulator = BuildAccumulator::<1>::new(1);
-/// accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+/// accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
 /// let observable = accumulator.finalize();
 ///
 /// let mut circuit = Circuit::<1>::new(1);

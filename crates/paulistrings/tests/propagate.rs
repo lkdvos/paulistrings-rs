@@ -18,7 +18,7 @@
 use num_complex::Complex64;
 use paulistrings::test_support::approx_eq;
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy,
 };
 use paulistrings::{Channel, Clifford1Q, Clifford2Q, IdentityChannel, PauliRotation};
 use paulistrings::{CoefficientThreshold, TopN, WeightCutoff};
@@ -35,7 +35,7 @@ impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
 fn sum1(num_qubits: usize, terms: &[(PauliString<1>, Complex64)]) -> PauliSum<1> {
     let mut acc = BuildAccumulator::<1>::new(num_qubits);
     for (p, c) in terms {
-        acc.add_term(*p, Phase::ONE, *c);
+        acc.add_term(*p, *c);
     }
     acc.finalize()
 }
@@ -43,7 +43,7 @@ fn sum1(num_qubits: usize, terms: &[(PauliString<1>, Complex64)]) -> PauliSum<1>
 fn sum2(num_qubits: usize, terms: &[(PauliString<2>, Complex64)]) -> PauliSum<2> {
     let mut acc = BuildAccumulator::<2>::new(num_qubits);
     for (p, c) in terms {
-        acc.add_term(*p, Phase::ONE, *c);
+        acc.add_term(*p, *c);
     }
     acc.finalize()
 }

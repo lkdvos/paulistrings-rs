@@ -12,9 +12,7 @@ use paulistrings::{
     PauliRotation,
 };
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
-use paulistrings::{
-    BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, TruncationPolicy,
-};
+use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
 
 struct NoTruncation;
 impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
@@ -38,7 +36,7 @@ fn assert_same_keys<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what:
 
 fn one_term<const W: usize>(p: PauliString<W>, num_qubits: usize, c: Complex64) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
-    acc.add_term(p, Phase::ONE, c);
+    acc.add_term(p, c);
     acc.finalize()
 }
 
@@ -355,11 +353,7 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
     // Observable: uniform X magnetization.
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
     for q in 0..n {
-        acc.add_term(
-            PauliString::<1>::x(q),
-            Phase::ONE,
-            Complex64::new(1.0 / n as f64, 0.0),
-        );
+        acc.add_term(PauliString::<1>::x(q), Complex64::new(1.0 / n as f64, 0.0));
     }
     let initial = acc.finalize();
 
@@ -404,11 +398,7 @@ fn ising_3x3_with_binding_top_n_matches_the_naive_oracle() {
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
     for q in 0..n {
-        acc.add_term(
-            PauliString::<1>::x(q),
-            Phase::ONE,
-            Complex64::new(1.0 / n as f64, 0.0),
-        );
+        acc.add_term(PauliString::<1>::x(q), Complex64::new(1.0 / n as f64, 0.0));
     }
     let initial = acc.finalize();
 
@@ -450,11 +440,7 @@ fn ising_quench_with_top_n_matches_the_naive_oracle() {
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
     for q in 0..n {
-        acc.add_term(
-            PauliString::<1>::x(q),
-            Phase::ONE,
-            Complex64::new(1.0 / n as f64, 0.0),
-        );
+        acc.add_term(PauliString::<1>::x(q), Complex64::new(1.0 / n as f64, 0.0));
     }
     let initial = acc.finalize();
 

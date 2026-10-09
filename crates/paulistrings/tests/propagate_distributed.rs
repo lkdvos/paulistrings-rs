@@ -20,7 +20,7 @@ use paulistrings::test_support::{
 };
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
-    Phase, RotationAxis,
+    RotationAxis,
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
@@ -357,11 +357,7 @@ fn len_is_collective_and_the_shares_add_up() {
 fn single_z_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::new(num_qubits);
     for q in 0..num_qubits {
-        acc.add_term(
-            PauliString::<W>::z(q),
-            Phase::ONE,
-            Complex64::new(1.0 + q as f64, 0.0),
-        );
+        acc.add_term(PauliString::<W>::z(q), Complex64::new(1.0 + q as f64, 0.0));
     }
     acc.finalize()
 }

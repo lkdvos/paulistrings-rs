@@ -6,7 +6,6 @@ use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
-use crate::phase::Phase;
 use crate::test_support::{
     assert_terms_close, differential_channels_w1, differential_channels_w2, naive_apply_layer,
     rand_sum, rand_sum_real,
@@ -349,7 +348,7 @@ fn cancelling_pair(
 
     let probe = |term: PauliString<1>| -> Complex64 {
         let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
-        accumulator.add_term(term, Phase::ONE, Complex64::new(1.0, 0.0));
+        accumulator.add_term(term, Complex64::new(1.0, 0.0));
         naive_apply_layer(&accumulator.finalize(), rot, &AlwaysKeep, false)
             .get(&w.x, &w.z)
             .unwrap_or(ZERO)
@@ -369,8 +368,8 @@ fn cancelling_input(
     scale: f64,
 ) -> PauliSum<1> {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
-    accumulator.add_term(w, Phase::ONE, beta);
-    accumulator.add_term(u, Phase::ONE, -alpha * scale);
+    accumulator.add_term(w, beta);
+    accumulator.add_term(u, -alpha * scale);
     accumulator.finalize()
 }
 
@@ -448,12 +447,8 @@ fn empty_partition_participates() {
         .expect("the dense SU(4) cell");
     // Two terms over four partitions: at least two parts are empty.
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
-    accumulator.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(1.0, 0.0));
-    accumulator.add_term(
-        PauliString::<1>::z(5),
-        Phase::ONE,
-        Complex64::new(-0.5, 0.25),
-    );
+    accumulator.add_term(PauliString::<1>::x(1), Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(5), Complex64::new(-0.5, 0.25));
     let input = accumulator.finalize();
     let rows = PartitionRows::<1>::from_seed(8, 2, 0x9D4);
     assert_eq!(rows.num_partitions(), 4);

@@ -25,7 +25,7 @@ use std::time::Instant;
 use num_complex::Complex64;
 use paulistrings::PauliRotation;
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, Phase, ProductState,
+    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, ProductState,
 };
 use paulistrings::{And, CoefficientThreshold, TopN};
 
@@ -84,7 +84,7 @@ fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
     let inv_n = Complex64::new(1.0 / n as f64, 0.0);
     let mut acc = BuildAccumulator::<1>::new(n);
     for site in 0..n {
-        acc.add_term(PauliString::<1>::x(site), Phase::ONE, inv_n);
+        acc.add_term(PauliString::<1>::x(site), inv_n);
     }
     acc.finalize()
 }

@@ -33,11 +33,7 @@ fn single_bucket_layer(
         for (x, z, c) in input.iter() {
             let mut x = *x;
             x[0] |= 1;
-            accumulator.add_term(
-                crate::pauli_string::PauliString::<2> { x, z: *z },
-                crate::phase::Phase::ONE,
-                c,
-            );
+            accumulator.add_term(crate::pauli_string::PauliString::<2> { x, z: *z }, c);
         }
         input = accumulator.finalize();
     }

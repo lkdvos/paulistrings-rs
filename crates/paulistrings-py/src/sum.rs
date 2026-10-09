@@ -9,7 +9,6 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, P
 use paulistrings::BuildAccumulator;
 use paulistrings::BuiltinTruncation;
 use paulistrings::PauliString;
-use paulistrings::Phase;
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, GateTrace, LayerScratch, PartitionConfig,
@@ -227,7 +226,7 @@ impl PauliSumImpl {
             coeff: Complex64,
         ) -> CorePauliSum<W> {
             let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
-            acc.add_term(*p, Phase::ONE, coeff);
+            acc.add_term(*p, coeff);
             acc.finalize()
         }
         use crate::pauli_string::PauliStringImpl as PS;
@@ -297,7 +296,7 @@ fn parse_terms<const W: usize>(
             )));
         }
         let c = extract_complex(&val)?;
-        acc.add_term(parse_pauli_key::<W>(&s)?, Phase::ONE, c);
+        acc.add_term(parse_pauli_key::<W>(&s)?, c);
     }
     Ok(acc.finalize())
 }
@@ -319,7 +318,7 @@ fn parse_label_list<const W: usize>(
             )));
         }
         let c = extract_complex(&coefficients.get_item(i)?)?;
-        acc.add_term(parse_pauli_key::<W>(s)?, Phase::ONE, c);
+        acc.add_term(parse_pauli_key::<W>(s)?, c);
     }
     Ok(acc.finalize())
 }
@@ -436,11 +435,7 @@ fn build_from_arrays<const W: usize>(
                 )));
             }
         }
-        acc.add_term(
-            PauliString::<W> { x: px, z: pz },
-            Phase::ONE,
-            coefficients[row],
-        );
+        acc.add_term(PauliString::<W> { x: px, z: pz }, coefficients[row]);
     }
     Ok(acc.finalize())
 }

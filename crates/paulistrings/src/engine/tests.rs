@@ -5,7 +5,6 @@ use crate::circuit::Circuit;
 use crate::engine::bucketed::LayerScratch;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
-use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
 use super::{propagate, propagate_with, Direction, PropagateOptions};
@@ -37,7 +36,7 @@ impl<const W: usize> Channel<W> for ThreeQubits {
 #[should_panic(expected = "Channel::prepare declined")]
 fn an_unpreparable_channel_panics() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
-    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(8);
@@ -48,7 +47,7 @@ fn an_unpreparable_channel_panics() {
 #[test]
 fn gate_trace_forward_indices_match_circuit_order() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
-    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
@@ -78,7 +77,7 @@ fn gate_trace_forward_indices_match_circuit_order() {
 #[test]
 fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
-    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);
@@ -105,7 +104,7 @@ fn gate_trace_heisenberg_reverses_circuit_index_not_application_index() {
 #[test]
 fn gate_trace_stays_empty_when_not_enabled() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
-    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     let sum = accumulator.finalize();
 
     let mut circuit = Circuit::<1>::new(1);

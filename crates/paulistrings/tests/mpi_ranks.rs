@@ -37,7 +37,7 @@ use paulistrings::test_support::{
 use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PartitionedTruncation,
-    PauliString, PauliSum, Phase, PropagateOptions,
+    PauliString, PauliSum, PropagateOptions,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
 use paulistrings::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
@@ -706,11 +706,7 @@ fn run_host_cases(r: &mut Runner) {
         // block holding that qubit, so its rank is that block's index.
         let mut acc = BuildAccumulator::<1>::new(NQ);
         for q in 0..NQ {
-            acc.add_term(
-                PauliString::<1>::z(q),
-                Phase::ONE,
-                Complex64::new(1.0 + q as f64, 0.0),
-            );
+            acc.add_term(PauliString::<1>::z(q), Complex64::new(1.0 + q as f64, 0.0));
         }
         let sum = acc.finalize();
 

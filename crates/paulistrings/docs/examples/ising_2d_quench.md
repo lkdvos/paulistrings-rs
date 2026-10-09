@@ -103,7 +103,7 @@ and X pushed last, the per-step state-evolution operator is
 a time, call `.finalize()` to get a sorted-and-deduplicated `PauliSum`.
 
 ```rust,no_run
-use paulistrings::{BuildAccumulator, PauliString, PauliSum, Phase};
+use paulistrings::{BuildAccumulator, PauliString, PauliSum};
 use num_complex::Complex64;
 
 fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
@@ -111,7 +111,7 @@ fn x_magnetization(lx: usize, ly: usize) -> PauliSum<1> {
     let inv_n = Complex64::new(1.0 / n as f64, 0.0);
     let mut acc = BuildAccumulator::<1>::new(n);
     for site in 0..n {
-        acc.add_term(PauliString::<1>::x(site), Phase::ONE, inv_n);
+        acc.add_term(PauliString::<1>::x(site), inv_n);
     }
     acc.finalize()
 }

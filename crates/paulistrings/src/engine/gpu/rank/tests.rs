@@ -383,7 +383,7 @@ mod protocol {
                     x: *x,
                     z: [z[0] | 1 << 63],
                 };
-                acc.add_term(p, crate::phase::Phase::ONE, coeff);
+                acc.add_term(p, coeff);
             }
             let input = acc
                 .finalize()

@@ -19,7 +19,6 @@ use paulistrings::Gf2Hash;
 use paulistrings::LayerScratch;
 use paulistrings::PauliString;
 use paulistrings::PauliSum;
-use paulistrings::Phase;
 use paulistrings::{propagate, Direction};
 use paulistrings::{
     Channel, Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation,
@@ -397,7 +396,7 @@ fn bench_ingest_finalize(c: &mut Criterion) {
                     let p = rand_pauli::<2>(&mut rng);
                     let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
                     let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-                    acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+                    acc.add_term(p, Complex64::new(re, im));
                 }
                 acc
             },

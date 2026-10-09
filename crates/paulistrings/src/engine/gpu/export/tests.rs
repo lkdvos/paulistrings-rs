@@ -41,7 +41,6 @@ fn dense_on_01<const W: usize>(base: &PauliSum<W>) -> PauliSum<W> {
             z[0] = (z[0] & !0b11) | (s >> 2);
             accumulator.add_term(
                 crate::pauli_string::PauliString::<W> { x, z },
-                crate::phase::Phase::ONE,
                 c * (1.0 + s as f64),
             );
         }
@@ -491,8 +490,8 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     let (aa, ab) = (d[ea].amplitude[sa], d[eb].amplitude[sb]);
     let cb = if aa == ab { -1.0 } else { 1.0 };
     let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(nq);
-    accumulator.add_term(key(sa), crate::phase::Phase::ONE, Complex64::new(1.0, 0.0));
-    accumulator.add_term(key(sb), crate::phase::Phase::ONE, Complex64::new(cb, 0.0));
+    accumulator.add_term(key(sa), Complex64::new(1.0, 0.0));
+    accumulator.add_term(key(sb), Complex64::new(cb, 0.0));
     let local = accumulator.finalize().with_hash(hash.clone());
     let (ka, kb) = (key(sa), key(sb));
     assert_eq!(rows.partition_of(&ka.x, &ka.z), 0);

@@ -48,7 +48,6 @@ use super::*;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PartitionRows;
-use crate::phase::Phase;
 use crate::readout::{PauliAxis, ProductBasis, ProductState};
 use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
@@ -79,7 +78,7 @@ fn rand_low_weight_sum<const W: usize>(
             }
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        accumulator.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
+        accumulator.add_term(p, Complex64::new(re, 0.0));
     }
     accumulator.finalize()
 }
@@ -582,16 +581,8 @@ fn get_w2_word_boundary() {
     // Keys live entirely in word 1, so a lookup that only compared word 0 would confuse them.
     let mut accumulator = BuildAccumulator::<2>::new(128);
     for q in [64, 65, 100, 127] {
-        accumulator.add_term(
-            PauliString::<2>::x(q),
-            Phase::ONE,
-            Complex64::new(q as f64, 0.0),
-        );
-        accumulator.add_term(
-            PauliString::<2>::z(q),
-            Phase::ONE,
-            Complex64::new(0.0, q as f64),
-        );
+        accumulator.add_term(PauliString::<2>::x(q), Complex64::new(q as f64, 0.0));
+        accumulator.add_term(PauliString::<2>::z(q), Complex64::new(0.0, q as f64));
     }
     let sum = accumulator.finalize();
     for bits in [0u8, 4] {
@@ -954,7 +945,7 @@ fn b10_build<const W: usize>(
         terms.len(),
     );
     for &(pp, c) in terms {
-        accumulator.add_term(pp, crate::phase::Phase::ONE, c);
+        accumulator.add_term(pp, c);
     }
     accumulator.finalize()
 }
@@ -1124,7 +1115,7 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
             z: [next() & 0xFFFF],
         };
         let c = Complex64::new((next() as i64 as f64) / (i64::MAX as f64), 0.0);
-        accumulator.add_term(pp, crate::phase::Phase::ONE, c);
+        accumulator.add_term(pp, c);
     }
     let sum = accumulator.finalize();
 
@@ -2044,7 +2035,6 @@ mod props {
         for &(x, z, re, im) in terms {
             accumulator.add_term(
                 PauliString::<1> { x: [x], z: [z] },
-                Phase::ONE,
                 Complex64::new(re as f64, im as f64),
             );
         }

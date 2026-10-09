@@ -786,8 +786,8 @@ fn premerge_with_exactly_cancelling_rows_agrees() {
         if v == w {
             continue;
         }
-        acc.add_term(v, paulistrings::Phase::ONE, c);
-        acc.add_term(w, paulistrings::Phase::ONE, -c);
+        acc.add_term(v, c);
+        acc.add_term(w, -c);
     }
     let sum = acc.finalize();
     let mut circuit = Circuit::<1>::new(nq);

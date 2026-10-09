@@ -5,7 +5,6 @@ use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::storage::DEFAULT_TARGET_BUCKET_LEN;
 use crate::pauli_sum::storage::{desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS};
 use crate::pauli_sum::PauliSum;
-use crate::phase::Phase;
 use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
@@ -17,10 +16,11 @@ use rustc_hash::FxBuildHasher;
 /// use num_complex::Complex64;
 ///
 /// let mut accumulator = BuildAccumulator::<1>::new(2);
-/// // The key (x=1, z=1) is Y; Phase::I folds a product's i into the coefficient.
-/// accumulator.add_term(PauliString::<1> { x: [1], z: [1] }, Phase::I, Complex64::new(1.0, 0.0));
-/// accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(0.5, 0.0));
-/// accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(0.5, 0.0));
+/// // The key (x=1, z=1) is Y; a product's phase folds into the coefficient before it is added.
+/// let y = PauliString::<1> { x: [1], z: [1] };
+/// accumulator.add_term(y, Phase::I.apply(Complex64::new(1.0, 0.0)));
+/// accumulator.add_term(PauliString::<1>::z(1), Complex64::new(0.5, 0.0));
+/// accumulator.add_term(PauliString::<1>::z(1), Complex64::new(0.5, 0.0));
 /// let sum = accumulator.finalize();
 /// assert_eq!(sum.get(&[1], &[1]), Some(Complex64::new(0.0, 1.0)));
 /// assert_eq!(sum.get(&[0], &[0b10]), Some(Complex64::new(1.0, 0.0)));
@@ -47,13 +47,9 @@ impl<const W: usize> BuildAccumulator<W> {
         }
     }
 
-    /// Add `phase · c · p`.
-    pub fn add_term(&mut self, p: PauliString<W>, phase: Phase, c: Complex64) {
-        let contribution = phase.apply(c);
-        self.map
-            .entry(p)
-            .and_modify(|e| *e += contribution)
-            .or_insert(contribution);
+    /// Add `c · p`.
+    pub fn add_term(&mut self, p: PauliString<W>, c: Complex64) {
+        self.map.entry(p).and_modify(|e| *e += c).or_insert(c);
     }
 
     /// Emit the [`crate::PauliSum`], dropping keys whose coefficients summed to exactly zero.

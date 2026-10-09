@@ -12,7 +12,7 @@ use paulistrings::test_support::assert_terms_close;
 use paulistrings::CoefficientThreshold;
 use paulistrings::{
     propagate, propagate_with, BuildAccumulator, Circuit, Direction, LayerScratch, PauliString,
-    PauliSum, Phase, PropagateOptions, TruncationPolicy,
+    PauliSum, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{Clifford1Q, PauliRotation};
 
@@ -27,7 +27,7 @@ const THETA: f64 = 0.3;
 /// `{X₀: 1}`.
 fn x0_observable<const W: usize>() -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(NUM_QUBITS, 1);
-    acc.add_term(PauliString::<W>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<W>::x(0), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
 

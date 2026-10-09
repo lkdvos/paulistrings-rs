@@ -214,12 +214,12 @@ fn merge_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> BucketColumns<
 /// use num_complex::Complex64;
 ///
 /// let mut accumulator = BuildAccumulator::<1>::new(2);
-/// accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-/// accumulator.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
+/// accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
+/// accumulator.add_term(PauliString::<1>::x(1), Complex64::new(0.5, 0.0));
 /// let a = accumulator.finalize();
 ///
 /// let mut accumulator = BuildAccumulator::<1>::new(2);
-/// accumulator.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(-0.25, 0.0));
+/// accumulator.add_term(PauliString::<1>::x(1), Complex64::new(-0.25, 0.0));
 /// let b = accumulator.finalize();
 ///
 /// let merged = a.add(&b);

@@ -6,7 +6,6 @@ use crate::pauli_string::PauliString;
 impl<const W: usize> PauliSum<W> {
     /// A sum from `(label, coeff)` pairs, character `i` being qubit `i`, via `BuildAccumulator`.
     pub(crate) fn from_strings(terms: &[(&str, Complex64)]) -> Self {
-        use crate::phase::Phase;
         assert!(!terms.is_empty(), "from_strings requires at least one term");
         let num_qubits = terms[0].0.len();
         assert!(num_qubits <= 64 * W, "num_qubits must fit in W*64 bits");
@@ -34,7 +33,7 @@ impl<const W: usize> PauliSum<W> {
                 }
             }
             let p = PauliString::<W> { x, z };
-            accumulator.add_term(p, Phase::ONE, *c);
+            accumulator.add_term(p, *c);
         }
         accumulator.finalize()
     }

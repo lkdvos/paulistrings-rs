@@ -149,7 +149,6 @@ fn weight_three_rotation_and_a_long_trotter_run() {
     let mut acc = paulistrings::BuildAccumulator::<1>::new(20);
     acc.add_term(
         PauliString::<1>::z(0),
-        paulistrings::Phase::ONE,
         num_complex::Complex64::new(1.0, 0.0),
     );
     let small = acc.finalize();

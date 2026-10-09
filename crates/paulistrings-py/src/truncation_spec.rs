@@ -102,7 +102,7 @@ mod tests {
     use super::*;
     use paulistrings::BuildAccumulator;
     use paulistrings::PauliString;
-    use paulistrings::Phase;
+
     use paulistrings::TruncationPolicy;
 
     /// `n` single-site `X` strings with coefficient 1.
@@ -111,7 +111,6 @@ mod tests {
         for q in 0..n {
             acc.add_term(
                 PauliString::<1>::x(q),
-                Phase::ONE,
                 num_complex::Complex64::new(1.0, 0.0),
             );
         }

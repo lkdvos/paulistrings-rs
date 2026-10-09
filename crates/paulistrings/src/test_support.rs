@@ -11,7 +11,6 @@ use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
-use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
 pub use crate::channel::prepared::Prepared;
@@ -270,7 +269,7 @@ pub fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> Pauli
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -291,7 +290,7 @@ pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
             p.z[w] = rng.next_u64() & m;
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, 0.0));
+        acc.add_term(p, Complex64::new(re, 0.0));
     }
     acc.finalize()
 }
@@ -313,7 +312,7 @@ pub fn rand_sum_unmasked<const W: usize>(n: usize, num_qubits: usize, seed: u64)
         let p = rand_pauli::<W>(&mut rng);
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -361,7 +360,7 @@ pub fn low_weight_sum<const W: usize>(
         let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -390,7 +389,7 @@ pub fn rand_sum_on<const W: usize>(
         }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Phase::ONE, Complex64::new(re, im));
+        acc.add_term(p, Complex64::new(re, im));
     }
     acc.finalize()
 }
@@ -402,11 +401,7 @@ pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for (i, (x, z, _)) in base.iter().enumerate() {
         let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
-        acc.add_term(
-            PauliString::<W> { x: *x, z: *z },
-            Phase::ONE,
-            Complex64::new(mag, 0.0),
-        );
+        acc.add_term(PauliString::<W> { x: *x, z: *z }, Complex64::new(mag, 0.0));
     }
     acc.finalize()
 }
@@ -422,7 +417,7 @@ pub fn tie_heavy_sum_unmasked<const W: usize>(
     for i in 0..n {
         let p = rand_pauli::<W>(&mut rng);
         let mag = [1.0f64, 0.5, 0.25, 0.125][i % 4];
-        acc.add_term(p, Phase::ONE, Complex64::new(mag, 0.0));
+        acc.add_term(p, Complex64::new(mag, 0.0));
     }
     acc.finalize()
 }
@@ -573,7 +568,7 @@ pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> 
         .zip(FOUR_TERM_WEIGHTS)
         .zip(phases)
     {
-        acc.add_term(p, Phase::ONE, Complex64::from_polar(w.sqrt(), phi));
+        acc.add_term(p, Complex64::from_polar(w.sqrt(), phi));
     }
     acc.finalize()
 }
@@ -1004,23 +999,11 @@ pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
         x: [0u64; W],
         z: [0u64; W],
     };
-    acc.add_term(identity, Phase::ONE, Complex64::new(-0.5, 0.0));
-    acc.add_term(PauliString::<W>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    acc.add_term(
-        PauliString::<W>::x(0),
-        Phase::ONE,
-        Complex64::new(0.25, 0.25),
-    );
-    acc.add_term(
-        PauliString::<W>::y(1),
-        Phase::ONE,
-        Complex64::new(0.75, -0.5),
-    );
-    acc.add_term(
-        PauliString::<W>::z(2),
-        Phase::ONE,
-        Complex64::new(0.125, 0.0),
-    );
+    acc.add_term(identity, Complex64::new(-0.5, 0.0));
+    acc.add_term(PauliString::<W>::z(0), Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<W>::x(0), Complex64::new(0.25, 0.25));
+    acc.add_term(PauliString::<W>::y(1), Complex64::new(0.75, -0.5));
+    acc.add_term(PauliString::<W>::z(2), Complex64::new(0.125, 0.0));
     acc.finalize()
 }
 
@@ -1061,7 +1044,7 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
             x: [(x[0] | 1) & !(1u64 << 63)],
             z: [z[0] & !(1u64 << 63)],
         };
-        acc.add_term(p, Phase::ONE, c);
+        acc.add_term(p, c);
     }
     let out = acc.finalize();
     assert_eq!(out.len(), n, "fixture: the terms must stay distinct");
@@ -1147,7 +1130,7 @@ pub fn collapsing_circuit() -> crate::Circuit<1> {
 /// `Z0` on eight qubits with coefficient 1.
 pub fn z0_sum() -> PauliSum<1> {
     let mut acc = BuildAccumulator::<1>::new(8);
-    acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
 

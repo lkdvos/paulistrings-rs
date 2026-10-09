@@ -22,8 +22,7 @@ use paulistrings::test_support::{
 use paulistrings::PauliRotation;
 use paulistrings::WeightCutoff;
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, Phase,
-    PropagateOptions,
+    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PropagateOptions,
 };
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum};
 use paulistrings::{ScatterOptions, ScatterRows};
@@ -182,16 +181,12 @@ fn lopsided_start() -> paulistrings::PauliSum<1> {
         for r in (q + 1)..16 {
             let mut p = PauliString::<1>::z(q);
             p.z[0] |= 1u64 << r;
-            acc.add_term(p, Phase::ONE, Complex64::new(1.0 / (1 + q + r) as f64, 0.0));
+            acc.add_term(p, Complex64::new(1.0 / (1 + q + r) as f64, 0.0));
         }
     }
     // Four terms on the far side of the cut: odd z-weight in `[16, 32)`.
     for q in 16..20 {
-        acc.add_term(
-            PauliString::<1>::z(q),
-            Phase::ONE,
-            Complex64::new(0.25, 0.0),
-        );
+        acc.add_term(PauliString::<1>::z(q), Complex64::new(0.25, 0.0));
     }
     acc.finalize()
 }

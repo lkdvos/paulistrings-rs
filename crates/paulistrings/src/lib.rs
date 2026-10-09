@@ -8,14 +8,14 @@
 //!
 //! ```
 //! use paulistrings::{
-//!     BuildAccumulator, Circuit, Clifford1Q, Direction, PauliString, Phase, TruncationPolicy,
+//!     BuildAccumulator, Circuit, Clifford1Q, Direction, PauliString, TruncationPolicy,
 //!     propagate,
 //! };
 //! use num_complex::Complex64;
 //!
 //! let mut accumulator = BuildAccumulator::<1>::new(2);
-//! accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-//! accumulator.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
+//! accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
+//! accumulator.add_term(PauliString::<1>::x(1), Complex64::new(0.5, 0.0));
 //! let observable = accumulator.finalize();
 //!
 //! let mut circuit = Circuit::<1>::new(2);

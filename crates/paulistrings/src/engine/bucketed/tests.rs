@@ -10,7 +10,6 @@ use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::PauliSum;
-use crate::phase::Phase;
 use crate::truncation::builtin::{And, CoefficientThreshold, WeightCutoff};
 
 // Re-exported so the sibling test modules reach the fixtures through `super::tests`.
@@ -164,7 +163,7 @@ pub(super) fn assert_sums_close<const W: usize>(got: &PauliSum<W>, want: &PauliS
 #[test]
 fn h_conjugates_z_to_x() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
-    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     let input = accumulator.finalize();
     let out = bucketed_layer(&input, &Clifford1Q::h(0), &AlwaysKeep, false, 4, 0x1);
     assert_eq!(out.len(), 1);
@@ -177,7 +176,7 @@ fn h_conjugates_z_to_x() {
 #[test]
 fn cnot_propagates_z_on_the_control() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
-    accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(1), Complex64::new(1.0, 0.0));
     let input = accumulator.finalize();
     // I⊗Z under CNOT(0 -> 1) becomes Z⊗Z.
     let out = bucketed_layer(&input, &Clifford2Q::cnot(0, 1), &AlwaysKeep, false, 4, 0x1);
@@ -190,7 +189,7 @@ fn cnot_propagates_z_on_the_control() {
 #[test]
 fn a_rotation_fans_out_to_two_terms() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 1);
-    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::x(0), Complex64::new(1.0, 0.0));
     let input = accumulator.finalize();
     let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_3);
     let out = bucketed_layer(&input, &rot, &AlwaysKeep, false, 4, 0x1);
@@ -275,12 +274,8 @@ fn differential_with_truncation_policies() {
 fn keep_term_sees_the_summed_coefficient() {
     // At theta = pi/2, X and Y land on one key with nearly cancelling weights, which the threshold must drop.
     let mut accumulator = BuildAccumulator::<1>::with_capacity(4, 2);
-    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(0.5, 0.0));
-    accumulator.add_term(
-        PauliString::<1>::y(0),
-        Phase::ONE,
-        Complex64::new(-0.4999999, 0.0),
-    );
+    accumulator.add_term(PauliString::<1>::x(0), Complex64::new(0.5, 0.0));
+    accumulator.add_term(PauliString::<1>::y(0), Complex64::new(-0.4999999, 0.0));
     let input = accumulator.finalize();
     let rot = PauliRotation::new(PauliString::<1>::z(0), std::f64::consts::FRAC_PI_2);
     for bits in [0u8, 3, 7] {
@@ -1139,7 +1134,7 @@ mod extra_rows_tests {
     use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
-    use crate::phase::Phase;
+
     use crate::test_support::{naive_apply_layer, rand_sum};
     use crate::truncation::builtin::CoefficientThreshold;
     use std::collections::{HashMap, HashSet};
@@ -1244,7 +1239,7 @@ mod extra_rows_tests {
             if c == ZERO || !policy.keep_term(&x, &z, c) {
                 continue;
             }
-            accumulator.add_term(PauliString::<W> { x, z }, Phase::ONE, c);
+            accumulator.add_term(PauliString::<W> { x, z }, c);
         }
         accumulator.finalize()
     }
@@ -1342,8 +1337,8 @@ mod extra_rows_tests {
     #[test]
     fn keep_term_sees_local_plus_injected() {
         let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
-        accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(0.5, 0.0));
-        accumulator.add_term(PauliString::<1>::z(1), Phase::ONE, Complex64::new(1.0, 0.0));
+        accumulator.add_term(PauliString::<1>::z(0), Complex64::new(0.5, 0.0));
+        accumulator.add_term(PauliString::<1>::z(1), Complex64::new(1.0, 0.0));
         let input = accumulator.finalize();
         // H on qubit 0 sends Z₀ → X₀ with amplitude 1 and leaves Z₁ alone.
         let h = Clifford1Q::h(0);

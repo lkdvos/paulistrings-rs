@@ -4,7 +4,6 @@ use crate::channel::rotation::PauliRotation;
 use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
-use crate::phase::Phase;
 use crate::test_support::{
     differential_channels_w1, differential_channels_w2, rand_sum, rand_sum_real,
 };
@@ -138,8 +137,8 @@ fn crossing_rows<const W: usize>(
 #[test]
 fn a_single_bucket_h_layer_exports_the_swapped_keys() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
-    accumulator.add_term(PauliString::<1>::x(0), Phase::ONE, Complex64::new(1.0, 0.0));
-    accumulator.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(2.0, 0.0));
+    accumulator.add_term(PauliString::<1>::x(0), Complex64::new(1.0, 0.0));
+    accumulator.add_term(PauliString::<1>::z(0), Complex64::new(2.0, 0.0));
     let input = accumulator.finalize();
     let rows = PartitionRows::<1>::from_rows(8, vec![[1u64]], vec![[0u64]]);
     assert_eq!(rows.partition_of(&[1], &[0]), 1, "X₀ is in partition 1");
@@ -185,7 +184,7 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 3);
     for p in [gen, PauliString::<1>::z(1), PauliString::<1>::x(3)] {
         assert!(p.commutes_with(&gen), "fixture term must commute");
-        accumulator.add_term(p, Phase::ONE, Complex64::new(1.5, 0.0));
+        accumulator.add_term(p, Complex64::new(1.5, 0.0));
     }
     let input = accumulator.finalize();
     // A row on the `x` bit of qubit 2 makes `part(gen) = 1`: the generator pass is remote.

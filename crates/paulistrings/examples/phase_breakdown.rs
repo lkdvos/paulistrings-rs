@@ -23,7 +23,7 @@ use paulistrings::test_support::{
 use paulistrings::BuiltinTruncation;
 use paulistrings::{
     propagate_with, BuildAccumulator, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
-    PauliString, PauliSum, Phase, PhaseStats, PropagateOptions, TruncationPolicy,
+    PauliString, PauliSum, PhaseStats, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{ApproxTopN, CoefficientThreshold, TopN};
 use paulistrings::{Clifford2Q, Depolarizing, GeneralUnitary2Q, PauliRotation};
@@ -1021,7 +1021,7 @@ fn heavy_hex_step_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Ci
 /// The single-term observable `Z_q` on `num_qubits` qubits, coefficient 1.
 fn z_observable<const W: usize>(num_qubits: usize, q: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
-    acc.add_term(PauliString::<W>::z(q), Phase::ONE, Complex64::new(1.0, 0.0));
+    acc.add_term(PauliString::<W>::z(q), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
 

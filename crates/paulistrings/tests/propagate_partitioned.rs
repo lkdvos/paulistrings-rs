@@ -191,7 +191,6 @@ fn options_are_honoured() {
     let options = PropagateOptions {
         target_bucket_len: 32,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for &p in &PS {

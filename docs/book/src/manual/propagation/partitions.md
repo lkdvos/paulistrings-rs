@@ -62,8 +62,6 @@ The partitioned engine builds one pool per partition from the placement, not fro
 An explicit CPU-list placement takes each partition's thread count from its list length; `"auto"` and an integer count take it from the CPUs of the partition's NUMA node inside this process's affinity mask.
 The variable still governs an unpartitioned run ([Stats, memory and logging](settings.md#threads)).
 
-**`engine` is ignored.** A partitioned run is always the bucketed engine; the `"auto"`/`"direct"` small-sum paths have no partitioned form.
-
 **Exact `topn` is unavailable.**
 Choosing the `n`-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run raises `NotImplementedError` on `truncation.topn`.
 Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.

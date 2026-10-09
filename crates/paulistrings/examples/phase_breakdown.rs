@@ -1037,10 +1037,6 @@ struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
 /// [`AlwaysKeep`] for a partitioned cell.
-///
-/// A separate type rather than an impl on `AlwaysKeep`: flipping `finalizes_layer()` to `false`
-/// on `AlwaysKeep` itself would change what the unpartitioned cell measures
-/// (`PropagateOptions::starts_direct` reads it).
 struct AlwaysKeepPartitioned;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
     fn finalizes_layer(&self) -> bool {
@@ -1318,7 +1314,6 @@ where
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     };
 
     if cfg.occupancy_at.is_some() && layer == LayerKind::Trotter {
@@ -1544,7 +1539,6 @@ fn device_options(cfg: &Config) -> PropagateOptions {
     PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     }
 }
 
@@ -1944,7 +1938,6 @@ where
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     };
 
     let split_hash_seed = base.hash().seed();
@@ -2071,7 +2064,6 @@ where
     let options = PropagateOptions {
         target_bucket_len: cfg.target_bucket_len,
         min_buckets: cfg.min_buckets,
-        ..PropagateOptions::default()
     };
 
     let transport = MpiTransport::from_communicator(&world);

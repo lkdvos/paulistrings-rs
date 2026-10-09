@@ -64,7 +64,6 @@ fn target_bucket_len_controls_the_partition() {
         PropagateOptions {
             target_bucket_len: 64 * DEFAULT_TARGET_BUCKET_LEN,
             min_buckets: 16,
-            ..Default::default()
         },
     );
     assert!(

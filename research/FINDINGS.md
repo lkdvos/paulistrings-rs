@@ -81,6 +81,7 @@ Redundant key gathers are still the fused kernel's largest known cost; a fix mus
 
 Small-`m` cost is `Channel::prepare` (4.19–5.71 µs per dense two-qubit gate), not the bucketed pipeline (0.19 µs/layer).
 A direct-apply path gains **2.28–2.36×** on kicked-Ising at 2⁻⁴; threshold 2048, behind the opt-in `EngineSelection::Auto`.
+The path has since been removed; revisit small `m` by caching the hash-independent part of `prepare` instead.
 
 ### Radix sort kernel for dense PTMs
 

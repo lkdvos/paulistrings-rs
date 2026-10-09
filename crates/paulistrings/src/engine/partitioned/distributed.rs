@@ -440,7 +440,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// Propagate through `circuit` under `policy`, in place. **Collective**: every rank passes the same circuit, direction and options.
     ///
     /// A shape fingerprint of the run (channel count, direction, options, qubit count, `W`) is checked across ranks first; channel contents are not.
-    /// [`EngineSelection`](crate::EngineSelection) is ignored.
     ///
     /// # Panics
     ///

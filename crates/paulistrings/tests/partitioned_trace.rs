@@ -206,7 +206,6 @@ fn bits_are_uniform_and_grow_only() {
     let options = PropagateOptions {
         target_bucket_len: 32,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
     let before = ps.bits();
     ps.enable_trace();

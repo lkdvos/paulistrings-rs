@@ -97,23 +97,7 @@ The measured roofline behind those numbers is on [Engine performance](../../exam
 
 Every benchmark on this site is run single-threaded, `RAYON_NUM_THREADS=1` exported before the interpreter starts, so that term counts and wall times are comparable across pages ([Comparability rules](../../examples/benchmarks/index.md#comparability-rules)).
 
-## Engine selection {#engine-selection}
-
-`engine` picks the storage path and changes nothing about the operator computed; all three settings agree to floating-point tolerance.
-
-- `"sorted"` (the default when `None`) is the bucketed engine every other page describes.
-- `"auto"` routes layers whose input has fewer than `small_sum_threshold` terms — [`paulistrings.DEFAULT_SMALL_SUM_THRESHOLD`](../../library/module-helpers.md), `2048` — through a term-by-term direct-apply path and switches to the bucketed engine above it, unless the policy needs a whole-layer pass such as `topn`.
-- `"direct"` uses the direct path below the same threshold unconditionally.
-
-```python
-small = observable.propagate(circuit, policy, direction="heisenberg", engine="auto")
-assert len(small) == len(evolved)
-```
-
-The bucketed pipeline has a per-layer fixed cost that is nearly independent of the term count, which is what makes it lose to a hash-map engine on sums of a few hundred terms.
-`engine="auto"` removes that cost where it matters: on the configurations below the cross-engine crossover it was measured worth 1.08–2.69× on the same binary, and above its threshold it is inert, measured as its own control — a 84 836-term SU(4) run gave 1.409× with the path on and 1.416× with it off — [Against other tools](../../examples/comparisons.md#below-the-crossover).
-Reach for it when a run spends most of its layers on a small sum, such as a local observable through a shallow circuit; on anything that grows past a few thousand terms early it changes nothing.
-`engine` is ignored under `partitions=`.
+## Bucket sizing {#bucket-sizing}
 
 `target_bucket_len` and `min_buckets` size the bucketed engine's storage per layer; `PauliSum.num_buckets` reads back what was realized, which only ever grows.
 They are tuning knobs for the engine's own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
@@ -121,7 +105,7 @@ They are tuning knobs for the engine's own benchmarks rather than for users, and
 ## Determinism
 
 The correctness bar is agreement to floating-point tolerance, not bit-identical output.
-Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, a partitioned run can differ from an unpartitioned one, and `engine="auto"` can differ from `"sorted"`, all within tolerance and all equally correct.
+Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
 Compare evolved sums with `numpy.allclose` on `coefficients_array()`, as [Splitting a circuit is free](incremental.md#splitting-a-circuit-is-free) does, never with equality.
 
 Bit-identical output is only expected between runs at a fixed bucket count and the same hash seed — cosets are write-disjoint and each is applied sequentially, so this holds *across thread counts too*, and a `partitions=1` run reproduces the unpartitioned path byte for byte; across bucket counts, seeds or partition counts the bar drops back to tolerance.

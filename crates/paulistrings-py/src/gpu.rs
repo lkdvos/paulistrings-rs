@@ -84,7 +84,9 @@ pub(crate) fn device_comm_unavailable_error() -> PyErr {
 mod cuda {
     use super::DeviceRequest;
     use crate::circuit::CircuitImpl;
-    use crate::sum::{check_num_qubits, parse_direction, parse_engine, PauliSum, PropagationStats};
+    use crate::sum::{
+        check_num_qubits, parse_direction, parse_propagate_options, PauliSum, PropagationStats,
+    };
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::PyTruncation;
     use paulistrings::gpu::{device_count, GpuError, GpuPauliSum as CoreGpuPauliSum};
@@ -389,7 +391,7 @@ mod cuda {
             traced: bool,
         ) -> PyResult<Option<paulistrings::PartitionTrace>> {
             let dir = parse_direction(direction)?;
-            let options = parse_engine(None, None, target_bucket_len, min_buckets)?;
+            let options = parse_propagate_options(target_bucket_len, min_buckets);
             check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
             let policy = PyTruncation::tree_of(policy);
             let inner = &mut self.inner;

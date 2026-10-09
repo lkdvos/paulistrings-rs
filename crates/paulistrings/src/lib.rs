@@ -68,10 +68,7 @@ pub use engine::partitioned::{
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
-pub use engine::{
-    propagate, propagate_with, Direction, EngineSelection, PropagateOptions,
-    DEFAULT_SMALL_SUM_THRESHOLD,
-};
+pub use engine::{propagate, propagate_with, Direction, PropagateOptions};
 pub use pauli_string::PauliString;
 pub use pauli_sum::accumulator::BuildAccumulator;
 pub use pauli_sum::{Gf2Hash, PartitionRows, PauliSum, P_MAX_BITS};

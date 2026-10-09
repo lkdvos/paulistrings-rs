@@ -123,7 +123,6 @@ Refine and coarsen parallelize per bucket (pair) above the same 8192-term thresh
 They are a **measurement lever, not a tuning parameter**: the defaults are the measured optimum.
 Both have to move together — above the floor, `desired_bits` clamps the count at `min_buckets` whatever the target asks for — and `min_buckets` must stay `>= 16` or the "worth splitting" gate goes non-monotone.
 `rebucket` being grow-only, lowering either mid-run never coarsens a partition already grown.
-The small-sum direct path (`engine::direct`) sizes its partition from the defaults regardless.
 Pinned by `crates/paulistrings/tests/bucket_knob.rs`.
 
 ## Prepared-Channels

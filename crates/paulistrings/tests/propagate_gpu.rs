@@ -416,7 +416,6 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
     let options = PropagateOptions {
         target_bucket_len: 1 << 20,
         min_buckets: 16,
-        ..PropagateOptions::default()
     };
     let want = propagate_with(
         &circuit,
@@ -797,7 +796,6 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         PropagateOptions {
             target_bucket_len: 1 << 20,
             min_buckets: 1,
-            ..PropagateOptions::default()
         },
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
@@ -809,7 +807,6 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         PropagateOptions {
             target_bucket_len: 1 << 20,
             min_buckets: 1,
-            ..PropagateOptions::default()
         },
     )
     .expect("device propagate");

@@ -12,11 +12,10 @@ use paulistrings::PauliString;
 use paulistrings::Phase;
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
-    propagate_with, Circuit as CoreCircuit, Direction, EngineSelection, GateTrace, LayerScratch,
-    PartitionConfig, PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace,
-    PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis, ProductState,
-    PropagateOptions, RotationAxis, ScatterOptions, ScatterRows, StabilizerState, TopologyError,
-    DEFAULT_SMALL_SUM_THRESHOLD,
+    propagate_with, Circuit as CoreCircuit, Direction, GateTrace, LayerScratch, PartitionConfig,
+    PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
+    PauliSum as CorePauliSum, Placement, ProductBasis, ProductState, PropagateOptions,
+    RotationAxis, ScatterOptions, ScatterRows, StabilizerState, TopologyError,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -555,33 +554,16 @@ pub(crate) fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     }
 }
 
-/// `"sorted"` (default), `"auto"` or `"direct"`, paired with an optional small-sum threshold and the per-layer bucket-sizing knobs, as a core [`PropagateOptions`].
-/// `None`/`None`/`None`/`None` is `PropagateOptions::default()` exactly, so the kwargs are additive and omitting them changes nothing; parsed once at the boundary, outside the width dispatch.
-/// Shared by `propagate` and `propagate_with_stats`, like `parse_direction`.
-pub(crate) fn parse_engine(
-    engine: Option<&str>,
-    small_sum_threshold: Option<usize>,
+/// The per-layer bucket-sizing knobs as a core [`PropagateOptions`]; `None` keeps that field's default, so omitting both is `PropagateOptions::default()`.
+pub(crate) fn parse_propagate_options(
     target_bucket_len: Option<usize>,
     min_buckets: Option<usize>,
-) -> PyResult<PropagateOptions> {
-    let engine = match engine.unwrap_or("sorted") {
-        "sorted" => EngineSelection::SortedOnly,
-        "auto" => EngineSelection::Auto,
-        "direct" => EngineSelection::SmallSumDirect,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "engine must be 'sorted', 'auto', or 'direct', got {:?}",
-                other
-            )))
-        }
-    };
+) -> PropagateOptions {
     let defaults = PropagateOptions::default();
-    Ok(PropagateOptions {
-        engine,
-        small_sum_threshold: small_sum_threshold.unwrap_or(DEFAULT_SMALL_SUM_THRESHOLD),
+    PropagateOptions {
         target_bucket_len: target_bucket_len.unwrap_or(defaults.target_bucket_len),
         min_buckets: min_buckets.unwrap_or(defaults.min_buckets),
-    })
+    }
 }
 
 /// `partitions=` / `pin_memory=` / `partition_row_seed=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
@@ -2314,12 +2296,11 @@ impl PauliSum {
     /// Propagate `self` through `circuit`.
     ///
     /// `direction` is `"forward"` (default) or `"heisenberg"`. `policy` is an optional `Truncation`; `None` applies no per-term filtering beyond the engine's own exact-zero drop.
-    /// `engine` is `"sorted"` (default, always bucketed), `"auto"` (a term-by-term hash-map path below `small_sum_threshold`, unless the policy has a layer pass like `topn`), or `"direct"` (same threshold, always). Results agree to floating-point tolerance across engines (ARCHITECTURE.md §Determinism).
-    /// `target_bucket_len` and `min_buckets` are the sorting engine's per-layer bucket-sizing knobs (`None` for either keeps that field at `PropagateOptions::default()`, `1024`/`128`); see `PropagateOptions` for the tradeoff. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since `rebucket` only ever grows a sum's partition.
+    /// `target_bucket_len` and `min_buckets` are the engine's per-layer bucket-sizing knobs (`None` for either keeps that field at `PropagateOptions::default()`, `1024`/`128`); see `PropagateOptions` for the tradeoff. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since `rebucket` only ever grows a sum's partition.
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned and bit-for-bit today's path; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
-    /// In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+    /// In partitioned mode `RAYON_NUM_THREADS` is ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
@@ -2331,12 +2312,12 @@ impl PauliSum {
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
     /// With `comm`, each MPI rank drives one device: an `int` ordinal or `"auto"` (a device near the rank's CPUs, distinct per rank on a node while there are enough), with `result=` as for a host `comm=` run; this needs both the `cuda` and `mpi` features.
-    /// `device` is an alternative to `partitions`, ignores `engine`, and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
+    /// `device` is an alternative to `partitions` and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
     ///
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -2344,8 +2325,6 @@ impl PauliSum {
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
-        engine: Option<&str>,
-        small_sum_threshold: Option<usize>,
         target_bucket_len: Option<usize>,
         min_buckets: Option<usize>,
         partitions: Option<&Bound<'_, PyAny>>,
@@ -2358,7 +2337,7 @@ impl PauliSum {
         device: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
-        let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
+        let options = parse_propagate_options(target_bucket_len, min_buckets);
         let gather = parse_result(result)?;
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
         let policy = PyTruncation::tree_of(policy);
@@ -2387,7 +2366,7 @@ impl PauliSum {
     /// A partitioned (`partitions=`) call additionally fills `PropagationStats.partition` with per-partition detail, summed to the same layer-level `terms_in`/`terms_out` an unpartitioned run would report.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
-    #[pyo3(signature = (circuit, policy=None, direction=None, engine=None, small_sum_threshold=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -2395,8 +2374,6 @@ impl PauliSum {
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
         direction: Option<&str>,
-        engine: Option<&str>,
-        small_sum_threshold: Option<usize>,
         target_bucket_len: Option<usize>,
         min_buckets: Option<usize>,
         partitions: Option<&Bound<'_, PyAny>>,
@@ -2409,7 +2386,7 @@ impl PauliSum {
         device: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
-        let options = parse_engine(engine, small_sum_threshold, target_bucket_len, min_buckets)?;
+        let options = parse_propagate_options(target_bucket_len, min_buckets);
         let gather = parse_result(result)?;
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
         let policy = PyTruncation::tree_of(policy);

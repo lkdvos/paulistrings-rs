@@ -6,7 +6,6 @@ pub(crate) mod bucketed;
 mod coset;
 #[cfg(feature = "cuda")]
 mod cuda_context;
-mod direct;
 #[cfg(feature = "cuda")]
 pub mod gpu;
 mod merge;
@@ -34,34 +33,9 @@ pub enum Direction {
     Heisenberg,
 }
 
-/// Which layer engine [`propagate_with`] uses.
-///
-/// The alternative to the bucketed sorting engine is a small-sum direct path that applies a layer through [`Channel::apply`] into a hash map, skipping [`Channel::prepare`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum EngineSelection {
-    /// The bucketed sorting engine for every layer.
-    #[default]
-    SortedOnly,
-    /// The direct path while the sum is at most [`PropagateOptions::small_sum_threshold`] terms and the policy reports no [`TruncationPolicy::finalizes_layer`], then the sorting engine.
-    ///
-    /// The policy condition is for performance only: a finalizing policy would cost the direct path a materialize and re-ingest per layer.
-    Auto,
-    /// The direct path whenever the sum is at most [`PropagateOptions::small_sum_threshold`] terms, whatever the policy.
-    ///
-    /// A policy with a layer pass still gets it once per layer, on a materialized sum.
-    SmallSumDirect,
-}
-
-/// Default for [`PropagateOptions::small_sum_threshold`]; research/FINDINGS.md §Direct-apply path for small sums.
-pub const DEFAULT_SMALL_SUM_THRESHOLD: usize = 2048;
-
 /// Tuning knobs for [`propagate_with`]; [`Default`] is what [`propagate`] uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PropagateOptions {
-    /// Which layer engine to use.
-    pub engine: EngineSelection,
-    /// Resident term count up to which the small-sum direct path is used; ignored under [`EngineSelection::SortedOnly`].
-    pub small_sum_threshold: usize,
     /// Terms per bucket the per-layer partition targets (ARCHITECTURE.md §Bucket-Policy).
     ///
     /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and rebucketing is grow-only, so lowering either mid-run never coarsens a partition.
@@ -69,28 +43,14 @@ pub struct PropagateOptions {
     /// Floor on the per-layer bucket count once the sum is worth splitting.
     ///
     /// Must be `>= 16`, below which a sum of at most `target_bucket_len` terms no longer reliably gets one bucket.
-    /// The small-sum direct path ignores it and sizes its materialized sum from the defaults.
     pub min_buckets: usize,
 }
 
 impl Default for PropagateOptions {
     fn default() -> Self {
         Self {
-            engine: EngineSelection::SortedOnly,
-            small_sum_threshold: DEFAULT_SMALL_SUM_THRESHOLD,
             target_bucket_len: DEFAULT_TARGET_BUCKET_LEN,
             min_buckets: DEFAULT_MIN_BUCKETS,
-        }
-    }
-}
-
-impl PropagateOptions {
-    /// Whether a run starting at `len` terms starts on the direct path, the only place it is entered.
-    fn starts_direct(&self, len: usize, policy_finalizes: bool) -> bool {
-        match self.engine {
-            EngineSelection::SortedOnly => false,
-            EngineSelection::Auto => len <= self.small_sum_threshold && !policy_finalizes,
-            EngineSelection::SmallSumDirect => len <= self.small_sum_threshold,
         }
     }
 }
@@ -158,9 +118,6 @@ where
 ///
 /// The scratch keeps its buffer capacity across calls and carries the opt-in [`TermTrace`](crate::TermTrace) and [`GateTrace`](crate::GateTrace) (and, under `phase-timing`, the phase counters).
 /// Log events are emitted on the calling thread, never inside a parallel layer.
-///
-/// Under a direct-path [`EngineSelection`] the leading layers run on a hash map until a layer leaves the sum above the threshold; the switch to the sorting engine is one-way.
-/// The direct path applies channels of any support width, so a circuit with a channel `prepare` declines panics only once the sum outgrows the threshold.
 pub fn propagate_with<const W: usize, T>(
     circuit: &Circuit<W>,
     mut sum: PauliSum<W>,
@@ -184,15 +141,7 @@ where
     let tracing = scratch.term_trace.is_some();
     let gate_tracing = scratch.gate_trace.is_some();
 
-    let mut start = 0usize;
-    if num_channels > 0 && options.starts_direct(terms_in, policy.finalizes_layer()) {
-        let (out, applied) =
-            direct::run_direct_prefix(circuit, sum, policy, direction, scratch, options);
-        sum = out;
-        start = applied;
-    }
-
-    for application_index in start..num_channels {
+    for application_index in 0..num_channels {
         let circuit_index = match direction {
             Direction::Forward => application_index,
             Direction::Heisenberg => num_channels - 1 - application_index,

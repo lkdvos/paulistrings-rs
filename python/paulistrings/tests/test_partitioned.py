@@ -230,15 +230,11 @@ def test_auto_places_one_partition_per_numa_node():
         assert stats.partition.partitions <= nodes
 
 
-def test_the_kwargs_are_accepted_positionally_after_small_sum_threshold():
+def test_the_kwargs_are_accepted_positionally_after_min_buckets():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    positional = s.propagate(
-        c, None, "forward", "sorted", 4096, None, None, _cpu_sets(), False
-    )
+    positional = s.propagate(c, None, "forward", None, None, _cpu_sets(), False)
     keyword = s.propagate(
         c,
-        engine="sorted",
-        small_sum_threshold=4096,
         partitions=_cpu_sets(),
         pin_memory=False,
     )

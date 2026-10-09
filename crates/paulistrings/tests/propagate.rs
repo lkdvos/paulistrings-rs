@@ -234,6 +234,21 @@ fn single_layer_w2_word_boundary() {
 }
 
 #[test]
+fn propagate_empty_sum_stays_empty() {
+    let mut circuit = Circuit::<1>::new(8);
+    circuit.push(Clifford1Q::h(0));
+    circuit.push(Clifford2Q::cnot(0, 1));
+    circuit.push(PauliRotation::new(PauliString::<1>::z(2), 0.3));
+    let out = propagate(
+        &circuit,
+        PauliSum::<1>::empty(8),
+        &NoTruncation,
+        Direction::Forward,
+    );
+    assert_eq!(out.len(), 0);
+}
+
+#[test]
 fn propagate_zero_channel_circuit_returns_input() {
     let input = sum1(1, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
     let circuit = Circuit::<1>::new(1);

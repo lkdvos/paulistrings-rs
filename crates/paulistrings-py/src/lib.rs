@@ -117,12 +117,6 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(p, m)?)?;
     m.add_function(wrap_pyfunction!(diagonal_echo, m)?)?;
 
-    // Re-exported from the core so the Python default cannot drift from the Rust one.
-    m.add(
-        "DEFAULT_SMALL_SUM_THRESHOLD",
-        paulistrings::DEFAULT_SMALL_SUM_THRESHOLD,
-    )?;
-
     m.add_class::<pauli_string::PauliString>()?;
     m.add_class::<sum::PauliSum>()?;
     m.add_class::<sum::PropagationStats>()?;

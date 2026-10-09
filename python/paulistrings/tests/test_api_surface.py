@@ -18,7 +18,6 @@ def test_top_level_names():
     assert hasattr(paulistrings, "gates")
     assert hasattr(paulistrings, "noise")
     assert hasattr(paulistrings, "truncation")
-    assert hasattr(paulistrings, "DEFAULT_SMALL_SUM_THRESHOLD")
     assert hasattr(paulistrings, "PropagationStats")
     assert hasattr(paulistrings, "PartitionStats")
     assert hasattr(paulistrings, "numa_nodes")

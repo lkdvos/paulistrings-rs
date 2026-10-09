@@ -36,7 +36,6 @@ fn fine() -> PropagateOptions {
     PropagateOptions {
         target_bucket_len: 32,
         min_buckets: 16,
-        ..PropagateOptions::default()
     }
 }
 

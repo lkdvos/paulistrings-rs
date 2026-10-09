@@ -278,7 +278,6 @@ impl<const W: usize> PartitionedSum<W> {
 
     /// Propagates through `circuit` under `policy` with explicit [`PropagateOptions`], as [`propagate_with`](crate::propagate_with) does unpartitioned.
     ///
-    /// [`EngineSelection`](crate::EngineSelection) is ignored: the partitioned path is always the bucketed layer.
     /// The per-layer `DEBUG` log line comes once per partition, tagged `partition r/P`, from that partition's own thread.
     ///
     /// # Panics

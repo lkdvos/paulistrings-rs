@@ -392,7 +392,6 @@ mod protocol {
                 options: PropagateOptions {
                     target_bucket_len: 1 << 20,
                     min_buckets: 1,
-                    ..PropagateOptions::default()
                 },
                 ..Run::new(&input, rows_reading_z63(), &c)
             };

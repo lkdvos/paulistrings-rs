@@ -276,7 +276,6 @@ pub(super) fn run_layers<const W: usize, T, X, B>(
 /// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
 ///
 /// A caller propagating repeatedly should hold a [`PartitionRuntime`](super::runtime::PartitionRuntime) and a [`PartitionedSum`] instead, so pools, split and scratch survive between calls.
-/// [`EngineSelection`](crate::EngineSelection) in `options` is ignored.
 ///
 /// # Errors
 ///

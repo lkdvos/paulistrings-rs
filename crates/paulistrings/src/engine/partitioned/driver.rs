@@ -261,34 +261,21 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 
         if debug_on {
             let Some(elapsed) = elapsed else { continue };
-            if solo {
-                log::debug!(
-                    target: LOG_TARGET,
-                    "layer {}/{} [{}]: {} -> {} terms, {:.1} ms",
-                    k + 1,
-                    n,
-                    channel.debug_name(),
-                    terms_before,
-                    local.len(),
-                    elapsed.as_secs_f64() * 1e3,
-                );
-            } else {
-                log::debug!(
-                    target: LOG_TARGET,
-                    "partition {}/{} layer {}/{} [{}]: {} -> {} terms, {} remote deltas, \
-                     {} rows in, {:.1} ms",
-                    rank,
-                    size,
-                    k + 1,
-                    n,
-                    channel.debug_name(),
-                    terms_before,
-                    local.len(),
-                    remote_deltas,
-                    rows_received,
-                    elapsed.as_secs_f64() * 1e3,
-                );
-            }
+            log::debug!(
+                target: LOG_TARGET,
+                "layer {}/{} [{}]: {} -> {} terms, {:.1} ms (partition {}/{}, {} remote deltas, \
+                 {} rows in)",
+                k + 1,
+                n,
+                channel.debug_name(),
+                terms_before,
+                local.len(),
+                elapsed.as_secs_f64() * 1e3,
+                rank,
+                size,
+                remote_deltas,
+                rows_received,
+            );
         }
     }
 }

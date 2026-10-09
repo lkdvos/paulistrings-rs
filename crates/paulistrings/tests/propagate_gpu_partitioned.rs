@@ -670,15 +670,8 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     for layer in &trace.layers {
         let ch = &circuit.channels[layer.circuit_index as usize];
         let mut deltas = std::collections::HashSet::new();
-        match ch.prepare(hash, false).expect("prepared") {
-            paulistrings::test_support::Prepared::Local(ptm) => {
-                for d in ptm.deltas() {
-                    deltas.insert(rows.partition_of(&d.mask_x, &d.mask_z));
-                }
-            }
-            paulistrings::test_support::Prepared::Rotation(r) => {
-                deltas.insert(rows.partition_of(&r.generator.x, &r.generator.z));
-            }
+        for (mask_x, mask_z) in paulistrings::test_support::key_delta_masks(ch.as_ref(), hash) {
+            deltas.insert(rows.partition_of(&mask_x, &mask_z));
         }
         for r in 0..4 {
             for q in 0..4 {

@@ -1,5 +1,6 @@
 //! [`GpuPartitionedSum`], [`PartitionedSum`] over device partitions, its one-device form [`GpuPauliSum`], and their front doors.
 
+use crate::channel::Prepare;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 

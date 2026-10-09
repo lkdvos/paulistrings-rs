@@ -1,4 +1,5 @@
 use super::*;
+use crate::channel::Prepare;
 use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix};
 
 /// One of every constructor on `(q0, q1)`, both qubit orders for the two-qubit ones.
@@ -74,7 +75,7 @@ fn check_prepare_matches_the_probe<const W: usize>(q0: usize, q1: usize) {
         let hash = Gf2Hash::<W>::new(64 * W, 10, seed);
         for (name, channel) in every_constructor(q0, q1) {
             for adjoint in [false, true] {
-                let direct = Channel::<W>::prepare(&channel, &hash, adjoint).unwrap();
+                let direct = Prepare::<W>::prepare(&channel, &hash, adjoint).unwrap();
                 let probed = Prepared::derive_local(&channel, &hash, adjoint).unwrap();
                 assert_same_local_ptm(&direct, &probed, &format!("{name} adjoint={adjoint}"));
             }

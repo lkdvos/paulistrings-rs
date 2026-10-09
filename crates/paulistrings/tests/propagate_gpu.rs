@@ -678,9 +678,9 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
         }
     }
     let circuit = random_clifford_circuit::<W>(nq, 24, 0x5EED);
-    let last_permutes = !matches!(
-        circuit.channels.last().unwrap().prepare(input.hash(), false),
-        Some(paulistrings::test_support::Prepared::Local(p)) if p.is_key_preserving()
+    let last_permutes = !paulistrings::test_support::is_key_preserving(
+        circuit.channels.last().unwrap().as_ref(),
+        input.hash(),
     );
     for (pname, policy) in &policies {
         let what = format!("random clifford {pname}");

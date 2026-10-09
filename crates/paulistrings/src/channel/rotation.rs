@@ -1,6 +1,6 @@
 //! [`PauliRotation`], the rotation `exp(-i·θ·P/2)` about a Pauli generator.
 
-use super::prepared::{Prepared, PreparedRotation, MAX_LOCAL_SUPPORT};
+use super::prepared::{PrepareToken, Prepared, PreparedRotation, MAX_LOCAL_SUPPORT};
 use super::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -55,7 +55,7 @@ impl<const W: usize> PauliRotation<W> {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         let input = PauliString::<W> {
             x: *input_x,
@@ -91,10 +91,6 @@ fn sin_cos(theta: f64) -> (f64, f64) {
 }
 
 impl<const W: usize> Channel<W> for PauliRotation<W> {
-    fn max_fanout(&self) -> usize {
-        2
-    }
-
     fn support(&self) -> [u64; W] {
         core::array::from_fn(|w| self.generator_x[w] | self.generator_z[w])
     }
@@ -104,7 +100,7 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         self.apply_with_theta(self.theta, input_x, input_z, coeff, out);
     }
@@ -114,13 +110,18 @@ impl<const W: usize> Channel<W> for PauliRotation<W> {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         self.apply_with_theta(-self.theta, input_x, input_z, coeff, out);
     }
 
     /// The tabulated default up to `MAX_LOCAL_SUPPORT`, `Prepared::Rotation` above it.
-    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
+    fn prepare_for_layer(
+        &self,
+        hash: &Gf2Hash<W>,
+        adjoint: bool,
+        _: PrepareToken,
+    ) -> Option<Prepared<W>> {
         if self.weight() <= MAX_LOCAL_SUPPORT {
             return Prepared::derive_local(self, hash, adjoint);
         }

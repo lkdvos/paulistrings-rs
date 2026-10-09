@@ -1,6 +1,7 @@
 use super::premerge::SCAN_LIMIT;
 use super::receive::{chunk_layout, chunk_max, recv_chunks, rows_between};
 use super::*;
+use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
 use crate::engine::coset::Gf2Span;
 use crate::engine::gpu::layer::GpuLayerOptions;

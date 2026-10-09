@@ -1,6 +1,6 @@
 use super::*;
 use crate::channel::prepared::Prepared;
-use crate::channel::Channel;
+use crate::channel::Prepare;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::phase::Phase;
@@ -474,7 +474,7 @@ fn pauli_channel_is_self_adjoint() {
 fn pauli_channel_prepares_as_a_key_preserving_local_ptm() {
     let channel = PtmChannel::pauli_channel(3, 0.1, 0.2, 0.3);
     let hash = Gf2Hash::<1>::new(16, 4, 0xC0FFEE);
-    let prepared = <PtmChannel as Channel<1>>::prepare(&channel, &hash, false)
+    let prepared = <PtmChannel as Prepare<1>>::prepare(&channel, &hash, false)
         .expect("a weight-1 support must prepare");
     match prepared {
         Prepared::Local(ptm) => assert!(ptm.is_key_preserving()),
@@ -612,7 +612,7 @@ fn depolarize2_is_self_adjoint() {
 fn depolarize2_prepares_as_a_key_preserving_local_ptm() {
     let channel = PtmChannel::depolarizing_2q(1, 4, 0.3);
     let hash = Gf2Hash::<1>::new(16, 4, 0xC0FFEE);
-    let prepared = <PtmChannel as Channel<1>>::prepare(&channel, &hash, false)
+    let prepared = <PtmChannel as Prepare<1>>::prepare(&channel, &hash, false)
         .expect("a weight-2 support must prepare");
     match prepared {
         Prepared::Local(ptm) => {

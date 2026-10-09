@@ -5,7 +5,7 @@ mod clifford;
 mod noise;
 mod unitary;
 
-use super::prepared::{Prepared, LOCAL_DIM};
+use super::prepared::{PrepareToken, Prepared, LOCAL_DIM};
 use super::{qubit_loc, read_pauli, support_mask, write_pauli, Channel, OutputBuffer};
 use crate::pauli_sum::hash::Gf2Hash;
 use num_complex::Complex64;
@@ -145,7 +145,7 @@ impl PtmChannel {
         x: &[u64; W],
         z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         let s = self.local_index(x, z);
         match &self.storage {
@@ -229,22 +229,6 @@ impl PtmChannel {
         });
         table
     }
-
-    /// The largest number of outputs one input produces in either direction.
-    fn fanout(&self) -> usize {
-        match &self.storage {
-            PtmStorage::SignedPermutation { .. } | PtmStorage::Diagonal { .. } => 1,
-            PtmStorage::Sparse { positions, .. } => {
-                let mut per_input = [0usize; LOCAL_DIM];
-                let mut per_output = [0usize; LOCAL_DIM];
-                for &(s, t) in positions.iter() {
-                    per_input[s as usize] += 1;
-                    per_output[t as usize] += 1;
-                }
-                per_input.into_iter().chain(per_output).max().unwrap_or(0)
-            }
-        }
-    }
 }
 
 /// Sparse storage from `(position, amplitude)` pairs ascending by position, exact zeros dropped.
@@ -276,10 +260,6 @@ fn assert_probability(constructor: &str, name: &str, value: f64) {
 }
 
 impl<const W: usize> Channel<W> for PtmChannel {
-    fn max_fanout(&self) -> usize {
-        self.fanout()
-    }
-
     fn support(&self) -> [u64; W] {
         support_mask(self.qubits())
     }
@@ -293,7 +273,7 @@ impl<const W: usize> Channel<W> for PtmChannel {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         self.apply_rows(false, input_x, input_z, coeff, out);
     }
@@ -303,13 +283,18 @@ impl<const W: usize> Channel<W> for PtmChannel {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         self.apply_rows(true, input_x, input_z, coeff, out);
     }
 
     /// Tabulated straight from the stored PTM, without probing `apply`.
-    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
+    fn prepare_for_layer(
+        &self,
+        hash: &Gf2Hash<W>,
+        adjoint: bool,
+        _: PrepareToken,
+    ) -> Option<Prepared<W>> {
         Some(Prepared::from_transfer_matrix(
             &self.support(),
             &self.transfer_matrix(adjoint),

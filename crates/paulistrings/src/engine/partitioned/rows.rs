@@ -1,9 +1,9 @@
 //! The circuit's key delta masks with the number of layers carrying each, for judging partition rows (ARCHITECTURE.md §Partitioning).
 //! A row `r` leaves a delta local iff `⟨r, d⟩ = parity(rx & dx) ^ parity(rz & dz) = 0`.
 
+use crate::channel::Prepare;
 use std::collections::HashMap;
 
-use crate::channel::prepared::Prepared;
 use crate::circuit::Circuit;
 use crate::pauli_sum::hash::Gf2Hash;
 
@@ -24,7 +24,7 @@ pub struct GeneratorWeight<const W: usize> {
 ///
 /// # Panics
 ///
-/// If any channel declines [`Channel::prepare`](crate::Channel::prepare).
+/// If any channel's preparation declines.
 pub fn circuit_generators<const W: usize>(
     circuit: &Circuit<W>,
     hash: &Gf2Hash<W>,
@@ -37,15 +37,11 @@ pub fn circuit_generators<const W: usize>(
     for k in 0..n {
         let index = if adjoint { n - 1 - k } else { k };
         let channel = &circuit.channels[index];
-        let prepared = channel.prepare(hash, adjoint).unwrap_or_else(|| {
-            panic!("circuit_generators: layer {index} declined Channel::prepare")
-        });
+        let prepared = channel
+            .prepare(hash, adjoint)
+            .unwrap_or_else(|| panic!("circuit_generators: layer {index} declined preparation"));
         // One layer's masks are distinct, so a repeat is a second layer.
-        let masks: Vec<Mask<W>> = match &prepared {
-            Prepared::Local(ptm) => ptm.deltas().iter().map(|d| d.mask()).collect(),
-            Prepared::Rotation(rotation) => vec![rotation.generator_mask()],
-        };
-        for m in masks {
+        for m in prepared.key_delta_masks() {
             if mask_is_zero(&m) {
                 continue;
             }

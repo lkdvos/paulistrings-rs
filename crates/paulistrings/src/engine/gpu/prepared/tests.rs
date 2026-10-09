@@ -1,5 +1,6 @@
 use super::*;
 use crate::channel::rotation::PauliRotation;
+use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::DEFAULT_HASH_SEED;

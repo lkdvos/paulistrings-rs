@@ -1,7 +1,8 @@
 use super::*;
 use crate::channel::rotation::PauliRotation;
+use crate::channel::Channel;
+use crate::channel::Prepare;
 use crate::channel::PtmChannel;
-use crate::channel::{Channel, OutputBuffer};
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::test_support::{
@@ -99,30 +100,13 @@ fn crossing_rows<const W: usize>(
     adjoint: bool,
     rows: &PartitionRows<W>,
 ) -> Vec<([u64; W], [u64; W], Complex64)> {
-    let mf = channel.max_fanout().max(1);
-    let mut buf_x = vec![[0u64; W]; mf];
-    let mut buf_z = vec![[0u64; W]; mf];
-    let mut buf_c = vec![ZERO; mf];
     let mut out = Vec::new();
     for (x, z, c) in input.iter() {
         let source = rows.partition_of(x, z);
-        let mut len = 0usize;
-        {
-            let mut buffer = OutputBuffer::<W> {
-                x: &mut buf_x,
-                z: &mut buf_z,
-                coeff: &mut buf_c,
-                len: &mut len,
-            };
-            if adjoint {
-                channel.apply_adjoint(x, z, c, &mut buffer);
-            } else {
-                channel.apply(x, z, c, &mut buffer);
-            }
-        }
+        let p = PauliString::<W> { x: *x, z: *z };
         let mut per_term: HashMap<([u64; W], [u64; W]), Complex64> = HashMap::new();
-        for i in 0..len {
-            *per_term.entry((buf_x[i], buf_z[i])).or_insert(ZERO) += buf_c[i];
+        for (q, qc) in crate::test_support::raw_outputs(channel, adjoint, p, c) {
+            *per_term.entry((q.x, q.z)).or_insert(ZERO) += qc;
         }
         for ((kx, kz), kc) in per_term {
             if kc != ZERO && rows.partition_of(&kx, &kz) != source {
@@ -407,7 +391,7 @@ fn a_reused_scratch_gives_the_same_export() {
     let _ = export_layer(&wide_local, &prepared, &plan, 4, &map, &mut scratch);
 
     let h = PtmChannel::hadamard(3);
-    let prepared = Channel::<1>::prepare(&h, whole.hash(), false).unwrap();
+    let prepared = Prepare::<1>::prepare(&h, whole.hash(), false).unwrap();
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let local = whole.filter_partition(&rows, 0);
     let map = map_for(&plan, local.num_buckets());

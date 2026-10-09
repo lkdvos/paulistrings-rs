@@ -3,6 +3,7 @@ use super::*;
 use crate::channel::identity::IdentityChannel;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
+use crate::channel::Prepare;
 use crate::channel::PtmChannel;
 use crate::engine::merge::{merge2_into, sort_rows_with_scratch, SortScratch};
 use crate::pauli_string::PauliString;
@@ -1047,8 +1048,14 @@ fn capacity_stabilizes_across_repeated_layers() {
 fn coset_path_is_correct_for_a_non_subspace_delta_set() {
     struct ThreeDeltas;
     impl<const W: usize> Channel<W> for ThreeDeltas {
-        fn max_fanout(&self) -> usize {
-            3
+        fn apply_adjoint(
+            &self,
+            input_x: &[u64; W],
+            input_z: &[u64; W],
+            coeff: Complex64,
+            out: &mut crate::channel::OutputBuffer<W>,
+        ) {
+            self.apply(input_x, input_z, coeff, out);
         }
         fn support(&self) -> [u64; W] {
             crate::channel::support_mask(&[0, 1])
@@ -1058,7 +1065,7 @@ fn coset_path_is_correct_for_a_non_subspace_delta_set() {
             input_x: &[u64; W],
             input_z: &[u64; W],
             coeff: Complex64,
-            out: &mut crate::channel::OutputBuffer<'_, W>,
+            out: &mut crate::channel::OutputBuffer<W>,
         ) {
             // v (0.5) + v⊕x₀ (0.3) + v⊕x₁ (0.2), so `a ⊕ b = x₀x₁` is never emitted.
             out.push(*input_x, *input_z, coeff * 0.5);
@@ -1511,7 +1518,6 @@ mod tie_tests {
     #[test]
     fn parallel_output_is_byte_identical_across_thread_counts() {
         use crate::channel::rotation::PauliRotation;
-        use crate::channel::Channel;
 
         let input = rand_sum::<1>(4000, 10, 0xC1C1);
         let rot = PauliRotation::new(PauliString::<1>::z(2), 0.37);
@@ -1555,7 +1561,6 @@ mod tie_tests {
     /// The in-place rescale path is parallel too, and must give the same answer.
     #[test]
     fn parallel_rescale_is_byte_identical_across_thread_counts() {
-        use crate::channel::Channel;
         use crate::channel::PtmChannel;
 
         let input = rand_sum::<1>(4000, 10, 0xC1C2);
@@ -1568,7 +1573,7 @@ mod tie_tests {
                 .install(|| {
                     let hash = Gf2Hash::<1>::new(10, 6, 0xC2);
                     let mut b = input.clone().with_hash(hash);
-                    let prepared = Channel::<1>::prepare(&depol, b.hash(), false).unwrap();
+                    let prepared = Prepare::<1>::prepare(&depol, b.hash(), false).unwrap();
                     let mut scratch = LayerScratch::<1>::new();
                     apply_layer_bucketed(
                         &mut b,

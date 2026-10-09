@@ -15,10 +15,6 @@ impl IdentityChannel {
 }
 
 impl<const W: usize> Channel<W> for IdentityChannel {
-    fn max_fanout(&self) -> usize {
-        1
-    }
-
     fn support(&self) -> [u64; W] {
         [0; W]
     }
@@ -28,9 +24,19 @@ impl<const W: usize> Channel<W> for IdentityChannel {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         out.push(*input_x, *input_z, coeff);
+    }
+
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<W>,
+    ) {
+        self.apply(input_x, input_z, coeff, out);
     }
 }
 

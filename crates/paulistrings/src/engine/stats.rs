@@ -13,7 +13,7 @@ pub struct PhaseStats {
     // -- wall-clock, once per layer, on the calling thread --
     /// The grow-only rebucket before each layer.
     pub rebucket_ns: u64,
-    /// `Channel::prepare`.
+    /// Channel preparation.
     pub prepare_ns: u64,
     /// The key-preserving rescale path, taken instead of the coset loop.
     pub rescale_ns: u64,

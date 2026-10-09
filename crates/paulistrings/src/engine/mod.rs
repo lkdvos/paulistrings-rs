@@ -65,7 +65,7 @@ impl Default for PropagateOptions {
 ///
 /// # Panics
 ///
-/// If a channel's [`Channel::prepare`](crate::Channel::prepare) declines, as for a user channel with support above two qubits; no built-in channel does.
+/// If a channel's preparation declines, as for a custom channel with support above two qubits; no built-in channel does.
 ///
 /// # Progress logging
 ///

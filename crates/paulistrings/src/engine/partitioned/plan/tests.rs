@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::channel::rotation::PauliRotation;
+use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
 use crate::pauli_string::PauliString;
 use crate::test_support::{haar_su4_matrix, Xs64};

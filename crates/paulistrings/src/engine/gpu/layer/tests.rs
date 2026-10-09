@@ -1,6 +1,7 @@
 use super::fast_paths::perm_threads;
 use super::options::parse_bytes;
 use super::*;
+use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
 use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_sum::hash::Gf2Hash;

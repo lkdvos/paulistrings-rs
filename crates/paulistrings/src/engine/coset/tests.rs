@@ -1,4 +1,5 @@
 use super::*;
+use crate::channel::Prepare;
 use proptest::prelude::*;
 use std::collections::HashSet;
 
@@ -187,7 +188,7 @@ proptest! {
 /// For a two-qubit channel `rank(h(D))` depends on the hash rows, so one Haar SU(4) gets different coset widths on different supports under one seed.
 #[test]
 fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
-    use crate::channel::{Channel, PtmChannel};
+    use crate::channel::PtmChannel;
     use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
     use crate::pauli_sum::Gf2Hash;
     use crate::test_support::{haar_su4_matrix, support_delta_rank};
@@ -198,7 +199,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
         // W = 2: full rank from `bits = 7`, the engine's own floor.
         let h2 = Gf2Hash::<2>::new(128, bits, DEFAULT_HASH_SEED);
         let want2 = support_delta_rank(&h2, &[0, 1]).min(bits as usize);
-        let prep2 = Channel::<2>::prepare(&channel, &h2, false).expect("prepare W=2");
+        let prep2 = Prepare::<2>::prepare(&channel, &h2, false).expect("prepare W=2");
         assert_eq!(
             Gf2Span::new(&prep2.bucket_deltas(), bits).r(),
             want2,
@@ -208,7 +209,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
         // W = 1: the same rows in word 0, so the same rank.
         let h1 = Gf2Hash::<1>::new(64, bits, DEFAULT_HASH_SEED);
         let want1 = support_delta_rank(&h1, &[0, 1]).min(bits as usize);
-        let prep1 = Channel::<1>::prepare(&channel, &h1, false).expect("prepare W=1");
+        let prep1 = Prepare::<1>::prepare(&channel, &h1, false).expect("prepare W=1");
         assert_eq!(
             Gf2Span::new(&prep1.bucket_deltas(), bits).r(),
             want1,
@@ -221,13 +222,13 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
     let h1 = Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED);
     let deficient = PtmChannel::unitary_2q(0, 7, haar_su4_matrix());
     let s2 = Gf2Span::new(
-        &Channel::<2>::prepare(&channel, &h2, false)
+        &Prepare::<2>::prepare(&channel, &h2, false)
             .unwrap()
             .bucket_deltas(),
         7,
     );
     let s1 = Gf2Span::new(
-        &Channel::<1>::prepare(&deficient, &h1, false)
+        &Prepare::<1>::prepare(&deficient, &h1, false)
             .unwrap()
             .bucket_deltas(),
         7,

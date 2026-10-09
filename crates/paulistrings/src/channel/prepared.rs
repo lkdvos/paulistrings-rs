@@ -1,4 +1,5 @@
-//! [`Prepared`], the per-layer engine form of a channel. See ARCHITECTURE.md §Prepared-Channels.
+//! [`Prepared`], the per-layer engine form of a channel, and the crate-private [`Prepare`] that produces it.
+//! See ARCHITECTURE.md §Prepared-Channels.
 
 use num_complex::Complex64;
 
@@ -15,17 +16,32 @@ pub(crate) const LOCAL_DIM: usize = 16;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
+/// The argument that keeps [`Channel::prepare_for_layer`] out of reach: it is `pub` only to appear in that signature, and only this module can build one.
+pub struct PrepareToken(());
+
+/// [`Channel::prepare_for_layer`] without the token, for the engine.
+pub(crate) trait Prepare<const W: usize> {
+    /// The channel's engine form for one layer; `None` makes `propagate` panic.
+    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>>;
+}
+
+impl<const W: usize, C: Channel<W> + ?Sized> Prepare<W> for C {
+    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
+        self.prepare_for_layer(hash, adjoint, PrepareToken(()))
+    }
+}
+
 /// One key delta, with the amplitude it carries for each input support pattern.
 #[derive(Clone, Debug)]
-pub struct DeltaEntry<const W: usize> {
+pub(crate) struct DeltaEntry<const W: usize> {
     /// `δ = H·d`; entries may share one.
     pub(crate) bucket_delta: u32,
     /// `d` in local support coordinates: bit `2j` is the x-bit of support qubit `j`, bit `2j+1` its z-bit.
     pub(crate) local_delta: u8,
     /// X-part of `d` as a full-width XOR mask.
-    pub mask_x: [u64; W],
+    pub(crate) mask_x: [u64; W],
     /// Z-part of `d` as a full-width XOR mask.
-    pub mask_z: [u64; W],
+    pub(crate) mask_z: [u64; W],
     /// `amplitude[s]` takes support pattern `s` to `s ^ local_delta`; exactly zero means no output.
     pub(crate) amplitude: [Complex64; LOCAL_DIM],
 }
@@ -59,6 +75,7 @@ impl<const W: usize> DeltaEntry<W> {
 }
 
 /// A channel with support on at most [`MAX_LOCAL_SUPPORT`] qubits, as its local Pauli-transfer matrix grouped by key delta.
+/// `pub` in this private module only because [`Prepared`] carries it.
 #[derive(Clone, Debug)]
 pub struct LocalPtm<const W: usize> {
     /// Support qubits, ascending; only the first `k` are meaningful.
@@ -76,17 +93,19 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// Support qubits, ascending.
-    pub fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+    #[cfg(any(test, feature = "cuda"))]
+    pub(crate) fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
         self.qubits[..self.k as usize].iter().map(|&q| q as usize)
     }
 
     /// The delta entries, ascending by `local_delta`.
-    pub fn deltas(&self) -> &[DeltaEntry<W>] {
+    pub(crate) fn deltas(&self) -> &[DeltaEntry<W>] {
         &self.deltas
     }
 
     /// Number of key deltas.
-    pub fn num_deltas(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn num_deltas(&self) -> usize {
         self.deltas.len()
     }
 
@@ -112,7 +131,7 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// Whether every key maps to itself, making the layer an in-place coefficient rescale.
-    pub fn is_key_preserving(&self) -> bool {
+    pub(crate) fn is_key_preserving(&self) -> bool {
         self.deltas.len() == 1 && self.deltas[0].local_delta == 0
     }
 
@@ -206,10 +225,11 @@ impl<const W: usize> LocalPtm<W> {
 }
 
 /// A rotation with support wider than [`MAX_LOCAL_SUPPORT`], whose amplitudes are computed per term.
+/// `pub` in this private module only because [`Prepared`] carries it.
 #[derive(Clone, Debug)]
 pub struct PreparedRotation<const W: usize> {
     /// The generator `P`.
-    pub generator: PauliString<W>,
+    pub(crate) generator: PauliString<W>,
     /// `cos(θ)`.
     pub(crate) cos: f64,
     /// `sin(θ)`.
@@ -245,6 +265,7 @@ impl<const W: usize> PreparedRotation<W> {
 }
 
 /// A channel prepared for one layer of the bucketed engine.
+/// `pub` in this private module only because the hidden [`Channel::prepare_for_layer`] returns it.
 #[derive(Clone, Debug)]
 pub enum Prepared<const W: usize> {
     /// Support on at most `MAX_LOCAL_SUPPORT` qubits, tabulated.
@@ -265,6 +286,15 @@ impl<const W: usize> Prepared<W> {
                     vec![r.bucket_delta_identity, r.bucket_delta_generator]
                 }
             }
+        }
+    }
+
+    /// The XOR masks of the key deltas: every entry's for a table, the generator's for a rotation.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn key_delta_masks(&self) -> Vec<([u64; W], [u64; W])> {
+        match self {
+            Prepared::Local(ptm) => ptm.deltas().iter().map(|d| d.mask()).collect(),
+            Prepared::Rotation(rotation) => vec![rotation.generator_mask()],
         }
     }
 
@@ -315,8 +345,6 @@ where
 {
     let k = ptm.k as usize;
     let dim = 1usize << (2 * k);
-    let fanout = channel.max_fanout().max(1);
-
     let mut table = [[ZERO; LOCAL_DIM]; LOCAL_DIM];
 
     let (support_x, support_z) = {
@@ -331,9 +359,7 @@ where
         (mx, mz)
     };
 
-    let mut buffer_x = vec![[0u64; W]; fanout];
-    let mut buffer_z = vec![[0u64; W]; fanout];
-    let mut buffer_coeff = vec![ZERO; fanout];
+    let mut out = OutputBuffer::<W>::new();
 
     for (s, row) in table.iter_mut().enumerate().take(dim) {
         let (mut in_x, mut in_z) = ptm.lift(s as u8);
@@ -344,31 +370,23 @@ where
             }
         }
 
-        let mut len = 0usize;
-        {
-            let mut out = OutputBuffer::<W> {
-                x: &mut buffer_x,
-                z: &mut buffer_z,
-                coeff: &mut buffer_coeff,
-                len: &mut len,
-            };
-            if adjoint {
-                channel.apply_adjoint(&in_x, &in_z, Complex64::new(1.0, 0.0), &mut out);
-            } else {
-                channel.apply(&in_x, &in_z, Complex64::new(1.0, 0.0), &mut out);
-            }
+        out.clear();
+        if adjoint {
+            channel.apply_adjoint(&in_x, &in_z, Complex64::new(1.0, 0.0), &mut out);
+        } else {
+            channel.apply(&in_x, &in_z, Complex64::new(1.0, 0.0), &mut out);
         }
 
-        for i in 0..len {
+        for (out_x, out_z, coeff) in out.terms() {
             for w in 0..W {
-                if (buffer_x[i][w] ^ in_x[w]) & !support_x[w] != 0
-                    || (buffer_z[i][w] ^ in_z[w]) & !support_z[w] != 0
+                if (out_x[w] ^ in_x[w]) & !support_x[w] != 0
+                    || (out_z[w] ^ in_z[w]) & !support_z[w] != 0
                 {
                     return None;
                 }
             }
-            let t = ptm.support_bits(&buffer_x[i], &buffer_z[i]);
-            row[t] += buffer_coeff[i];
+            let t = ptm.support_bits(&out_x, &out_z);
+            row[t] += coeff;
         }
     }
 

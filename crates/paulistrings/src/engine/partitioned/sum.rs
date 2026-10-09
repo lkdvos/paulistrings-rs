@@ -283,7 +283,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// # Panics
     ///
-    /// If a channel's [`Channel::prepare`](crate::Channel::prepare) declines, as the unpartitioned engine does.
+    /// If a channel's preparation declines, as the unpartitioned engine does.
     /// Before the first layer, above one partition, unless [`policy.supports_partitioned()`](TruncationPolicy::supports_partitioned) — exact [`TopN`](crate::TopN) is not yet supported partitioned.
     /// A panic in any partition is re-raised on the calling thread.
     pub fn propagate_with<T>(

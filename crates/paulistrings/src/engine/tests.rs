@@ -15,8 +15,14 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 /// Support on three qubits, so `prepare` returns `None`.
 struct ThreeQubits;
 impl<const W: usize> Channel<W> for ThreeQubits {
-    fn max_fanout(&self) -> usize {
-        1
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut crate::channel::OutputBuffer<W>,
+    ) {
+        self.apply(input_x, input_z, coeff, out);
     }
     fn support(&self) -> [u64; W] {
         support_mask(&[0, 1, 2])
@@ -26,14 +32,14 @@ impl<const W: usize> Channel<W> for ThreeQubits {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     ) {
         out.push(*input_x, *input_z, coeff);
     }
 }
 
 #[test]
-#[should_panic(expected = "Channel::prepare declined")]
+#[should_panic(expected = "channel preparation declined")]
 fn an_unpreparable_channel_panics() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
     accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));

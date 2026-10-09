@@ -444,7 +444,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     ///
     /// # Panics
     ///
-    /// If a channel's `prepare` declines, or if the ranks disagree about the run's shape.
+    /// If a channel's preparation declines, or if the ranks disagree about the run's shape.
     /// Before the first layer, above one rank, unless [`policy.supports_partitioned()`](TruncationPolicy::supports_partitioned) — exact [`TopN`](crate::TopN) is not yet supported partitioned.
     pub fn propagate_with<T>(
         &mut self,

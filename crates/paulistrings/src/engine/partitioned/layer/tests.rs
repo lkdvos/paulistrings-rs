@@ -1,6 +1,7 @@
 use super::*;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
+use crate::channel::Prepare;
 use crate::channel::PtmChannel;
 use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_string::PauliString;
@@ -247,7 +248,7 @@ fn no_remote_deltas_means_no_exchange() {
     let h = PtmChannel::hadamard(3);
     let hash = Gf2Hash::<1>::new(8, 4, 0x9D);
     let whole = input.clone().with_hash(hash);
-    let prepared = Channel::<1>::prepare(&h, whole.hash(), false).expect("prepare");
+    let prepared = Prepare::<1>::prepare(&h, whole.hash(), false).expect("prepare");
     assert!(
         !PartitionPlan::new(&prepared, &rows, 0).has_remote(),
         "fixture must have no remote delta",
@@ -301,7 +302,7 @@ fn all_remote_rotation_generator() {
     let input = rand_sum::<1>(500, 8, 0x9D3);
     let hash = Gf2Hash::<1>::new(8, 3, 0x9E);
     let whole = input.clone().with_hash(hash);
-    let prepared = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
+    let prepared = Prepare::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     assert!(plan.has_remote(), "the generator must be remote");
     assert!(!plan.local_entries[1], "entry 1 is the generator pass");
@@ -385,7 +386,7 @@ fn keep_term_sees_the_sum_across_partitions() {
     for bits in [0u8, 3] {
         let hash = Gf2Hash::<1>::new(8, bits, 0x9F);
         let whole = input.clone().with_hash(hash);
-        let prepared = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
+        let prepared = Prepare::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
         let (parts, _) = run_parts(&whole, &prepared, &rows, &policy, None);
         let got = PauliSum::merge_partitions(parts);
         assert!(
@@ -420,7 +421,7 @@ fn exact_zero_sum_across_partitions_is_dropped() {
     for bits in [0u8, 3] {
         let hash = Gf2Hash::<1>::new(8, bits, 0x9F);
         let whole = input.clone().with_hash(hash);
-        let prepared = Channel::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
+        let prepared = Prepare::<1>::prepare(&rot, whole.hash(), false).expect("prepare");
         let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
         let got = PauliSum::merge_partitions(parts);
         assert!(

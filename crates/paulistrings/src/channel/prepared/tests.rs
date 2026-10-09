@@ -1,6 +1,7 @@
 use super::*;
 use crate::channel::identity::IdentityChannel;
 use crate::channel::rotation::PauliRotation;
+use crate::channel::Prepare;
 use crate::channel::PtmChannel;
 
 use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, Xs64};
@@ -17,25 +18,13 @@ fn via_apply<const W: usize, C: Channel<W> + ?Sized>(
     z: &[u64; W],
     coeff: Complex64,
 ) -> Vec<Term<W>> {
-    let f = channel.max_fanout().max(1);
-    let mut bx = vec![[0u64; W]; f];
-    let mut bz = vec![[0u64; W]; f];
-    let mut bc = vec![ZERO; f];
-    let mut len = 0usize;
-    {
-        let mut out = OutputBuffer::<W> {
-            x: &mut bx,
-            z: &mut bz,
-            coeff: &mut bc,
-            len: &mut len,
-        };
-        if adjoint {
-            channel.apply_adjoint(x, z, coeff, &mut out);
-        } else {
-            channel.apply(x, z, coeff, &mut out);
-        }
-    }
-    normalize((0..len).map(|i| (bx[i], bz[i], bc[i])).collect())
+    let p = PauliString::<W> { x: *x, z: *z };
+    normalize(
+        crate::test_support::raw_outputs(channel, adjoint, p, coeff)
+            .into_iter()
+            .map(|(q, c)| (q.x, q.z, c))
+            .collect(),
+    )
 }
 
 /// The same outputs, reconstructed from the prepared table.
@@ -714,8 +703,14 @@ fn derive_refuses_support_wider_than_the_local_maximum() {
 fn derive_local_rejects_popcount_gt_2() {
     struct ThreeQubits;
     impl<const W: usize> Channel<W> for ThreeQubits {
-        fn max_fanout(&self) -> usize {
-            1
+        fn apply_adjoint(
+            &self,
+            input_x: &[u64; W],
+            input_z: &[u64; W],
+            coeff: Complex64,
+            out: &mut crate::channel::OutputBuffer<W>,
+        ) {
+            self.apply(input_x, input_z, coeff, out);
         }
         fn support(&self) -> [u64; W] {
             let mut mask = [0u64; W];
@@ -727,7 +722,7 @@ fn derive_local_rejects_popcount_gt_2() {
             input_x: &[u64; W],
             input_z: &[u64; W],
             coeff: Complex64,
-            out: &mut OutputBuffer<'_, W>,
+            out: &mut OutputBuffer<W>,
         ) {
             out.push(*input_x, *input_z, coeff);
         }
@@ -741,8 +736,14 @@ fn derive_refuses_a_channel_that_writes_outside_its_support() {
     // Declares support [0] but also flips qubit 1, so derivation must decline.
     struct Liar;
     impl<const W: usize> Channel<W> for Liar {
-        fn max_fanout(&self) -> usize {
-            1
+        fn apply_adjoint(
+            &self,
+            input_x: &[u64; W],
+            input_z: &[u64; W],
+            coeff: Complex64,
+            out: &mut crate::channel::OutputBuffer<W>,
+        ) {
+            self.apply(input_x, input_z, coeff, out);
         }
         fn support(&self) -> [u64; W] {
             let mut mask = [0u64; W];
@@ -754,7 +755,7 @@ fn derive_refuses_a_channel_that_writes_outside_its_support() {
             input_x: &[u64; W],
             input_z: &[u64; W],
             coeff: Complex64,
-            out: &mut OutputBuffer<'_, W>,
+            out: &mut OutputBuffer<W>,
         ) {
             let mut x = *input_x;
             x[0] ^= 0b10; // qubit 1 — outside the declared support

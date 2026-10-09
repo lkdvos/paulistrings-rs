@@ -1,6 +1,7 @@
 use super::*;
 use crate::channel::prepared::Prepared;
 use crate::channel::Channel;
+use crate::channel::Prepare;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::outputs;
@@ -153,7 +154,7 @@ fn t_gate_expansion_and_bucket_fanin() {
     assert!((got[0].2 - ONE).norm() < TOL);
 
     let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
-    let prepared = Channel::<1>::prepare(&t, &hash, false).unwrap();
+    let prepared = Prepare::<1>::prepare(&t, &hash, false).unwrap();
     assert_eq!(
         prepared.bucket_deltas().len(),
         2,
@@ -175,7 +176,7 @@ fn dense_unitaries_reach_the_quoted_bucket_fanin() {
     ];
     let g = PtmChannel::unitary_1q(0, u);
     let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
-    let prepared = Channel::<1>::prepare(&g, &hash, false).unwrap();
+    let prepared = Prepare::<1>::prepare(&g, &hash, false).unwrap();
     assert_eq!(
         prepared.bucket_deltas().len(),
         4,
@@ -262,7 +263,7 @@ fn cnot_general_unitary_adjoint_matches_clifford2q_adjoint() {
 fn derive_local_recovers_the_table() {
     let h = PtmChannel::unitary_1q(3, [[c(R), c(R)], [c(R), c(-R)]]);
     let hash = Gf2Hash::<2>::new(128, 12, 0x1234);
-    let prepared = Channel::<2>::prepare(&h, &hash, false).unwrap();
+    let prepared = Prepare::<2>::prepare(&h, &hash, false).unwrap();
     let table = h.transfer_matrix(false);
     let Prepared::Local(ptm) = prepared else {
         panic!("expected a Local preparation")

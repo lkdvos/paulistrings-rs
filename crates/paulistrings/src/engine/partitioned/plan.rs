@@ -2,6 +2,8 @@
 
 use crate::channel::prepared::Prepared;
 #[cfg(any(test, feature = "test-utils"))]
+use crate::channel::Prepare;
+#[cfg(any(test, feature = "test-utils"))]
 use crate::circuit::Circuit;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::pauli_sum::hash::Gf2Hash;
@@ -129,7 +131,7 @@ impl PartitionPlan {
 ///
 /// # Panics
 ///
-/// If any channel declines [`Channel::prepare`](crate::Channel::prepare).
+/// If any channel's preparation declines.
 #[cfg(any(test, feature = "test-utils"))]
 pub fn count_remote_deltas<const W: usize>(
     circuit: &Circuit<W>,
@@ -144,7 +146,7 @@ pub fn count_remote_deltas<const W: usize>(
             let prepared = circuit.channels[index]
                 .prepare(hash, adjoint)
                 .unwrap_or_else(|| {
-                    panic!("count_remote_deltas: layer {index} declined Channel::prepare")
+                    panic!("count_remote_deltas: layer {index} declined preparation")
                 });
             let plan = PartitionPlan::new(&prepared, rows, 0);
             let local = plan.local_entries.iter().filter(|b| **b).count();

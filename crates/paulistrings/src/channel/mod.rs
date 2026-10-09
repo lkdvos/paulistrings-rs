@@ -10,45 +10,51 @@ pub use identity::IdentityChannel;
 pub use ptm::PtmChannel;
 pub use rotation::PauliRotation;
 
+pub(crate) use prepared::Prepare;
+
 use crate::pauli_sum::hash::Gf2Hash;
 use num_complex::Complex64;
-use prepared::Prepared;
+use prepared::{PrepareToken, Prepared};
 
-/// Fixed-capacity structure-of-arrays buffer that [`Channel::apply`] writes its outputs into.
-///
-/// Capacity is the length of the columns, sized by the caller to at least [`Channel::max_fanout`] per input term.
-pub struct OutputBuffer<'a, const W: usize> {
-    /// X-part column.
-    pub x: &'a mut [[u64; W]],
-    /// Z-part column.
-    pub z: &'a mut [[u64; W]],
-    /// Coefficient column.
-    pub coeff: &'a mut [Complex64],
-    /// Number of terms written so far.
-    pub len: &'a mut usize,
+/// The terms one [`Channel::apply`] call emits, pushed with [`push`](Self::push).
+pub struct OutputBuffer<const W: usize> {
+    x: Vec<[u64; W]>,
+    z: Vec<[u64; W]>,
+    coeff: Vec<Complex64>,
 }
 
-impl<'a, const W: usize> OutputBuffer<'a, W> {
+impl<const W: usize> OutputBuffer<W> {
     /// Append one term.
-    ///
-    /// Panics if the buffer is full; an `apply` body must not push more than its declared `max_fanout`.
-    pub fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        debug_assert!(
-            *self.len < self.x.len(),
-            "OutputBuffer overflow: {} pushes into a buffer of capacity {}",
-            *self.len + 1,
-            self.x.len()
-        );
-        let i = *self.len;
-        self.x[i] = x;
-        self.z[i] = z;
-        self.coeff[i] = c;
-        *self.len = i + 1;
+    pub fn push(&mut self, x: [u64; W], z: [u64; W], coeff: Complex64) {
+        self.x.push(x);
+        self.z.push(z);
+        self.coeff.push(coeff);
     }
 
-    /// Reset the length to zero, keeping the storage.
-    pub fn clear(&mut self) {
-        *self.len = 0;
+    pub(crate) fn new() -> Self {
+        Self {
+            x: Vec::new(),
+            z: Vec::new(),
+            coeff: Vec::new(),
+        }
+    }
+
+    /// Forget every term, keeping the storage.
+    pub(crate) fn clear(&mut self) {
+        self.x.clear();
+        self.z.clear();
+        self.coeff.clear();
+    }
+
+    /// The terms in push order.
+    pub(crate) fn terms(
+        &self,
+    ) -> impl ExactSizeIterator<Item = ([u64; W], [u64; W], Complex64)> + '_ {
+        self.x
+            .iter()
+            .zip(&self.z)
+            .zip(&self.coeff)
+            .map(|((&x, &z), &coeff)| (x, z, coeff))
     }
 }
 
@@ -94,7 +100,7 @@ fn write_pauli<const W: usize>(
 /// A gate or noise channel: maps a Pauli string to a small weighted sum of Pauli strings.
 ///
 /// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel), [`PauliRotation`], [`IdentityChannel`].
-/// A custom channel implements `max_fanout`, `support` and `apply`; the engine derives everything else (ARCHITECTURE.md §Prepared-Channels).
+/// A custom channel implements `support`, `apply` and `apply_adjoint`; the engine derives its per-layer form by probing `apply` (ARCHITECTURE.md §Prepared-Channels).
 ///
 /// ```
 /// use paulistrings::{Channel, OutputBuffer};
@@ -106,16 +112,24 @@ fn write_pauli<const W: usize>(
 /// }
 ///
 /// impl<const W: usize> Channel<W> for GlobalPhase {
-///     fn max_fanout(&self) -> usize { 1 }
 ///     fn support(&self) -> [u64; W] { [0; W] }
 ///     fn apply(
 ///         &self,
 ///         input_x: &[u64; W],
 ///         input_z: &[u64; W],
 ///         coeff: Complex64,
-///         out: &mut OutputBuffer<'_, W>,
+///         out: &mut OutputBuffer<W>,
 ///     ) {
 ///         out.push(*input_x, *input_z, coeff * self.factor);
+///     }
+///     fn apply_adjoint(
+///         &self,
+///         input_x: &[u64; W],
+///         input_z: &[u64; W],
+///         coeff: Complex64,
+///         out: &mut OutputBuffer<W>,
+///     ) {
+///         out.push(*input_x, *input_z, coeff * self.factor.conj());
 ///     }
 /// }
 ///
@@ -125,9 +139,6 @@ fn write_pauli<const W: usize>(
 /// let _: Box<dyn Channel<1>> = Box::new(channel);
 /// ```
 pub trait Channel<const W: usize>: Send + Sync {
-    /// Upper bound on the output terms per input term.
-    fn max_fanout(&self) -> usize;
-
     /// Qubits this channel acts on, as a bitmask built with [`support_mask`].
     ///
     /// Outputs must differ from their input only at these qubits.
@@ -154,27 +165,29 @@ pub trait Channel<const W: usize>: Send + Sync {
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
+        out: &mut OutputBuffer<W>,
     );
 
     /// Apply the channel's adjoint to one input term; run by `Direction::Heisenberg`.
     ///
-    /// The default calls [`apply`](Self::apply), which is correct only for a self-adjoint channel.
+    /// A self-adjoint channel calls [`apply`](Self::apply).
     fn apply_adjoint(
         &self,
         input_x: &[u64; W],
         input_z: &[u64; W],
         coeff: Complex64,
-        out: &mut OutputBuffer<'_, W>,
-    ) {
-        self.apply(input_x, input_z, coeff, out);
-    }
+        out: &mut OutputBuffer<W>,
+    );
 
-    /// Prepare this channel for one engine layer (ARCHITECTURE.md §Prepared-Channels).
-    ///
-    /// The default probes `apply` on the local basis Paulis and supports at most two qubits; `None` makes `propagate` panic.
-    /// It is exact only if the output amplitudes depend on the input solely through its bits at [`support`](Self::support), which debug builds check.
-    fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
+    /// The engine form for one layer: probed from `apply` unless a built-in knows its table (ARCHITECTURE.md §Prepared-Channels).
+    /// Neither callable nor overridable outside the crate, since `PrepareToken` and `Prepared` cannot be named there.
+    #[doc(hidden)]
+    fn prepare_for_layer(
+        &self,
+        hash: &Gf2Hash<W>,
+        adjoint: bool,
+        _: PrepareToken,
+    ) -> Option<Prepared<W>> {
         Prepared::derive_local(self, hash, adjoint)
     }
 }

@@ -1,5 +1,6 @@
 //! The partitioned layer loop `run_layers`, shared by every partitioned driver, and the [`propagate_partitioned`] front door (ARCHITECTURE.md §Partitioning).
 
+use crate::channel::Prepare;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
@@ -111,7 +112,7 @@ pub(crate) struct PartitionContext<'a, const W: usize> {
     pub(crate) tracing: bool,
 }
 
-/// [`Channel::prepare`], or the unpartitioned engine's hard error naming the partition and layer.
+/// The channel's preparation, or the unpartitioned engine's hard error naming the partition and layer.
 fn prepare_or_panic<const W: usize>(
     channel: &dyn Channel<W>,
     hash: &Gf2Hash<W>,
@@ -122,7 +123,7 @@ fn prepare_or_panic<const W: usize>(
     channel.prepare(hash, adjoint).unwrap_or_else(|| {
         let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
-            "partition {rank}, layer {index}: Channel::prepare declined, so this channel \
+            "partition {rank}, layer {index}: channel preparation declined, so this channel \
              cannot be propagated. The engine tabulates channels of support ≤ \
              {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
              not write outside its declared support. See \

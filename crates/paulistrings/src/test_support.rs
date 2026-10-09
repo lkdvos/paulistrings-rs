@@ -7,13 +7,13 @@ use hashbrown::HashMap;
 use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
-use crate::channel::{Channel, OutputBuffer, PtmChannel};
+use crate::channel::prepared::Prepared;
+use crate::channel::{Channel, OutputBuffer, Prepare, PtmChannel};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 
-pub use crate::channel::prepared::Prepared;
 pub use crate::engine::bucketed::apply_layer_bucketed;
 pub use crate::engine::partitioned::driver::BITS_AGREE_EVERY;
 pub use crate::engine::partitioned::plan::count_remote_deltas;
@@ -160,7 +160,7 @@ impl crate::engine::partitioned::Transport for LoggingTransport {
 
 /// Apply one channel layer the obvious way, as a differential oracle.
 ///
-/// For every input term: [`Channel::apply`] (or `apply_adjoint` when `adjoint`) into a `max_fanout`-sized [`OutputBuffer`], accumulate into a hashmap keyed by `(x, z)`, filter the summed coefficients through [`TruncationPolicy::keep_term`], drop exact zeros, sort by key, rebuild a [`PauliSum`].
+/// For every input term: [`Channel::apply`] (or `apply_adjoint` when `adjoint`) into an [`OutputBuffer`], accumulate into a hashmap keyed by `(x, z)`, filter the summed coefficients through [`TruncationPolicy::keep_term`], drop exact zeros, sort by key, rebuild a [`PauliSum`].
 /// Deliberately naive: no bucketing, no coset structure, no parallelism, no code shared with `engine::bucketed` beyond the `Channel` trait itself.
 /// Hashmap summation order is unspecified, so compare with [`assert_terms_close`], never bitwise.
 pub fn naive_apply_layer<const W: usize>(
@@ -169,30 +169,19 @@ pub fn naive_apply_layer<const W: usize>(
     policy: &dyn TruncationPolicy<W>,
     adjoint: bool,
 ) -> PauliSum<W> {
-    let mf = ch.max_fanout().max(1);
-    let mut buf_x = vec![[0u64; W]; mf];
-    let mut buf_z = vec![[0u64; W]; mf];
-    let mut buf_c = vec![ZERO; mf];
+    let mut out = OutputBuffer::<W>::new();
     let mut acc: HashMap<([u64; W], [u64; W]), Complex64, FxBuildHasher> =
         HashMap::with_capacity_and_hasher(input.len(), FxBuildHasher);
 
     for (x, z, c) in input.iter() {
-        let mut len = 0usize;
-        {
-            let mut out = OutputBuffer::<W> {
-                x: &mut buf_x,
-                z: &mut buf_z,
-                coeff: &mut buf_c,
-                len: &mut len,
-            };
-            if adjoint {
-                ch.apply_adjoint(x, z, c, &mut out);
-            } else {
-                ch.apply(x, z, c, &mut out);
-            }
+        out.clear();
+        if adjoint {
+            ch.apply_adjoint(x, z, c, &mut out);
+        } else {
+            ch.apply(x, z, c, &mut out);
         }
-        for i in 0..len {
-            *acc.entry((buf_x[i], buf_z[i])).or_insert(ZERO) += buf_c[i];
+        for (out_x, out_z, out_c) in out.terms() {
+            *acc.entry((out_x, out_z)).or_insert(ZERO) += out_c;
         }
     }
 
@@ -207,6 +196,34 @@ pub fn naive_apply_layer<const W: usize>(
     let zs: Vec<[u64; W]> = kept.iter().map(|t| t.1).collect();
     let cs: Vec<Complex64> = kept.iter().map(|t| t.2).collect();
     PauliSum::from_key_sorted(&xs, &zs, &cs, input.hash().clone(), input.num_qubits())
+}
+
+/// The engine form of `channel` for one layer, for driving [`apply_layer_bucketed`] directly; `None` where `propagate` would panic.
+pub fn prepare<const W: usize, C: Channel<W> + ?Sized>(
+    channel: &C,
+    hash: &crate::Gf2Hash<W>,
+    adjoint: bool,
+) -> Option<Prepared<W>> {
+    channel.prepare(hash, adjoint)
+}
+
+/// Whether `channel` prepares to an in-place coefficient rescale under `hash`.
+pub fn is_key_preserving<const W: usize>(
+    channel: &dyn Channel<W>,
+    hash: &crate::Gf2Hash<W>,
+) -> bool {
+    matches!(channel.prepare(hash, false), Some(Prepared::Local(ptm)) if ptm.is_key_preserving())
+}
+
+/// The XOR masks of `channel`'s key deltas under `hash`: every table entry's, or a rotation's generator.
+pub fn key_delta_masks<const W: usize>(
+    channel: &dyn Channel<W>,
+    hash: &crate::Gf2Hash<W>,
+) -> Vec<([u64; W], [u64; W])> {
+    channel
+        .prepare(hash, false)
+        .expect("a built-in always prepares")
+        .key_delta_masks()
 }
 
 /// Xorshift64 — small, deterministic, no dev-dependency.
@@ -421,20 +438,6 @@ pub fn tie_heavy_sum_unmasked<const W: usize>(
     acc.finalize()
 }
 
-/// Output-buffer columns plus a zeroed cursor, sized for `n` rows.
-/// A tuple, not an [`OutputBuffer`], because the buffer borrows its columns — the caller owns them, then builds the borrow in a narrower scope.
-#[allow(clippy::type_complexity)]
-pub fn alloc_bufs<const W: usize>(
-    n: usize,
-) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>, usize) {
-    (
-        vec![[0u64; W]; n],
-        vec![[0u64; W]; n],
-        vec![ZERO; n],
-        0usize,
-    )
-}
-
 /// Complex numbers equal to within `tol`.
 pub fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
     (a - b).norm() <= tol
@@ -464,23 +467,14 @@ pub fn raw_outputs<const W: usize, C: Channel<W> + ?Sized>(
     p: PauliString<W>,
     coeff: Complex64,
 ) -> Vec<(PauliString<W>, Complex64)> {
-    let f = ch.max_fanout().max(1);
-    let (mut bx, mut bz, mut bc, mut len) = alloc_bufs::<W>(f);
-    {
-        let mut out = OutputBuffer::<W> {
-            x: &mut bx,
-            z: &mut bz,
-            coeff: &mut bc,
-            len: &mut len,
-        };
-        if adjoint {
-            ch.apply_adjoint(&p.x, &p.z, coeff, &mut out);
-        } else {
-            ch.apply(&p.x, &p.z, coeff, &mut out);
-        }
+    let mut out = OutputBuffer::<W>::new();
+    if adjoint {
+        ch.apply_adjoint(&p.x, &p.z, coeff, &mut out);
+    } else {
+        ch.apply(&p.x, &p.z, coeff, &mut out);
     }
-    (0..len)
-        .map(|i| (PauliString::<W> { x: bx[i], z: bz[i] }, bc[i]))
+    out.terms()
+        .map(|(x, z, c)| (PauliString::<W> { x, z }, c))
         .collect()
 }
 
@@ -627,7 +621,7 @@ pub fn assert_frequencies(counts: &[usize], probs: &[f64], what: &str) {
     }
 }
 
-/// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for [`GeneralUnitary2Q::from_matrix`](crate::channel::GeneralUnitary2Q::from_matrix).
+/// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for [`PtmChannel::unitary_2q`](crate::PtmChannel::unitary_2q).
 /// The canonical sparse-but-wide two-qubit fixture: its delta set spans more than one bucket bit, yet its PTM is far from dense (steady-state fanout 3.65 vs. a dense PTM's 14.94), exercising multi-delta behaviour without [`haar_su4_matrix`]'s all-sixteen-entries cost.
 pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {
     let h = Complex64::new(0.5, 0.5);
@@ -989,15 +983,21 @@ pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
 pub struct ShiftX;
 
 impl<const W: usize> Channel<W> for ShiftX {
-    fn max_fanout(&self) -> usize {
-        1
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: Complex64,
+        out: &mut crate::channel::OutputBuffer<W>,
+    ) {
+        self.apply(input_x, input_z, coeff, out);
     }
 
     fn support(&self) -> [u64; W] {
         crate::channel::support_mask(&[0])
     }
 
-    fn apply(&self, x: &[u64; W], z: &[u64; W], c: Complex64, out: &mut OutputBuffer<'_, W>) {
+    fn apply(&self, x: &[u64; W], z: &[u64; W], c: Complex64, out: &mut OutputBuffer<W>) {
         let mut kx = *x;
         kx[0] ^= 1;
         out.push(kx, *z, c);

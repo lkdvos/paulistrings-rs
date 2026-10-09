@@ -94,6 +94,40 @@ def test_overlap_is_conjugate_symmetric():
     assert a.overlap(b) == pytest.approx(b.overlap(a).conjugate())
 
 
+def _label(x_words, z_words, num_qubits):
+    chars = []
+    for q in range(num_qubits):
+        word, bit = divmod(q, 64)
+        x, z = (int(x_words[word]) >> bit) & 1, (int(z_words[word]) >> bit) & 1
+        chars.append("IXZY"[x + 2 * z])
+    return "".join(chars)
+
+
+def test_overlap_of_a_small_sum_with_a_propagated_many_bucket_sum():
+    num_qubits = 8
+    c = Circuit(num_qubits)
+    for _ in range(2):
+        for q in range(num_qubits):
+            c.rx(0.3 + 0.05 * q, q)
+            c.rz(0.7 - 0.03 * q, q)
+        for q in range(num_qubits - 1):
+            c.cnot(q, q + 1)
+    big = _sum({"Z" * num_qubits: 1.0}, num_qubits).propagate(c)
+    assert big.num_buckets > 1, "the circuit must spread the sum over many buckets"
+
+    rows = list(zip(big.x_array(), big.z_array(), big.coefficients()))
+    picked = {_label(x, z, num_qubits): (k + 1.0) - 0.5j for k, (x, z, _) in enumerate(rows[:: len(rows) // 20])}
+    big_coefficients = {_label(x, z, num_qubits): c for x, z, c in rows}
+    picked["X" * num_qubits] = 2.0
+    small = _sum(picked, num_qubits)
+    assert small.num_buckets == 1
+
+    want = sum(c.conjugate() * big_coefficients.get(label, 0.0) for label, c in picked.items())
+    assert abs(want) > 0.0
+    assert small.overlap(big) == pytest.approx(want, rel=1e-12)
+    assert big.overlap(small) == pytest.approx(want.conjugate(), rel=1e-12)
+
+
 def test_overlap_rejects_a_qubit_count_mismatch():
     a = _sum({"XI": 1.0}, 2)
     b = _sum({"XII": 1.0}, 3)

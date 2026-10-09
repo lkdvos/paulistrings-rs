@@ -1,5 +1,7 @@
 //! [`PauliSum`]'s per-bucket column storage, the bucket-count policy and the merge helpers (ARCHITECTURE.md §Data-Model, §Bucket-Policy).
 
+use std::borrow::Cow;
+
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -313,10 +315,13 @@ impl<const W: usize> PauliSum<W> {
         Self::from_key_sorted(&merged.x, &merged.z, &merged.coeff, hash, num_qubits)
     }
 
-    /// A copy of `self` partitioned exactly as `target` partitions.
-    fn align_to(&self, target: &Gf2Hash<W>) -> Self {
+    /// `self` partitioned exactly as `target` partitions, borrowed when it already is.
+    fn align_to(&self, target: &Gf2Hash<W>) -> Cow<'_, Self> {
         if !self.hash.same_rows_as(target) {
-            return self.clone().with_hash(target.clone());
+            return Cow::Owned(self.clone().with_hash(target.clone()));
+        }
+        if self.hash.bits() == target.bits() {
+            return Cow::Borrowed(self);
         }
         let mut out = self.clone();
         while out.hash.bits() < target.bits() {
@@ -325,7 +330,7 @@ impl<const W: usize> PauliSum<W> {
         while out.hash.bits() > target.bits() {
             out.coarsen();
         }
-        out
+        Cow::Owned(out)
     }
 
     /// Drop every term, keeping the hash and the bucket storage.
@@ -534,20 +539,17 @@ impl<const W: usize> PauliSum<W> {
     ///
     /// # Panics
     ///
-    /// Panics unless the two sums share a partition (same hash rows and bucket count); realign one with [`Self::with_hash`] first.
+    /// Panics if the two sums disagree about `num_qubits`.
     pub fn overlap(&self, other: &Self) -> Complex64 {
-        assert!(
-            self.hash.same_rows_as(&other.hash),
-            "PauliSum::overlap: hash mismatch (seed or num_qubits differs)",
-        );
         assert_eq!(
-            self.hash.bits(),
-            other.hash.bits(),
-            "PauliSum::overlap: bucket count mismatch",
+            self.num_qubits, other.num_qubits,
+            "PauliSum::overlap: num_qubits mismatch ({} vs {})",
+            self.num_qubits, other.num_qubits,
         );
+        let rhs = other.align_to(&self.hash);
         self.buckets
             .par_iter()
-            .zip(other.buckets.par_iter())
+            .zip(rhs.buckets.par_iter())
             .map(|(a, b)| {
                 let mut partial = Complex64::new(0.0, 0.0);
                 let (mut i, mut j) = (0usize, 0usize);

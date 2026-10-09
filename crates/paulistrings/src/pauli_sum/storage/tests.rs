@@ -740,21 +740,66 @@ fn overlap_with_an_empty_operand_is_zero() {
 }
 
 #[test]
-#[should_panic(expected = "bucket count mismatch")]
-fn overlap_rejects_a_different_bucket_count() {
-    let a = rand_sum::<1>(200, 64, 0x209);
-    let ba = a.clone().with_hash(Gf2Hash::<1>::new(64, 3, 0x20A));
-    let bb = a.clone().with_hash(Gf2Hash::<1>::new(64, 4, 0x20A));
-    let _ = ba.overlap(&bb);
+fn overlap_aligns_a_different_bucket_count_or_hash() {
+    let a = rand_low_weight_sum::<2>(3000, 70, 2, 0x209);
+    let b = rand_low_weight_sum::<2>(3000, 70, 2, 0x209 ^ 0xFFFF);
+    let want = flat_overlap(&a, &b);
+    assert!(want.norm() > 0.0, "operands share no keys; test is vacuous");
+    for &(bits_a, seed_a, bits_b, seed_b) in &[
+        (3u8, 0x20Au64, 7u8, 0x20Au64),
+        (7, 0x20A, 3, 0x20A),
+        (0, 0x20A, 6, 0x20A),
+        (4, 0x20C, 4, 0x20D),
+        (2, 0x20C, 8, 0x20D),
+    ] {
+        let ba = a.clone().with_hash(Gf2Hash::<2>::new(70, bits_a, seed_a));
+        let bb = b.clone().with_hash(Gf2Hash::<2>::new(70, bits_b, seed_b));
+        let got = ba.overlap(&bb);
+        assert!(
+            (got - want).norm() <= 1e-12 * want.norm(),
+            "bits {bits_a}/{bits_b}, seeds {seed_a:#x}/{seed_b:#x}: {got} vs {want}",
+        );
+        assert!((bb.overlap(&ba) - want.conj()).norm() <= 1e-12 * want.norm());
+    }
 }
 
 #[test]
-#[should_panic(expected = "hash mismatch")]
-fn overlap_rejects_a_different_hash() {
-    let a = rand_sum::<1>(200, 64, 0x20B);
-    let ba = a.clone().with_hash(Gf2Hash::<1>::new(64, 3, 0x20C));
-    let bb = a.clone().with_hash(Gf2Hash::<1>::new(64, 3, 0x20D));
-    let _ = ba.overlap(&bb);
+fn overlap_of_a_small_sum_with_a_many_bucket_sum() {
+    // A one-bucket sum from the accumulator against a many-bucket sum, both orders, under the same and under different hash rows.
+    let terms = canonical_triples(&rand_low_weight_sum::<1>(4000, 40, 3, 0x20E));
+    let picked: Vec<(PauliString<1>, Complex64)> = terms
+        .iter()
+        .step_by(331)
+        .enumerate()
+        .map(|(k, &(x, z, _))| (PauliString { x, z }, Complex64::new(1.0 + k as f64, -0.5)))
+        .chain(std::iter::once((
+            PauliString::<1>::x(39),
+            Complex64::new(9.0, 0.0),
+        )))
+        .collect();
+    let small = b10_build::<1>(40, &picked);
+    assert_eq!(small.num_buckets(), 1);
+    for seed in [DEFAULT_HASH_SEED, 0x20F] {
+        let big = rand_low_weight_sum::<1>(4000, 40, 3, 0x20E).with_hash(Gf2Hash::new(40, 6, seed));
+        let want = picked.iter().fold(Complex64::new(0.0, 0.0), |acc, (p, c)| {
+            acc + c.conj() * big.get(&p.x, &p.z).unwrap_or_default()
+        });
+        assert!(
+            want.norm() > 0.0,
+            "picked keys miss the big sum; test is vacuous"
+        );
+        let got = small.overlap(&big);
+        assert!(
+            (got - want).norm() <= 1e-12 * want.norm(),
+            "seed {seed:#x}: {got} vs {want}"
+        );
+        let got = big.overlap(&small);
+        assert!(
+            (got - want.conj()).norm() <= 1e-12 * want.norm(),
+            "seed {seed:#x}: {got} vs {}",
+            want.conj(),
+        );
+    }
 }
 
 /// The canonical order, sorted — i.e. the multiset of terms, partition forgotten.

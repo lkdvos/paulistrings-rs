@@ -206,7 +206,7 @@ Each `+` builds a new sum, so assembling $N$ terms one at a time costs $O(N^2)$.
 `+` and `-` combine two sums with the deduplication step, `+=` and `-=` do the same in place, and `*` scales every coefficient by a number:
 
 ```python
- = PauliSum.from_strings({"ZZII": -1.0})
+a = PauliSum.from_strings({"ZZII": -1.0})
 b = PauliSum.from_strings({"IZZI": -1.0})
 print(a + a)
 print(2.0 * (a + b))

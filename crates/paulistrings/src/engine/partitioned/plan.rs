@@ -12,12 +12,10 @@ use crate::pauli_sum::hash::PartitionRows;
 pub(crate) struct RemoteDelta {
     /// Index into `ptm.deltas()`; for a rotation, `0` is the identity pass and `1` the generator pass.
     pub entry: usize,
-    /// `rank ^ partition_delta`.
+    /// `rank ^ part(d)`, never `rank` itself.
     pub partner: u32,
     /// `h(d)`.
     pub bucket_delta: u32,
-    /// `part(d)`, nonzero by construction.
-    pub partition_delta: u32,
 }
 
 /// How one prepared channel's deltas split under a partitioning, seen from one partition.
@@ -79,7 +77,6 @@ impl PartitionPlan {
                     entry,
                     partner: rank ^ partition_delta,
                     bucket_delta: *bucket_delta,
-                    partition_delta,
                 });
             }
         }

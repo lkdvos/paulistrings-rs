@@ -88,7 +88,6 @@ fn a_delta_whose_mask_sets_the_partition_bit_is_remote() {
                 entry: 1,
                 partner: rank ^ 1,
                 bucket_delta: ptm.deltas()[1].bucket_delta,
-                partition_delta: 1,
             }],
             "rank {rank}",
         );
@@ -132,7 +131,6 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
             entry: 1,
             partner: 0,
             bucket_delta: r.bucket_delta_generator,
-            partition_delta: 1,
         }],
     );
     assert_eq!(plan.rest_streams_total, 1);
@@ -170,8 +168,8 @@ fn local_and_remote_cover_every_entry_exactly_once() {
             .collect();
         assert_eq!(remote_entries, expected, "trial {trial}");
         for r in &plan.remote {
-            assert_ne!(r.partition_delta, 0);
-            assert_eq!(r.partner, rank ^ r.partition_delta);
+            let (mask_x, mask_z) = ptm.deltas()[r.entry].mask();
+            assert_eq!(r.partner, rank ^ rows.partition_of(&mask_x, &mask_z));
             assert_ne!(r.partner, rank, "a partition never ships to itself");
             assert_eq!(r.bucket_delta, ptm.deltas()[r.entry].bucket_delta);
         }

@@ -60,7 +60,6 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
                     entry: 1,
                     partner: 1,
                     bucket_delta: 0,
-                    partition_delta: 1,
                 }],
                 rest_streams_total: 1,
             };

@@ -714,7 +714,6 @@ pub fn support_delta_rank<const W: usize>(
 /// Shared by `engine::bucketed`'s differential net and the partitioned engine's, so both exercise exactly the same channels.
 /// Ends with three structurally distinct gather shapes: a fanout-2 non-Clifford, a sparse-but-wide 2Q PTM, a dense one, and a rotation wider than `MAX_LOCAL_SUPPORT` (the `Prepared::Rotation` arm).
 pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
-    use crate::channel::identity::IdentityChannel;
     use crate::channel::rotation::PauliRotation;
 
     vec![
@@ -976,6 +975,30 @@ pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     acc.add_term(PauliString::<W>::y(1), Complex64::new(0.75, -0.5));
     acc.add_term(PauliString::<W>::z(2), Complex64::new(0.125, 0.0));
     acc.finalize()
+}
+
+/// The identity channel, with empty support.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IdentityChannel;
+
+impl IdentityChannel {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl<const W: usize> Channel<W> for IdentityChannel {
+    fn support(&self) -> [u64; W] {
+        [0; W]
+    }
+
+    fn apply(&self, x: &[u64; W], z: &[u64; W], c: Complex64, out: &mut OutputBuffer<W>) {
+        out.push(*x, *z, c);
+    }
+
+    fn apply_adjoint(&self, x: &[u64; W], z: &[u64; W], c: Complex64, out: &mut OutputBuffer<W>) {
+        self.apply(x, z, c, out);
+    }
 }
 
 /// A channel with no identity delta: every term moves to `v ⊕ x₀` with its coefficient unchanged.

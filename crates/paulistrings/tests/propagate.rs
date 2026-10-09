@@ -16,11 +16,12 @@
 //! thread-count stability.
 
 use num_complex::Complex64;
+use paulistrings::test_support::IdentityChannel;
 use paulistrings::test_support::{approx_eq, bucket};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy,
 };
-use paulistrings::{Channel, IdentityChannel, PauliRotation, PtmChannel};
+use paulistrings::{Channel, PauliRotation, PtmChannel};
 use paulistrings::{CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-12;

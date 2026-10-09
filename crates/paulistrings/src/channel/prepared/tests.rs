@@ -1,8 +1,8 @@
 use super::*;
-use crate::channel::identity::IdentityChannel;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Prepare;
 use crate::channel::PtmChannel;
+use crate::test_support::IdentityChannel;
 
 use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, Xs64};
 

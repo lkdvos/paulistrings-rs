@@ -1,4 +1,33 @@
-use super::HEAVY_HEX_127_EDGES;
+use super::{raw_outputs, IdentityChannel, HEAVY_HEX_127_EDGES};
+use crate::channel::Channel;
+use crate::pauli_string::PauliString;
+use num_complex::Complex64;
+
+#[test]
+fn identity_channel_has_empty_support() {
+    assert_eq!(
+        <IdentityChannel as Channel<1>>::support(&IdentityChannel),
+        [0u64; 1]
+    );
+    assert_eq!(
+        <IdentityChannel as Channel<2>>::support(&IdentityChannel),
+        [0u64; 2]
+    );
+}
+
+#[test]
+fn identity_channel_emits_its_input_unchanged() {
+    let mut input = PauliString::<2>::x(0);
+    let _ = input.mul_assign(&PauliString::<2>::y(1));
+    let _ = input.mul_assign(&PauliString::<2>::z(70));
+    let coeff = Complex64::new(2.0, 3.0);
+    for adjoint in [false, true] {
+        assert_eq!(
+            raw_outputs(&IdentityChannel, adjoint, input, coeff),
+            vec![(input, coeff)]
+        );
+    }
+}
 
 /// Pins the transcribed copy: 144 undirected edges over qubits `0..126`, sorted and unique as `(lo, hi)`, degree histogram 2 × 1, 89 × 2, 36 × 3.
 #[test]

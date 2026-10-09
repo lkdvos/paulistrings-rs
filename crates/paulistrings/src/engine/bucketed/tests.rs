@@ -1,6 +1,5 @@
 use super::coset_fill::{gather_local_input_major, gather_local_output_major, nonzero, GatherRun};
 use super::*;
-use crate::channel::identity::IdentityChannel;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
 use crate::channel::Prepare;
@@ -10,6 +9,7 @@ use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::PauliSum;
+use crate::test_support::IdentityChannel;
 use crate::truncation::builtin::{And, CoefficientThreshold, WeightCutoff};
 
 // Re-exported so the sibling test modules reach the fixtures through `super::tests`.

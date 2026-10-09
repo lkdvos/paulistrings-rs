@@ -1,12 +1,10 @@
 //! The [`Channel`] trait, its output buffer, and the built-in gates and noise channels.
 //! See ARCHITECTURE.md §Channels.
 
-pub(crate) mod identity;
 pub(crate) mod prepared;
 pub(crate) mod ptm;
 pub(crate) mod rotation;
 
-pub use identity::IdentityChannel;
 pub use ptm::PtmChannel;
 pub use rotation::PauliRotation;
 
@@ -99,7 +97,7 @@ fn write_pauli<const W: usize>(
 
 /// A gate or noise channel: maps a Pauli string to a small weighted sum of Pauli strings.
 ///
-/// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel), [`PauliRotation`], [`IdentityChannel`].
+/// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel) and [`PauliRotation`].
 /// A custom channel implements `support`, `apply` and `apply_adjoint`; the engine derives its per-layer form by probing `apply` (ARCHITECTURE.md §Prepared-Channels).
 ///
 /// ```

@@ -42,7 +42,10 @@ fn debug_name_through_dyn_trims_path_and_generics() {
             Box::new(PtmChannel::amplitude_damping(0, 0.1)),
             "AmplitudeDamping",
         ),
-        (Box::new(IdentityChannel), "IdentityChannel"),
+        (
+            Box::new(crate::test_support::IdentityChannel),
+            "IdentityChannel",
+        ),
     ];
     for (channel, expected) in &channels {
         assert_eq!(channel.debug_name(), *expected);

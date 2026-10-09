@@ -170,7 +170,7 @@ Never design, constrain or reject an optimization to keep output bits stable.
 crates/paulistrings/      pure Rust core, no Python deps
   src/                    pauli_string, phase, rng, circuit,
                           pauli_sum/{storage,partition,hash,accumulator},
-                          channel/{ptm,rotation,identity,prepared},
+                          channel/{ptm,rotation,prepared},
                           truncation/{builtin,tree},
                           engine/{bucketed,coset,merge,direct,stats,cuda_context},
                           engine/partitioned/{backend,distributed,driver,export,layer,mpi,plan,

@@ -41,8 +41,8 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 
 | # | Chunk | Files | Status |
 |---|---|---|---|
-| 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | done; D16/D17 implementing |
-| 1 | Leaf algebra | phase, rng, pauli_string | pending |
+| 0 | Tour of the main call path | engine/mod, bucketed (skim), coset, merge, partitioned/driver (skim) | done (A/B pending) |
+| 1 | Leaf algebra | phase, rng, pauli_string | D18–D21 implementing |
 | 2 | Partition hash | bucket/hash | pending |
 | 3 | Storage | bucket/sum, pauli_sum, accumulator | pending |
 | 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | pending |
@@ -93,7 +93,20 @@ Chunk 0 (2026-10-09):
 - **D16 One layer loop.** `propagate`/`propagate_with` run `partitioned::driver::run_layers` with one partition on the caller's Rayon pool and a trivial transport; a solo fast path keeps rebucket-before-prepare (no second `prepare` on growth layers). Gated on an A/B against `89bdcca`; if it regresses, fall back to a shared per-layer helper.
 - **D17 Cut the small-sum direct path now.** Delete `engine/direct.rs`, `EngineSelection`, `small_sum_threshold`, `DEFAULT_SMALL_SUM_THRESHOLD`, Python `engine=`/`small_sum_threshold=`, `tests/small_sum_path.rs`; opt-in users lose up to 2.3× at small `m` (FINDINGS §Direct-apply path for small sums). Default users are unaffected.
 
+Chunk 1 (2026-10-09):
+
+- **D18 `PauliString` trims.** Derive `Ord`/`PartialOrd`/`Hash` (identical to the hand-written lex `x` then `z`); drop `unsafe impl Pod/Zeroable` (nothing casts `PauliString`); rename `mul` → `product`.
+- **D19 Qubit indices are `usize`** on every public API (string constructors, `support_mask`, channel constructors).
+- **D20 `Phase` stays** (exact, swap-and-negate `apply`, natural return of `mul_assign`; no phase bits in the key — the coefficient carries it and the key must be the operator); `BuildAccumulator::add_term(string, coeff)` drops the `Phase` argument (66 of 71 call sites passed `Phase::ONE`).
+- **D21 `#[inline]` only where it can matter.** Remove from generic and private functions crate-wide; keep on small non-generic `pub` functions; keep `always`/`never`/`#[cold]` only with a stated reason; verified by a byte comparison of the release probe's `.text`, differences either kept with a reason or queued for A/B.
+
 ### As applied, chunk 0
+
+`fab0549` D17: direct path, `EngineSelection`, `small_sum_threshold` and Python `engine=`/`small_sum_threshold=` removed (+195/−1721, 37 files); workspace tests 758 → 737, pytest 523 → 485 passed (101 skipped).
+`bfb19b3` D16: `propagate_with` runs `run_layers` as one partition on the caller's pool via a crate-private `SoloTransport` and `SoloPolicy` (keeps exact `TopN` and `dyn` policies for `propagate`), `PartitionStorage::refine_unprepared` keeps rebucket-before-one-`prepare` at P=1 (also for `PartitionedSum` P=1 and one-rank `DistributedSum`), `PartitionPlan` rebuilt in place (no per-layer allocation at any P), traces/stats filled from `run_layers`' records; net about +45 lines (single loop, not fewer lines).
+Equivalence vs `c14ea2a` (harness in scratchpad `equiv/`): 48 cases bitwise identical incl. traces and bucket counts; panic text gains a "partition 0," prefix; a policy with `finalizes_layer() == false` now skips `finalize_layer` (allowed by contract).
+Local A/B (4 ABAB pairs, indicative): `su4` 1e6 8T −6.5% (4/4, likely layout), `rotation_zz` 1e6 1T +2.6% (4/4); small-n cells noise. Same-node A/B pending: `A_REV=89bdcca PS_REV=bfb19b3 LAYERS="rotation_zz cnot su4" NS="1000 1000000" REPS=40 sbatch --export=ALL scripts/slurm/ab-campaign.sbatch`.
+Verified: fmt/clippy matrix, rustdoc, 737 workspace tests, `cuda` 867 on the A6000, pytest 485/101, `mpi-test.sh --ranks 2,4` Rust and `--python`.
 
 `c2411cb`: a probe over `Gf2Hash` seeds 1–3 at 4/7/10 bits gave `haar_su4` coset dimension `r = 4` (output-major gather) at 7 and 10 bits, `cnot` `r = 2`, `rotation_zz` `r = 1`; three docs that said no built-in reaches output-major fixed.
 
@@ -129,6 +142,9 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - Cache the hash-independent part of a channel's prepared table (probe + masks) so a layer recomputes only `δ = H·d`; `prepare` is 4.2–5.7 µs per dense two-qubit gate and dominates small-`m` runs now that the direct path is gone (issue to open).
 
 ## Open items
+
+- `ApproxTopN` wipes a sum whose top octave alone exceeds `n` to empty (documented contract; seen at 1e5-start cases with `ApproxTopN(4000)`): surprising behaviour to revisit in chunk 6.
+- `benchmarks/python/jl_performance/README.md` and `post-optimization-auto/` still describe `engine="auto"` as historical records (chunk 23).
 
 - Release-mode guard: `Depolarizing2Q` with equal qubits is only `debug_assert`ed (chunk 5).
 - `PAULISTRINGS_NCCL_TIMEOUT_S` also bounds the in-process `PeerWire` (misleading env-var name; chunk 19).

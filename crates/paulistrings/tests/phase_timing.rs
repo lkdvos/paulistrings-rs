@@ -10,10 +10,11 @@ use paulistrings::{DistributedSum, PartitionRuntime, PartitionedSum, ScatterOpti
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
-use paulistrings::test_support::{rand_sum_real, unpinned_partitions, zz_rotation, KeepAll};
+use paulistrings::test_support::{
+    partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
+};
 use paulistrings::{
-    propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliString, PhaseStats,
-    PropagateOptions,
+    propagate_with, Circuit, Direction, LayerScratch, PauliString, PhaseStats, PropagateOptions,
 };
 
 #[test]
@@ -156,7 +157,7 @@ fn partitioned_stats_are_attributed() {
 
     let config = unpinned_partitions(2, 1, 0x51A75);
     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
+    let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
     let mut split = PartitionedSum::scatter_with(
         sum,
         ScatterOptions {
@@ -231,7 +232,7 @@ fn distributed_stats_are_attributed() {
                 scope.spawn(move || {
                     let config = unpinned_partitions(1, 1, 0x51A75);
                     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-                    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
+                    let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
                     let mut split = DistributedSum::scatter_with(
                         sum,
                         transport,

@@ -1,7 +1,9 @@
 //! `PartitionTrace`: the opt-in per-layer record of a partitioned run.
 
 use paulistrings::test_support::desired_bits;
-use paulistrings::test_support::{low_weight_sum, rand_sum, unpinned_partitions, KeepAll};
+use paulistrings::test_support::{
+    low_weight_sum, partition_rows, rand_sum, unpinned_partitions, KeepAll,
+};
 use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
 use paulistrings::{Clifford1Q, Clifford2Q, PauliRotation};
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
@@ -41,7 +43,7 @@ fn wide_gen() -> PauliString<1> {
 /// One row seeing the `x` bit of qubit 0, which [`wide_gen`] carries: the
 /// generator pass is remote at every rank.
 fn rows_seeing_qubit_0_x() -> PartitionRows<1> {
-    PartitionRows::<1>::from_rows(NQ, vec![[1u64]], vec![[0u64]])
+    partition_rows::<1>(NQ, vec![[1u64]], vec![[0u64]])
 }
 
 #[test]

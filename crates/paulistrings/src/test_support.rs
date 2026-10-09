@@ -1056,6 +1056,19 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
     out
 }
 
+/// [`PartitionRows`](crate::PartitionRows) from explicit rows, masked to the live columns, for tests that pin the split by hand.
+///
+/// # Panics
+///
+/// As the crate-private `PartitionRows::from_rows`: mismatched lengths, more than `P_MAX_BITS` rows, or a row that masks to zero.
+pub fn partition_rows<const W: usize>(
+    num_qubits: usize,
+    rows_x: Vec<[u64; W]>,
+    rows_z: Vec<[u64; W]>,
+) -> crate::PartitionRows<W> {
+    crate::PartitionRows::from_rows(num_qubits, rows_x, rows_z)
+}
+
 /// Partition rows reading `Z₆₃`: `ZZ(0, 63)` is remote and every [`x0_terms_identity_on_q63`] term sits on rank 0.
 pub fn rows_reading_z63() -> crate::pauli_sum::hash::PartitionRows<1> {
     crate::pauli_sum::hash::PartitionRows::<1>::from_rows(64, vec![[0u64]], vec![[1u64 << 63]])

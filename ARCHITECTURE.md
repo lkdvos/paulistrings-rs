@@ -233,7 +233,7 @@ A global bucket is the pair `(part(v), loc(v))`: `part(v) = P·v` from `p` desig
 **A partition holds the terms with `part(v) = rank` and nothing else**, so a key lives on exactly one partition and duplicates can no more straddle partitions than buckets (§Bucketing).
 
 The partition rows are a separate matrix, not a prefix of `H`: `H`'s active rows grow with the term count, and a row that moved would change a term's owner mid-run.
-`from_seed` draws them from a salted seed so they are independent of the refinement stream at every bucket count; `from_rows` is the hook for choosing them deliberately.
+`from_seed` draws them from a salted seed so they are independent of the refinement stream at every bucket count; `cut` and `from_seed_excluding` are the hooks for choosing them deliberately, and tests pin explicit rows through `test_support::partition_rows`.
 `is_independent_of(hash)` checks at scatter that the joint row set has full rank, so the global bucket carries `p + b` bits of entropy rather than `max(p, b)`; dependence costs load balance, not correctness.
 
 **The classification is per layer, not per term.**

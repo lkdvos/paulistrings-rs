@@ -2,7 +2,8 @@
 //! accessors, and the runtime shared between sums.
 
 use paulistrings::test_support::{
-    approx_eq, assert_terms_close, low_weight_sum, rand_sum, unpinned_partitions, KeepAll,
+    approx_eq, assert_terms_close, low_weight_sum, partition_rows, rand_sum, unpinned_partitions,
+    KeepAll,
 };
 use paulistrings::{
     propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
@@ -134,7 +135,7 @@ fn explicit_rows_may_be_lopsided() {
 
     // One row seeing only qubit 13's `x` bit: a term is in partition 1 only if
     // it carries `X` or `Y` there — roughly one term in twelve.
-    let rows = PartitionRows::<1>::from_rows(NQ, vec![[1u64 << 13]], vec![[0u64]]);
+    let rows = partition_rows::<1>(NQ, vec![[1u64 << 13]], vec![[0u64]]);
     let mut ps = PartitionedSum::scatter_with(
         sum,
         ScatterOptions {

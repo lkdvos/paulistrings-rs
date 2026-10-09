@@ -319,7 +319,11 @@ impl<const W: usize> PartitionRows<W> {
     /// # Panics
     ///
     /// Panics if `rows_x` and `rows_z` differ in length, if there are more than [`P_MAX_BITS`] rows, or if any row masks to all-zero while `num_qubits > 0`.
-    pub fn from_rows(num_qubits: usize, rows_x: Vec<[u64; W]>, rows_z: Vec<[u64; W]>) -> Self {
+    pub(crate) fn from_rows(
+        num_qubits: usize,
+        rows_x: Vec<[u64; W]>,
+        rows_z: Vec<[u64; W]>,
+    ) -> Self {
         assert_eq!(
             rows_x.len(),
             rows_z.len(),

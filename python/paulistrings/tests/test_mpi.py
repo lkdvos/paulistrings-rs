@@ -38,6 +38,8 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
+from ._runs_agree import assert_runs_agree, single_cuts
+
 pytest.importorskip("mpi4py")
 
 # Before `mpi4py.MPI` is imported, because that import calls MPI_Init: a
@@ -236,18 +238,28 @@ def test_gather_returns_the_whole_sum_on_rank_zero(observable, circuit, referenc
 def test_gather_agrees_under_a_truncating_approx_topn(observable, circuit):
     """`approx_topn` all-reduces its octave histogram and boundary counts, so
     the kept count is exactly the serial one even when it really does cut; the
-    boundary-octave terms are chosen in rank order, so above one rank only the
-    count is shared. Spelled with an explicit `result="gather"`, which must mean
-    what the default means."""
+    boundary-octave terms are chosen in rank order (`assert_runs_agree`).
+    Spelled with an explicit `result="gather"`, which must mean what the
+    default means."""
     want = observable.propagate(circuit, TIGHT_POLICY)
     got = observable.propagate(circuit, TIGHT_POLICY, comm=COMM, result="gather")
     assert len(want) < NUM_TERMS, "the tight policy must actually truncate"
     if RANK == 0:
-        assert len(got) == len(want)
-        if SIZE == 1:
-            _assert_terms_close(got, want)
+        assert_runs_agree(got, want, TIGHT_POLICY, len(circuit), TOL)
     else:
         assert len(got) == 0
+
+
+def test_gather_agrees_after_a_single_cut():
+    """One cut from identical inputs: the kept terms agree up to the boundary octave."""
+    for name, c, s, n in single_cuts(NUM_QUBITS):
+        policy = truncation.approx_topn(n)
+        want = s.propagate(c, policy)
+        got = s.propagate(c, policy, comm=COMM)
+        if RANK == 0:
+            assert_runs_agree(got, want, policy, len(c), TOL, name)
+        else:
+            assert len(got) == 0
 
 
 def test_gather_respects_the_direction(observable, circuit, reference):
@@ -444,8 +456,7 @@ def test_one_device_per_rank_respects_a_truncating_policy_and_direction(observab
         circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto"
     )
     if RANK == 0:
-        assert len(got) == len(want)
-        _assert_terms_close(got, want)
+        assert_runs_agree(got, want, TIGHT_POLICY, len(circuit), TOL)
 
 
 @needs_a_device_group

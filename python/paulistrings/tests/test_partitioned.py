@@ -38,6 +38,8 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, numa_nodes, truncation
 
+from ._runs_agree import assert_runs_agree, single_cuts
+
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux" or len(os.sched_getaffinity(0)) < 2,
@@ -143,10 +145,9 @@ def _assert_terms_close(got, want, tol=TOL):
     assert worst < tol, f"largest coefficient difference {worst:.3e} exceeds {tol:.1e}"
 
 
-def _assert_same_count(got, want, got_stats=None, want_stats=None):
-    """Under a cutting ``approx_topn`` the runs keep different boundary-octave
-    terms (rank order, then bucket order), so only the counts agree."""
-    assert len(got) == len(want)
+def _assert_agree(got, want, policy, layers, got_stats=None, want_stats=None):
+    """``assert_runs_agree``, and the per-run counts when stats are given."""
+    assert_runs_agree(got, want, policy, layers, TOL)
     if got_stats is not None:
         assert got_stats.layers == want_stats.layers
         assert got_stats.final_terms == want_stats.final_terms
@@ -211,7 +212,18 @@ def test_two_partitions_match_unpartitioned_with_fanout(num_qubits, direction):
     got, got_stats = s.propagate_with_stats(
         c, policy, direction=direction, partitions=_cpu_sets()
     )
-    _assert_same_count(got, want, got_stats, want_stats)
+    _assert_agree(got, want, policy, len(c), got_stats, want_stats)
+
+
+@pytest.mark.parametrize("num_qubits", [16, 68])
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_two_partitions_match_unpartitioned_after_a_single_cut(num_qubits, direction):
+    """One cut from identical inputs: the kept terms agree up to the boundary octave."""
+    for name, c, s, n in single_cuts(num_qubits):
+        policy = truncation.approx_topn(n)
+        want = s.propagate(c, policy, direction=direction)
+        got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
+        assert_runs_agree(got, want, policy, len(c), TOL, name)
 
 
 def test_pin_memory_false_matches():
@@ -260,7 +272,7 @@ def test_a_trotter_loop_reuses_the_runtime():
     for _ in range(3):
         partitioned = partitioned.propagate(c, policy, partitions=_cpu_sets())
         plain = plain.propagate(c, policy)
-    _assert_same_count(partitioned, plain)
+    _assert_agree(partitioned, plain, policy, 3 * len(c))
 
 
 # --------------------------------------------------------------------------
@@ -275,7 +287,7 @@ def test_approx_topn_agrees_with_unpartitioned():
     want, want_stats = s.propagate_with_stats(c, policy)
     got, got_stats = s.propagate_with_stats(c, policy, partitions=_cpu_sets())
     assert max(want_stats.terms_out) == 4_000, "the policy must actually bite"
-    _assert_same_count(got, want, got_stats, want_stats)
+    _assert_agree(got, want, policy, len(c), got_stats, want_stats)
     assert got_stats.terms_out == want_stats.terms_out
 
 
@@ -493,12 +505,12 @@ def test_seeded_and_cut_rows_agree_with_unpartitioned(num_qubits):
     got_cut, stats_cut = s.propagate_with_stats(
         c, policy, partitions=_cpu_sets(), partition_row_blocks=blocks
     )
-    _assert_same_count(got_cut, want, stats_cut, want_stats)
+    _assert_agree(got_cut, want, policy, len(c), stats_cut, want_stats)
 
     got_seed, stats_seed = s.propagate_with_stats(
         c, policy, partitions=_cpu_sets(), partition_row_seed=7
     )
-    _assert_same_count(got_seed, want, stats_seed, want_stats)
+    _assert_agree(got_seed, want, policy, len(c), stats_seed, want_stats)
 
 
 def test_cut_blocks_round_trip_to_the_named_partition():

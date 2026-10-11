@@ -6,13 +6,15 @@ use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_runs_agree, assert_terms_close, cancellation_channel, cancellation_sum,
     differential_channels_w1, differential_channels_w2, haar_su4_matrix, or, rand_sum,
-    random_circuit, trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
+    random_circuit, single_cuts, trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
     PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, WeightCutoff};
+use paulistrings::{
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, TopN, WeightCutoff,
+};
 use paulistrings::{Channel, PauliRotation, PtmChannel};
 
 const TOL: f64 = 1e-11;
@@ -64,7 +66,7 @@ fn check_with<const W: usize, T>(
         if let Some(p) = permuted {
             assert_eq!(c.permuted, p, "{what}: {c:?}");
         }
-        assert_runs_agree(policy, &got, &want, TOL, &what);
+        assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
     }
 }
 
@@ -90,6 +92,20 @@ fn differential_channels_match_propagate_w2() {
     let input = rand_sum::<2>(3000, 128, 0xC0FFEE);
     for (name, ch) in differential_channels_w2() {
         check(&one_layer(128, ch), &input, &KeepAll, name);
+    }
+}
+
+/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+#[test]
+fn single_cuts_match_propagate() {
+    require_cuda!();
+    for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C5) {
+        check(&circuit, &sum, &TopN(n), &format!("{name} topn"));
+        check(&circuit, &sum, &ApproxTopN(n), &format!("{name} approx"));
+    }
+    for (name, circuit, sum, n) in single_cuts::<2>(70, 0x51C6) {
+        check(&circuit, &sum, &TopN(n), &format!("{name} topn"));
+        check(&circuit, &sum, &ApproxTopN(n), &format!("{name} approx"));
     }
 }
 

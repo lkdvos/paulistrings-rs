@@ -10,10 +10,12 @@
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
+    assert_runs_agree, assert_terms_close, rand_sum, rand_sum_real, random_circuit, single_cuts,
     trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
 };
-use paulistrings::{propagate, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy};
+use paulistrings::{
+    propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
+};
 use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
 
@@ -28,9 +30,7 @@ fn config(partitions: usize) -> PartitionConfig {
 }
 
 /// One policy against one circuit: the unpartitioned engine is the oracle, and
-/// every partition count has to reproduce it — same keys, close coefficients
-/// and the same term count, or the count alone under a cutting `ApproxTopN`
-/// (`assert_runs_agree`).
+/// every partition count has to reproduce it as `assert_runs_agree` defines.
 fn check<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -38,7 +38,7 @@ fn check<const W: usize, T>(
     name: &str,
     partitions: &[usize],
 ) where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
@@ -53,7 +53,7 @@ fn check<const W: usize, T>(
             )
             .expect("topology resolves");
             let what = format!("{name} P={p} {direction:?}");
-            assert_runs_agree(policy, &got, &want, TOL, &what);
+            assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
         }
     }
 }
@@ -95,6 +95,17 @@ fn builtin_truncation_tree_matches_propagate() {
         Box::new(T::ApproxTopN(3_000)),
     );
     check(&circuit, &sum, &tree, "trotter tree", &PS);
+}
+
+/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+#[test]
+fn single_cuts_match_propagate() {
+    for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C1) {
+        check(&circuit, &sum, &ApproxTopN(n), name, &PS);
+    }
+    for (name, circuit, sum, n) in single_cuts::<2>(70, 0x51C2) {
+        check(&circuit, &sum, &ApproxTopN(n), name, &PS);
+    }
 }
 
 /// A 30-layer random circuit over every channel class at `W = 1`.
@@ -279,7 +290,14 @@ fn auto_placement_agrees() {
         PropagateOptions::default(),
     )
     .expect("topology resolves");
-    assert_runs_agree(&ApproxTopN(400), &got, &want, TOL, "auto placement");
+    assert_runs_agree(
+        ApproxTopN(400),
+        circuit.len(),
+        &got,
+        &want,
+        TOL,
+        "auto placement",
+    );
 }
 
 /// A policy with a layer pass and no collective form panics before the first layer.

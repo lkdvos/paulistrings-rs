@@ -217,7 +217,7 @@ pub(crate) enum EdgeDecision {
 }
 
 /// The octave of `|c|²`, [`APPROX_BINS`] wide.
-fn octave(norm_sqr: f64) -> usize {
+pub(crate) fn octave(norm_sqr: f64) -> usize {
     (norm_sqr.to_bits() >> 52) as usize
 }
 

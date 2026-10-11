@@ -16,12 +16,13 @@ use num_complex::Complex64;
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
     assert_runs_agree, assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum,
-    rand_sum_on, rand_sum_real, trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
+    rand_sum_on, rand_sum_real, single_cuts, trotter_circuit, unpinned_partitions, z0_sum,
+    zz_rotation, KeepAll,
 };
 use paulistrings::PtmChannel;
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, RotationAxis,
-    TruncationPolicy,
+    propagate, BuildAccumulator, BuiltinTruncation, Circuit, Direction, PauliString, PauliSum,
+    RotationAxis, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{
@@ -127,15 +128,26 @@ where
 /// The unpartitioned engine is the oracle for every group size and direction.
 fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T, name: &str)
 where
-    T: TruncationPolicy<W> + Sync,
+    T: TruncationPolicy<W> + Sync + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(circuit, sum.clone(), policy, direction);
         for size in [1u32, 2, 4] {
             let got = distributed(circuit, sum, policy, direction, size);
             let what = format!("{name} ranks={size} {direction:?}");
-            assert_runs_agree(policy, &got, &want, TOL, &what);
+            assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
         }
+    }
+}
+
+/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+#[test]
+fn single_cuts_match_propagate() {
+    for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C3) {
+        check(&circuit, &sum, &ApproxTopN(n), name);
+    }
+    for (name, circuit, sum, n) in single_cuts::<2>(70, 0x51C4) {
+        check(&circuit, &sum, &ApproxTopN(n), name);
     }
 }
 

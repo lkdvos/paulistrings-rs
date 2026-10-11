@@ -9,7 +9,7 @@ use paulistrings::require_cuda;
 use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
     assert_runs_agree, assert_same_terms, assert_terms_close, rand_sum, rand_sum_real,
-    random_circuit, rows_reading_z63, su4_chain, trotter_circuit, with_hash,
+    random_circuit, rows_reading_z63, single_cuts, su4_chain, trotter_circuit, with_hash,
     x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::{
@@ -96,8 +96,20 @@ fn check<const W: usize, T>(
         for &p in partitions {
             let got = run(circuit, sum, policy, direction, p).expect("device propagate");
             let what = format!("{name} P={p} {direction:?}");
-            assert_runs_agree(policy, &got, &want, TOL, &what);
+            assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
         }
+    }
+}
+
+/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+#[test]
+fn single_cuts_match_propagate() {
+    require_cuda!();
+    for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C7) {
+        check(&circuit, &sum, &ApproxTopN(n), name, &PS);
+    }
+    for (name, circuit, sum, n) in single_cuts::<2>(70, 0x51C8) {
+        check(&circuit, &sum, &ApproxTopN(n), name, &PS);
     }
 }
 
@@ -234,7 +246,7 @@ fn cut_rows_agree() {
             );
             let got = split.gather().expect("gather");
             let what = format!("cut P={p} {direction:?}");
-            assert_runs_agree(&ApproxTopN(2_500), &got, &want, TOL, &what);
+            assert_runs_agree(ApproxTopN(2_500), circuit.len(), &got, &want, TOL, &what);
         }
     }
 }
@@ -288,7 +300,8 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
             "GpuPauliSum {direction:?}: term count"
         );
         assert_runs_agree(
-            &ApproxTopN(4_000),
+            ApproxTopN(4_000),
+            circuit.len(),
             &want,
             &host,
             TOL,
@@ -311,14 +324,17 @@ fn repeated_propagate_on_one_split() {
         random_circuit::<1>(8, 3, 0x2222, true),
         random_circuit::<1>(8, 5, 0x3333, true),
     ];
+    let mut layers = 0;
     for (i, c) in circuits.iter().enumerate() {
+        layers += c.len();
         host = propagate(c, host, &ApproxTopN(3_000), Direction::Heisenberg);
         split
             .propagate(c, ApproxTopN(3_000), Direction::Heisenberg)
             .expect("propagate");
         assert_eq!(split.len(), host.len(), "call {i}");
         assert_runs_agree(
-            &ApproxTopN(3_000),
+            ApproxTopN(3_000),
+            layers,
             &split.gather().expect("gather"),
             &host,
             TOL,
@@ -411,7 +427,8 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
             Direction::Forward,
         );
         assert_runs_agree(
-            &ApproxTopN(6_000),
+            ApproxTopN(6_000),
+            circuit.len(),
             &split.gather().expect("gather"),
             &want,
             TOL,
@@ -626,7 +643,14 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     assert!(trace.local_layers() > 0);
     let got = split.gather().expect("gather");
     assert_eq!(got.len(), want.len());
-    assert_runs_agree(&ApproxTopN(4_000), &got, &want, TOL, "uneven cut");
+    assert_runs_agree(
+        ApproxTopN(4_000),
+        circuit.len(),
+        &got,
+        &want,
+        TOL,
+        "uneven cut",
+    );
 }
 
 /// Four cut blocks with gates only inside blocks and between blocks 0 and 1: the partner pairs at partition delta 2 and 3 never exchange.
@@ -694,7 +718,8 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     );
     let want = propagate(&circuit, sum, &ApproxTopN(6_000), Direction::Forward);
     assert_runs_agree(
-        &ApproxTopN(6_000),
+        ApproxTopN(6_000),
+        circuit.len(),
         &split.gather().expect("gather"),
         &want,
         TOL,

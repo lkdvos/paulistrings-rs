@@ -2,8 +2,8 @@
 //! accessors, and the runtime shared between sums.
 
 use paulistrings::test_support::{
-    approx_eq, assert_terms_close, low_weight_sum, partition_rows, rand_sum, unpinned_partitions,
-    KeepAll,
+    approx_eq, assert_runs_agree, assert_terms_close, low_weight_sum, partition_rows, rand_sum,
+    unpinned_partitions, KeepAll,
 };
 use paulistrings::{
     propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
@@ -153,8 +153,15 @@ fn explicit_rows_may_be_lopsided() {
 
     ps.propagate(&circuit, &ApproxTopN(200), Direction::Forward);
     ps.assert_invariants();
-    // Which boundary-octave terms survive depends on the partitioning, so only the count is shared.
-    assert_eq!(ps.into_gathered().len(), want.len(), "lopsided rows");
+    let got = ps.into_gathered();
+    assert_runs_agree(
+        ApproxTopN(200),
+        circuit.len(),
+        &got,
+        &want,
+        TOL,
+        "lopsided rows",
+    );
 }
 
 /// An empty sum scatters, propagates and gathers.

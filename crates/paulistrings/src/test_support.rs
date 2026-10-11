@@ -589,22 +589,162 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
-/// Two runs of `policy` over differently bucketed, partitioned or placed sums: [`assert_terms_close`] for a policy without a layer pass, and the same term count for one with.
-/// `TopN`/`ApproxTopN` keep boundary terms in bucket order (rank order across partitions), so after a cut through a tie group or octave the runs keep different terms and only the count is shared.
-pub fn assert_runs_agree<const W: usize, T>(
-    policy: &T,
+/// The layer pass of a policy tree, as [`assert_runs_agree`] reads it.
+#[derive(Clone, Copy, PartialEq)]
+enum Cut {
+    None,
+    TopN,
+    ApproxTopN,
+    Other,
+}
+
+fn cut_of(policy: &crate::truncation::BuiltinTruncation) -> Cut {
+    use crate::truncation::BuiltinTruncation as T;
+    match policy {
+        T::Keep | T::Coefficient(_) | T::Weight(_) | T::Or(..) => Cut::None,
+        T::TopN(_) => Cut::TopN,
+        T::ApproxTopN(_) => Cut::ApproxTopN,
+        T::CollapseSample(_) => Cut::Other,
+        T::And(a, b) => match (cut_of(a), cut_of(b)) {
+            (Cut::None, cut) | (cut, Cut::None) => cut,
+            _ => Cut::Other,
+        },
+    }
+}
+
+type Triple<const W: usize> = ([u64; W], [u64; W], Complex64);
+
+/// Two runs of `policy` over differently bucketed, partitioned or placed sums, `layers` layer passes after identical inputs.
+///
+/// Without a layer pass, or when both runs kept the same keys, [`assert_terms_close`].
+/// `TopN`/`ApproxTopN` keep boundary terms in bucket order (rank order across partitions), so the runs may keep different terms; then, after a single cut, every term clear of the boundary matches term for term, and the kept magnitudes agree to `tol` (`TopN`) or the smallest kept `|c|²` lie in one octave (`ApproxTopN`).
+/// After more than one cut the runs evolve different survivors and only the term count is shared.
+pub fn assert_runs_agree<const W: usize>(
+    policy: impl Into<crate::truncation::BuiltinTruncation>,
+    layers: usize,
     got: &PauliSum<W>,
     want: &PauliSum<W>,
     tol: f64,
     what: &str,
-) where
-    T: TruncationPolicy<W> + ?Sized,
-{
-    if policy.finalizes_layer() {
-        assert_eq!(got.len(), want.len(), "{what}: term count");
-    } else {
+) {
+    let cut = cut_of(&policy.into());
+    assert_eq!(got.len(), want.len(), "{what}: term count");
+    let got_terms = canonical_triples(got);
+    let want_terms = canonical_triples(want);
+    let same_keys = got_terms
+        .iter()
+        .zip(&want_terms)
+        .all(|(g, w)| (g.0, g.1) == (w.0, w.1));
+    if cut == Cut::None || same_keys || layers == 0 {
         assert_terms_close(got, want, tol, what);
+        return;
     }
+    if layers > 1 {
+        // The runs evolved different survivors; neither the kept magnitudes nor their lowest octave need agree.
+        return;
+    }
+    match cut {
+        Cut::TopN => assert_top_n_cut_agrees(&got_terms, &want_terms, tol, what),
+        Cut::ApproxTopN => assert_approx_top_n_cut_agrees(&got_terms, &want_terms, tol, what),
+        Cut::None | Cut::Other => {}
+    }
+}
+
+/// Sorted kept magnitudes agree to `tol` (a top-`n` of magnitudes that agree to `tol` does), and every term more than `2 tol` above the other run's smallest kept is in both.
+fn assert_top_n_cut_agrees<const W: usize>(
+    got: &[Triple<W>],
+    want: &[Triple<W>],
+    tol: f64,
+    what: &str,
+) {
+    let descending = |terms: &[Triple<W>]| {
+        let mut m: Vec<f64> = terms.iter().map(|t| t.2.norm()).collect();
+        m.sort_unstable_by(|a, b| b.total_cmp(a));
+        m
+    };
+    let (g, w) = (descending(got), descending(want));
+    let (got_min, want_min) = (g[g.len() - 1], w[w.len() - 1]);
+    for (i, (a, b)) in g.iter().zip(&w).enumerate() {
+        assert!(
+            (a - b).abs() < tol,
+            "{what}: kept magnitude {i} of {} is {a} vs {b}; the smallest kept are {got_min} vs {want_min}",
+            g.len(),
+        );
+    }
+    assert_both_keep(want, got, |c| c.norm() > got_min + 2.0 * tol, tol, what);
+    assert_both_keep(got, want, |c| c.norm() > want_min + 2.0 * tol, tol, what);
+}
+
+/// The smallest kept `|c|²` lie in one octave, and every term at least `tol` clear of that octave's upper edge is in both runs.
+fn assert_approx_top_n_cut_agrees<const W: usize>(
+    got: &[Triple<W>],
+    want: &[Triple<W>],
+    tol: f64,
+    what: &str,
+) {
+    use crate::truncation::builtin::octave;
+    let lowest = |terms: &[Triple<W>]| terms.iter().map(|t| octave(t.2.norm_sqr())).min();
+    let (got_octave, want_octave) = (lowest(got), lowest(want));
+    assert_eq!(
+        got_octave, want_octave,
+        "{what}: the smallest kept |c|² lie in different octaves"
+    );
+    let Some(boundary) = want_octave else { return };
+    let edge = f64::from_bits(((boundary + 1) as u64) << 52).sqrt();
+    let clear = |c: Complex64| c.norm() - tol >= edge;
+    assert_both_keep(got, want, clear, tol, what);
+    assert_both_keep(want, got, clear, tol, what);
+}
+
+/// Every term of `from` that `above` selects is in `other` (canonical order) with a coefficient within `tol`.
+fn assert_both_keep<const W: usize>(
+    other: &[Triple<W>],
+    from: &[Triple<W>],
+    above: impl Fn(Complex64) -> bool,
+    tol: f64,
+    what: &str,
+) {
+    for (x, z, c) in from.iter().filter(|t| above(t.2)) {
+        let found = other.binary_search_by_key(&(x, z), |(ox, oz, _)| (ox, oz));
+        let i = found.unwrap_or_else(|_| {
+            panic!(
+                "{what}: key {x:?}/{z:?} (|c| = {}) above the boundary is kept by one run only",
+                c.norm()
+            )
+        });
+        let d = (other[i].2 - c).norm();
+        assert!(
+            d < tol,
+            "{what}: key {x:?}/{z:?} above the boundary: coeff {c} vs {} (delta {d:e})",
+            other[i].2,
+        );
+    }
+}
+
+/// One-layer circuits whose single cut splits a boundary group, each with its input and the `n` that cuts it: a Haar SU(4) on `(0, 1)` over [`rand_sum`], and a Hadamard on qubit 0 over coefficients `±1`, `±2`, `±3`, where `n` falls inside the `±2` ties.
+pub fn single_cuts<const W: usize>(
+    num_qubits: usize,
+    seed: u64,
+) -> Vec<(&'static str, crate::Circuit<W>, PauliSum<W>, usize)> {
+    let mut dense = crate::Circuit::<W>::new(num_qubits);
+    dense.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
+    let mut hadamard = crate::Circuit::<W>::new(num_qubits);
+    hadamard.push(PtmChannel::hadamard(0));
+    let mut tied = BuildAccumulator::<W>::new(num_qubits);
+    for (x, z, c) in rand_sum_real::<W>(2_000, num_qubits, seed ^ 1).iter() {
+        let magnitude = 1.0 + (c.re.abs() * 3.0).floor().min(2.0);
+        let p = PauliString::<W> { x: *x, z: *z };
+        tied.add_term(p, Complex64::new(magnitude.copysign(c.re), 0.0));
+    }
+    vec![
+        (
+            "dense cut",
+            dense,
+            rand_sum::<W>(1_500, num_qubits, seed),
+            2_000,
+        ),
+        ("tied cut", hadamard, tied.finalize(), 1_300),
+    ]
 }
 
 /// The keys of [`weighted_four_term_sum`], in order: `X0`, `Z3 X5`, `Y2 Y7`, `X1 Z6`.

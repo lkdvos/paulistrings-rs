@@ -48,8 +48,8 @@ mod protocol {
     use crate::engine::partitioned::{PartitionRuntime, ScatterOptions, ScatterRows};
     use crate::test_support::{
         assert_runs_agree, assert_terms_close, rand_sum_real, random_circuit, rows_reading_z63,
-        su4_chain, trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation,
-        CallLog, LoggingTransport,
+        single_cuts, su4_chain, trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63,
+        zz_rotation, CallLog, LoggingTransport,
     };
     use crate::truncation::ApproxTopN;
 
@@ -141,7 +141,7 @@ mod protocol {
         fn check(&self, size: u32, what: &str) {
             let got = rank0(self.on(wired(size).0, &|_| {}));
             let want = self.want();
-            assert_runs_agree(&self.policy, &got, &want, 1e-11, what);
+            assert_runs_agree(&self.policy, self.circuit.len(), &got, &want, 1e-11, what);
         }
     }
 
@@ -188,6 +188,7 @@ mod protocol {
         let input = rand_sum::<1>(400, 8, 0xD16);
         let trotter = trotter_circuit::<2>(24, 0.1);
         let real = rand_sum_real::<2>(900, 24, 0xD17);
+        let cuts = single_cuts::<1>(16, 0xD18);
         for direction in [Direction::Forward, Direction::Heisenberg] {
             for size in [1u32, 2, 4] {
                 let what = format!("ranks={size} {direction:?}");
@@ -202,6 +203,14 @@ mod protocol {
                     ..Run::new(&real, seeded_rows(24, size), &trotter)
                 };
                 run.check(size, &format!("w2 trotter {what}"));
+                for (name, circuit, sum, n) in &cuts {
+                    let run = Run {
+                        direction,
+                        policy: BuiltinTruncation::ApproxTopN(*n),
+                        ..Run::new(sum, seeded_rows(16, size), circuit)
+                    };
+                    run.check(size, &format!("{name} {what}"));
+                }
             }
         }
         let run = Run::new(&input, seeded_rows(8, 2), &dense);

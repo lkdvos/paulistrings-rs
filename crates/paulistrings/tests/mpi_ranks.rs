@@ -16,8 +16,8 @@
 //!
 //! The oracle is always the unpartitioned single-process [`propagate`]: rank 0
 //! runs it on the same replicated input and compares the gathered result with
-//! [`assert_runs_agree`]: term for term to tolerance, or only the exact term
-//! count under a cutting `ApproxTopN`, which keeps boundary terms in rank order.
+//! [`assert_runs_agree`], since a cutting `ApproxTopN` keeps boundary terms in
+//! rank order.
 //!
 //! Built with `--features cuda` as well, the matrix repeats its layer shapes with one CUDA device per rank (`MpiGpuSum`), ranks sharing a device when there are fewer devices than ranks; those cases are skipped on every rank unless every rank sees a device.
 //!
@@ -31,7 +31,7 @@ use std::panic::AssertUnwindSafe;
 use num_complex::Complex64;
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real,
+    assert_runs_agree, assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, single_cuts,
     trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
@@ -264,13 +264,13 @@ impl Runner<'_> {
         got: Option<PauliSum<W>>,
         what: &str,
     ) where
-        T: TruncationPolicy<W> + ?Sized,
+        T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
         match (self.rank, got) {
             (0, Some(got)) => {
                 let want = propagate(circuit, sum.clone(), policy, direction);
                 let what = format!("{what} ranks={} {direction:?}", self.size);
-                assert_runs_agree(policy, &got, &want, TOL, &what);
+                assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
             }
             (0, None) => panic!("{what}: rank 0 did not gather"),
             (r, Some(_)) => panic!("{what}: rank {r} gathered but is not the root"),
@@ -464,6 +464,12 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
             SEED,
             "w2 trotter",
         );
+    });
+
+    r.case(&format!("{tag}single cuts"), |r| {
+        for (name, circuit, sum, n) in single_cuts::<1>(16, 0xA009) {
+            r.both_directions(backend, &circuit, &sum, &ApproxTopN(n), SEED, name);
+        }
     });
 
     /// A budget small enough that the collective octave selection fires on several layers, so the exact `len()` equality is a real test of partition-exactness.

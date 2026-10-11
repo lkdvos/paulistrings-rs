@@ -6,7 +6,8 @@
 use num_complex::Complex64;
 use paulistrings::test_support::IdentityChannel;
 use paulistrings::test_support::{
-    assert_same_terms, assert_terms_close, bucket, canonical_triples, naive_apply_layer, rand_sum,
+    assert_runs_agree, assert_same_terms, assert_terms_close, bucket, canonical_triples,
+    naive_apply_layer, rand_sum,
 };
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
@@ -376,8 +377,7 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
 /// topology, 27 channels per step, and truncation active from the first step.
 ///
 /// The lattice symmetry makes ties, and `TopN` keeps boundary terms in bucket
-/// order, which the oracle's storage does not share, so the two agree on the
-/// term count at every step rather than term for term.
+/// order, which the oracle's storage does not share (`assert_runs_agree`).
 #[test]
 fn ising_3x3_with_binding_top_n_keeps_the_naive_oracles_count() {
     let (lx, ly) = (3usize, 3usize);
@@ -407,7 +407,15 @@ fn ising_3x3_with_binding_top_n_keeps_the_naive_oracles_count() {
         if bucketed.len() == 1500 {
             binding = true;
         }
-        assert_eq!(bucketed.len(), reference.len(), "step {step}");
+        let layers = step * circuit.len();
+        assert_runs_agree(
+            policy,
+            layers,
+            &bucketed,
+            &reference,
+            1e-11,
+            &format!("step {step}"),
+        );
     }
     assert!(
         binding,

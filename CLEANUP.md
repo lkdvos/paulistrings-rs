@@ -232,4 +232,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on the user's `ab-campaign.sbatch` run with `KNOB_B="--truncation-dispatch builtin"`, D16 on its own A/B. Next: chunk 7 (`engine/merge.rs`, `engine/coset.rs`), then chunk 8 (bucketed layer; TermTrace/GateTrace cut, phase-timing fold).
+Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on job 7216669 (`ab-campaign.sbatch`, `KNOB_B="--truncation-dispatch builtin"`, PS_REV `b4df80d`), D16 on its own A/B. Next: chunk 7 (`engine/merge.rs`, `engine/coset.rs`), then chunk 8 (bucketed layer; TermTrace/GateTrace cut, phase-timing fold).

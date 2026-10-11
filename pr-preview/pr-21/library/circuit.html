@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-df023f3c.js";
+            window.path_to_searchindex_js = "../searchindex-187d70d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -211,8 +211,8 @@ A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2<
 <tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
 <tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
 <tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td><td>the one exemption from the two-qubit support panic below — any generator weight is accepted</td></tr>
-<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td><td>—</td></tr>
-<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
+<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex; <code>ValueError</code> unless every entry of <code>U†U − I</code> is within <code>1e-10</code></td><td>—</td></tr>
+<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, unitary to <code>1e-10</code> as above; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
 </tbody>
 </table>
 </div>

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-df023f3c.js";
+            window.path_to_searchindex_js = "../../searchindex-187d70d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -243,8 +243,8 @@ Pauli rotations prepare specially at any generator weight, since their delta set
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; <code>TopN</code> and its histogram-based approximation live there.
-Policies compose with and/or combinators.
-Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code> keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).</p>
+Policies compose with and/or combinators; or combines per-term filters only.
+Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code>/<code>ApproxTopN</code> keep exactly <code>n</code>, filling from the boundary in bucket order (ARCHITECTURE.md §Truncation).</p>
 <h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
 <p><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
 The rustdoc under <a href="../../api/paulistrings/index.html">/api/</a> documents the public types; the module docs on <code>engine::bucketed</code>, <code>engine::merge</code>, and <code>pauli_sum</code> carry the precise per-module contracts.</p>

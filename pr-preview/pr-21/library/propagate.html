@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-df023f3c.js";
+            window.path_to_searchindex_js = "../searchindex-187d70d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -308,7 +308,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.final_terms</code></td><td><code>int</code></td><td><code>terms_out[-1]</code>, or the input’s count for a zero-layer circuit</td></tr>
 <tr><td><code>.circuit_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the circuit as written, independent of <code>direction</code></td></tr>
 <tr><td><code>.application_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the propagation loop, <code>0..layers</code> regardless of <code>direction</code></td></tr>
-<tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer</td></tr>
+<tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer: the <code>PtmChannel</code> constructor name (<code>hadamard</code>, <code>cnot</code>, <code>depolarizing</code>, …; <code>phase_gate_adjoint</code> for <code>sdg</code>) or <code>PauliRotation</code></td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[int]</code></td><td>elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks</td></tr>
 <tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code>/<code>device=</code> call, else <code>None</code></td></tr>
 <tr><td><code>.collapses</code></td><td><code>int | None</code></td><td>collapses a <code>truncation.collapse_sample</code> made during this call, <code>None</code> without one; under <code>comm=</code> rank 0’s count, all-reduced so every rank reports it</td></tr>

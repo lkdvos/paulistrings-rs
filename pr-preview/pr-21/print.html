@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-df023f3c.js";
+            window.path_to_searchindex_js = "searchindex-187d70d7.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -897,8 +897,8 @@ Reach for it unless you have a specific reason not to.</p>
 It keeps terms of Pauli weight at most <code>k</code>, which is useful when the causal cone is the real constraint and measurably useless when it is not: on a 2D lattice at high entangling strength it can delete most of the operator for no time saved, and at Clifford angles the operator passes through high weight mid-circuit even when it lands on a low-weight string, so a tight cap can truncate the whole sum to zero terms.</p>
 <p><strong><code>topn(k)</code> bounds memory, but changes what “converged” means.</strong>
 It keeps at most <code>k</code> terms, largest <code>|c|</code> first, so the error is set by the discarded tail rather than by a threshold; a <code>topn</code> run cannot carry a <code>coeff</code>-sweep convergence panel, and it has no equivalent in <code>PauliPropagation.jl</code> for cross-engine comparison.
-<code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within <code>k</code>, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
-<strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code> and keeps whole octaves from the top down while they fit in <code>n</code>, so at most <code>n</code> terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
+A sum of more than <code>k</code> terms keeps exactly <code>k</code>: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
+<strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code>, keeps whole octaves from the top down while they fit in <code>n</code>, and fills the rest from the next octave in storage order, so exactly <code>n</code> terms survive but not necessarily the <code>n</code> largest.
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a>.</p>
 <p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
 Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
@@ -906,7 +906,7 @@ It is unbiased only for weight-diagonal read-outs such as <a href="#echo"><code>
 <code>PropagationStats.collapses</code> counts the draws.</p>
 <pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
 </code></pre>
-<p>Policies compose with <code>&amp;</code> (keep when both agree) and <code>|</code> (keep when either does):</p>
+<p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code>:</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>
@@ -1166,7 +1166,7 @@ print(stats.circuit_index)
 </code></pre>
 <pre><code class="language-text">4 5 5
 [4, 4, 4, 4] [4, 4, 4, 5]
-['Depolarizing', 'Depolarizing', 'Clifford2Q', 'PauliRotation']
+['depolarizing', 'depolarizing', 'cnot', 'PauliRotation']
 [3, 2, 1, 0]
 </code></pre>
 <p>A layer is one applied channel (<a href="#the-loop">The loop</a>), so the broadcast <code>depolarize(p, [0, 1])</code> shows up as two entries and <code>len(circuit) == stats.layers</code>.
@@ -1292,8 +1292,8 @@ Pauli rotations prepare specially at any generator weight, since their delta set
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; <code>TopN</code> and its histogram-based approximation live there.
-Policies compose with and/or combinators.
-Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code> keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).</p>
+Policies compose with and/or combinators; or combines per-term filters only.
+Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code>/<code>ApproxTopN</code> keep exactly <code>n</code>, filling from the boundary in bucket order (ARCHITECTURE.md §Truncation).</p>
 <h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
 <p><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
 The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs on <code>engine::bucketed</code>, <code>engine::merge</code>, and <code>pauli_sum</code> carry the precise per-module contracts.</p>
@@ -4436,8 +4436,8 @@ A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2<
 <tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
 <tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
 <tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td><td>the one exemption from the two-qubit support panic below — any generator weight is accepted</td></tr>
-<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td><td>—</td></tr>
-<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
+<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex; <code>ValueError</code> unless every entry of <code>U†U − I</code> is within <code>1e-10</code></td><td>—</td></tr>
+<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, unitary to <code>1e-10</code> as above; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
 </tbody>
 </table>
 </div>
@@ -4625,7 +4625,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.final_terms</code></td><td><code>int</code></td><td><code>terms_out[-1]</code>, or the input’s count for a zero-layer circuit</td></tr>
 <tr><td><code>.circuit_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the circuit as written, independent of <code>direction</code></td></tr>
 <tr><td><code>.application_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the propagation loop, <code>0..layers</code> regardless of <code>direction</code></td></tr>
-<tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer</td></tr>
+<tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer: the <code>PtmChannel</code> constructor name (<code>hadamard</code>, <code>cnot</code>, <code>depolarizing</code>, …; <code>phase_gate_adjoint</code> for <code>sdg</code>) or <code>PauliRotation</code></td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[int]</code></td><td>elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks</td></tr>
 <tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code>/<code>device=</code> call, else <code>None</code></td></tr>
 <tr><td><code>.collapses</code></td><td><code>int | None</code></td><td>collapses a <code>truncation.collapse_sample</code> made during this call, <code>None</code> without one; under <code>comm=</code> rank 0’s count, all-reduced so every rank reports it</td></tr>
@@ -4666,8 +4666,8 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tbody>
 <tr><td><code>truncation.coeff(eps)</code></td><td><code>|c| &gt; eps</code> — note <strong>strictly</strong> greater; <code>|c| == eps</code> is dropped</td></tr>
 <tr><td><code>truncation.weight(k)</code></td><td>Pauli weight <code>&lt;= k</code></td></tr>
-<tr><td><code>truncation.topn(k)</code></td><td>at most <code>k</code> terms, largest <code>|c|</code> first; exact, no partitioned form</td></tr>
-<tr><td><code>truncation.approx_topn(k)</code></td><td>approximately <code>k</code> terms; partition/comm-safe</td></tr>
+<tr><td><code>truncation.topn(k)</code></td><td>exactly <code>k</code> terms (all of a smaller sum), largest <code>|c|</code> first; no partitioned form</td></tr>
+<tr><td><code>truncation.approx_topn(k)</code></td><td>exactly <code>k</code> terms, ranked by octave of <code>|c|**2</code>; partition/comm-safe</td></tr>
 <tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
 </tbody>
 </table>
@@ -4680,13 +4680,13 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 </thead>
 <tbody>
 <tr><td><code>a &amp; b</code></td><td>both</td></tr>
-<tr><td><code>a | b</code></td><td>either</td></tr>
+<tr><td><code>a | b</code></td><td>either; per-term filters only (<code>coeff</code>, <code>weight</code> and their compositions), so a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code> on either side raises <code>ValueError</code></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="topn-vs-approx_topn"><a class="header" href="#topn-vs-approx_topn"><code>topn</code> vs. <code>approx_topn</code></a></h2>
-<p><code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within <code>k</code>, dropped whole otherwise.
-<code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
+<p>Both keep every term above a boundary and fill up to <code>k</code> from the boundary itself: for <code>topn</code> the terms tied at the <code>k</code>-th largest magnitude, for <code>approx_topn</code> the octave of <code>\|c\|**2</code> where the count from the top first exceeds <code>k</code>.
+Boundary terms are taken in storage order (bucket order, rank order across partitions), so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="#choosing-a-policy">Truncation</a> for guidance and <a href="#truncation">Truncation</a> for the mechanism.</p>
 <h2 id="collapse_sample"><a class="header" href="#collapse_sample"><code>collapse_sample</code></a></h2>

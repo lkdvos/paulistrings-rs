@@ -62,9 +62,27 @@ fn layer_finalize_hint_matches_the_builtins() {
     let topn_first = And(TopN(4), WeightCutoff(2));
     assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&topn_first));
 
-    // `Or` does not forward `finalize_layer` to either side, so it has no layer pass however its children answer.
-    let ored = Or(CoefficientThreshold(1e-9), TopN(4));
+    let ored = Or::new(CoefficientThreshold(1e-9), WeightCutoff(4));
     assert!(!<_ as TruncationPolicy<1>>::finalizes_layer(&ored));
+}
+
+#[test]
+#[should_panic(
+    expected = "Or combines per-term filters only, but its second operand has a layer pass"
+)]
+fn or_with_top_n_panics_in_finalizes_layer() {
+    let _ =
+        <_ as TruncationPolicy<1>>::finalizes_layer(&Or::new(CoefficientThreshold(1e-9), TopN(4)));
+}
+
+#[test]
+#[should_panic(expected = "Or combines per-term filters only, but both operands have")]
+fn or_with_layer_passes_nested_in_and_panics_in_finalizes_layer() {
+    let policy = Or::new(
+        And(WeightCutoff(2), ApproxTopN(4)),
+        And(CollapseSample::new(4, 1), CoefficientThreshold(0.1)),
+    );
+    let _ = <_ as TruncationPolicy<1>>::finalizes_layer(&policy);
 }
 
 /// The hint defaults to the conservative `true`, so a forgotten override still gets its layer pass run.
@@ -892,7 +910,7 @@ fn and_requires_both_keep() {
 /// `Or` accepts if *either* policy accepts.
 #[test]
 fn or_keeps_if_either() {
-    let policy = Or(CoefficientThreshold(0.5), WeightCutoff(0));
+    let policy = Or::new(CoefficientThreshold(0.5), WeightCutoff(0));
     // (I, 0.1): |c| fails (0.1 ≤ 0.5), but weight=0 passes → kept.
     assert!(<Or<_, _> as TruncationPolicy<1>>::keep_term(
         &policy,

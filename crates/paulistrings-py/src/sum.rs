@@ -1222,7 +1222,7 @@ fn parse_run_mode(
         ));
     }
     let config = parse_partitions(partitions, pin_memory, partition_row_seed)?;
-    if (distributed || config.is_some()) && policy.contains_exact_top_n() {
+    if (distributed || config.is_some()) && !policy.supports_partitioned() {
         return Err(topn_partitioned_error(if distributed {
             None
         } else {
@@ -1347,7 +1347,7 @@ fn parse_device_mode(
             None => Some(crate::gpu::resolve_devices(&request, &shown)?),
         };
         // Exact TopN runs at one partition only: one resolved device, never a comm= group (one partition per rank).
-        if policy.contains_exact_top_n() && devices.as_ref().is_none_or(|d| d.len() > 1) {
+        if !policy.supports_partitioned() && devices.as_ref().is_none_or(|d| d.len() > 1) {
             return Err(PyNotImplementedError::new_err(format!(
                 "{shown}: {}",
                 crate::gpu::TOPN_DEVICE_MSG

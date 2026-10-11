@@ -1,7 +1,7 @@
 //! `paulistrings._paulistrings.truncation` submodule: policy factories. See
 //! ARCHITECTURE.md §Truncation and ARCHITECTURE.md §Python-Bindings.
 //!
-//! Python composition is via the `&` and `|` operators on the returned objects.
+//! Python composition is via the `&` and `|` operators on the returned objects; `|` combines per-term filters only.
 
 use crate::truncation_spec::PyTruncation;
 use paulistrings::{BuiltinTruncation, CollapseSample};

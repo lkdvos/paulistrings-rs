@@ -286,7 +286,7 @@ def test_exact_topn_is_not_implemented_across_several_devices():
     with pytest.raises(NotImplementedError, match="approx_topn"):
         s.propagate(c, truncation.topn(10), device=[0, 0])
     with pytest.raises(NotImplementedError, match="topn"):
-        s.propagate(c, truncation.coeff(0.1) | truncation.topn(10), device=[0, 0])
+        s.propagate(c, truncation.coeff(0.1) & truncation.topn(10), device=[0, 0])
 
 
 @needs_cuda

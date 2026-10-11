@@ -409,7 +409,8 @@ The split is performance-critical: `keep_term` runs on every merged output — p
 `finalize_layer` runs once per layer and may be non-local; its partitioned form is §Partitioning's.
 
 Built-ins: `CoefficientThreshold(eps)` and `WeightCutoff(k)` are per-term filters; `TopN(n)` and `ApproxTopN(n)` are layer finalizations.
-Policies compose with `And` / `Or` (Python: `&` / `|`).
+Policies compose with `And` / `Or` (Python: `&` / `|`): `And` keeps a term both keep and runs both layer passes, first then second; `Or` keeps a term either keeps and combines per-term filters only.
+An `Or` operand with a layer pass (`TopN`, `ApproxTopN`, `CollapseSample`, or an `And` holding one) is rejected: by `BuiltinTruncation::or`/`try_or` and Python's `|` at construction, and by a generic `Or`'s `finalizes_layer`, which every driver calls before the first layer.
 `BuiltinTruncation` is the same set as one runtime value, and every builtin and combinator converts into it; the device drivers take one, which is what they lower, so a custom policy has no device form and cannot reach a device.
 
 **Magnitudes are compared as `|c|²`, never as `|c|`.**

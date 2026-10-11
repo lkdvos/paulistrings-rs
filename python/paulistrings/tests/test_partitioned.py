@@ -276,9 +276,8 @@ def test_approx_topn_agrees_with_unpartitioned():
     [
         truncation.topn(1_000),
         truncation.coeff(1e-9) & truncation.topn(1_000),
-        truncation.topn(1_000) | truncation.coeff(1e-9),
     ],
-    ids=["topn", "coeff & topn", "topn | coeff"],
+    ids=["topn", "coeff & topn"],
 )
 def test_exact_topn_is_rejected_in_partitioned_mode(policy):
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0], layers=1)

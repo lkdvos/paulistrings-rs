@@ -492,14 +492,35 @@ where
     }
 }
 
-/// Either policy: a term is kept if either keeps it, and neither layer pass runs.
+/// Either of two per-term filters: a term is kept if either keeps it.
+///
+/// `Or` combines per-term filters only: an operand with a layer pass ([`TopN`], [`ApproxTopN`], [`CollapseSample`], or an [`And`] containing one) is rejected, since "either keeps" has no meaning for a pass over the whole sum.
+/// Use [`And`] to add a filter to a layer pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Or<A, B>(
-    /// First policy.
-    pub A,
-    /// Second policy.
-    pub B,
-);
+pub struct Or<A, B>(pub(crate) A, pub(crate) B);
+
+impl<A, B> Or<A, B> {
+    /// Either of `first` and `second`.
+    ///
+    /// The operands are checked in [`finalizes_layer`](TruncationPolicy::finalizes_layer), which every driver calls before the first layer, since a layer pass is a property of the policy at a width `W` and `new` has no `W`.
+    pub fn new(first: A, second: B) -> Self {
+        Self(first, second)
+    }
+}
+
+/// Why an `Or` of these operands is rejected, or `None` if both are per-term filters.
+pub(crate) fn or_operand_error(first_has_pass: bool, second_has_pass: bool) -> Option<String> {
+    let which = match (first_has_pass, second_has_pass) {
+        (false, false) => return None,
+        (true, false) => "its first operand has",
+        (false, true) => "its second operand has",
+        (true, true) => "both operands have",
+    };
+    Some(format!(
+        "Or combines per-term filters only, but {which} a layer pass (TopN, ApproxTopN or \
+         CollapseSample, alone or inside an And); use And to add a filter to a layer pass"
+    ))
+}
 
 impl<const W: usize, A, B> TruncationPolicy<W> for Or<A, B>
 where
@@ -510,7 +531,12 @@ where
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
     }
 
+    /// `false`; panics if either operand has a layer pass.
     fn finalizes_layer(&self) -> bool {
+        if let Some(message) = or_operand_error(self.0.finalizes_layer(), self.1.finalizes_layer())
+        {
+            panic!("{message}");
+        }
         false
     }
 }

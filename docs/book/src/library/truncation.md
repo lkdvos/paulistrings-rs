@@ -15,7 +15,7 @@ All five live in the `paulistrings.truncation` module and run after every channe
 | Expression | Keeps |
 |---|---|
 | `a & b` | both |
-| `a \| b` | either |
+| `a \| b` | either; per-term filters only (`coeff`, `weight` and their compositions), so a `topn`, `approx_topn` or `collapse_sample` on either side raises `ValueError` |
 
 ## `topn` vs. `approx_topn`
 

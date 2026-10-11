@@ -49,7 +49,7 @@ pub(super) fn lower_for_run<const W: usize>(
     hash: &Gf2Hash<W>,
     single_partition: bool,
 ) -> Result<KeepProgram, GpuError> {
-    if policy.contains_exact_top_n() && !single_partition {
+    if !policy.supports_partitioned() && !single_partition {
         return Err(GpuError::Unsupported("exact TopN on device"));
     }
     if policy.contains_collapse_sample() {

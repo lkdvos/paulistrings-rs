@@ -179,11 +179,11 @@ fn a_per_term_policy_finalizes_to_a_no_op() {
     }
 }
 
-/// `Or` forwards its partitioned pass to neither side, as it does unpartitioned.
+/// An `Or` of filters has no layer pass, partitioned or not.
 #[test]
-fn or_forwards_no_layer_pass_either_way() {
+fn an_or_of_filters_runs_no_layer_pass_either_way() {
     let input = rand_sum_real::<1>(600, 32, 0xB0B0);
-    let policy = Or(CoefficientThreshold(1e-3), ApproxTopN(10));
+    let policy = Or::new(CoefficientThreshold(1e-3), WeightCutoff(10));
 
     let mut unpartitioned = input.clone();
     policy.finalize_layer(&mut unpartitioned);
@@ -296,7 +296,7 @@ fn exact_top_n_runs_at_one_partition_only() {
     );
 }
 
-/// `supports_partitioned` is `false` exactly for a layer pass with no collective form, looking through `And` but not into `Or`.
+/// `supports_partitioned` is `false` exactly for a layer pass with no collective form, looking through `And`.
 #[test]
 fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
     fn supports<T: TruncationPolicy<1>>(policy: T) -> bool {
@@ -307,7 +307,10 @@ fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
     assert!(supports(ApproxTopN(10)));
     assert!(supports(CollapseSample::new(10, 1)));
     assert!(supports(And(CoefficientThreshold(1e-3), ApproxTopN(10))));
-    assert!(supports(Or(TopN(10), CoefficientThreshold(1e-3))));
+    assert!(supports(Or::new(
+        WeightCutoff(10),
+        CoefficientThreshold(1e-3)
+    )));
     assert!(!supports(TopN(10)));
     assert!(!supports(And(CoefficientThreshold(1e-3), TopN(10))));
     assert!(!supports(HalfDone));

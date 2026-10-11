@@ -43,7 +43,7 @@ It is unbiased only for weight-diagonal read-outs such as [`diagonal_echo`](../m
 sampler = truncation.collapse_sample(1_000, 7)
 ```
 
-Policies compose with `&` (keep when both agree) and `|` (keep when either does):
+Policies compose with `&` (keep when both agree, and run every layer pass) and `|` (keep when either does); `|` combines per-term filters only, and raises `ValueError` on a `topn`, `approx_topn` or `collapse_sample`:
 
 ```python
 policy = truncation.weight(6) & truncation.coeff(1e-10)

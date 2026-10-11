@@ -84,7 +84,7 @@ Pauli rotations prepare specially at any generator weight, since their delta set
 A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; `TopN` and its histogram-based approximation live there.
-Policies compose with and/or combinators.
+Policies compose with and/or combinators; or combines per-term filters only.
 Magnitude comparisons use `|c|²` rather than `|c|` (the same ordering, no `hypot` on the hot path), and `TopN` keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).
 
 ## Further reading

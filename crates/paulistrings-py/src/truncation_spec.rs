@@ -1,7 +1,8 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle over a core [`BuiltinTruncation`] tree.
-//! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`.
+//! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`, and `|` takes per-term filters only.
 
 use paulistrings::{BuiltinTruncation, CollapseSample};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -75,11 +76,11 @@ impl PyTruncation {
         ))
     }
 
-    fn __or__(&self, other: &PyTruncation) -> PyTruncation {
-        PyTruncation::new(BuiltinTruncation::Or(
-            Box::new(self.tree.clone()),
-            Box::new(other.tree.clone()),
-        ))
+    /// Either of two per-term filters (`coeff`, `weight`, or a composition of them); raises `ValueError` if either side has a layer pass (`topn`, `approx_topn`, `collapse_sample`).
+    fn __or__(&self, other: &PyTruncation) -> PyResult<PyTruncation> {
+        BuiltinTruncation::try_or(self.tree.clone(), other.tree.clone())
+            .map(PyTruncation::new)
+            .map_err(PyValueError::new_err)
     }
 
     fn __repr__(&self) -> String {
@@ -126,7 +127,7 @@ mod tests {
         for tree in [&a, &b, &b] {
             <BuiltinTruncation as TruncationPolicy<1>>::finalize_layer(tree, &mut x_sum(40));
         }
-        let both = BuiltinTruncation::Or(Box::new(a.clone()), Box::new(b.clone()));
+        let both = BuiltinTruncation::And(Box::new(a.clone()), Box::new(b.clone()));
         assert_eq!(collapse_count(&both), Some(3));
         let twice = BuiltinTruncation::And(Box::new(a.clone()), Box::new(a));
         assert_eq!(collapse_count(&twice), Some(1));

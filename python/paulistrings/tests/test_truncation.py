@@ -161,19 +161,29 @@ def test_approx_topn_composes_with_the_operators():
         _probe_circuit(2), policy=truncation.approx_topn(2) & truncation.weight(1)
     )
     assert _mags(out) == pytest.approx([1.0, 0.25])
-    # Or keeps a term if either arm does, and both TopN flavours' *per-term*
-    # predicate is unconditionally true — they work in the layer pass, which
-    # `Or` does not run (matching `builtin::Or`). So an `Or` containing one
-    # keeps everything, exactly as it does with `topn`.
-    ored = s.propagate(
-        _probe_circuit(2), policy=truncation.approx_topn(1) | truncation.weight(1)
-    )
-    assert len(ored.coefficients()) == 4
-    assert len(
-        s.propagate(
-            _probe_circuit(2), policy=truncation.topn(1) | truncation.weight(1)
-        ).coefficients()
-    ) == 4
+
+
+@pytest.mark.parametrize(
+    "layer_pass",
+    [
+        lambda: truncation.topn(3),
+        lambda: truncation.approx_topn(3),
+        lambda: truncation.collapse_sample(3, 1),
+        lambda: truncation.coeff(0.1) & truncation.topn(3),
+        lambda: truncation.weight(2) & truncation.collapse_sample(3, 1),
+    ],
+    ids=["topn", "approx_topn", "collapse_sample", "coeff & topn", "weight & collapse"],
+)
+def test_or_rejects_a_layer_pass(layer_pass):
+    with pytest.raises(
+        ValueError,
+        match="Or combines per-term filters only, but its second operand has a layer pass",
+    ):
+        truncation.weight(1) | layer_pass()
+    with pytest.raises(ValueError, match="its first operand has a layer pass"):
+        layer_pass() | truncation.coeff(0.1)
+    with pytest.raises(ValueError, match="both operands have a layer pass"):
+        layer_pass() | layer_pass()
 
 
 def test_and_combinator_requires_both_to_keep():
@@ -239,7 +249,7 @@ def test_coeff_factory_is_a_truncation_object():
     b = truncation.weight(2)
     composed = a & b
     # Should behave like a Truncation under further composition.
-    deeper = composed | truncation.topn(5)
+    deeper = (composed | truncation.weight(0)) & truncation.topn(5)
     assert deeper is not None
 
 

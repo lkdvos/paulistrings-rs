@@ -55,7 +55,7 @@ pub fn or(
     a: crate::truncation::BuiltinTruncation,
     b: crate::truncation::BuiltinTruncation,
 ) -> crate::truncation::BuiltinTruncation {
-    crate::truncation::BuiltinTruncation::Or(Box::new(a), Box::new(b))
+    crate::truncation::BuiltinTruncation::or(a, b)
 }
 
 /// Every transport call one rank issued, in order.

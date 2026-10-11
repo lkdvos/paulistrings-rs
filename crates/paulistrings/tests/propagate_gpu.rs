@@ -242,7 +242,7 @@ fn builtin_policy_types_lower_and_match_the_host() {
     check(
         &circuit,
         &input,
-        &Or(CoefficientThreshold(1e-3), WeightCutoff(4)),
+        &Or::new(CoefficientThreshold(1e-3), WeightCutoff(4)),
         "coeff | weight",
     );
 }

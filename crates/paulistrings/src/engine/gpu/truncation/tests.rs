@@ -87,10 +87,6 @@ fn lowering_emits_the_hand_written_postfix() {
         lower(&and(T::ApproxTopN(10), T::ApproxTopN(3))),
         vec![(OP_KEEP, 0)]
     );
-    assert_eq!(
-        lower(&or(T::Coefficient(1e-3), T::TopN(10))),
-        vec![(OP_KEEP, 0)]
-    );
     assert_eq!(KeepProgram::lower(&T::Keep).unwrap(), KeepProgram::KEEP);
 }
 
@@ -117,13 +113,16 @@ fn lowering_round_trips_and_evaluates_as_the_tree() {
         T::Weight(2),
         and(T::Coefficient(0.1), T::Weight(1)),
         or(T::Coefficient(0.5), T::Weight(0)),
-        or(
-            and(T::Coefficient(0.1), T::ApproxTopN(3)),
-            and(T::Weight(2), T::Coefficient(0.3)),
+        and(
+            or(
+                and(T::Coefficient(0.1), T::Weight(1)),
+                and(T::Weight(2), T::Coefficient(0.3)),
+            ),
+            T::ApproxTopN(3),
         ),
         and(
             or(T::Weight(0), T::Coefficient(1.0)),
-            or(T::TopN(3), T::Weight(3)),
+            and(T::TopN(3), T::Weight(3)),
         ),
         and(T::Keep, or(T::Keep, T::Coefficient(0.2))),
     ];
@@ -170,7 +169,7 @@ fn every_builtin_lowers_including_top_n() {
 }
 
 #[test]
-fn layer_pass_leaves_follow_and_and_skip_or() {
+fn layer_pass_leaves_follow_and() {
     let leaves = |t: &T| {
         let mut v = Vec::new();
         layer_pass_leaves(t, &mut |l| v.push(l.clone()));
@@ -185,7 +184,7 @@ fn layer_pass_leaves_follow_and_and_skip_or() {
         leaves(&and(T::ApproxTopN(9), and(T::Weight(2), T::ApproxTopN(3)))),
         vec![T::ApproxTopN(9), T::ApproxTopN(3)]
     );
-    assert!(leaves(&or(T::ApproxTopN(3), T::Coefficient(0.1))).is_empty());
+    assert!(leaves(&or(T::Weight(3), T::Coefficient(0.1))).is_empty());
     assert!(leaves(&T::Coefficient(0.1)).is_empty());
     let collapse = T::from(crate::truncation::CollapseSample::new(4, 1));
     assert_eq!(

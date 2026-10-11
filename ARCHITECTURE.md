@@ -451,6 +451,7 @@ Its default probes `apply`; `PtmChannel` and `PauliRotation` override it, and th
 Built-ins: `PauliRotation` (`exp(-iθP/2)`, any generator weight; support derived from the generator, never caller-supplied) and `PtmChannel`, every one- and two-qubit gate and noise channel as its Pauli-transfer matrix (PTM), built by named constructors that assert distinct qubits and parameters in `[0, 1]`.
 `PtmChannel` stores the PTM in the cheapest exact form its constructor knows: a signed permutation for the Cliffords (`hadamard`, `phase_gate`, `pauli_x/y/z`, `cnot`, `cz`, `swap`), the diagonal for the Pauli-diagonal noise (`depolarizing`, `dephasing`, `pauli_channel`, `depolarizing_2q`), and sparse `(s, t, amplitude)` entries for `amplitude_damping` (genuine fanout 2) and the general unitaries `unitary_1q` / `unitary_2q` (PTM derived from the matrix).
 Its `debug_name` is the constructor name (`hadamard`, `cnot`, …), with `_adjoint` appended for an `adjoint()`.
+The struct is 40 bytes (`u32` qubits, a one-byte constructor kind) plus the heap table of a diagonal or sparse PTM.
 `apply` reads a PTM row, `apply_adjoint` its transpose, and `adjoint()` returns the transposed channel.
 `test_support::IdentityChannel` (behind `test-utils`) is the empty-support channel the tests use.
 `Circuit::push` (and `push_boxed`) asserts that the channel's support lies below `num_qubits`, naming the channel by `debug_name`; the channel list is read through `channels()`.

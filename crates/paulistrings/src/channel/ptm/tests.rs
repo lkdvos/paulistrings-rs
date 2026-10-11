@@ -142,6 +142,11 @@ fn debug_name_is_the_constructor_name() {
     }
 }
 
+#[test]
+fn a_channel_fits_in_40_bytes() {
+    assert!(core::mem::size_of::<PtmChannel>() <= 40);
+}
+
 /// The two-qubit order is the constructor's: `cnot(4, 1)` controls on 4.
 #[test]
 fn a_reversed_pair_keeps_its_roles() {

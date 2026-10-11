@@ -25,7 +25,7 @@ const ONE: Complex64 = Complex64::new(1.0, 0.0);
 #[derive(Clone, Debug)]
 pub struct PtmChannel {
     /// Support qubits in constructor order; only the first `num_support_qubits` are meaningful.
-    qubits: [usize; 2],
+    qubits: [u32; 2],
     num_support_qubits: u8,
     kind: PtmKind,
     /// Whether this is the [`adjoint`](Self::adjoint) of the constructed channel; [`Channel::debug_name`] appends `_adjoint`.
@@ -91,19 +91,27 @@ enum PtmStorage {
     },
     /// A Pauli-diagonal channel: input `s` keeps its key and is scaled by `scale[s]`.
     Diagonal { scale: Box<[f64]> },
-    /// Everything else: `amplitudes[i]` takes input `positions[i].0` to output `positions[i].1`, ascending by position.
-    Sparse {
-        positions: Box<[(u8, u8)]>,
-        amplitudes: Box<[Complex64]>,
-    },
+    /// Everything else, ascending by `(input, output)`.
+    Sparse { entries: Box<[SparseEntry]> },
+}
+
+/// One nonzero PTM entry: `amplitude` takes local Pauli `input` to `output`.
+#[derive(Clone, Copy, Debug)]
+struct SparseEntry {
+    input: u8,
+    output: u8,
+    amplitude: Complex64,
 }
 
 impl PtmChannel {
     /// A channel on `qubits` (one or two, distinct) from its storage.
     fn new(qubits: &[usize], storage: PtmStorage, kind: PtmKind) -> Self {
         debug_assert!(qubits.len() == 1 || qubits.len() == 2);
-        let mut padded = [qubits[0]; 2];
-        padded[..qubits.len()].copy_from_slice(qubits);
+        let narrow = |q: usize| u32::try_from(q).expect("PtmChannel: qubit index exceeds u32");
+        let mut padded = [narrow(qubits[0]); 2];
+        for (slot, &q) in padded.iter_mut().zip(qubits) {
+            *slot = narrow(q);
+        }
         Self {
             qubits: padded,
             num_support_qubits: qubits.len() as u8,
@@ -114,8 +122,10 @@ impl PtmChannel {
     }
 
     /// The support qubits, in constructor order.
-    pub fn qubits(&self) -> &[usize] {
-        &self.qubits[..self.num_support_qubits as usize]
+    pub fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
+        self.qubits[..self.num_support_qubits as usize]
+            .iter()
+            .map(|&q| q as usize)
     }
 
     /// The adjoint channel, whose PTM is this one's transpose.
@@ -137,17 +147,13 @@ impl PtmChannel {
             PtmStorage::Diagonal { scale } => PtmStorage::Diagonal {
                 scale: scale.clone(),
             },
-            PtmStorage::Sparse {
-                positions,
-                amplitudes,
-            } => {
-                let mut entries: Vec<((u8, u8), Complex64)> = positions
+            PtmStorage::Sparse { entries } => {
+                let mut transposed: Vec<((u8, u8), Complex64)> = entries
                     .iter()
-                    .map(|&(s, t)| (t, s))
-                    .zip(amplitudes.iter().copied())
+                    .map(|entry| ((entry.output, entry.input), entry.amplitude))
                     .collect();
-                entries.sort_by_key(|&(position, _)| position);
-                sparse_storage(entries)
+                transposed.sort_by_key(|&(position, _)| position);
+                sparse_storage(transposed)
             }
         };
         Self {
@@ -165,9 +171,8 @@ impl PtmChannel {
     /// The local Pauli index of the input's restriction to the support.
     fn local_index<const W: usize>(&self, x: &[u64; W], z: &[u64; W]) -> usize {
         self.qubits()
-            .iter()
             .enumerate()
-            .map(|(j, &q)| {
+            .map(|(j, q)| {
                 let (word, bit, _) = qubit_loc(q);
                 read_pauli(x, z, word, bit) << (2 * j)
             })
@@ -183,7 +188,7 @@ impl PtmChannel {
     ) -> ([u64; W], [u64; W]) {
         let mut new_x = *x;
         let mut new_z = *z;
-        for (j, &q) in self.qubits().iter().enumerate() {
+        for (j, q) in self.qubits().enumerate() {
             let (word, bit, mask) = qubit_loc(q);
             write_pauli(&mut new_x, &mut new_z, word, bit, mask, (t >> (2 * j)) & 3);
         }
@@ -220,19 +225,16 @@ impl PtmChannel {
                 out.push(new_x, new_z, signed);
             }
             PtmStorage::Diagonal { scale } => out.push(*x, *z, coeff * scale[s]),
-            PtmStorage::Sparse {
-                positions,
-                amplitudes,
-            } => {
-                for (&(input, output), &amplitude) in positions.iter().zip(amplitudes.iter()) {
+            PtmStorage::Sparse { entries } => {
+                for entry in entries.iter() {
                     let (from, to) = if transpose {
-                        (output, input)
+                        (entry.output, entry.input)
                     } else {
-                        (input, output)
+                        (entry.input, entry.output)
                     };
                     if from as usize == s {
                         let (new_x, new_z) = self.with_local_index(x, z, to as usize);
-                        out.push(new_x, new_z, coeff * amplitude);
+                        out.push(new_x, new_z, coeff * entry.amplitude);
                     }
                 }
             }
@@ -253,12 +255,9 @@ impl PtmChannel {
                     visit(s, s, Complex64::new(value, 0.0));
                 }
             }
-            PtmStorage::Sparse {
-                positions,
-                amplitudes,
-            } => {
-                for (&(s, t), &amplitude) in positions.iter().zip(amplitudes.iter()) {
-                    visit(s as usize, t as usize, amplitude);
+            PtmStorage::Sparse { entries } => {
+                for entry in entries.iter() {
+                    visit(entry.input as usize, entry.output as usize, entry.amplitude);
                 }
             }
         }
@@ -285,13 +284,16 @@ impl PtmChannel {
 
 /// Sparse storage from `(position, amplitude)` pairs ascending by position, exact zeros dropped.
 fn sparse_storage(entries: Vec<((u8, u8), Complex64)>) -> PtmStorage {
-    let (positions, amplitudes): (Vec<(u8, u8)>, Vec<Complex64>) = entries
-        .into_iter()
-        .filter(|&(_, amplitude)| amplitude != ZERO)
-        .unzip();
     PtmStorage::Sparse {
-        positions: positions.into_boxed_slice(),
-        amplitudes: amplitudes.into_boxed_slice(),
+        entries: entries
+            .into_iter()
+            .filter(|&(_, amplitude)| amplitude != ZERO)
+            .map(|((input, output), amplitude)| SparseEntry {
+                input,
+                output,
+                amplitude,
+            })
+            .collect(),
     }
 }
 
@@ -313,7 +315,11 @@ fn assert_probability(constructor: &str, name: &str, value: f64) {
 
 impl<const W: usize> Channel<W> for PtmChannel {
     fn support(&self) -> [u64; W] {
-        support_mask(self.qubits())
+        let mut qubits = [0usize; 2];
+        for (slot, q) in qubits.iter_mut().zip(self.qubits()) {
+            *slot = q;
+        }
+        support_mask(&qubits[..self.num_support_qubits as usize])
     }
 
     fn debug_name(&self) -> &'static str {

@@ -47,7 +47,7 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 3 | Storage | pauli_sum/{storage,partition,accumulator} | done |
 | 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | done |
 | 5 | Channels II | channel/noise, unitary, prepared | done |
-| 6 | Truncation | truncation/* | D37–D43 implementing (D42 needs the user's A/B) |
+| 6 | Truncation | truncation/* | done except D42 (awaiting the user's A/B) |
 | 7 | Sort/merge kernels | engine/merge, engine/coset | pending |
 | 8 | Bucketed layer | engine/bucketed, engine/stats | pending |
 | 9 | Front door | engine/mod, engine/direct | pending |
@@ -141,6 +141,8 @@ Chunk 4–5 follow-ups and chunk 6 (2026-10-11):
 - **D42 Per-term filter stays monomorphized unless measured otherwise.** Before unifying the generic built-ins and `BuiltinTruncation`, a probe flag runs `CoefficientThreshold` either generically or as `BuiltinTruncation::Coefficient`, and a same-node runtime-knob A/B decides: no consistent difference → one `Truncation` enum; otherwise keep the generic per-term path (and dispatch common Python trees onto it).
 - **D43** Small cleanups: `TopN`'s compaction via `retain`, one `LOG_TARGET`, `contains_exact_top_n` removed per D40.
 
+As applied: `00b4dc5` D37 (`adjoint()` toggles an `_adjoint` suffix, so `sdg` reports `phase_gate_adjoint`), `187ba3b` D38 (80 → 40 bytes; sparse table one `Box<[SparseEntry]>`; `PtmChannel::qubits()` returns an iterator), `213f089` D39 (largest `|(U†U − I)_ij|` ≤ 1e-10, NaN fails; Python checks the same quantity), `4e982f6` D40 (the `Or` check runs in `Or::finalizes_layer`, before the first layer, because `Or::new` has no `W`; `BuiltinTruncation::or`/`try_or` check at construction), `084d45e` D41 (host `retain_with_boundary_quota` over `PauliSum::retain_per_bucket`; partitioned quota via one extra length-P all-reduce; device `k_boundary_counts` + scan + quota-aware `k_retain`, `k_topn_counts` gone; `test_support::assert_runs_agree` compares count only when a layer pass cut a tie), `22d796d` D42 probe flag `--truncation-dispatch` plus `PROBE_EXTRA`/`KNOB_B` in `ab-campaign.sbatch`, `96714e0` D43, `601b391` (Python MPI test policy above the circuit's peak). Equivalence vs `2e1b64a`, 604 cases: 404 without `TopN`/`ApproxTopN`/`Or` bitwise (44 differ only in D37 trace names); single-pass cuts keep exactly `n` with every above-boundary term bitwise; multi-layer cuts diverge only after a layer where the old rule kept fewer than `n`. 762 workspace, 893 cuda, 504 pytest, MPI 2/4 ranks green.
+
 ### As applied, chunks 4–5
 
 `38353a4` D35+D36 (`PtmChannel` with `hadamard`, `phase_gate`, `pauli_x/y/z`, `cnot`, `cz`, `swap`, `unitary_1q/2q`, `depolarizing`, `dephasing`, `pauli_channel`, `depolarizing_2q`, `amplitude_damping`, `adjoint()`; storage `SignedPermutation`/`Diagonal`/`Sparse`; constructors assert distinct qubits and parameters in [0, 1] incl. NaN; per-constructor tests compare the direct table bitwise against probing `apply`), `12318fc` D30+D31+D15 (`OutputBuffer<W>` owns growable columns; `apply_adjoint` required; `prepare` via a `#[doc(hidden)] prepare_for_layer(.., PrepareToken)` whose token type is unnameable outside the crate), `86cc82d` D33 (plus a new public `Circuit::push_boxed`), `8e506c6` D34.
@@ -230,4 +232,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Preparatory pass (stages A, B0, B1–B8, C) complete and verified at `2489250`; code A/B vs `89bdcca` handed to the user. Next: chunk 0 tour on the reorganised tree (update the global map paths first).
+Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on the user's `ab-campaign.sbatch` run with `KNOB_B="--truncation-dispatch builtin"`, D16 on its own A/B. Next: chunk 7 (`engine/merge.rs`, `engine/coset.rs`), then chunk 8 (bucketed layer; TermTrace/GateTrace cut, phase-timing fold).

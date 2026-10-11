@@ -24,7 +24,7 @@ use partitioned::driver::{run_layers, PartitionContext, PartitionWork};
 use partitioned::trace::PartitionLayerRow;
 use partitioned::transport::SoloTransport;
 
-/// `log` target for the engine's progress events, partitioned or not.
+/// `log` target for the engine's progress events, partitioned or not, and the truncation policies' own.
 pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";
 
 /// Propagation direction: channels in order, or in reverse with adjoints for backpropagating observables.

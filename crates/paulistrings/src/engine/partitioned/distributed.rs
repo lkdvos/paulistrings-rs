@@ -6,7 +6,7 @@ use std::time::Instant;
 use num_complex::Complex64;
 
 use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
-use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork};
+use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, LOG_TARGET};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
@@ -21,9 +21,6 @@ use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 #[cfg(feature = "phase-timing")]
 use super::sum::PartitionPhaseStats;
-
-/// `log` target shared with [`propagate`](crate::propagate).
-const LOG_TARGET: &str = "paulistrings::propagate";
 
 /// Parts the gather ships per rank: bucket lengths, then the three columns.
 const GATHER_PARTS: usize = 4;

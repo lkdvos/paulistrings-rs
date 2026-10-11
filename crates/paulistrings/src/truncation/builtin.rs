@@ -2,6 +2,7 @@
 
 use super::TruncationPolicy;
 use crate::collectives::Collectives;
+use crate::engine::LOG_TARGET;
 use crate::pauli_sum::PauliSum;
 use crate::rng::Rng;
 use num_complex::Complex64;
@@ -366,9 +367,6 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
         true
     }
 }
-
-/// `log` target shared with [`propagate`](crate::propagate).
-pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";
 
 /// Replace the sum by one Pauli string, drawn with probability `|c|² / Σ|c|²` and given coefficient `1`, whenever it holds more than `cache` terms.
 ///

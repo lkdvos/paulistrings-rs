@@ -47,7 +47,7 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 3 | Storage | pauli_sum/{storage,partition,accumulator} | done |
 | 4 | Channels I | channel/mod, clifford, identity, rotation, circuit | done |
 | 5 | Channels II | channel/noise, unitary, prepared | done |
-| 6 | Truncation | truncation/* | presented, Q20–Q23 open |
+| 6 | Truncation | truncation/* | D37–D43 implementing (D42 needs the user's A/B) |
 | 7 | Sort/merge kernels | engine/merge, engine/coset | pending |
 | 8 | Bucketed layer | engine/bucketed, engine/stats | pending |
 | 9 | Front door | engine/mod, engine/direct | pending |
@@ -130,6 +130,16 @@ Chunk 5 (2026-10-09):
 
 - **D35 One PTM built-in.** `PtmChannel` (support qubits plus compact PTM storage: permutation and signs for Cliffords, the diagonal for diagonal noise, sparse entries otherwise) replaces `Clifford1Q`, `Clifford2Q`, `GeneralUnitary1Q/2Q`, `Depolarizing`, `Dephasing`, `PauliChannel`, `Depolarizing2Q`, `AmplitudeDamping`, with named constructors; adjoint is the transpose; its `prepare` builds the delta list directly without probing `apply`. Python keeps its names. Check memory per gate and `prepare` cost per layer before/after.
 - **D36 Validating constructors.** Real `assert!`s for distinct qubits and `p, γ ∈ [0, 1]` (the release-mode `Depolarizing2Q` equal-qubit hole), no public fields.
+
+Chunk 4–5 follow-ups and chunk 6 (2026-10-11):
+
+- **D37** `debug_name` reports constructor names (`hadamard`, `cnot`, `depolarizing`, …), so trace and Python `gate_name` strings change.
+- **D38** `PtmChannel` shrinks to about 48 bytes (one-byte kind instead of a name, `u32` qubits internally).
+- **D39** `unitary_1q`/`unitary_2q` assert unitarity (`‖U†U − I‖` within a small tolerance) with a clear message; Python maps it to `ValueError`.
+- **D40 `Or` runs both layer passes in order**, like `And`; per-term it keeps a term if either side keeps it. So `Or(TopN(n), …)` truncates to `n` instead of silently disabling truncation; `supports_partitioned` is the AND of both sides; `contains_exact_top_n` is replaced by `!supports_partitioned()`.
+- **D41 `TopN` and `ApproxTopN` keep exactly `n` terms** when the sum exceeds `n`: everything strictly above the boundary (the `n`-th magnitude, or the boundary octave) plus as many boundary terms as fit, chosen in bucket order (rank order across partitions, via an all-reduce of per-partition boundary counts); no wipe to empty, no overshoot. Which tied terms survive is not a semantic promise. Device paths follow the same rule.
+- **D42 Per-term filter stays monomorphized unless measured otherwise.** Before unifying the generic built-ins and `BuiltinTruncation`, a probe flag runs `CoefficientThreshold` either generically or as `BuiltinTruncation::Coefficient`, and a same-node runtime-knob A/B decides: no consistent difference → one `Truncation` enum; otherwise keep the generic per-term path (and dispatch common Python trees onto it).
+- **D43** Small cleanups: `TopN`'s compaction via `retain`, one `LOG_TARGET`, `contains_exact_top_n` removed per D40.
 
 ### As applied, chunks 4–5
 

@@ -6,8 +6,10 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+/// Largest `|(U†U − I)_ij|` accepted; must match `PtmChannel`'s own bound.
+const UNITARITY_TOLERANCE: f64 = 1e-10;
+
 /// Read an `n x n` complex matrix from a NumPy array, checking shape and unitarity.
-/// The unitarity check is not pedantry: a non-unitary matrix silently produces a non-physical channel, and the error would only show up as drifting coefficients many layers later.
 fn read_unitary<const N: usize>(
     a: PyReadonlyArray2<'_, Complex64>,
     what: &str,
@@ -25,27 +27,23 @@ fn read_unitary<const N: usize>(
             u[i][j] = view[[i, j]];
         }
     }
-    // U U^dagger == I to within tolerance.
+    // The same bound `PtmChannel::unitary_1q`/`unitary_2q` assert, checked first so a bad matrix is a `ValueError`, not a panic.
+    let mut deviation: f64 = 0.0;
     for i in 0..N {
         for j in 0..N {
-            let acc: Complex64 = u[i]
-                .iter()
-                .zip(u[j].iter())
-                .map(|(a, b)| a * b.conj())
-                .sum();
-            let want = if i == j {
-                Complex64::new(1.0, 0.0)
-            } else {
-                Complex64::new(0.0, 0.0)
-            };
-            if (acc - want).norm() > 1e-9 {
-                return Err(PyValueError::new_err(format!(
-                    "{what}: matrix is not unitary (U U* deviates from the identity \
-                     by {:.3e} at [{i}][{j}])",
-                    (acc - want).norm(),
-                )));
+            let product: Complex64 = (0..N).map(|k| u[k][i].conj() * u[k][j]).sum();
+            let identity = if i == j { 1.0 } else { 0.0 };
+            let entry = (product - Complex64::new(identity, 0.0)).norm();
+            if entry > deviation || entry.is_nan() {
+                deviation = entry;
             }
         }
+    }
+    if deviation.is_nan() || deviation > UNITARITY_TOLERANCE {
+        return Err(PyValueError::new_err(format!(
+            "{what}: matrix is not unitary (largest entry of U†U − I is {deviation:.3e}, \
+             tolerance {UNITARITY_TOLERANCE:e})"
+        )));
     }
     Ok(u)
 }
@@ -221,6 +219,8 @@ pub(crate) fn unitary_2q_spec(
 }
 
 /// An arbitrary single-qubit unitary from its 2x2 matrix.
+///
+/// Raises `ValueError` unless every entry of `U†U − I` is at most `1e-10` in absolute value.
 #[pyfunction]
 fn unitary_1q(qubit: usize, matrix: PyReadonlyArray2<'_, Complex64>) -> PyResult<PyChannel> {
     Ok(PyChannel::new(unitary_1q_spec(qubit, matrix)?))
@@ -229,7 +229,7 @@ fn unitary_1q(qubit: usize, matrix: PyReadonlyArray2<'_, Complex64>) -> PyResult
 /// An arbitrary two-qubit unitary from its 4x4 matrix.
 ///
 /// `q0` is the more significant tensor factor, i.e. the matrix acts on
-/// `|q0 q1>`.
+/// `|q0 q1>`. Raises `ValueError` unless every entry of `U†U − I` is at most `1e-10` in absolute value.
 #[pyfunction]
 fn unitary_2q(
     q0: usize,

@@ -192,3 +192,34 @@ fn depolarizing_2q_rejects_equal_qubits() {
 fn unitary_2q_rejects_equal_qubits() {
     let _ = PtmChannel::unitary_2q(0, 0, sqrt_swap_matrix());
 }
+
+#[test]
+#[should_panic(
+    expected = "PtmChannel::unitary_1q: the matrix is not unitary (largest entry of U†U − I is 1e0, tolerance 1e-10)"
+)]
+fn unitary_1q_rejects_a_non_unitary_matrix() {
+    let _ = PtmChannel::unitary_1q(0, [[ONE, ONE], [ZERO, ONE]]);
+}
+
+#[test]
+#[should_panic(expected = "PtmChannel::unitary_2q: the matrix is not unitary")]
+fn unitary_2q_rejects_a_scaled_unitary() {
+    let mut u = sqrt_swap_matrix();
+    u[0][0] *= 1.0 + 1e-9;
+    let _ = PtmChannel::unitary_2q(0, 1, u);
+}
+
+#[test]
+#[should_panic(expected = "largest entry of U†U − I is NaN")]
+fn unitary_1q_rejects_nan() {
+    let _ = PtmChannel::unitary_1q(0, [[Complex64::new(f64::NAN, 0.0), ZERO], [ZERO, ONE]]);
+}
+
+#[test]
+fn unitary_constructors_accept_a_deviation_below_the_tolerance() {
+    let mut u = haar_su4_matrix();
+    u[2][3] += Complex64::new(1e-11, 0.0);
+    let _ = PtmChannel::unitary_2q(0, 1, u);
+    let phase = Complex64::from_polar(1.0, 0.3);
+    let _ = PtmChannel::unitary_1q(0, [[ZERO, phase], [phase, ZERO]]);
+}

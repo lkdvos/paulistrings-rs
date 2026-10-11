@@ -31,8 +31,8 @@ Each of these is a `Circuit` method, a `gates.<name>(...)` factory returning a `
 | `.rx(theta, qubit)` | `gates.rx(theta, qubit)` | 1 | `theta` | — |
 | `.ry(theta, qubit)` | `gates.ry(theta, qubit)` | 1 | `theta` | — |
 | `.pauli_rotation(pauli, qubits, theta)` | `gates.pauli_rotation(pauli, qubits, theta)` | any | `pauli[k]` acts on `qubits[k]`; identity positions are expressed by omission, not `I` | the one exemption from the two-qubit support panic below — any generator weight is accepted |
-| `.unitary_1q(qubit, matrix)` | `gates.unitary_1q(qubit, matrix)` | 1 | `2x2` complex, checked unitary | — |
-| `.unitary_2q(q0, q1, matrix)` | `gates.unitary_2q(q0, q1, matrix)` | 2 | `4x4` complex, checked unitary; `q0` is the more significant tensor factor (`\|q0 q1>`) | — |
+| `.unitary_1q(qubit, matrix)` | `gates.unitary_1q(qubit, matrix)` | 1 | `2x2` complex; `ValueError` unless every entry of `U†U − I` is within `1e-10` | — |
+| `.unitary_2q(q0, q1, matrix)` | `gates.unitary_2q(q0, q1, matrix)` | 2 | `4x4` complex, unitary to `1e-10` as above; `q0` is the more significant tensor factor (`\|q0 q1>`) | — |
 
 A channel with support on more than two qubits, other than `pauli_rotation`, makes `propagate` **panic**; there is no fallback path.
 

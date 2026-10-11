@@ -6,9 +6,17 @@ use num_complex::Complex64;
 /// Tolerance below which a derived PTM entry is treated as an exact zero, since every nonzero entry becomes an output term.
 const PTM_EPS: f64 = 1e-12;
 
+/// The largest `|(U†U − I)_ij|` the general-unitary constructors accept; the Python bindings check the same bound first.
+const UNITARITY_TOLERANCE: f64 = 1e-10;
+
 impl PtmChannel {
     /// A general single-qubit unitary `U`: `ptm[s][t] = tr(P_t · U P_s U†) / 2`.
+    ///
+    /// # Panics
+    ///
+    /// Unless every entry of `U†U − I` is at most `1e-10` in absolute value.
     pub fn unitary_1q(qubit: usize, u: [[Complex64; 2]; 2]) -> Self {
+        assert_unitary("unitary_1q", &u);
         let u_dagger = dagger(&u);
         let mut entries = Vec::new();
         for s in 0..4 {
@@ -26,9 +34,10 @@ impl PtmChannel {
     ///
     /// # Panics
     ///
-    /// If `q0 == q1`.
+    /// If `q0 == q1`, or unless every entry of `U†U − I` is at most `1e-10` in absolute value.
     pub fn unitary_2q(q0: usize, q1: usize, u: [[Complex64; 4]; 4]) -> Self {
         assert_distinct("unitary_2q", q0, q1);
+        assert_unitary("unitary_2q", &u);
         let u_dagger = dagger(&u);
         let two_qubit_pauli = |s: usize| kron(&pauli_matrix(s & 3), &pauli_matrix(s >> 2));
         let mut entries = Vec::new();
@@ -42,6 +51,28 @@ impl PtmChannel {
         }
         Self::new(&[q0, q1], sparse_storage(entries), PtmKind::Unitary2q)
     }
+}
+
+/// Panics unless `u` is unitary to [`UNITARITY_TOLERANCE`]; a NaN entry fails too.
+fn assert_unitary<const N: usize>(constructor: &str, u: &[[Complex64; N]; N]) {
+    let product = matmul(&dagger(u), u);
+    let deviation = (0..N)
+        .flat_map(|i| (0..N).map(move |j| (i, j)))
+        .map(|(i, j)| {
+            let identity = if i == j { ONE } else { ZERO };
+            (product[i][j] - identity).norm()
+        })
+        .fold(0.0, |largest: f64, entry| {
+            if entry > largest || entry.is_nan() {
+                entry
+            } else {
+                largest
+            }
+        });
+    assert!(
+        deviation <= UNITARITY_TOLERANCE,
+        "PtmChannel::{constructor}: the matrix is not unitary (largest entry of U†U − I is {deviation:e}, tolerance {UNITARITY_TOLERANCE:e})"
+    );
 }
 
 /// The four single-qubit Pauli matrices, in `I, X, Z, Y` index order.

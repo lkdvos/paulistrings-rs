@@ -1,6 +1,6 @@
 //! The noise constructors of [`PtmChannel`]: Pauli-diagonal rescalings and amplitude damping.
 
-use super::{assert_distinct, assert_probability, sparse_storage, PtmChannel, PtmStorage};
+use super::{assert_distinct, assert_probability, sparse_storage, PtmChannel, PtmKind, PtmStorage};
 use num_complex::Complex64;
 
 impl PtmChannel {
@@ -12,7 +12,11 @@ impl PtmChannel {
     pub fn depolarizing(qubit: usize, p: f64) -> Self {
         assert_probability("depolarizing", "p", p);
         let scale = 1.0 - 4.0 * p / 3.0;
-        Self::diagonal(&[qubit], vec![1.0, scale, scale, scale], "Depolarizing")
+        Self::diagonal(
+            &[qubit],
+            vec![1.0, scale, scale, scale],
+            PtmKind::Depolarizing,
+        )
     }
 
     /// Single-qubit dephasing noise with error probability `p`: `X` and `Y` are scaled by `1 - 2p`.
@@ -23,7 +27,7 @@ impl PtmChannel {
     pub fn dephasing(qubit: usize, p: f64) -> Self {
         assert_probability("dephasing", "p", p);
         let scale = 1.0 - 2.0 * p;
-        Self::diagonal(&[qubit], vec![1.0, scale, 1.0, scale], "Dephasing")
+        Self::diagonal(&[qubit], vec![1.0, scale, 1.0, scale], PtmKind::Dephasing)
     }
 
     /// Single-qubit Pauli channel `E(ρ) = (1-px-py-pz)ρ + px·XρX + py·YρY + pz·ZρZ`.
@@ -50,7 +54,7 @@ impl PtmChannel {
                 1.0 - 2.0 * (px + py),
                 1.0 - 2.0 * (px + pz),
             ],
-            "PauliChannel",
+            PtmKind::PauliChannel,
         )
     }
 
@@ -66,7 +70,7 @@ impl PtmChannel {
         assert_probability("depolarizing_2q", "p", p);
         let mut scale = vec![1.0 - 16.0 * p / 15.0; 16];
         scale[0] = 1.0;
-        Self::diagonal(&[q0, q1], scale, "Depolarizing2Q")
+        Self::diagonal(&[q0, q1], scale, PtmKind::Depolarizing2q)
     }
 
     /// Single-qubit amplitude damping with Kraus operators `K_0 = |0⟩⟨0| + √(1-γ)|1⟩⟨1|`, `K_1 = √γ |0⟩⟨1|`.
@@ -86,16 +90,16 @@ impl PtmChannel {
             ((2, 2), Complex64::new(1.0 - gamma, 0.0)),
             ((3, 3), transverse),
         ]);
-        Self::new(&[qubit], storage, "AmplitudeDamping")
+        Self::new(&[qubit], storage, PtmKind::AmplitudeDamping)
     }
 
-    fn diagonal(qubits: &[usize], scale: Vec<f64>, name: &'static str) -> Self {
+    fn diagonal(qubits: &[usize], scale: Vec<f64>, kind: PtmKind) -> Self {
         Self::new(
             qubits,
             PtmStorage::Diagonal {
                 scale: scale.into_boxed_slice(),
             },
-            name,
+            kind,
         )
     }
 }

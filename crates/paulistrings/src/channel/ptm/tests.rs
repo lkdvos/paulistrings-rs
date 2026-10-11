@@ -128,6 +128,20 @@ fn each_constructor_picks_its_storage() {
     }
 }
 
+#[test]
+fn debug_name_is_the_constructor_name() {
+    for (label, channel) in every_constructor(0, 1) {
+        let expected = label.split(' ').next().unwrap();
+        assert_eq!(Channel::<1>::debug_name(&channel), expected, "{label}");
+        let adjoint_name = Channel::<1>::debug_name(&channel.adjoint());
+        if let Some(source) = expected.strip_suffix("_adjoint") {
+            assert_eq!(adjoint_name, source);
+        } else {
+            assert_eq!(adjoint_name, format!("{expected}_adjoint"));
+        }
+    }
+}
+
 /// The two-qubit order is the constructor's: `cnot(4, 1)` controls on 4.
 #[test]
 fn a_reversed_pair_keeps_its_roles() {

@@ -146,7 +146,7 @@ def test_gate_trace_fields_forward():
 
     assert stats.circuit_index == [0, 1, 2]
     assert stats.application_index == [0, 1, 2]
-    assert stats.gate_name == ["PauliRotation", "Clifford1Q", "PauliRotation"]
+    assert stats.gate_name == ["PauliRotation", "hadamard", "PauliRotation"]
     assert len(stats.nanos) == 3
     assert all(n >= 0 for n in stats.nanos)
 

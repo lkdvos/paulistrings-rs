@@ -1,6 +1,6 @@
 //! The general-unitary constructors of [`PtmChannel`], whose PTM is derived from the matrix.
 
-use super::{assert_distinct, sparse_storage, PtmChannel, ONE, ZERO};
+use super::{assert_distinct, sparse_storage, PtmChannel, PtmKind, ONE, ZERO};
 use num_complex::Complex64;
 
 /// Tolerance below which a derived PTM entry is treated as an exact zero, since every nonzero entry becomes an output term.
@@ -19,7 +19,7 @@ impl PtmChannel {
                 entries.push(((s as u8, t as u8), clean(value)));
             }
         }
-        Self::new(&[qubit], sparse_storage(entries), "GeneralUnitary1Q")
+        Self::new(&[qubit], sparse_storage(entries), PtmKind::Unitary1q)
     }
 
     /// A general two-qubit unitary `U` on `|q0 q1⟩`, `q0` the more significant tensor factor: `ptm[s][t] = tr(P_t · U P_s U†) / 4`.
@@ -40,7 +40,7 @@ impl PtmChannel {
                 entries.push(((s as u8, t as u8), clean(value)));
             }
         }
-        Self::new(&[q0, q1], sparse_storage(entries), "GeneralUnitary2Q")
+        Self::new(&[q0, q1], sparse_storage(entries), PtmKind::Unitary2q)
     }
 }
 

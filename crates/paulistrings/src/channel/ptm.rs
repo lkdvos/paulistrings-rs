@@ -21,14 +21,64 @@ const ONE: Complex64 = Complex64::new(1.0, 0.0);
 ///
 /// On the support, Paulis are indexed `x | (z << 1)` per qubit (`I = 0, X = 1, Z = 2, Y = 3`), the constructor's first qubit in the low two bits.
 /// [`Channel::apply`] maps input Pauli `s` to `Σ_t ptm[s][t] · P_t`, and [`Channel::apply_adjoint`] reads the transpose.
+/// [`Channel::debug_name`] is the constructor's name (`"hadamard"`, `"cnot"`, …), with `_adjoint` appended after [`adjoint`](Self::adjoint).
 #[derive(Clone, Debug)]
 pub struct PtmChannel {
     /// Support qubits in constructor order; only the first `num_support_qubits` are meaningful.
     qubits: [usize; 2],
     num_support_qubits: u8,
+    kind: PtmKind,
+    /// Whether this is the [`adjoint`](Self::adjoint) of the constructed channel; [`Channel::debug_name`] appends `_adjoint`.
+    adjoint: bool,
     storage: PtmStorage,
-    /// What [`Channel::debug_name`] reports.
-    name: &'static str,
+}
+
+/// The constructor a [`PtmChannel`] came from, which [`Channel::debug_name`] reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PtmKind {
+    Hadamard,
+    PhaseGate,
+    PauliX,
+    PauliY,
+    PauliZ,
+    Cnot,
+    Cz,
+    Swap,
+    Unitary1q,
+    Unitary2q,
+    Depolarizing,
+    Dephasing,
+    PauliChannel,
+    Depolarizing2q,
+    AmplitudeDamping,
+}
+
+impl PtmKind {
+    /// The constructor's name, with `_adjoint` appended for the adjoint.
+    fn name(self, adjoint: bool) -> &'static str {
+        let [plain, adjoint_name] = match self {
+            Self::Hadamard => ["hadamard", "hadamard_adjoint"],
+            Self::PhaseGate => ["phase_gate", "phase_gate_adjoint"],
+            Self::PauliX => ["pauli_x", "pauli_x_adjoint"],
+            Self::PauliY => ["pauli_y", "pauli_y_adjoint"],
+            Self::PauliZ => ["pauli_z", "pauli_z_adjoint"],
+            Self::Cnot => ["cnot", "cnot_adjoint"],
+            Self::Cz => ["cz", "cz_adjoint"],
+            Self::Swap => ["swap", "swap_adjoint"],
+            Self::Unitary1q => ["unitary_1q", "unitary_1q_adjoint"],
+            Self::Unitary2q => ["unitary_2q", "unitary_2q_adjoint"],
+            Self::Depolarizing => ["depolarizing", "depolarizing_adjoint"],
+            Self::Dephasing => ["dephasing", "dephasing_adjoint"],
+            Self::PauliChannel => ["pauli_channel", "pauli_channel_adjoint"],
+            Self::Depolarizing2q => ["depolarizing_2q", "depolarizing_2q_adjoint"],
+            Self::AmplitudeDamping => ["amplitude_damping", "amplitude_damping_adjoint"],
+        };
+        if adjoint {
+            adjoint_name
+        } else {
+            plain
+        }
+    }
 }
 
 /// The nonzero PTM entries, in the cheapest form the constructor knows to be exact.
@@ -50,15 +100,16 @@ enum PtmStorage {
 
 impl PtmChannel {
     /// A channel on `qubits` (one or two, distinct) from its storage.
-    fn new(qubits: &[usize], storage: PtmStorage, name: &'static str) -> Self {
+    fn new(qubits: &[usize], storage: PtmStorage, kind: PtmKind) -> Self {
         debug_assert!(qubits.len() == 1 || qubits.len() == 2);
         let mut padded = [qubits[0]; 2];
         padded[..qubits.len()].copy_from_slice(qubits);
         Self {
             qubits: padded,
             num_support_qubits: qubits.len() as u8,
+            kind,
+            adjoint: false,
             storage,
-            name,
         }
     }
 
@@ -101,7 +152,8 @@ impl PtmChannel {
         };
         Self {
             storage,
-            ..self.clone()
+            adjoint: !self.adjoint,
+            ..*self
         }
     }
 
@@ -265,7 +317,7 @@ impl<const W: usize> Channel<W> for PtmChannel {
     }
 
     fn debug_name(&self) -> &'static str {
-        self.name
+        self.kind.name(self.adjoint)
     }
 
     fn apply(

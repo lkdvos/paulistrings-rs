@@ -11,13 +11,11 @@ fn push_keeps_order_and_counts() {
     assert_eq!(circuit.num_qubits(), 100);
     assert_eq!(circuit.len(), 3);
     let names: Vec<_> = circuit.channels().iter().map(|c| c.debug_name()).collect();
-    assert_eq!(names, ["Clifford1Q", "Clifford2Q", "Depolarizing"]);
+    assert_eq!(names, ["hadamard", "cnot", "depolarizing"]);
 }
 
 #[test]
-#[should_panic(
-    expected = "Circuit::push: Clifford2Q acts on qubit 8, outside this 8-qubit circuit"
-)]
+#[should_panic(expected = "Circuit::push: cnot acts on qubit 8, outside this 8-qubit circuit")]
 fn push_rejects_a_support_past_num_qubits() {
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(PtmChannel::cnot(8, 0));

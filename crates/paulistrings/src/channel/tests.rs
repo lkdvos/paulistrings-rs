@@ -21,26 +21,26 @@ fn debug_name_through_dyn_trims_path_and_generics() {
     use crate::pauli_string::PauliString;
 
     let channels: Vec<(Box<dyn Channel<1>>, &str)> = vec![
-        (Box::new(PtmChannel::hadamard(0)), "Clifford1Q"),
-        (Box::new(PtmChannel::cnot(0, 1)), "Clifford2Q"),
+        (Box::new(PtmChannel::hadamard(0)), "hadamard"),
+        (Box::new(PtmChannel::cnot(0, 1)), "cnot"),
         (
             // Generic in `W`, so `type_name` carries a `<1>` to trim.
             Box::new(PauliRotation::new(PauliString::<1>::z(0), 0.3)),
             "PauliRotation",
         ),
-        (Box::new(PtmChannel::depolarizing(0, 0.1)), "Depolarizing"),
-        (Box::new(PtmChannel::dephasing(0, 0.1)), "Dephasing"),
+        (Box::new(PtmChannel::depolarizing(0, 0.1)), "depolarizing"),
+        (Box::new(PtmChannel::dephasing(0, 0.1)), "dephasing"),
         (
             Box::new(PtmChannel::pauli_channel(0, 0.1, 0.1, 0.1)),
-            "PauliChannel",
+            "pauli_channel",
         ),
         (
             Box::new(PtmChannel::depolarizing_2q(0, 1, 0.1)),
-            "Depolarizing2Q",
+            "depolarizing_2q",
         ),
         (
             Box::new(PtmChannel::amplitude_damping(0, 0.1)),
-            "AmplitudeDamping",
+            "amplitude_damping",
         ),
         (
             Box::new(crate::test_support::IdentityChannel),

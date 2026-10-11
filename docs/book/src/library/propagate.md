@@ -117,7 +117,7 @@ A broadcast call such as `circuit.depolarize(p, [0, 1])` contributes two layers,
 | `.final_terms` | `int` | `terms_out[-1]`, or the input's count for a zero-layer circuit |
 | `.circuit_index` | `list[int]` | this layer's position in the circuit as written, independent of `direction` |
 | `.application_index` | `list[int]` | this layer's position in the propagation loop, `0..layers` regardless of `direction` |
-| `.gate_name` | `list[str]` | the applied channel's debug name per layer |
+| `.gate_name` | `list[str]` | the applied channel's debug name per layer: the `PtmChannel` constructor name (`hadamard`, `cnot`, `depolarizing`, …; `phase_gate_adjoint` for `sdg`) or `PauliRotation` |
 | `.nanos` | `list[int]` | elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks |
 | `.partition` | `PartitionStats \| None` | per-partition detail for a `partitions=`/`comm=`/`device=` call, else `None` |
 | `.collapses` | `int \| None` | collapses a `truncation.collapse_sample` made during this call, `None` without one; under `comm=` rank 0's count, all-reduced so every rank reports it |

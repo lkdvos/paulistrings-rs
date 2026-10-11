@@ -1,6 +1,6 @@
 //! The Clifford constructors of [`PtmChannel`], stored as signed permutations.
 
-use super::{assert_distinct, PtmChannel, PtmStorage};
+use super::{assert_distinct, PtmChannel, PtmKind, PtmStorage};
 use crate::channel::prepared::LOCAL_DIM;
 use crate::channel::{read_pauli, write_pauli};
 use crate::pauli_string::PauliString;
@@ -9,27 +9,27 @@ use crate::phase::Phase;
 impl PtmChannel {
     /// Hadamard: `X → Z, Z → X, Y → −Y`.
     pub fn hadamard(qubit: usize) -> Self {
-        Self::clifford_1q(qubit, [0, 2, 1, 3], 0b1000)
+        Self::clifford_1q(qubit, [0, 2, 1, 3], 0b1000, PtmKind::Hadamard)
     }
 
     /// Phase gate `S = diag(1, i)`: `X → Y, Z → Z, Y → −X`.
     pub fn phase_gate(qubit: usize) -> Self {
-        Self::clifford_1q(qubit, [0, 3, 2, 1], 0b1000)
+        Self::clifford_1q(qubit, [0, 3, 2, 1], 0b1000, PtmKind::PhaseGate)
     }
 
     /// Pauli-X gate: `X → X, Z → −Z, Y → −Y`.
     pub fn pauli_x(qubit: usize) -> Self {
-        Self::clifford_1q(qubit, [0, 1, 2, 3], 0b1100)
+        Self::clifford_1q(qubit, [0, 1, 2, 3], 0b1100, PtmKind::PauliX)
     }
 
     /// Pauli-Y gate: `X → −X, Z → −Z, Y → Y`.
     pub fn pauli_y(qubit: usize) -> Self {
-        Self::clifford_1q(qubit, [0, 1, 2, 3], 0b0110)
+        Self::clifford_1q(qubit, [0, 1, 2, 3], 0b0110, PtmKind::PauliY)
     }
 
     /// Pauli-Z gate: `X → −X, Z → Z, Y → −Y`.
     pub fn pauli_z(qubit: usize) -> Self {
-        Self::clifford_1q(qubit, [0, 1, 2, 3], 0b1010)
+        Self::clifford_1q(qubit, [0, 1, 2, 3], 0b1010, PtmKind::PauliZ)
     }
 
     /// CNOT: `X⊗I → X⊗X, I⊗X → I⊗X, Z⊗I → Z⊗I, I⊗Z → Z⊗Z`, control first.
@@ -41,6 +41,7 @@ impl PtmChannel {
         assert_distinct("cnot", control, target);
         Self::clifford_2q(
             [control, target],
+            PtmKind::Cnot,
             [
                 pack(1, 0, 1, 0),
                 pack(0, 1, 0, 0),
@@ -59,6 +60,7 @@ impl PtmChannel {
         assert_distinct("cz", q0, q1);
         Self::clifford_2q(
             [q0, q1],
+            PtmKind::Cz,
             [
                 pack(1, 0, 0, 1),
                 pack(0, 1, 0, 0),
@@ -77,6 +79,7 @@ impl PtmChannel {
         assert_distinct("swap", q0, q1);
         Self::clifford_2q(
             [q0, q1],
+            PtmKind::Swap,
             [
                 pack(0, 0, 1, 0),
                 pack(0, 0, 0, 1),
@@ -86,7 +89,7 @@ impl PtmChannel {
         )
     }
 
-    fn clifford_1q(qubit: usize, image: [u8; 4], negated: u16) -> Self {
+    fn clifford_1q(qubit: usize, image: [u8; 4], negated: u16, kind: PtmKind) -> Self {
         let mut padded = [0u8; LOCAL_DIM];
         padded[..4].copy_from_slice(&image);
         Self::new(
@@ -95,12 +98,12 @@ impl PtmChannel {
                 image: padded,
                 negated,
             },
-            "Clifford1Q",
+            kind,
         )
     }
 
     /// The signed permutation from the images of `X₀, Z₀, X₁, Z₁`, multiplied out per input.
-    fn clifford_2q(qubits: [usize; 2], generator_images: [u8; 4]) -> Self {
+    fn clifford_2q(qubits: [usize; 2], kind: PtmKind, generator_images: [u8; 4]) -> Self {
         let mut image = [0u8; LOCAL_DIM];
         let mut negated = 0u16;
         for (index, slot) in image.iter_mut().enumerate() {
@@ -128,7 +131,7 @@ impl PtmChannel {
         Self::new(
             &qubits,
             PtmStorage::SignedPermutation { image, negated },
-            "Clifford2Q",
+            kind,
         )
     }
 }

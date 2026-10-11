@@ -20,6 +20,9 @@
 #           also half of them, i.e. one socket's worth). Must be divisible by P.
 #   REPS    --reps (default 8; rotation cells at m ~ 1e6 want >= 40, see PROFILING.md)
 #   PAIRS   --pairs (default 5), ORDER --order (default abba)
+#   PROBE_EXTRA  extra probe args for both sides (e.g. "--truncation coeff:1e-4")
+#   KNOB_B  side B's extra args in a runtime-knob A/B (default: the partitions knob above;
+#           e.g. "--truncation-dispatch builtin")
 #   MEMBENCH=1  also run crates/membench (1 core node-local, all cores) for this node's ceilings
 #   PS_REV  commit to build (default: HEAD when the job starts). Builds go through a git worktree
 #           of that commit, never the live working tree, so editing the checkout while jobs are
@@ -77,16 +80,21 @@ for layer in $LAYERS; do
   for n in $NS; do
     for t in $THREADS; do
       name="slurm-${layer}-n${n}-t${t}"
-      probe="--n $n --qubits 128 --layers $layer --threads $t --reps $REPS"
+      probe="--n $n --qubits 128 --layers $layer --threads $t --reps $REPS ${PROBE_EXTRA:-}"
       if [ -n "${A_REV:-}" ]; then
         echo "== code A/B $A_REV vs . : $probe"
         scripts/ab-compare.sh "$name" --a "$A_REV" --b "$PS_REV" --probe "$probe" \
             --pairs "$PAIRS" --order "$ORDER"
       else
-        if (( t % P != 0 )); then echo "skip threads=$t: not divisible by P=$P"; continue; fi
-        echo "== knob A/B P=1 vs P=$P : $probe"
+        if [ -n "${KNOB_B:-}" ]; then
+          knob=$KNOB_B
+        else
+          if (( t % P != 0 )); then echo "skip threads=$t: not divisible by P=$P"; continue; fi
+          knob="--partitions $P --partition-cpus '$PART_CPUS'"
+        fi
+        echo "== knob A/B: $probe | B adds: $knob"
         scripts/ab-compare.sh "$name" --a "$PS_REV" --b "$PS_REV" --probe "$probe" \
-            --probe-b "$probe --partitions $P --partition-cpus '$PART_CPUS'" \
+            --probe-b "$probe $knob" \
             --pairs "$PAIRS" --order "$ORDER"
       fi
     done

@@ -20,7 +20,6 @@ use paulistrings::test_support::{
     circuit_generators, count_remote_deltas, haar_su4_matrix, low_weight_sum, rand_sum,
     GeneratorWeight, BITS_AGREE_EVERY, B_MAX_BITS, DEFAULT_HASH_SEED,
 };
-#[cfg(feature = "cuda")]
 use paulistrings::BuiltinTruncation;
 use paulistrings::{
     propagate_with, BuildAccumulator, Circuit, Direction, Gf2Hash, LayerScratch, PartitionRows,
@@ -119,6 +118,13 @@ Options:
                                             histogram boundary instead of a
                                             selection. Also keeps exactly N,
                                             but not the N largest.
+  --truncation-dispatch <generic|builtin>
+                           How the host runs --truncation (default generic):
+                           generic is the policy's own type, monomorphized
+                           into the merge; builtin is the same policy as a
+                           BuiltinTruncation, matched per term. A runtime
+                           knob for a same-binary A/B; device cells always
+                           run builtin.
   --partitions <csv>       Comma-separated partition counts, each a power of
                             two (default: 1). P > 1 runs the cell through the
                             partitioned engine; P = 1 runs the unpartitioned
@@ -282,6 +288,32 @@ enum Format {
     Table,
     Json,
     Tsv,
+}
+
+/// `--truncation-dispatch`: the policy's own type, or the same policy as a [`BuiltinTruncation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TruncationDispatch {
+    Generic,
+    Builtin,
+}
+
+impl TruncationDispatch {
+    fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "generic" => Ok(Self::Generic),
+            "builtin" => Ok(Self::Builtin),
+            other => Err(format!(
+                "--truncation-dispatch expects generic or builtin, got '{other}'"
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Generic => "generic",
+            Self::Builtin => "builtin",
+        }
+    }
 }
 
 /// Which [`TruncationPolicy`] every cell runs under, kept as a spec so `run` dispatches it into one monomorphization per variant.
@@ -507,6 +539,7 @@ struct Config {
     reps: usize,
     seed: u64,
     truncation: TruncSpec,
+    truncation_dispatch: TruncationDispatch,
     format: Format,
     /// Sidecar file that gets one JSON line appended per cell, regardless of `--format`.
     json_out: Option<String>,
@@ -596,6 +629,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut min_buckets: usize = DEFAULT_MIN_BUCKETS;
     let mut occupancy_at: Option<usize> = None;
     let mut truncation = TruncSpec::Keep;
+    let mut truncation_dispatch = TruncationDispatch::Generic;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
     let mut partitions: Vec<usize> = vec![1];
@@ -648,6 +682,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--min-buckets" => min_buckets = parse_usize(value, "--min-buckets")?,
             "--occupancy-at" => occupancy_at = Some(parse_usize(value, "--occupancy-at")?),
             "--truncation" => truncation = TruncSpec::parse(value)?,
+            "--truncation-dispatch" => truncation_dispatch = TruncationDispatch::parse(value)?,
             "--partitions" => partitions = parse_csv_usize(value, "--partitions")?,
             "--partition-cpus" => partition_cpus = PartitionCpus::parse(value)?,
             "--bind-memory" => {
@@ -866,6 +901,7 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
         reps,
         seed,
         truncation,
+        truncation_dispatch,
         format,
         json_out,
     })
@@ -1093,6 +1129,8 @@ fn build_circuit<const W: usize>(
 struct CellResult {
     layer: &'static str,
     truncation: String,
+    /// `--truncation-dispatch`, or `builtin` for a device cell, which always runs a [`BuiltinTruncation`].
+    truncation_dispatch: &'static str,
     threads: usize,
     n: usize,
     reps: usize,
@@ -1386,6 +1424,7 @@ where
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
+        truncation_dispatch: cfg.truncation_dispatch.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,
@@ -1417,9 +1456,8 @@ where
     }
 }
 
-/// `--truncation` as the device drivers take it.
-#[cfg(feature = "cuda")]
-fn device_truncation(spec: TruncSpec) -> BuiltinTruncation {
+/// `--truncation` as a [`BuiltinTruncation`], the form the device drivers and `--truncation-dispatch builtin` take.
+fn builtin_truncation(spec: TruncSpec) -> BuiltinTruncation {
     match spec {
         TruncSpec::Keep => BuiltinTruncation::Keep,
         TruncSpec::Coefficient(t) => BuiltinTruncation::Coefficient(t),
@@ -1548,6 +1586,7 @@ fn device_cell(
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
+        truncation_dispatch: TruncationDispatch::Builtin.label(),
         threads,
         n: run.n,
         reps: cfg.reps,
@@ -1956,6 +1995,7 @@ where
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
+        truncation_dispatch: cfg.truncation_dispatch.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,
@@ -2083,6 +2123,7 @@ where
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
+        truncation_dispatch: cfg.truncation_dispatch.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,
@@ -2641,7 +2682,7 @@ fn json_line(cell: &CellResult) -> String {
         cell.row_stats.remote_weight,
     );
     let core = format!(
-        "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
+        "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"truncation_dispatch\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
          \"qubits\":{},\"seed\":{},\"hash_seed\":{},\"bucket_bits\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
@@ -2652,6 +2693,7 @@ fn json_line(cell: &CellResult) -> String {
          \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{}",
         cell.layer,
         cell.truncation,
+        cell.truncation_dispatch,
         cell.threads,
         cell.n,
         cell.reps,
@@ -2821,10 +2863,17 @@ fn print_tsv_row(cell: &CellResult) {
 }
 
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
-/// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
-/// values: the unpartitioned one and its partitioned form (`topn` has none, already
+/// `keep_term` inlines into the merge the way a real caller's does, or under
+/// `--truncation-dispatch builtin` into the one [`BuiltinTruncation`] instance. Each spec supplies
+/// two policy values: the unpartitioned one and its partitioned form (`topn` has none, already
 /// rejected by [`parse_args`]).
 fn run<const W: usize>(cfg: &Config) {
+    if cfg.truncation_dispatch == TruncationDispatch::Builtin {
+        let policy = builtin_truncation(cfg.truncation);
+        let partitioned = policy.supports_partitioned().then_some(&policy);
+        run_cells::<W, _, _>(cfg, &policy, partitioned);
+        return;
+    }
     match cfg.truncation {
         TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
         TruncSpec::Coefficient(t) => run_cells::<W, _, _>(
@@ -2862,7 +2911,7 @@ where
     // A device cell has no thread axis: one cell per layer, `--threads[0]` echoed into the row.
     #[cfg(feature = "cuda")]
     if let Some(spec) = &cfg.device {
-        let policy = device_truncation(cfg.truncation);
+        let policy = builtin_truncation(cfg.truncation);
         #[cfg(feature = "mpi")]
         if cfg.mpi {
             for &layer in &cfg.layers {

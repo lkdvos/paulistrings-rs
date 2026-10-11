@@ -6,7 +6,7 @@ cluster resources is a user check-in point.
 
 | script | what it runs | when |
 |---|---|---|
-| `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | in-process partitioning |
+| `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or a runtime-knob A/B on one binary, P=1 vs P=`<numa nodes>` unless `KNOB_B` names another knob | in-process partitioning |
 | `gpu-devices.sbatch` | one 4 × A100 node (`gpu` partition): the single-device CUDA net, `tests/propagate_gpu_partitioned.rs` at one partition per GPU, then `phase_breakdown --device 0` and `--device 0,1,2,3` on the device cells | the CUDA backend, one process (needs the `cuda` cargo feature) |
 | `mpi-gpu.sbatch` | one 4-GPU node by default (`--gpus-per-node=4 --ntasks-per-node=4`, every node GPU visible to every task), one GPU per MPI rank over NCCL: diagnostics preamble, `tests/mpi_ranks.rs` with `NCCL_DEBUG` on, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
@@ -50,6 +50,8 @@ env -u SBATCH_RESERVATION sbatch scripts/slurm/ab-campaign.sbatch
 LAYERS="su4 rotation_local rotation_remote gu2q" NS="1000000 3000000" PAIRS=5 sbatch scripts/slurm/ab-campaign.sbatch
 # code A/B of the untouched path (P=1 both sides): baseline sha vs the working tree
 A_REV=e7de227 LAYERS="rotation_zz cnot su4" sbatch scripts/slurm/ab-campaign.sbatch
+# runtime-knob A/B of another probe flag: B adds KNOB_B instead of the partitions knob
+LAYERS="rotation_zz cnot su4" THREADS="1 8" PROBE_EXTRA="--truncation coeff:1e-4" KNOB_B="--truncation-dispatch builtin" sbatch scripts/slurm/ab-campaign.sbatch
 # more NUMA domains:
 sbatch --constraint='genoa&rocky9' scripts/slurm/ab-campaign.sbatch
 ```

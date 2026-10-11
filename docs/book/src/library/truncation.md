@@ -6,8 +6,8 @@ All five live in the `paulistrings.truncation` module and run after every channe
 |---|---|
 | `truncation.coeff(eps)` | `\|c\| > eps` — note **strictly** greater; `\|c\| == eps` is dropped |
 | `truncation.weight(k)` | Pauli weight `<= k` |
-| `truncation.topn(k)` | at most `k` terms, largest `\|c\|` first; exact, no partitioned form |
-| `truncation.approx_topn(k)` | approximately `k` terms; partition/comm-safe |
+| `truncation.topn(k)` | exactly `k` terms (all of a smaller sum), largest `\|c\|` first; no partitioned form |
+| `truncation.approx_topn(k)` | exactly `k` terms, ranked by octave of `\|c\|**2`; partition/comm-safe |
 | `truncation.collapse_sample(cache, seed)` | everything up to `cache` terms; above it, one string drawn by `\|c\|**2` with coefficient `1`; partition/comm-safe |
 
 ## Combinators
@@ -19,8 +19,8 @@ All five live in the `paulistrings.truncation` module and run after every channe
 
 ## `topn` vs. `approx_topn`
 
-`topn` never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within `k`, dropped whole otherwise.
-`approx_topn` bins by octave of `\|c\|**2` and keeps whole octaves top-down while they fit in `n`: at most `n` is kept, the shortfall is bounded by the coarsest excluded octave's population, and a tie group is always kept whole.
+Both keep every term above a boundary and fill up to `k` from the boundary itself: for `topn` the terms tied at the `k`-th largest magnitude, for `approx_topn` the octave of `\|c\|**2` where the count from the top first exceeds `k`.
+Boundary terms are taken in storage order (bucket order, rank order across partitions), so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 `topn` raises `NotImplementedError` under `partitions=`/`comm=`; `approx_topn` is the partitioned/distributed default in that case.
 
 See [Truncation](../manual/propagation/truncation.md#choosing-a-policy) for guidance and [Truncation](../manual/propagation/truncation.md) for the mechanism.

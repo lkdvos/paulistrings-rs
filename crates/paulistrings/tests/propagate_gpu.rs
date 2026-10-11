@@ -4,9 +4,9 @@
 use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    and, assert_terms_close, cancellation_channel, cancellation_sum, differential_channels_w1,
-    differential_channels_w2, haar_su4_matrix, or, rand_sum, random_circuit, trotter_circuit,
-    with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
+    and, assert_runs_agree, assert_terms_close, cancellation_channel, cancellation_sum,
+    differential_channels_w1, differential_channels_w2, haar_su4_matrix, or, rand_sum,
+    random_circuit, trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
@@ -64,8 +64,7 @@ fn check_with<const W: usize, T>(
         if let Some(p) = permuted {
             assert_eq!(c.permuted, p, "{what}: {c:?}");
         }
-        assert_eq!(got.len(), want.len(), "{what}: term count");
-        assert_terms_close(&got, &want, TOL, &what);
+        assert_runs_agree(policy, &got, &want, TOL, &what);
     }
 }
 
@@ -200,7 +199,10 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
         ("coeff | weight", or(T::Coefficient(1e-3), T::Weight(4))),
         ("topn n", T::TopN(n)),
         ("coeff & topn", and(T::Coefficient(1e-6), T::TopN(n))),
-        ("topn | weight", or(T::TopN(n), T::Weight(0))),
+        (
+            "topn & (coeff | weight)",
+            and(T::TopN(n), or(T::Coefficient(1e-3), T::Weight(4))),
+        ),
     ];
     for (name, policy) in &matrix {
         check(&circuit, &input, policy, &format!("W={W} {name}"));

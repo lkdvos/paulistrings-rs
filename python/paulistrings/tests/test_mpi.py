@@ -235,15 +235,18 @@ def test_gather_returns_the_whole_sum_on_rank_zero(observable, circuit, referenc
 
 
 def test_gather_agrees_under_a_truncating_approx_topn(observable, circuit):
-    """`approx_topn` all-reduces its octave histogram, so the retained set is
-    exactly the serial one even when it really does cut. Spelled with an
-    explicit `result="gather"`, which must mean what the default means."""
+    """`approx_topn` all-reduces its octave histogram and boundary counts, so
+    the kept count is exactly the serial one even when it really does cut; the
+    boundary-octave terms are chosen in rank order, so above one rank only the
+    count is shared. Spelled with an explicit `result="gather"`, which must mean
+    what the default means."""
     want = observable.propagate(circuit, TIGHT_POLICY)
     got = observable.propagate(circuit, TIGHT_POLICY, comm=COMM, result="gather")
     assert len(want) < NUM_TERMS, "the tight policy must actually truncate"
     if RANK == 0:
         assert len(got) == len(want)
-        _assert_terms_close(got, want)
+        if SIZE == 1:
+            _assert_terms_close(got, want)
     else:
         assert len(got) == 0
 

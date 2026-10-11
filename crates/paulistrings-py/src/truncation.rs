@@ -17,20 +17,18 @@ fn weight(k: u32) -> PyTruncation {
     PyTruncation::new(BuiltinTruncation::Weight(k))
 }
 
-/// Keep at most ``n`` terms by coefficient magnitude after each layer.
+/// Keep the ``n`` terms of largest coefficient magnitude after each layer; a sum of at most ``n`` terms is untouched.
 ///
-/// Never splits a tie group: let ``t`` be the n-th largest magnitude; everything above ``t`` is kept, and the group at ``t`` is kept only if it fits within ``n`` whole, otherwise dropped whole. Equal magnitudes are symmetry-related terms, and keeping an arbitrary subset of such a multiplet would break the symmetry of the truncated operator.
-/// Degenerate case: if every candidate ties at the threshold, this keeps nothing. Combine with ``coeff`` via ``&``, or raise ``n``, if that matters.
+/// Let ``t`` be the n-th largest magnitude: everything above ``t`` is kept, plus as many terms at exactly ``t`` as fit, the first in storage (bucket) order. Which tied terms survive is not part of the contract.
 #[pyfunction]
 fn topn(n: usize) -> PyTruncation {
     PyTruncation::new(BuiltinTruncation::TopN(n))
 }
 
-/// Keep approximately ``n`` terms after each layer — the cheap sibling of ``topn``, opt-in and never a default.
+/// Keep ``n`` terms after each layer, ranked by octave of ``|c|**2`` — the cheap sibling of ``topn``, and the one that runs partitioned.
 ///
-/// Terms are binned by the octave of ``|c|**2``, and whole octaves are kept from the top down while they still fit in ``n``. So: (1) at most ``n`` is kept, always; (2) the shortfall is bounded by the population of the coarsest excluded octave; (3) a tie group is always kept whole, since equal magnitudes share an octave (``topn`` instead drops a tie group whole if it does not fit).
-/// The retained set is a pure function of the magnitude multiset, like ``topn``: independent of bucket partition, hash seed, and thread count. Reach for this when ``n`` is a memory budget and a little slack in the term count is cheaper than exact selection; keep ``topn`` when the retained count itself matters.
-/// Degenerate case: if every magnitude lands in one octave and there are more than ``n`` terms, this keeps nothing. Combine with ``coeff`` via ``&``, or use ``topn``, if that matters.
+/// Whole octaves are kept from the top down while they fit in ``n``, and the next octave fills the rest in storage order (rank order across partitions, then bucket order), so exactly ``n`` survive whenever the sum holds more, though not necessarily the ``n`` largest.
+/// Which boundary-octave terms survive depends on bucketing and partitioning and is not part of the contract.
 #[pyfunction]
 fn approx_topn(n: usize) -> PyTruncation {
     PyTruncation::new(BuiltinTruncation::ApproxTopN(n))

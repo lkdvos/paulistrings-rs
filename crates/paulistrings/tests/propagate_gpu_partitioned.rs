@@ -8,9 +8,9 @@ use paulistrings::gpu::{
 use paulistrings::require_cuda;
 use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
-    assert_same_terms, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
-    rows_reading_z63, su4_chain, trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation,
-    KeepAll,
+    assert_runs_agree, assert_same_terms, assert_terms_close, rand_sum, rand_sum_real,
+    random_circuit, rows_reading_z63, su4_chain, trotter_circuit, with_hash,
+    x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
@@ -96,8 +96,7 @@ fn check<const W: usize, T>(
         for &p in partitions {
             let got = run(circuit, sum, policy, direction, p).expect("device propagate");
             let what = format!("{name} P={p} {direction:?}");
-            assert_eq!(got.len(), want.len(), "{what}: term count");
-            assert_terms_close(&got, &want, TOL, &what);
+            assert_runs_agree(policy, &got, &want, TOL, &what);
         }
     }
 }
@@ -235,8 +234,7 @@ fn cut_rows_agree() {
             );
             let got = split.gather().expect("gather");
             let what = format!("cut P={p} {direction:?}");
-            assert_eq!(got.len(), want.len(), "{what}: term count");
-            assert_terms_close(&got, &want, TOL, &what);
+            assert_runs_agree(&ApproxTopN(2_500), &got, &want, TOL, &what);
         }
     }
 }
@@ -289,7 +287,8 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
             host.len(),
             "GpuPauliSum {direction:?}: term count"
         );
-        assert_terms_close(
+        assert_runs_agree(
+            &ApproxTopN(4_000),
             &want,
             &host,
             TOL,
@@ -318,7 +317,8 @@ fn repeated_propagate_on_one_split() {
             .propagate(c, ApproxTopN(3_000), Direction::Heisenberg)
             .expect("propagate");
         assert_eq!(split.len(), host.len(), "call {i}");
-        assert_terms_close(
+        assert_runs_agree(
+            &ApproxTopN(3_000),
             &split.gather().expect("gather"),
             &host,
             TOL,
@@ -410,7 +410,8 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
             &ApproxTopN(6_000),
             Direction::Forward,
         );
-        assert_terms_close(
+        assert_runs_agree(
+            &ApproxTopN(6_000),
             &split.gather().expect("gather"),
             &want,
             TOL,
@@ -625,7 +626,7 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     assert!(trace.local_layers() > 0);
     let got = split.gather().expect("gather");
     assert_eq!(got.len(), want.len());
-    assert_terms_close(&got, &want, TOL, "uneven cut");
+    assert_runs_agree(&ApproxTopN(4_000), &got, &want, TOL, "uneven cut");
 }
 
 /// Four cut blocks with gates only inside blocks and between blocks 0 and 1: the partner pairs at partition delta 2 and 3 never exchange.
@@ -692,7 +693,13 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
         "the fixture has both idle pairs and traffic"
     );
     let want = propagate(&circuit, sum, &ApproxTopN(6_000), Direction::Forward);
-    assert_terms_close(&split.gather().expect("gather"), &want, TOL, "cut P=4");
+    assert_runs_agree(
+        &ApproxTopN(6_000),
+        &split.gather().expect("gather"),
+        &want,
+        TOL,
+        "cut P=4",
+    );
 }
 
 /// Rows every partition shipped over a traced propagation, and the gathered result.
@@ -966,5 +973,47 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
             TOL,
             &format!("P={p} two H"),
         );
+    }
+}
+
+/// One cutting layer at `P = 2, 4`: exactly `n` terms in total, and every term above the boundary octave agrees with the host's.
+#[test]
+fn approx_top_n_keeps_exactly_n_across_device_partitions() {
+    require_cuda!();
+    let nq = 16;
+    let sum = rand_sum_real::<1>(3_000, nq, 0xE1A);
+    let mut circuit = Circuit::<1>::new(nq);
+    circuit.push(zz_rotation::<1>(0, 9, 0.3));
+    let untruncated = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    let octave = |c: num_complex::Complex64| c.norm_sqr().to_bits() >> 52;
+    for n in [1usize, 777, 1_500, 2_999] {
+        let mut octaves: Vec<u64> = untruncated.iter().map(|(_, _, c)| octave(c)).collect();
+        octaves.sort_unstable_by(|a, b| b.cmp(a));
+        let boundary = octaves[n - 1];
+        let above = |s: &PauliSum<1>| {
+            let mut terms: Vec<_> = s
+                .iter()
+                .filter(|(_, _, c)| octave(*c) > boundary)
+                .map(|(x, z, c)| (*x, *z, c))
+                .collect();
+            terms.sort_unstable_by_key(|&(x, z, _)| (x, z));
+            terms
+        };
+        let host = propagate(&circuit, sum.clone(), &ApproxTopN(n), Direction::Forward);
+        assert_eq!(host.len(), n, "host n={n}");
+        for p in [2usize, 4] {
+            let got = run(&circuit, &sum, &ApproxTopN(n), Direction::Forward, p).expect("device");
+            let what = format!("n={n} P={p}");
+            assert_eq!(got.len(), n, "{what}: kept count");
+            let (got_above, host_above) = (above(&got), above(&host));
+            assert_eq!(got_above.len(), host_above.len(), "{what}: terms above");
+            for (g, h) in got_above.iter().zip(&host_above) {
+                assert_eq!((g.0, g.1), (h.0, h.1), "{what}: key above the boundary");
+                assert!(
+                    (g.2 - h.2).norm() < TOL,
+                    "{what}: coefficient above the boundary"
+                );
+            }
+        }
     }
 }

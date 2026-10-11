@@ -11,8 +11,7 @@ What lives here
 - `make_policy` / `TruncationSpec` — the jl-compatible `(max_weight,
   min_abs_coeff)` knobs, the only truncation vocabulary comparative runs may
   use. `topn` is deliberately not offered (plan §2, D3: PauliPropagation.jl has
-  no equivalent, and `topn` on the right of an `|` composition is silently
-  inert).
+  no equivalent).
 - `assert_single_threaded` — the A7 thread-pin gate.
 - `run_propagation` — one run in, one `report.RunRecord` out: separately timed
   propagation and contraction, term counts from `PropagationStats`, peak RSS,
@@ -180,8 +179,7 @@ def make_policy(
     schedule match a per-gate-truncating reference (plan §5, D10).
 
     `topn` is deliberately absent: there is no reference-implementation
-    equivalent, and it is silently inert on the right of an `|` composition
-    (plan §2, D3). Showcases that want it should call
+    equivalent (plan §2, D3). Showcases that want it should call
     `paulistrings.truncation.topn` directly and say so in their narrative.
     """
     parts = []

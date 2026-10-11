@@ -204,18 +204,12 @@ expect, and worth knowing before reading precision into these curves.
 coefficient magnitude — unavoidable here, because lattice symmetry on a periodic
 lattice relates many Pauli strings and gives them identical weights.
 
-`TopN(n)` keeps at most `n` terms. When a tie group of equal-magnitude terms
-straddles the cutoff, the whole group is kept if it fits within `n`, and the
-whole group is discarded otherwise — a tie group is never split, and an
-all-tied sum truncates to empty. The rationale: on a symmetric lattice, a
-tie group at exactly-equal magnitude is a symmetry orbit, and truncation
-should commute with the lattice's symmetry group. Keeping part of an orbit
-while discarding the rest breaks a symmetry the exact operator has, so a
-group is kept or dropped as a whole instead.
-
-This is a real design choice, not the only defensible one. Alternative tie
-rules (for example, a deterministic split-the-group tiebreak that always
-keeps exactly `n` terms) move the final trajectory by:
+`TopN(n)` keeps exactly `n` terms. When a tie group of equal-magnitude terms
+straddles the cutoff, the first members in bucket order fill the remaining
+slots, so part of a symmetry orbit survives and which part depends on the
+bucketing. Keeping or dropping each group whole instead, which commutes with
+the lattice's symmetry group but keeps fewer than `n`, moves the final
+trajectory by:
 
 | Lattice | max Δ⟨X_avg⟩ | max relative |
 |---------|--------------|---------------|

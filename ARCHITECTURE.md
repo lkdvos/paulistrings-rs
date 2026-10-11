@@ -418,18 +418,19 @@ An `Or` operand with a layer pass (`TopN`, `ApproxTopN`, `CollapseSample`, or an
 The equivalence is exact for the *ordering* and near-exact for the *tie grouping*: a symmetry multiplet's members differ by a sign or a power of `i`, and `re² + im²` is bitwise invariant under both, so exact ties survive.
 What squaring loses is the band below `|c| ≈ 1.57e-162`, whose squares underflow to `0.0` and therefore tie.
 
-**`TopN` never splits a tie group.**
-Terms with exactly equal magnitude are typically a symmetry multiplet, and truncation should commute with the symmetry, so the group at the threshold magnitude is kept only if it fits entirely within `n` and discarded whole otherwise.
-Consequences, all deliberate: `TopN(n)` retains *at most* `n`; it retains exactly `n` when magnitudes are distinct; and a sum whose coefficients all share one magnitude is wiped to empty.
-Implementation: gather squared magnitudes into a per-thread pooled buffer, select the `n`-th largest once globally, decide the tie group from the selection's own partition (the group fits iff nothing after the pivot equals the pivot), then filter each bucket in parallel — per-bucket filtering preserves within-bucket order automatically.
+**`TopN(n)` and `ApproxTopN(n)` keep exactly `n` terms whenever the sum holds more.**
+Each has a boundary: `TopN`'s is the `n`-th largest `|c|²`, `ApproxTopN`'s the octave of `|c|²` where the running count from the top first exceeds `n`.
+Every term above the boundary is kept, and the boundary contributes the first `n − kept_above` of its terms in bucket order (rank order across partitions, then bucket order); `n == 0` clears, and a sum of at most `n` terms is untouched.
+Which boundary terms survive is not a semantic promise: it depends on the bucket count, the partition rows and the device's bucketing, so two such runs agree on the count and on everything above the boundary, and after the first cut through a tie group or octave a multi-layer run diverges term for term.
+The quota is deterministic: count the boundary terms per bucket, hand the quota out over buckets in order, then retain each bucket in parallel with its own quota (`retain_with_boundary_quota`).
+`TopN` gathers squared magnitudes into a per-thread pooled buffer and selects the `n`-th largest once globally; the terms above it are counted in the selection's prefix.
 
-**`ApproxTopN(n)` trades the exact count for the selection.**
-It histograms the octave of `|c|²` (the 11-bit `f64` exponent: 2048 bins, 8 KB, L1-resident), walks the bins down to the lowest edge whose cumulative count still fits in `n`, and retains against that edge — two `O(m)` passes, no candidate array, no selection.
-It keeps `≤ n` (so the memory bound is exact) and `> n - p`, where `p` is the population of the coarsest octave that did not fit.
-Tie groups need no rule here: equal magnitudes share an octave, so a multiplet is always kept or dropped whole — at the price of a wider degenerate case, a sum confined to a single octave of `|c|²` being wiped exactly as an all-tied sum is under `TopN`.
-`TopN` remains the default and the choice whenever the retained count itself matters.
+**`ApproxTopN(n)` trades exact ranking for the selection.**
+It histograms the octave of `|c|²` (the 11-bit `f64` exponent: 2048 bins, 8 KB, L1-resident) and walks the bins down to the boundary octave — no candidate array, no selection; inside the boundary octave terms are taken in bucket order, not by magnitude.
+Partitioned, one `allreduce_sum_u64` of `[len, histogram…]` fixes the boundary and the global quota, and at a boundary one more of a length-`P` vector holding each rank's boundary-octave count in its slot gives each rank its quota by a prefix over the lower ranks.
+On a device the same rule runs as a per-bucket boundary count, an exclusive scan and an order-preserving warp-per-bucket retain, with integer counts only, so a device run stays bitwise reproducible.
 
-Under partitioning the two swap places: `ApproxTopN` is **partition-exact**, while exact `TopN` has no collective form yet and is rejected before the first layer (§Partitioning).
+Under partitioning `ApproxTopN` keeps exactly `n` in total, while exact `TopN` has no collective form yet and is rejected before the first layer (§Partitioning).
 
 ## Channels
 

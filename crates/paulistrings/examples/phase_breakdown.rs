@@ -116,10 +116,9 @@ Options:
                                             partitioned exact TopN is not
                                             yet supported.
                               atopn:<N>     ApproxTopN(N): the same, with a
-                                            histogram threshold instead of a
-                                            selection. Keeps <= N, so its
-                                            steady-state m differs from
-                                            topn:<N>'s -- compare per-term.
+                                            histogram boundary instead of a
+                                            selection. Also keeps exactly N,
+                                            but not the N largest.
   --partitions <csv>       Comma-separated partition counts, each a power of
                             two (default: 1). P > 1 runs the cell through the
                             partitioned engine; P = 1 runs the unpartitioned

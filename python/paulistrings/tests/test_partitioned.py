@@ -143,6 +143,15 @@ def _assert_terms_close(got, want, tol=TOL):
     assert worst < tol, f"largest coefficient difference {worst:.3e} exceeds {tol:.1e}"
 
 
+def _assert_same_count(got, want, got_stats=None, want_stats=None):
+    """Under a cutting ``approx_topn`` the runs keep different boundary-octave
+    terms (rank order, then bucket order), so only the counts agree."""
+    assert len(got) == len(want)
+    if got_stats is not None:
+        assert got_stats.layers == want_stats.layers
+        assert got_stats.final_terms == want_stats.final_terms
+
+
 def _assert_counts_equal(got, want):
     assert got.layers == want.layers
     assert got.terms_in == want.terms_in
@@ -195,15 +204,14 @@ def test_two_partitions_match_unpartitioned(num_qubits, direction):
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_two_partitions_match_unpartitioned_with_fanout(num_qubits, direction):
     """The same check on a circuit with real fanout, under the collective
-    ``approx_topn`` that bounds its growth."""
+    ``approx_topn`` that bounds its growth: the same counts."""
     s, c = _observable(num_qubits), _mixed_circuit(num_qubits)
     policy = truncation.approx_topn(NUM_TERMS)
     want, want_stats = s.propagate_with_stats(c, policy, direction=direction)
     got, got_stats = s.propagate_with_stats(
         c, policy, direction=direction, partitions=_cpu_sets()
     )
-    _assert_terms_close(got, want)
-    _assert_counts_equal(got_stats, want_stats)
+    _assert_same_count(got, want, got_stats, want_stats)
 
 
 def test_pin_memory_false_matches():
@@ -245,14 +253,14 @@ def test_a_trotter_loop_reuses_the_runtime():
     """Three calls in a row on one placement: the pinned pools are cached per
     config, so this must not spawn (and leak) a pool set per step. Nothing
     observable asserts the reuse — what is asserted is that stepping works and
-    still agrees with the unpartitioned answer."""
+    keeps the unpartitioned answer's count."""
     s, c = _observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0], layers=1)
     policy = truncation.approx_topn(5_000)
     partitioned, plain = s, s
     for _ in range(3):
         partitioned = partitioned.propagate(c, policy, partitions=_cpu_sets())
         plain = plain.propagate(c, policy)
-    _assert_terms_close(partitioned, plain)
+    _assert_same_count(partitioned, plain)
 
 
 # --------------------------------------------------------------------------
@@ -260,15 +268,15 @@ def test_a_trotter_loop_reuses_the_runtime():
 
 
 def test_approx_topn_agrees_with_unpartitioned():
-    """The collective octave histogram: the union of what the partitions keep
-    is what one partition holding everything would have kept."""
+    """The collective octave histogram and boundary quota: the partitions keep
+    exactly as many terms as one partition holding everything."""
     s, c = _observable(WIDTHS[1]), _mixed_circuit(WIDTHS[1])
     policy = truncation.coeff(1e-12) & truncation.approx_topn(4_000)
     want, want_stats = s.propagate_with_stats(c, policy)
     got, got_stats = s.propagate_with_stats(c, policy, partitions=_cpu_sets())
-    assert max(want_stats.terms_out) <= 4_000, "the policy must actually bite"
-    _assert_terms_close(got, want)
-    _assert_counts_equal(got_stats, want_stats)
+    assert max(want_stats.terms_out) == 4_000, "the policy must actually bite"
+    _assert_same_count(got, want, got_stats, want_stats)
+    assert got_stats.terms_out == want_stats.terms_out
 
 
 @pytest.mark.parametrize(
@@ -474,8 +482,8 @@ def test_distinct_seeds_move_different_rows():
 @pytest.mark.parametrize("num_qubits", WIDTHS)
 def test_seeded_and_cut_rows_agree_with_unpartitioned(num_qubits):
     """Both new row policies are placement knobs, not semantic ones: the
-    returned sum and every per-layer term count still match the unpartitioned
-    run, exactly like the existing seeded-random path."""
+    returned sum keeps the unpartitioned run's count under the cutting policy,
+    exactly like the existing seeded-random path."""
     s, c = _observable(num_qubits), _mixed_circuit(num_qubits)
     policy = truncation.approx_topn(NUM_TERMS)
     want, want_stats = s.propagate_with_stats(c, policy)
@@ -485,14 +493,12 @@ def test_seeded_and_cut_rows_agree_with_unpartitioned(num_qubits):
     got_cut, stats_cut = s.propagate_with_stats(
         c, policy, partitions=_cpu_sets(), partition_row_blocks=blocks
     )
-    _assert_terms_close(got_cut, want)
-    _assert_counts_equal(stats_cut, want_stats)
+    _assert_same_count(got_cut, want, stats_cut, want_stats)
 
     got_seed, stats_seed = s.propagate_with_stats(
         c, policy, partitions=_cpu_sets(), partition_row_seed=7
     )
-    _assert_terms_close(got_seed, want)
-    _assert_counts_equal(stats_seed, want_stats)
+    _assert_same_count(got_seed, want, stats_seed, want_stats)
 
 
 def test_cut_blocks_round_trip_to_the_named_partition():

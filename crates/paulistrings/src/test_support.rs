@@ -487,6 +487,35 @@ pub fn canonical_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64
     v
 }
 
+/// `(x, z, coeff)` triples in storage order: bucket by bucket, each bucket in its own order.
+pub fn storage_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64; W], Complex64)> {
+    s.iter().map(|(x, z, c)| (*x, *z, c)).collect()
+}
+
+/// The terms `TopN`/`ApproxTopN` keep out of `terms` (storage order, partitions concatenated in rank order), transcribed with a stable sort independently of production: descending by `rank`, the first `n`, back in input order.
+/// [`magnitude_rank`] gives `TopN(n)`, [`octave_rank`] gives `ApproxTopN(n)`.
+pub fn first_n_by_rank<const W: usize>(
+    terms: &[([u64; W], [u64; W], Complex64)],
+    n: usize,
+    rank: impl Fn(Complex64) -> u64,
+) -> Vec<([u64; W], [u64; W], Complex64)> {
+    let mut order: Vec<usize> = (0..terms.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(rank(terms[i].2)));
+    let mut kept: Vec<usize> = order.into_iter().take(n).collect();
+    kept.sort_unstable();
+    kept.into_iter().map(|i| terms[i]).collect()
+}
+
+/// `|c|²` as its bits, which order a non-negative `f64` as its value.
+pub fn magnitude_rank(c: Complex64) -> u64 {
+    c.norm_sqr().to_bits()
+}
+
+/// The octave of `|c|²`, `ApproxTopN`'s bin.
+pub fn octave_rank(c: Complex64) -> u64 {
+    c.norm_sqr().to_bits() >> 52
+}
+
 /// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
 /// Only appropriate between two computations that sum equal keys in the same order; anything compared against [`naive_apply_layer`] wants [`assert_terms_close`] instead.
 pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
@@ -557,6 +586,24 @@ pub fn assert_terms_close<const W: usize>(
             g.2,
             w.2,
         );
+    }
+}
+
+/// Two runs of `policy` over differently bucketed, partitioned or placed sums: [`assert_terms_close`] for a policy without a layer pass, and the same term count for one with.
+/// `TopN`/`ApproxTopN` keep boundary terms in bucket order (rank order across partitions), so after a cut through a tie group or octave the runs keep different terms and only the count is shared.
+pub fn assert_runs_agree<const W: usize, T>(
+    policy: &T,
+    got: &PauliSum<W>,
+    want: &PauliSum<W>,
+    tol: f64,
+    what: &str,
+) where
+    T: TruncationPolicy<W> + ?Sized,
+{
+    if policy.finalizes_layer() {
+        assert_eq!(got.len(), want.len(), "{what}: term count");
+    } else {
+        assert_terms_close(got, want, tol, what);
     }
 }
 

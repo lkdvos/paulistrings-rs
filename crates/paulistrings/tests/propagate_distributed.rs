@@ -15,8 +15,8 @@
 use num_complex::Complex64;
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
-    assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real,
-    trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
+    assert_runs_agree, assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum,
+    rand_sum_on, rand_sum_real, trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
 };
 use paulistrings::PtmChannel;
 use paulistrings::{
@@ -134,8 +134,7 @@ where
         for size in [1u32, 2, 4] {
             let got = distributed(circuit, sum, policy, direction, size);
             let what = format!("{name} ranks={size} {direction:?}");
-            assert_terms_close(&got, &want, TOL, &what);
-            assert_eq!(got.len(), want.len(), "{what}: term count");
+            assert_runs_agree(policy, &got, &want, TOL, &what);
         }
     }
 }

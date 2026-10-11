@@ -112,7 +112,7 @@ pub(crate) struct KernelSet {
     pub(crate) octave_histogram: CudaFunction,
     pub(crate) radix_histogram: CudaFunction,
     pub(crate) radix_extract: CudaFunction,
-    pub(crate) topn_counts: CudaFunction,
+    pub(crate) boundary_counts: CudaFunction,
     pub(crate) retain: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
@@ -268,7 +268,7 @@ pub(crate) fn kernel_set_with_options(
         octave_histogram: load("k_octave_hist")?,
         radix_histogram: load("k_radix_hist")?,
         radix_extract: load("k_radix_extract")?,
-        topn_counts: load("k_topn_counts")?,
+        boundary_counts: load("k_boundary_counts")?,
         retain: load("k_retain")?,
         layer,
         threads,

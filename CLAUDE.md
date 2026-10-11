@@ -126,6 +126,7 @@ The correctness bar is agreement to floating-point tolerance (`test_support::ass
 A test pinning exact bits is a tripwire: when it trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit.
 Never design, constrain or reject an optimization to keep output bits stable.
 `propagate_partitioned` at `P = 1` is byte-identical to `propagate`; across partition counts the bar is tolerance; a device run is bitwise reproducible on one device.
+`TopN`/`ApproxTopN` fill from their boundary in bucket order, so after a cut through a tie group or octave, runs at different bucket counts, partition counts or on a device agree only on the term count (`test_support::assert_runs_agree`).
 
 ## Performance discipline
 

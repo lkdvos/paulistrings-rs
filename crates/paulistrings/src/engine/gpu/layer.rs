@@ -150,7 +150,7 @@ pub(crate) struct LayerScratch<const W: usize> {
     pub(super) hist: CudaSlice<u64>,
     /// K8's 256-bin radix digit histogram, reused across passes.
     pub(super) radix_histogram: CudaSlice<u64>,
-    /// K8's small scalar outputs: the extracted singleton bits, or `[above, equal]` counts.
+    /// K8's extracted singleton bits.
     pub(super) radix_out: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
     pub(super) table: TableBuffers,

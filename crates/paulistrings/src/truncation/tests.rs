@@ -1,7 +1,10 @@
 use super::*;
 use crate::engine::partitioned::transport::InProcessTransport;
 use crate::pauli_sum::PartitionRows;
-use crate::test_support::{assert_same_terms, rand_sum_real, tie_heavy_sum};
+use crate::test_support::{
+    assert_same_terms, canonical_triples, first_n_by_rank, octave_rank, rand_sum_real,
+    storage_triples, tie_heavy_sum,
+};
 use crate::truncation::builtin::{
     And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
 };
@@ -15,14 +18,8 @@ fn partitioned_finalize<const W: usize, T>(policy: &T, sum: &PauliSum<W>, pbits:
 where
     T: TruncationPolicy<W>,
 {
-    let rows = PartitionRows::<W>::from_seed(sum.num_qubits(), pbits, PSEED);
-    let p = rows.num_partitions() as u32;
-    let parts: Vec<PauliSum<W>> = (0..p).map(|r| sum.filter_partition(&rows, r)).collect();
-    assert_eq!(
-        parts.iter().map(PauliSum::len).sum::<usize>(),
-        sum.len(),
-        "the split must be a partition of the terms",
-    );
+    let parts = split(sum, pbits);
+    let p = parts.len() as u32;
 
     let group = InProcessTransport::group(p);
     let gathered: Vec<PauliSum<W>> = std::thread::scope(|scope| {
@@ -52,6 +49,37 @@ where
     merged
 }
 
+/// `sum` split into `1 << pbits` partitions, in rank order.
+fn split<const W: usize>(sum: &PauliSum<W>, pbits: u8) -> Vec<PauliSum<W>> {
+    let rows = PartitionRows::<W>::from_seed(sum.num_qubits(), pbits, PSEED);
+    let p = rows.num_partitions() as u32;
+    let parts: Vec<PauliSum<W>> = (0..p).map(|r| sum.filter_partition(&rows, r)).collect();
+    assert_eq!(
+        parts.iter().map(PauliSum::len).sum::<usize>(),
+        sum.len(),
+        "the split must be a partition of the terms",
+    );
+    parts
+}
+
+/// Partitioned `ApproxTopN(n)` keeps `min(n, len)` terms in total: whole octaves above the boundary and the first boundary-octave terms in rank order, then bucket order.
+fn assert_partitioned_approx_top_n<const W: usize>(
+    input: &PauliSum<W>,
+    n: usize,
+    pbits: u8,
+    what: &str,
+) {
+    let got = partitioned_finalize(&ApproxTopN(n), input, pbits);
+    assert_eq!(got.len(), n.min(input.len()), "{what}: kept count");
+    let in_rank_order: Vec<_> = split(input, pbits)
+        .iter()
+        .flat_map(storage_triples)
+        .collect();
+    let mut want = first_n_by_rank(&in_rank_order, n, octave_rank);
+    want.sort_unstable_by_key(|&(x, z, _)| (x, z));
+    assert_eq!(canonical_triples(&got), want, "{what}: kept set");
+}
+
 /// Partitioned finalization is exactly the single-partition one.
 fn assert_matches_single_partition<const W: usize, T>(
     policy: &T,
@@ -75,32 +103,26 @@ fn assert_matches_single_partition<const W: usize, T>(
     assert_same_terms(&got, &want, what);
 }
 
-/// `W = 1`, random real coefficients: the retained set is the same at `P = 1, 2, 4` for a spread of `n`, including `n` well inside the sum, `n = 0`, and `n` past the end.
+/// `W = 1`, random real coefficients, `P = 2, 4`, for a spread of `n` including `n = 0` and `n` past the end.
 #[test]
-fn approx_top_n_partitioned_matches_single_partition_w1() {
+fn approx_top_n_partitioned_keeps_exactly_n_w1() {
     let input = rand_sum_real::<1>(2000, 32, 0xA9C7);
     for pbits in [1u8, 2] {
         for n in [0usize, 1, 37, 300, 999, 1500, input.len(), input.len() + 10] {
-            assert_matches_single_partition(
-                &ApproxTopN(n),
-                &input,
-                pbits,
-                &format!("w1 P=2^{pbits} n={n}"),
-            );
+            assert_partitioned_approx_top_n(&input, n, pbits, &format!("w1 P=2^{pbits} n={n}"));
         }
     }
 }
 
-/// `W = 2` with magnitudes 1, ½, ¼, ⅛, one group per octave, so several `n` cut inside a tie band.
+/// `W = 2` with magnitudes 1, ½, ¼, ⅛, one group per octave, so every `n` cuts inside a tie band.
 #[test]
-fn approx_top_n_partitioned_matches_single_partition_w2_tie_heavy() {
+fn approx_top_n_partitioned_keeps_exactly_n_w2_tie_heavy() {
     let input = tie_heavy_sum::<2>(2000, 100, 0x7135);
-    // Cumulative octave populations are ~500, ~1000, ~1500, ~2000; every `n` lands strictly between two of them.
     for pbits in [1u8, 2] {
         for n in [0usize, 3, 250, 700, 1200, 1900, 2500] {
-            assert_matches_single_partition(
-                &ApproxTopN(n),
+            assert_partitioned_approx_top_n(
                 &input,
+                n,
                 pbits,
                 &format!("w2 tie-heavy P=2^{pbits} n={n}"),
             );
@@ -108,9 +130,9 @@ fn approx_top_n_partitioned_matches_single_partition_w2_tie_heavy() {
     }
 }
 
-/// A sum confined to one octave of `|c|²` (magnitudes 1, 1⅛, 1¼, 1⅜) is wiped to empty on every partition.
+/// A sum confined to one octave of `|c|²` (magnitudes 1, 1⅛, 1¼, 1⅜) keeps `n` of it across partitions.
 #[test]
-fn approx_top_n_partitioned_wipes_a_single_octave_sum() {
+fn approx_top_n_partitioned_splits_a_single_octave_sum() {
     let mags = [1.0f64, 1.125, 1.25, 1.375];
     let input = PauliSum::<1>::from_sorted_columns(
         (0u64..mags.len() as u64).map(|i| [i]).collect(),
@@ -119,15 +141,9 @@ fn approx_top_n_partitioned_wipes_a_single_octave_sum() {
         32,
     );
     for pbits in [1u8, 2] {
-        let got = partitioned_finalize(&ApproxTopN(3), &input, pbits);
-        assert!(got.is_empty(), "P=2^{pbits}: one octave cannot be split");
-        // …and `n >= len` is still the no-op it is single-partition.
-        assert_matches_single_partition(
-            &ApproxTopN(4),
-            &input,
-            pbits,
-            &format!("single octave P=2^{pbits} n=4"),
-        );
+        for n in 0..=4 {
+            assert_partitioned_approx_top_n(&input, n, pbits, &format!("P=2^{pbits} n={n}"));
+        }
     }
 }
 
@@ -157,7 +173,9 @@ fn and_composes_with_a_collective_finalization() {
     let input = rand_sum_real::<1>(1500, 32, 0xC0DE);
     let policy = And(CoefficientThreshold(1e-3), ApproxTopN(400));
     for pbits in [1u8, 2] {
-        assert_matches_single_partition(&policy, &input, pbits, &format!("and P=2^{pbits}"));
+        let got = partitioned_finalize(&policy, &input, pbits);
+        let want = partitioned_finalize(&ApproxTopN(400), &input, pbits);
+        assert_same_terms(&got, &want, &format!("and P=2^{pbits}"));
     }
 }
 

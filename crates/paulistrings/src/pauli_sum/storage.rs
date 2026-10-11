@@ -463,23 +463,35 @@ impl<const W: usize> PauliSum<W> {
 
     /// Keep only the terms for which `f(x, z, coeff)` is `true`; `f` may run on several threads at once.
     pub fn retain(&mut self, f: impl Fn(&[u64; W], &[u64; W], Complex64) -> bool + Sync) {
-        self.buckets.par_iter_mut().for_each(|columns| {
-            let n = columns.len();
-            let mut w = 0usize;
-            for r in 0..n {
-                if f(&columns.x[r], &columns.z[r], columns.coeff[r]) {
-                    if w != r {
-                        columns.x[w] = columns.x[r];
-                        columns.z[w] = columns.z[r];
-                        columns.coeff[w] = columns.coeff[r];
+        self.retain_per_bucket(|_| &f);
+    }
+
+    /// [`retain`](Self::retain) with one filter per bucket, `filter_for(b)`, run over bucket `b` in order.
+    pub(crate) fn retain_per_bucket<F>(&mut self, filter_for: impl Fn(usize) -> F + Sync)
+    where
+        F: FnMut(&[u64; W], &[u64; W], Complex64) -> bool,
+    {
+        self.buckets
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(b, columns)| {
+                let mut keep = filter_for(b);
+                let n = columns.len();
+                let mut w = 0usize;
+                for r in 0..n {
+                    if keep(&columns.x[r], &columns.z[r], columns.coeff[r]) {
+                        if w != r {
+                            columns.x[w] = columns.x[r];
+                            columns.z[w] = columns.z[r];
+                            columns.coeff[w] = columns.coeff[r];
+                        }
+                        w += 1;
                     }
-                    w += 1;
                 }
-            }
-            columns.x.truncate(w);
-            columns.z.truncate(w);
-            columns.coeff.truncate(w);
-        });
+                columns.x.truncate(w);
+                columns.z.truncate(w);
+                columns.coeff.truncate(w);
+            });
         self.recount();
     }
 

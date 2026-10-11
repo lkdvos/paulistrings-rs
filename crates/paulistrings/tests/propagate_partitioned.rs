@@ -10,8 +10,8 @@
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use paulistrings::test_support::{
-    assert_terms_close, rand_sum, rand_sum_real, random_circuit, trotter_circuit,
-    unpinned_partitions, zz_rotation, KeepAll,
+    assert_runs_agree, assert_terms_close, rand_sum, rand_sum_real, random_circuit,
+    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::{propagate, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy};
 use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
@@ -28,8 +28,9 @@ fn config(partitions: usize) -> PartitionConfig {
 }
 
 /// One policy against one circuit: the unpartitioned engine is the oracle, and
-/// every partition count has to reproduce it — same keys (which
-/// `assert_terms_close` checks), close coefficients, and the same term count.
+/// every partition count has to reproduce it — same keys, close coefficients
+/// and the same term count, or the count alone under a cutting `ApproxTopN`
+/// (`assert_runs_agree`).
 fn check<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -52,8 +53,7 @@ fn check<const W: usize, T>(
             )
             .expect("topology resolves");
             let what = format!("{name} P={p} {direction:?}");
-            assert_terms_close(&got, &want, TOL, &what);
-            assert_eq!(got.len(), want.len(), "{what}: term count");
+            assert_runs_agree(policy, &got, &want, TOL, &what);
         }
     }
 }
@@ -279,7 +279,7 @@ fn auto_placement_agrees() {
         PropagateOptions::default(),
     )
     .expect("topology resolves");
-    assert_terms_close(&got, &want, TOL, "auto placement");
+    assert_runs_agree(&ApproxTopN(400), &got, &want, TOL, "auto placement");
 }
 
 /// A policy with a layer pass and no collective form panics before the first layer.

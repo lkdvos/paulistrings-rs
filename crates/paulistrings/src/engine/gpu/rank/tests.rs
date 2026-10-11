@@ -47,9 +47,9 @@ mod protocol {
     use super::*;
     use crate::engine::partitioned::{PartitionRuntime, ScatterOptions, ScatterRows};
     use crate::test_support::{
-        assert_terms_close, rand_sum_real, random_circuit, rows_reading_z63, su4_chain,
-        trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog,
-        LoggingTransport,
+        assert_runs_agree, assert_terms_close, rand_sum_real, random_circuit, rows_reading_z63,
+        su4_chain, trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation,
+        CallLog, LoggingTransport,
     };
     use crate::truncation::ApproxTopN;
 
@@ -141,8 +141,7 @@ mod protocol {
         fn check(&self, size: u32, what: &str) {
             let got = rank0(self.on(wired(size).0, &|_| {}));
             let want = self.want();
-            assert_eq!(got.len(), want.len(), "{what}: term count");
-            assert_terms_close(&got, &want, 1e-11, what);
+            assert_runs_agree(&self.policy, &got, &want, 1e-11, what);
         }
     }
 

@@ -30,8 +30,8 @@ It keeps terms of Pauli weight at most `k`, which is useful when the causal cone
 
 **`topn(k)` bounds memory, but changes what "converged" means.**
 It keeps at most `k` terms, largest `|c|` first, so the error is set by the discarded tail rather than by a threshold; a `topn` run cannot carry a `coeff`-sweep convergence panel, and it has no equivalent in `PauliPropagation.jl` for cross-engine comparison.
-`topn` never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within `k`, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
-**`approx_topn(n)`** is the cheap sibling: it bins terms by octave of `|c|²` and keeps whole octaves from the top down while they fit in `n`, so at most `n` terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
+A sum of more than `k` terms keeps exactly `k`: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
+**`approx_topn(n)`** is the cheap sibling: it bins terms by octave of `|c|²`, keeps whole octaves from the top down while they fit in `n`, and fills the rest from the next octave in storage order, so exactly `n` terms survive but not necessarily the `n` largest.
 Exact `topn` has no partitioned form, so `approx_topn` is the policy for [NUMA partitions](partitions.md) and [MPI ranks](mpi.md).
 
 **`collapse_sample(cache, seed)` samples instead of filtering.**

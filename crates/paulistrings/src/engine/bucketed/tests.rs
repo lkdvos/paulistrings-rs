@@ -1596,150 +1596,66 @@ mod tie_tests {
         }
     }
 
+    use super::canonical_triples;
     use super::*;
-    use super::{assert_same_terms, canonical_triples};
     use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
-    use crate::test_support::{rand_sum, tie_heavy_sum};
-    use crate::truncation::builtin::TopN;
+    use crate::test_support::{
+        first_n_by_rank, magnitude_rank, octave_rank, rand_sum, storage_triples, tie_heavy_sum,
+    };
+    use crate::truncation::builtin::{ApproxTopN, TopN};
 
-    /// A naive transcription of the `TopN` tie-group rule (ARCHITECTURE.md §Truncation), sharing no code with production.
-    fn top_n_reference<const W: usize>(
-        sum: &PauliSum<W>,
+    /// The kept terms whose `rank` is strictly above the `n`-th largest rank of `input`, in key order.
+    fn above_the_boundary<const W: usize>(
+        input: &PauliSum<W>,
+        kept: &PauliSum<W>,
         n: usize,
+        rank: fn(Complex64) -> u64,
     ) -> Vec<([u64; W], [u64; W], Complex64)> {
-        let mut triples = canonical_triples(sum);
-        if triples.len() <= n {
-            return triples;
-        }
-        if n == 0 {
-            return Vec::new();
-        }
-        let mut mags: Vec<f64> = triples.iter().map(|t| t.2.norm()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).expect("no NaN magnitudes"));
-        // `t` = the n-th largest magnitude.
-        let t = mags[n - 1];
-        let count_gt = mags.iter().filter(|&&m| m > t).count();
-        let count_eq = mags.iter().filter(|&&m| m == t).count();
-        // Keep the tie group iff it fits entirely.
-        let keep_tied = count_gt + count_eq <= n;
-        triples.retain(|(_, _, c)| {
-            let m = c.norm();
-            m > t || (keep_tied && m == t)
-        });
-        triples
+        let mut ranks: Vec<u64> = input.iter().map(|(_, _, c)| rank(c)).collect();
+        ranks.sort_unstable_by(|a, b| b.cmp(a));
+        let boundary = ranks[n - 1];
+        canonical_triples(kept)
+            .into_iter()
+            .filter(|t| rank(t.2) > boundary)
+            .collect()
     }
 
-    /// The retained set depends only on the magnitude multiset, never on the bucket partition; checked on tie-dense data.
+    /// `TopN(n)` keeps exactly `n` of a tie-dense sum at every bucket count and hash seed: the same terms above the boundary, and the stable-sort transcription of the rule in each storage order.
     #[test]
-    fn top_n_is_bucket_count_independent_on_tied_magnitudes() {
+    fn top_n_keeps_exactly_n_at_every_bucket_count_and_seed() {
         let input = tie_heavy_sum::<1>(2000, 8, 0x7135);
-        let n = 700; // cuts inside the group of magnitude-0.5 terms
-        let reference = {
-            let hash = Gf2Hash::<1>::new(8, 0, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            b
-        };
-        for bits in [1u8, 2, 4, 6, 9] {
-            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            let got = b;
-            assert_same_terms(
-                &got,
-                &reference,
-                &format!("bits={bits}: TopN kept a different set of tied terms"),
-            );
-        }
-    }
-
-    /// `finalize_layer` matches the `TopN` tie-group rule for `n` both straddling and exactly on group boundaries.
-    #[test]
-    fn top_n_matches_the_reference_rule_on_tied_magnitudes() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x7136);
-        let len = input.len();
-
-        // Cumulative magnitude-group sizes, descending: each is a cut exactly on a group boundary.
-        let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).expect("no NaN magnitudes"));
-        let boundaries: Vec<usize> = (1..mags.len())
-            .filter(|&i| mags[i] != mags[i - 1])
-            .collect();
-        assert!(
-            boundaries.len() >= 2,
-            "fixture must have several magnitude groups, got {}",
-            boundaries.len() + 1
-        );
-
-        let mut sweep = vec![3usize, 250, 700, 1200, 1900];
-        sweep.extend_from_slice(&boundaries);
-        let mut saw_straddle = false;
-        let mut saw_fit = false;
-
-        for n in sweep {
-            let want = top_n_reference(&input, n);
-            // A straddling group is dropped whole, so fewer than `n` survive; a fitting group leaves exactly `n`.
-            assert!(want.len() <= n, "n={n}: rule must retain at most n");
-            if want.len() < n {
-                saw_straddle = true;
-            } else {
-                saw_fit = true;
-            }
-
-            let policy = TopN(n);
-            for bits in [0u8, 2, 5, 9] {
-                let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-                let mut b = input.clone().with_hash(hash);
-                policy.finalize_layer(&mut b);
+        // 700 cuts inside the group of magnitude-0.5 terms; 1000 near a group boundary.
+        for n in [3usize, 700, 1000, 1900] {
+            let reference = {
+                let mut b = input.clone().with_hash(Gf2Hash::<1>::new(8, 0, 0x99));
+                TopN(n).finalize_layer(&mut b);
+                b
+            };
+            for (bits, seed) in [(1u8, 0x99u64), (2, 0x99), (5, 1), (5, 13), (9, 0x99)] {
+                let hashed = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, seed));
+                let mut b = hashed.clone();
+                TopN(n).finalize_layer(&mut b);
                 b.assert_invariants();
+                let what = format!("n={n} bits={bits} seed={seed}");
+                assert_eq!(b.len(), n, "{what}: kept count");
                 assert_eq!(
-                    canonical_triples(&b),
-                    want,
-                    "n={n} bits={bits} (len={len}): retained set differs from the \
-                     reference rule",
+                    storage_triples(&b),
+                    first_n_by_rank(&storage_triples(&hashed), n, magnitude_rank),
+                    "{what}: rule"
+                );
+                assert_eq!(
+                    above_the_boundary(&input, &b, n, magnitude_rank),
+                    above_the_boundary(&input, &reference, n, magnitude_rank),
+                    "{what}: terms above the boundary"
                 );
             }
         }
-
-        assert!(
-            saw_straddle,
-            "the n sweep no longer covers a straddling tie group"
-        );
-        assert!(
-            saw_fit,
-            "the n sweep no longer covers a tie group that fits"
-        );
     }
 
-    /// The same across hash seeds.
+    /// The same for `ApproxTopN(n)`, whose boundary is an octave; `n = 700` cuts between the first two of `tie_heavy_sum`'s four octaves.
     #[test]
-    fn top_n_is_hash_seed_independent_on_tied_magnitudes() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x7123);
-        let n = 700;
-        let reference = {
-            let hash = Gf2Hash::<1>::new(8, 5, 1);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            b
-        };
-        for seed in [2u64, 3, 5, 8, 13] {
-            let hash = Gf2Hash::<1>::new(8, 5, seed);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            let got = b;
-            assert_same_terms(
-                &got,
-                &reference,
-                &format!("seed={seed}: different set kept"),
-            );
-        }
-    }
-
-    /// `ApproxTopN`'s retained set is independent of bucket count and hash seed; `n = 700` cuts between the first two of `tie_heavy_sum`'s four equal octaves.
-    #[test]
-    fn approx_top_n_is_partition_independent_on_tied_magnitudes() {
-        use crate::truncation::builtin::ApproxTopN;
+    fn approx_top_n_keeps_exactly_n_at_every_bucket_count_and_seed() {
         let input = tie_heavy_sum::<1>(2000, 8, 0x7135);
         let n = 700;
         let reference = {
@@ -1748,55 +1664,27 @@ mod tie_tests {
             b
         };
         assert_eq!(
-            reference.len(),
+            above_the_boundary(&input, &reference, n, octave_rank).len(),
             input.iter().filter(|(_, _, c)| c.norm() == 1.0).count(),
             "the fixture must cut between the top two octaves"
         );
         for (bits, seed) in [(1u8, 0x99u64), (2, 0x99), (4, 3), (6, 13), (9, 0x99)] {
-            let mut b = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, seed));
+            let hashed = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, seed));
+            let mut b = hashed.clone();
             ApproxTopN(n).finalize_layer(&mut b);
             b.assert_invariants();
-            assert_same_terms(
-                &b,
-                &reference,
-                &format!("bits={bits} seed={seed}: ApproxTopN kept a different set"),
-            );
-        }
-    }
-
-    /// A straddling tie group leaves no member behind in any bucket.
-    #[test]
-    fn top_n_drops_a_straddling_group_from_every_bucket() {
-        let input = tie_heavy_sum::<1>(2000, 8, 0x71C0);
-        let n = 700;
-        // t is the 700th largest magnitude; the group at t straddles the cut.
-        let mut mags: Vec<f64> = input.iter().map(|(_, _, c)| c.norm()).collect();
-        mags.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let t = mags[n - 1];
-        let count_gt = mags.iter().filter(|&&m| m > t).count();
-        let count_eq = mags.iter().filter(|&&m| m == t).count();
-        assert!(
-            count_gt + count_eq > n,
-            "fixture no longer straddles: gt={count_gt} eq={count_eq} n={n}"
-        );
-
-        for bits in [0u8, 3, 7] {
-            let hash = Gf2Hash::<1>::new(8, bits, 0x99);
-            let mut b = input.clone().with_hash(hash);
-            TopN(n).finalize_layer(&mut b);
-            b.assert_invariants();
+            let what = format!("bits={bits} seed={seed}");
+            assert_eq!(b.len(), n, "{what}: kept count");
             assert_eq!(
-                b.len(),
-                count_gt,
-                "bits={bits}: retained count must be exactly count(|c| > t)"
+                storage_triples(&b),
+                first_n_by_rank(&storage_triples(&hashed), n, octave_rank),
+                "{what}: rule"
             );
-            for nb in 0..b.num_buckets() {
-                let (_, _, coeff) = b.bucket(nb);
-                assert!(
-                    coeff.iter().all(|c| c.norm() > t),
-                    "bits={bits} bucket={nb}: a member of the discarded group survived"
-                );
-            }
+            assert_eq!(
+                above_the_boundary(&input, &b, n, octave_rank),
+                above_the_boundary(&input, &reference, n, octave_rank),
+                "{what}: terms above the boundary"
+            );
         }
     }
 }

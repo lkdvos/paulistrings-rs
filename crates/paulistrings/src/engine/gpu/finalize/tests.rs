@@ -2,7 +2,7 @@ use super::*;
 use crate::engine::gpu::layer::GpuLayerOptions;
 use crate::pauli_sum::PauliSum;
 use crate::test_support::{rand_sum, tie_heavy_sum};
-use crate::truncation::builtin::{octave_histogram, retain_at_or_above};
+use crate::truncation::builtin::{octave_histogram, retain_at_edge};
 use crate::TruncationPolicy;
 use num_complex::Complex64;
 
@@ -64,23 +64,32 @@ fn histogram_bins_edge_values_as_the_host() {
     }
 }
 
+/// The whole-sum boundary quota of `edge`, which a single partition keeps in full.
+fn quota_of(edge: EdgeDecision) -> usize {
+    match edge {
+        EdgeDecision::Boundary { quota, .. } => quota,
+        EdgeDecision::KeepAll | EdgeDecision::Clear => 0,
+    }
+}
+
 fn retain_matches<const W: usize>() {
     for (what, sum) in fixtures::<W>() {
         let len = sum.len();
         let hist = octave_histogram(&sum);
         for n in [0usize, 1, len / 3, len / 2, len.saturating_sub(1), len] {
             let edge = octave_edge(&hist, len, n);
+            let quota = quota_of(edge);
             let mut want = sum.clone();
-            retain_at_or_above(&mut want, edge);
+            retain_at_edge(&mut want, edge, quota);
             let (mut dev, mut scratch) = device(&sum);
-            retain_at_or_above_device(&mut dev, &mut scratch, edge).expect("retain");
+            retain_at_edge_device(&mut dev, &mut scratch, edge, quota).expect("retain");
             assert_eq!(dev.len(), want.len(), "{what} n={n}: len");
             dev.assert_invariants_device()
                 .unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download");
             assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: terms");
-            if let EdgeDecision::AtOrAbove { kept, .. } = edge {
-                assert_eq!(dev.len(), kept, "{what} n={n}: histogram and predicate");
+            if let EdgeDecision::Boundary { .. } = edge {
+                assert_eq!(dev.len(), n, "{what} n={n}: exactly n kept");
             }
         }
     }
@@ -102,13 +111,10 @@ fn retain_twice_reuses_the_spare_and_stays_valid() {
     let mut host = sum.clone();
     for n in [20_000usize, 12_000] {
         let edge = octave_edge(&octave_histogram(&host), host.len(), n);
-        retain_at_or_above(&mut host, edge);
-        retain_at_or_above_device(&mut dev, &mut scratch, edge).expect("retain");
+        retain_at_edge(&mut host, edge, quota_of(edge));
+        retain_at_edge_device(&mut dev, &mut scratch, edge, quota_of(edge)).expect("retain");
     }
-    assert!(
-        host.len() < 12_000 && !host.is_empty(),
-        "both passes must cut without wiping"
-    );
+    assert_eq!(host.len(), 12_000, "the second pass keeps exactly n");
     assert_eq!(dev.to_host().unwrap().to_arrays(), host.to_arrays());
 }
 
@@ -145,7 +151,7 @@ fn top_n_equals_the_hosts_term_for_term() {
     top_n_matches::<2>();
 }
 
-/// `TopN::finalize_layer`'s tie rule on device: a group straddling the cut is dropped whole, one ending exactly at `n` is kept, an all-tied sum is wiped, and distinct magnitudes keep exactly `n`.
+/// `TopN::finalize_layer`'s tie rule on device: a group straddling the cut is split in bucket order, one ending exactly at `n` is kept, an all-tied sum keeps its first `n`, and distinct magnitudes keep exactly `n`.
 #[test]
 fn top_n_tie_rules_match_the_host_on_device() {
     crate::require_cuda!();
@@ -160,7 +166,7 @@ fn top_n_tie_rules_match_the_host_on_device() {
     };
     let real = |m: [f64; 6]| six(m.map(|m| (m, 0.0)));
     let cases = [
-        ("straddling", real([5.0, 4.0, 3.0, 3.0, 3.0, 2.0]), 3, 2),
+        ("straddling", real([5.0, 4.0, 3.0, 3.0, 3.0, 2.0]), 3, 3),
         ("fits exactly", real([5.0, 4.0, 3.0, 3.0, 2.0, 1.0]), 4, 4),
         (
             "all tied",
@@ -173,7 +179,7 @@ fn top_n_tie_rules_match_the_host_on_device() {
                 (-2.0, 0.0),
             ]),
             3,
-            0,
+            3,
         ),
         ("all distinct", rand_sum::<1>(5_000, 32, 0xD157), 1234, 1234),
     ];

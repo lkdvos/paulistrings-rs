@@ -258,9 +258,9 @@ fn top_n_all_distinct_retains_exactly_n() {
     sum.assert_invariants();
 }
 
-/// A tie group straddling the cut is discarded whole: magnitudes 5, 4, 3, 3, 3, 2 with `n = 3` keeps only 5 and 4, since the three-member group at 3 does not fit in the one remaining slot.
+/// A tie group straddling the cut is split in bucket order: magnitudes 5, 4, 3, 3, 3, 2 with `n = 3` keeps 5, 4 and the first 3.
 #[test]
-fn top_n_discards_a_straddling_tie_group_entirely() {
+fn top_n_splits_a_straddling_tie_group_in_bucket_order() {
     let magnitudes = [5.0f64, 4.0, 3.0, 3.0, 3.0, 2.0];
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
@@ -268,17 +268,11 @@ fn top_n_discards_a_straddling_tie_group_entirely() {
         magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
         3,
     );
-    sum.assert_invariants();
     TopN(3).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 2, "straddling group must be dropped whole");
     let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[0u64], [1u64]]);
+    assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
     let got: Vec<f64> = c.iter().map(|c| c.norm()).collect();
-    assert_eq!(got, vec![5.0, 4.0]);
-    assert!(
-        !got.contains(&3.0),
-        "no member of the straddling group may survive"
-    );
+    assert_eq!(got, vec![5.0, 4.0, 3.0]);
     sum.assert_invariants();
 }
 
@@ -302,36 +296,34 @@ fn top_n_keeps_a_tie_group_that_fits_exactly() {
     sum.assert_invariants();
 }
 
-/// If every candidate ties at the threshold, the group cannot fit and the whole sum is discarded — the case documented on [`TopN`] itself.
+/// An all-tied sum keeps exactly `n`, the first in bucket order.
 #[test]
-fn top_n_wipes_an_all_tied_sum_to_empty() {
+fn top_n_keeps_exactly_n_of_an_all_tied_sum() {
+    // Same magnitude, different phases (fourth roots of unity so every norm is bitwise 2.0): a multiplet, not duplicates.
+    let coefficients = vec![
+        Complex64::new(2.0, 0.0),
+        Complex64::new(-2.0, 0.0),
+        Complex64::new(0.0, 2.0),
+        Complex64::new(0.0, -2.0),
+        Complex64::new(2.0, 0.0),
+        Complex64::new(-2.0, 0.0),
+    ];
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
         vec![[0u64]; 6],
-        // Same magnitude, different phases (fourth roots of unity so every norm is bitwise 2.0): a multiplet, not duplicates.
-        vec![
-            Complex64::new(2.0, 0.0),
-            Complex64::new(-2.0, 0.0),
-            Complex64::new(0.0, 2.0),
-            Complex64::new(0.0, -2.0),
-            Complex64::new(2.0, 0.0),
-            Complex64::new(-2.0, 0.0),
-        ],
+        coefficients.clone(),
         3,
     );
-    sum.assert_invariants();
     TopN(3).finalize_layer(&mut sum);
-    assert!(
-        sum.is_empty(),
-        "an all-tied sum is wiped: t is the maximum, nothing exceeds it, \
-         and the single group of size 6 does not fit in 3"
-    );
+    let (x, _, c) = sum.to_arrays();
+    assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
+    assert_eq!(c, coefficients[..3].to_vec());
     sum.assert_invariants();
 }
 
-/// Magnitudes below the square-underflow floor (`≈1.57e-162`) collapse to one tie group: six terms at 1e-200..6e-200 with `n = 3` all square to `0.0` and the group of six does not fit in three, so the sum is wiped.
+/// Magnitudes below the square-underflow floor (`≈1.57e-162`) tie at zero: six terms at 1e-200..6e-200 with `n = 3` keep the first three in bucket order, not the largest three.
 #[test]
-fn top_n_wipes_a_sum_whose_squares_all_underflow() {
+fn top_n_treats_underflowing_squares_as_one_tie_group() {
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
         vec![[0u64]; 6],
@@ -340,18 +332,21 @@ fn top_n_wipes_a_sum_whose_squares_all_underflow() {
             .collect(),
         3,
     );
-    sum.assert_invariants();
     TopN(3).finalize_layer(&mut sum);
-    assert!(
-        sum.is_empty(),
-        "squares all underflow to 0.0, so the whole sum is one tie group"
+    let (x, _, c) = sum.to_arrays();
+    assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
+    assert_eq!(
+        c,
+        (1..=3)
+            .map(|i| Complex64::new(i as f64 * 1e-200, 0.0))
+            .collect::<Vec<_>>()
     );
     sum.assert_invariants();
 }
 
-/// When the cut falls inside an underflowing tail, the tail is dropped whole and the representable terms are kept: magnitudes 3, 2, 1 plus five terms at 1e-200 with `n = 5` keeps only the three representable terms.
+/// A cut inside an underflowing tail keeps the representable terms and fills the rest from the tail in bucket order: magnitudes 3, 2, 1 plus five terms at 5e-200..1e-200 with `n = 5`.
 #[test]
-fn top_n_drops_an_underflowing_tail_and_keeps_the_rest() {
+fn top_n_fills_from_an_underflowing_tail_in_bucket_order() {
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..8).map(|i| [i]).collect(),
         vec![[0u64]; 8],
@@ -367,20 +362,37 @@ fn top_n_drops_an_underflowing_tail_and_keeps_the_rest() {
         ],
         3,
     );
-    sum.assert_invariants();
     TopN(5).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 3, "the underflowing tail must go whole");
     let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
+    assert_eq!(x, (0u64..5).map(|i| [i]).collect::<Vec<_>>());
     assert_eq!(
         c,
         vec![
             Complex64::new(3.0, 0.0),
             Complex64::new(2.0, 0.0),
             Complex64::new(1.0, 0.0),
+            Complex64::new(5e-200, 0.0),
+            Complex64::new(4e-200, 0.0),
         ]
     );
     sum.assert_invariants();
+}
+
+/// On multi-bucket tie-dense sums, `TopN(n)` keeps exactly the stable-sort transcription of the rule, at every bucket count.
+#[test]
+fn top_n_matches_the_stable_sort_rule_across_bucket_counts() {
+    let input = crate::test_support::tie_heavy_sum::<1>(2000, 8, 0x7136);
+    for bits in [0u8, 2, 5, 9] {
+        let hashed = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, 0x99));
+        for n in [0usize, 1, 3, 250, 500, 700, 1000, 1999, 2000, 2500] {
+            let mut sum = hashed.clone();
+            TopN(n).finalize_layer(&mut sum);
+            sum.assert_invariants();
+            let want = first_n_by_rank(&storage_triples(&hashed), n, magnitude_rank);
+            assert_eq!(sum.len(), n.min(input.len()), "bits={bits} n={n}");
+            assert_eq!(storage_triples(&sum), want, "bits={bits} n={n}");
+        }
+    }
 }
 
 /// A smaller sum finalized after a larger one on the same thread reads only its own prefix of the pooled buffer, not the stale tail.
@@ -505,36 +517,29 @@ fn octave(c: Complex64) -> usize {
     (c.norm_sqr().to_bits() >> 52) as usize
 }
 
-/// The threshold can only land on an octave boundary of `|c|²`, so the retained count is a cumulative octave population, not `n` — hand-tabulated here for the four-octave fixture below (populations 1, 2, 3, 4; cumulative 1, 3, 6, 10 from the top).
+/// Every octave above the boundary is kept whole and the boundary octave fills the rest in bucket order, so exactly `n` survive — hand-tabulated for four octaves of populations 1, 2, 3, 4 (keys in magnitude order, one bucket).
 #[test]
-fn approx_top_n_keeps_a_cumulative_octave_population() {
+fn approx_top_n_keeps_exactly_n_filling_the_boundary_octave_in_bucket_order() {
     let magnitudes = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
-    for (n, want) in [
-        (1usize, 1usize),
-        (2, 1),
-        (3, 3),
-        (4, 3),
-        (5, 3),
-        (6, 6),
-        (7, 6),
-        (8, 6),
-        (9, 6),
-    ] {
+    for n in 1usize..10 {
         let mut sum = sum_of_mags(&magnitudes);
         ApproxTopN(n).finalize_layer(&mut sum);
         sum.assert_invariants();
-        assert_eq!(sum.len(), want, "n={n}");
-        // Whatever survives is the largest `want` magnitudes.
-        let mut got = kept_mags(&sum);
-        got.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let mut all = magnitudes.to_vec();
-        all.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        assert_eq!(got, all[..want].to_vec(), "n={n}");
+        let keys: Vec<u64> = sum.iter().map(|(x, _, _)| x[0]).collect();
+        assert_eq!(keys, (0..n as u64).collect::<Vec<_>>(), "n={n}");
     }
     // `n >= len` is a no-op, like every other policy's.
     let mut sum = sum_of_mags(&magnitudes);
     ApproxTopN(10).finalize_layer(&mut sum);
     assert_eq!(sum.len(), 10);
+}
+
+/// Within the boundary octave bucket order decides, not magnitude: keys carry magnitudes 2, 1, 1.3, 1.1, 1.2 and `n = 3` keeps 2 and the first two of the octave `[1, 2)` of `|c|²`, 1 and 1.3.
+#[test]
+fn approx_top_n_does_not_rank_inside_the_boundary_octave() {
+    let mut sum = sum_of_mags(&[2.0, 1.0, 1.3, 1.1, 1.2]);
+    ApproxTopN(3).finalize_layer(&mut sum);
+    assert_eq!(kept_mags(&sum), vec![2.0, 1.0, 1.3]);
 }
 
 /// When the cut lands exactly on an octave boundary (`n` = 1, 3, or 6, the fixture's cumulative populations), the approximation is no approximation: both policies return the same top `n`.
@@ -609,35 +614,30 @@ fn approx_top_n_shortfall_is_bounded_by_one_octave() {
     }
 }
 
-/// Equal magnitudes share an octave, so `ApproxTopN` cannot split a symmetry multiplet: `tie_heavy_sum`'s magnitudes (1, ½, ¼, ⅛) each land in their own octave, so every retained set must be a union of whole magnitude groups.
+/// On multi-bucket tie-dense sums `ApproxTopN(n)` keeps exactly the stable-sort transcription of the rule, at every bucket count: whole octaves above the boundary, the first of the boundary octave in bucket order.
 #[test]
-fn approx_top_n_never_splits_a_tie_group() {
+fn approx_top_n_matches_the_stable_sort_rule_across_bucket_counts() {
     let input = crate::test_support::tie_heavy_sum::<1>(2000, 8, 0x7135);
-    for n in [3usize, 250, 700, 1200, 1900] {
-        let mut sum = input.clone();
-        ApproxTopN(n).finalize_layer(&mut sum);
-        sum.assert_invariants();
-        for mag in [1.0f64, 0.5, 0.25, 0.125] {
-            let want = input.iter().filter(|(_, _, c)| c.norm() == mag).count();
-            let got = sum.iter().filter(|(_, _, c)| c.norm() == mag).count();
-            assert!(
-                got == 0 || got == want,
-                "n={n}: magnitude {mag} group is split, {got} of {want} kept"
-            );
+    for bits in [0u8, 2, 5, 9] {
+        let hashed = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, 0x99));
+        for n in [1usize, 3, 250, 500, 700, 1200, 1900, input.len() - 1] {
+            let mut sum = hashed.clone();
+            ApproxTopN(n).finalize_layer(&mut sum);
+            sum.assert_invariants();
+            assert_eq!(sum.len(), n, "bits={bits} n={n}");
+            let want = first_n_by_rank(&storage_triples(&hashed), n, octave_rank);
+            assert_eq!(storage_triples(&sum), want, "bits={bits} n={n}");
         }
     }
 }
 
-/// One octave holding everything resolves like [`TopN`]'s all-tied sum: the bound wins and the sum is wiped.
+/// One octave holding everything keeps the first `n` in bucket order, the smallest magnitudes included.
 #[test]
-fn approx_top_n_wipes_a_single_octave_sum() {
+fn approx_top_n_keeps_the_first_n_of_a_single_octave_sum() {
     let magnitudes = [1.0f64, 1.125, 1.25, 1.375];
     let mut sum = sum_of_mags(&magnitudes);
     ApproxTopN(3).finalize_layer(&mut sum);
-    assert!(
-        sum.is_empty(),
-        "one octave cannot be split, so nothing fits"
-    );
+    assert_eq!(kept_mags(&sum), vec![1.0, 1.125, 1.25]);
     sum.assert_invariants();
     // …and it is a no-op at n >= len, as always.
     let mut sum = sum_of_mags(&magnitudes);
@@ -672,7 +672,7 @@ fn approx_top_n_w2() {
     };
     let mut sum = build();
     ApproxTopN(2).finalize_layer(&mut sum);
-    assert_eq!(kept_mags(&sum), vec![4.0]);
+    assert_eq!(kept_mags(&sum), vec![4.0, 2.0]);
     sum.assert_invariants();
 
     let mut sum = build();
@@ -712,61 +712,35 @@ fn approx_top_n_ranks_complex_coefficients_by_squared_magnitude() {
 }
 
 proptest! {
-    /// The whole contract over tie-dense magnitude multisets: `kept <= n`, the kept set is a union of whole top octaves, and the shortfall bound `kept + p > n` holds for `p` the population of the highest excluded octave.
+    /// The whole contract over tie-dense magnitude multisets: exactly `min(n, len)` survive, and they are the stable-sort transcription of the rule.
     /// Magnitudes are small integers so squares collide into few octaves and the interesting branches are hit often.
     #[test]
-    fn approx_top_n_thresholds_on_an_octave_edge(
+    fn approx_top_n_keeps_exactly_n_on_tie_dense_multisets(
         values in proptest::collection::vec(1u32..40u32, 1..48),
-        n in 1usize..48,
+        n in 0usize..48,
     ) {
         let magnitudes: Vec<f64> = values.iter().map(|&v| f64::from(v)).collect();
-        let mut sum = sum_of_mags(&magnitudes);
+        let input = sum_of_mags(&magnitudes);
+        let mut sum = input.clone();
         ApproxTopN(n).finalize_layer(&mut sum);
-
-        // Key `i` carries `magnitudes[i]`, so a key identifies its magnitude.
-        let survivors: std::collections::HashSet<u64> =
-            sum.iter().map(|(x, _, _)| x[0]).collect();
-        let oct = |m: f64| (m * m).to_bits() >> 52;
-
-        if magnitudes.len() <= n {
-            prop_assert_eq!(survivors.len(), magnitudes.len(), "n >= len must be a no-op");
-            return Ok(());
-        }
-        prop_assert!(survivors.len() <= n, "kept {} > n {}", survivors.len(), n);
-
-        // Every kept octave is kept whole and outranks every dropped one.
-        let dropped_top = magnitudes
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !survivors.contains(&(*i as u64)))
-            .map(|(_, &m)| oct(m))
-            .max();
-        let kept_low = magnitudes
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| survivors.contains(&(*i as u64)))
-            .map(|(_, &m)| oct(m))
-            .min();
-        if let (Some(d), Some(k)) = (dropped_top, kept_low) {
-            prop_assert!(d < k, "dropped octave {} is not below kept octave {}", d, k);
-        }
-
-        // Shortfall bound: including the next octave down would overshoot.
-        if let Some(d) = dropped_top {
-            let p = magnitudes.iter().filter(|&&m| oct(m) == d).count();
-            prop_assert!(
-                survivors.len() + p > n,
-                "kept {} + octave {} must exceed n {}",
-                survivors.len(), p, n,
-            );
-        }
+        prop_assert_eq!(sum.len(), n.min(magnitudes.len()));
+        prop_assert_eq!(
+            storage_triples(&sum),
+            first_n_by_rank(&storage_triples(&input), n, octave_rank)
+        );
+        let mut exact = input.clone();
+        TopN(n).finalize_layer(&mut exact);
+        prop_assert_eq!(
+            storage_triples(&exact),
+            first_n_by_rank(&storage_triples(&input), n, magnitude_rank)
+        );
     }
 }
 
 use crate::pauli_sum::Gf2Hash;
 use crate::test_support::{
-    assert_frequencies, collapsed_index, four_term_keys, rand_sum, weighted_four_term_sum,
-    FOUR_TERM_WEIGHTS,
+    assert_frequencies, collapsed_index, first_n_by_rank, four_term_keys, magnitude_rank,
+    octave_rank, rand_sum, storage_triples, weighted_four_term_sum, FOUR_TERM_WEIGHTS,
 };
 
 /// Weights `[0, 1, 0, 2]`: slot 1 owns `[0, 1)`, slot 3 owns `[1, 3)`, and a target at or past 3 falls back to slot 3.

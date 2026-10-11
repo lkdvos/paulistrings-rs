@@ -53,14 +53,14 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
     }
 }
 
-/// Retain at most `n` terms by coefficient magnitude, never splitting a group of equal magnitudes.
+/// Retain the `n` terms of largest coefficient magnitude.
 ///
-/// With `t` the `n`-th largest magnitude, every term above `t` is kept and the group at `t` is kept only if it fits whole, since equal magnitudes are usually a symmetry multiplet.
-/// A sum whose magnitudes all tie is therefore wiped to empty; pair with [`CoefficientThreshold`] via [`And`] if that would be wrong.
-/// Magnitudes are compared squared, so those below about `1.6e-162` form one tie group.
+/// With `t` the `n`-th largest magnitude, every term above `t` is kept, plus as many terms at exactly `t` as fit in `n`, the first in bucket order; which tied terms survive is not a semantic promise.
+/// A sum of more than `n` terms keeps exactly `n` (fewer only if coefficients are NaN), and `n == 0` clears.
+/// Magnitudes are compared squared, so those below about `1.6e-162` tie at zero.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopN(
-    /// Upper bound on the retained term count.
+    /// The retained term count.
     pub usize,
 );
 
@@ -102,31 +102,27 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
         magnitudes.select_nth_unstable_by(n - 1, |a, b| {
             b.partial_cmp(a).unwrap_or(core::cmp::Ordering::Equal)
         });
-        let t2 = magnitudes[n - 1];
-
-        // The tie group fits iff nothing after the pivot equals `t2`.
-        let keep_tied = !magnitudes[n..].par_iter().any(|&m| m == t2);
+        let boundary = magnitudes[n - 1];
+        // Everything above the pivot sits before it after the selection.
+        let above = magnitudes[..n - 1]
+            .par_iter()
+            .filter(|&&m| m > boundary)
+            .count();
 
         MAGNITUDES.set(buffer);
 
-        sum.buckets_mut().par_iter_mut().for_each(|columns| {
-            let len = columns.len();
-            let mut write = 0usize;
-            for i in 0..len {
-                let m = columns.coeff[i].norm_sqr();
-                if !(m > t2 || (keep_tied && m == t2)) {
-                    continue;
+        retain_with_boundary_quota(
+            sum,
+            |m| {
+                if m.is_nan() {
+                    core::cmp::Ordering::Less
+                } else {
+                    m.partial_cmp(&boundary)
+                        .unwrap_or(core::cmp::Ordering::Less)
                 }
-                columns.x[write] = columns.x[i];
-                columns.z[write] = columns.z[i];
-                columns.coeff[write] = columns.coeff[i];
-                write += 1;
-            }
-            columns.x.truncate(write);
-            columns.z.truncate(write);
-            columns.coeff.truncate(write);
-        });
-        sum.recount();
+            },
+            n - above,
+        );
     }
 
     /// Panics above one partition, where the `n`-th largest of a split sum has no collective form yet.
@@ -142,16 +138,62 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
     }
 }
 
+/// How many boundary terms each bucket keeps: `quota` handed out in bucket order, each bucket taking at most its own count.
+fn bucket_quotas(boundary_counts: &[usize], quota: usize) -> Vec<usize> {
+    let mut remaining = quota;
+    boundary_counts
+        .iter()
+        .map(|&count| {
+            let taken = count.min(remaining);
+            remaining -= taken;
+            taken
+        })
+        .collect()
+}
+
+/// Keep every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`), in bucket order.
+pub(crate) fn retain_with_boundary_quota<const W: usize>(
+    sum: &mut PauliSum<W>,
+    classify: impl Fn(f64) -> core::cmp::Ordering + Sync,
+    quota: usize,
+) {
+    use core::cmp::Ordering;
+    let boundary_counts: Vec<usize> = (0..sum.num_buckets())
+        .into_par_iter()
+        .map(|b| {
+            sum.bucket(b)
+                .2
+                .iter()
+                .filter(|c| classify(c.norm_sqr()) == Ordering::Equal)
+                .count()
+        })
+        .collect();
+    let quotas = bucket_quotas(&boundary_counts, quota);
+    sum.retain_per_bucket(|b| {
+        let mut remaining = quotas[b];
+        let classify = &classify;
+        move |_: &[u64; W], _: &[u64; W], c: Complex64| match classify(c.norm_sqr()) {
+            Ordering::Greater => true,
+            Ordering::Equal if remaining > 0 => {
+                remaining -= 1;
+                true
+            }
+            Ordering::Equal | Ordering::Less => false,
+        }
+    });
+}
+
 /// Bins of [`ApproxTopN`]'s histogram, one per `f64` exponent.
 pub(crate) const APPROX_BINS: usize = 2048;
 
-/// Retain at most `n` terms, cutting at an octave of `|c|²` instead of selecting exactly.
+/// Retain `n` terms, cutting at an octave of `|c|²` instead of selecting exactly.
 ///
-/// The kept set is every octave of `|c|²` from the top down while the running count fits in `n`, so it falls short of `n` by less than the population of the first octave that does not fit.
-/// Equal magnitudes share an octave and are never split; a sum inside a single octave is wiped to empty, as an all-tied sum is under [`TopN`].
+/// Every octave of `|c|²` that fits whole is kept from the top down; the first that does not fit, the boundary octave, contributes as many terms as fit in `n`, the first in bucket order (rank order across partitions).
+/// A sum of more than `n` terms keeps exactly `n` (fewer only if coefficients are NaN), and `n == 0` clears.
+/// Which boundary-octave terms survive is not a semantic promise.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ApproxTopN(
-    /// Upper bound on the retained term count.
+    /// The retained term count.
     pub usize,
 );
 
@@ -160,15 +202,31 @@ pub struct ApproxTopN(
 pub(crate) enum EdgeDecision {
     /// The whole sum fits within `n`: nothing is dropped.
     KeepAll,
-    /// Nothing fits — `n == 0`, or the top octave alone overshoots `n`.
+    /// `n == 0`.
     Clear,
-    /// Keep the terms with `norm_sqr() >= threshold`.
-    AtOrAbove {
-        /// Lower edge of the lowest octave of `|c|²` that fits.
-        threshold: f64,
-        /// Terms kept across the whole sum.
-        kept: usize,
+    /// Keep every term above octave `bin` and `quota` terms of octave `bin`, `kept_above + quota == n` in all.
+    Boundary {
+        /// The boundary octave, `norm_sqr().to_bits() >> 52`.
+        bin: usize,
+        /// Terms above the boundary octave, across the whole sum.
+        kept_above: usize,
+        /// Boundary-octave terms kept, across the whole sum.
+        quota: usize,
     },
+}
+
+/// The octave of `|c|²`, [`APPROX_BINS`] wide.
+fn octave(norm_sqr: f64) -> usize {
+    (norm_sqr.to_bits() >> 52) as usize
+}
+
+/// `|c|²` against the boundary octave `bin`; a NaN is below every octave.
+pub(crate) fn classify_octave(norm_sqr: f64, bin: usize) -> core::cmp::Ordering {
+    if norm_sqr.is_nan() {
+        core::cmp::Ordering::Less
+    } else {
+        octave(norm_sqr).cmp(&bin)
+    }
 }
 
 /// Population of each octave of `|c|²`, binned by the exponent bits `norm_sqr().to_bits() >> 52`.
@@ -182,7 +240,7 @@ pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPRO
             let mut h = [0u32; APPROX_BINS];
             for b in (num_buckets * t / tasks)..(num_buckets * (t + 1) / tasks) {
                 for c in sum.bucket(b).2 {
-                    h[(c.norm_sqr().to_bits() >> 52) as usize] += 1;
+                    h[octave(c.norm_sqr())] += 1;
                 }
             }
             h
@@ -198,7 +256,7 @@ pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPRO
         )
 }
 
-/// The octave edge [`ApproxTopN`] retains against, from a histogram of the whole sum, local or all-reduced.
+/// The boundary octave [`ApproxTopN`] cuts at, from a histogram of the whole sum, local or all-reduced.
 pub(crate) fn octave_edge<C>(hist: &[C], total_len: usize, n: usize) -> EdgeDecision
 where
     C: Copy + Into<u64>,
@@ -211,34 +269,50 @@ where
         return EdgeDecision::Clear;
     }
 
-    let mut kept = 0usize;
-    let mut edge = APPROX_BINS;
+    let mut kept_above = 0usize;
     for bin in (0..APPROX_BINS).rev() {
-        let next = kept + hist[bin].into() as usize;
-        if next > n {
-            break;
+        let population = hist[bin].into() as usize;
+        if kept_above + population > n {
+            return EdgeDecision::Boundary {
+                bin,
+                kept_above,
+                quota: n - kept_above,
+            };
         }
-        kept = next;
-        edge = bin;
+        kept_above += population;
     }
-    if kept == 0 {
-        return EdgeDecision::Clear;
-    }
-    EdgeDecision::AtOrAbove {
-        threshold: f64::from_bits((edge as u64) << 52),
-        kept,
-    }
+    unreachable!("a histogram of more than n terms overflows n at some octave")
 }
 
-/// Apply an [`EdgeDecision`] to one sum or partition.
-pub(crate) fn retain_at_or_above<const W: usize>(sum: &mut PauliSum<W>, edge: EdgeDecision) {
+/// Apply an [`EdgeDecision`] to one sum or partition, keeping `local_quota` boundary-octave terms.
+pub(crate) fn retain_at_edge<const W: usize>(
+    sum: &mut PauliSum<W>,
+    edge: EdgeDecision,
+    local_quota: usize,
+) {
     match edge {
         EdgeDecision::KeepAll => {}
         EdgeDecision::Clear => sum.clear(),
-        EdgeDecision::AtOrAbove { threshold, .. } => {
-            sum.retain(|_, _, c| c.norm_sqr() >= threshold);
+        EdgeDecision::Boundary { bin, .. } => {
+            retain_with_boundary_quota(sum, |m| classify_octave(m, bin), local_quota);
         }
     }
+}
+
+/// This partition's share of a boundary quota: what is left of `quota` after the lower ranks' boundary terms, at most `local_count`.
+///
+/// One `allreduce_sum_u64` of a length-`P` vector holding each rank's `local_count` in its slot; every rank calls it with the same `quota`.
+pub(crate) fn local_boundary_quota(
+    collectives: &dyn Collectives,
+    local_count: usize,
+    quota: usize,
+) -> usize {
+    let rank = collectives.rank() as usize;
+    let mut counts = vec![0u64; collectives.size() as usize];
+    counts[rank] = local_count as u64;
+    collectives.allreduce_sum_u64(&mut counts);
+    let below: u64 = counts[..rank].iter().sum();
+    (quota as u64).saturating_sub(below).min(local_count as u64) as usize
 }
 
 impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
@@ -254,13 +328,14 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
         }
 
         let edge = octave_edge(&octave_histogram(sum), total, n);
-        retain_at_or_above(sum, edge);
-        if let EdgeDecision::AtOrAbove { kept, .. } = edge {
-            debug_assert_eq!(sum.len(), kept, "histogram and predicate disagree");
-        }
+        let quota = match edge {
+            EdgeDecision::Boundary { quota, .. } => quota,
+            EdgeDecision::KeepAll | EdgeDecision::Clear => 0,
+        };
+        retain_at_edge(sum, edge, quota);
     }
 
-    /// One `allreduce_sum_u64` of `[len, histogram…]`, then the single-partition edge walk; no early exit, since that would desynchronize the group.
+    /// One `allreduce_sum_u64` of `[len, histogram…]`, the single-partition edge walk, and at a boundary one more of the per-rank boundary counts for this rank's quota; no early exit, since that would desynchronize the group.
     fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
         if collectives.size() == 1 {
             self.finalize_layer(local);
@@ -278,7 +353,13 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
 
         let total = packed[0] as usize;
         let edge = octave_edge(&packed[1..], total, self.0);
-        retain_at_or_above(local, edge);
+        let local_quota = match edge {
+            EdgeDecision::Boundary { bin, quota, .. } => {
+                local_boundary_quota(collectives, histogram[bin] as usize, quota)
+            }
+            EdgeDecision::KeepAll | EdgeDecision::Clear => 0,
+        };
+        retain_at_edge(local, edge, local_quota);
     }
 
     fn supports_partitioned(&self) -> bool {

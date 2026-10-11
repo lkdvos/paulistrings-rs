@@ -111,11 +111,10 @@ needs_a_device_group = pytest.mark.skipif(
 # W = 2: two words per key, so the multi-word paths run on the wire too.
 NUM_QUBITS = 68
 NUM_TERMS = 20_000
-# The circuit's fanout is bounded by this, and it is loose enough that the
-# octave histogram keeps everything at the sizes here — so the comparisons are
-# against an untruncated answer while still exercising the *collective* layer
-# pass on every layer.
-POLICY = truncation.approx_topn(NUM_TERMS * 8)
+# Above the circuit's peak (about 11.5 x NUM_TERMS), so nothing is cut and the
+# comparisons are against an untruncated answer while still exercising the
+# *collective* layer pass on every layer.
+POLICY = truncation.approx_topn(NUM_TERMS * 16)
 # A policy that really does cut, to exercise the collective octave reduction
 # where the retained set is a strict subset.
 TIGHT_POLICY = truncation.approx_topn(NUM_TERMS // 4)

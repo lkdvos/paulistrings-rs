@@ -65,7 +65,7 @@
 <a href=#65 id=65 data-nosnippet>65</a>///
 <a href=#66 id=66 data-nosnippet>66</a>/// # Panics
 <a href=#67 id=67 data-nosnippet>67</a>///
-<a href=#68 id=68 data-nosnippet>68</a>/// If a channel's [`Channel::prepare`](crate::Channel::prepare) declines, as for a user channel with support above two qubits; no built-in channel does.
+<a href=#68 id=68 data-nosnippet>68</a>/// If a channel's preparation declines, as for a custom channel with support above two qubits; no built-in channel does.
 <a href=#69 id=69 data-nosnippet>69</a>///
 <a href=#70 id=70 data-nosnippet>70</a>/// # Progress logging
 <a href=#71 id=71 data-nosnippet>71</a>///
@@ -76,7 +76,7 @@
 <a href=#76 id=76 data-nosnippet>76</a>/// ```
 <a href=#77 id=77 data-nosnippet>77</a>/// use paulistrings::{
 <a href=#78 id=78 data-nosnippet>78</a>///     BuildAccumulator, Circuit, Direction, PauliString, Phase, TruncationPolicy,
-<a href=#79 id=79 data-nosnippet>79</a>///     Clifford1Q, propagate,
+<a href=#79 id=79 data-nosnippet>79</a>///     PtmChannel, propagate,
 <a href=#80 id=80 data-nosnippet>80</a>/// };
 <a href=#81 id=81 data-nosnippet>81</a>/// use num_complex::Complex64;
 <a href=#82 id=82 data-nosnippet>82</a>///
@@ -85,7 +85,7 @@
 <a href=#85 id=85 data-nosnippet>85</a>/// let observable = accumulator.finalize();
 <a href=#86 id=86 data-nosnippet>86</a>///
 <a href=#87 id=87 data-nosnippet>87</a>/// let mut circuit = Circuit::&lt;1&gt;::new(1);
-<a href=#88 id=88 data-nosnippet>88</a>/// circuit.push(Clifford1Q::h(0));
+<a href=#88 id=88 data-nosnippet>88</a>/// circuit.push(PtmChannel::hadamard(0));
 <a href=#89 id=89 data-nosnippet>89</a>///
 <a href=#90 id=90 data-nosnippet>90</a>/// struct KeepAll;
 <a href=#91 id=91 data-nosnippet>91</a>/// impl&lt;const W: usize&gt; TruncationPolicy&lt;W&gt; for KeepAll {}

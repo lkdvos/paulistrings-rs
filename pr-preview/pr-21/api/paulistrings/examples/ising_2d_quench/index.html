@@ -182,7 +182,7 @@ order suits its parallelism. This circuit is built entirely from
 <code>PauliRotation</code> layers, which merge at most two contributions per output
 key, and two-operand floating-point addition is exactly commutative, so the
 curves above are insensitive to that order. A channel with wider fan-in
-(e.g. <code>GeneralUnitary2Q</code>, merging three or more contributions per key) could
+(e.g. a dense <code>PtmChannel::unitary_2q</code>, merging three or more contributions per key) could
 show a nonzero, floating-point-tolerance-size shift instead.</p>
 <h2 id="result"><a class="doc-anchor" href="#result">§</a>Result</h2>
 <p><img src="https://raw.githubusercontent.com/lkdvos/paulistrings-rs/main/crates/paulistrings/docs/examples/img/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices" /></p>

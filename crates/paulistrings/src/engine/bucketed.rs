@@ -8,9 +8,7 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::coset::Gf2Span;
-use super::merge::{
-    RADIX_MAX_REST_ROWS_PER_KEY, RADIX_MIN_DISJOINT_STREAMS, RADIX_MIN_REST_STREAMS,
-};
+use super::merge::{rest_rows_per_key, SortKernel};
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
@@ -137,8 +135,8 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
         has_identity: bool,
         /// Whether the identity amplitude is nonzero on every active support pattern, so the merge borrows the id keys from the source bucket (ARCHITECTURE.md §Engine).
         dense_identity: bool,
-        /// Whether this layer's runs use the radix sort kernel, decided once per layer (see `RADIX_MIN_REST_STREAMS`).
-        radix_sort: bool,
+        /// This layer's per-run sort kernel.
+        sort_kernel: SortKernel,
     },
     /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
@@ -157,7 +155,7 @@ pub(crate) struct LayerKnobs<'k> {
     pub bucket_deltas: Option<&'k [u32]>,
     /// The channel's total rest-stream count, so every partition picks the sort kernel the unpartitioned run would.
     pub rest_streams: Option<usize>,
-    /// The unrestricted channel's [`rest_rows_per_key`], since a PTM cut down to local entries can look more disjoint than the channel is.
+    /// The unrestricted channel's [`rest_rows_per_key`](super::merge::rest_rows_per_key), since a PTM cut down to local entries can look more disjoint than the channel is.
     pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
     pub generator_local: bool,
@@ -171,26 +169,6 @@ impl Default for LayerKnobs<'_> {
             rows_per_key: None,
             generator_local: true,
         }
-    }
-}
-
-/// Mean rest rows per output key that gets any, the radix gate's second arm; ask it of the channel's own PTM, never a restricted one.
-pub(super) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
-    let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
-    let dim = 1usize << (2 * ptm.k());
-    let (mut rows, mut keys) = (0u32, 0u32);
-    for output in 0..dim {
-        let rows_here = ptm.deltas()[rest_start..]
-            .iter()
-            .filter(|delta| delta.amplitude[output ^ delta.local_delta as usize] != ZERO)
-            .count() as u32;
-        rows += rows_here;
-        keys += u32::from(rows_here > 0);
-    }
-    if keys == 0 {
-        0.0
-    } else {
-        f64::from(rows) / f64::from(keys)
     }
 }
 
@@ -212,16 +190,15 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 let rest_streams = knobs
                     .rest_streams
                     .unwrap_or(ptm.deltas().len() - has_identity as usize);
-                let radix_sort = rest_streams >= RADIX_MIN_REST_STREAMS
-                    || (rest_streams >= RADIX_MIN_DISJOINT_STREAMS
-                        && knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
-                            < RADIX_MAX_REST_ROWS_PER_KEY);
+                let sort_kernel = SortKernel::for_layer(rest_streams, || {
+                    knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
+                });
                 DeltaPlan::Local {
                     ptm,
                     coords,
                     has_identity,
                     dense_identity,
-                    radix_sort,
+                    sort_kernel,
                 }
             }
             Prepared::Rotation(rotation) => DeltaPlan::Rotation {

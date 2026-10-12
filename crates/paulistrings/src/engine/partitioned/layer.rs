@@ -6,10 +6,10 @@ use super::plan::PartitionPlan;
 use super::transport::{ChunkMap, ChunkWait, ExchangeBlock, PartnerPayload, Transport};
 use crate::channel::prepared::Prepared;
 use crate::engine::bucketed::{
-    apply_layer_bucketed, apply_layer_bucketed_with, rest_rows_per_key, ExtraRows, LayerKnobs,
-    LayerScratch,
+    apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
 };
 use crate::engine::coset::Gf2Span;
+use crate::engine::merge::rest_rows_per_key;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::PauliSum;
 use crate::truncation::TruncationPolicy;

@@ -4,7 +4,7 @@ use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
 use crate::channel::Prepare;
 use crate::channel::PtmChannel;
-use crate::engine::merge::{merge2_into, sort_rows_with_scratch, SortScratch};
+use crate::engine::merge::{merge2_into, rest_rows_per_key, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -444,7 +444,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         }
         let mut scratch = SortScratch::<1>::default();
         for run in runs.iter_mut() {
-            sort_rows_with_scratch(&mut run.rest, &mut scratch);
+            SortKernel::Comparison.sort(&mut run.rest, &mut scratch);
         }
         runs
     };
@@ -526,11 +526,11 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
             DeltaPlan::Local {
                 ptm,
                 has_identity,
-                radix_sort,
+                sort_kernel,
                 ..
             } => (
                 ptm.deltas().len() - has_identity as usize,
-                radix_sort,
+                sort_kernel == SortKernel::Radix,
                 rest_rows_per_key(ptm),
             ),
             // A wide rotation has one rest stream and never takes the radix kernel.
@@ -590,7 +590,7 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         );
         assert_eq!(
             radix, want_radix,
-            "{label}: {streams} rest streams, {rpk} rows per key, radix_sort = {radix}",
+            "{label}: {streams} rest streams, {rpk} rows per key, radix = {radix}",
         );
         if radix {
             selected.push(*label);
@@ -633,7 +633,7 @@ fn a_partitioned_plan_reads_the_channel_wide_overlap() {
 
     let span = Gf2Span::new(&local.bucket_deltas(), 8);
     let radix = |knobs: LayerKnobs<'_>| match DeltaPlan::new(&local, &span, knobs) {
-        DeltaPlan::Local { radix_sort, .. } => radix_sort,
+        DeltaPlan::Local { sort_kernel, .. } => sort_kernel == SortKernel::Radix,
         DeltaPlan::Rotation { .. } => unreachable!(),
     };
     // What the partitioned layer actually passes.

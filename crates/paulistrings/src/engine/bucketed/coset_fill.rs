@@ -4,9 +4,7 @@ use num_complex::Complex64;
 
 use super::{DeltaPlan, ExtraRows, ZERO};
 use crate::channel::prepared::LocalPtm;
-use crate::engine::merge::{
-    merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
-};
+use crate::engine::merge::{merge2_into, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::phase::Phase;
@@ -274,24 +272,17 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     #[cfg(feature = "phase-timing")]
     stamp.lap(&mut stats.gather_ns);
 
-    let radix = matches!(
-        plan,
-        DeltaPlan::Local {
-            radix_sort: true,
-            ..
-        }
-    );
+    let sort_kernel = match plan {
+        DeltaPlan::Local { sort_kernel, .. } => *sort_kernel,
+        DeltaPlan::Rotation { .. } => SortKernel::Comparison,
+    };
     for (j, (run, destination)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
         #[cfg(feature = "phase-timing")]
         {
             stats.rows_gathered += run.len() as u64;
             stats.rows_sorted += run.rest.len() as u64;
         }
-        if radix {
-            sort_rows_radix_with_scratch(&mut run.rest, sort);
-        } else {
-            sort_rows_with_scratch(&mut run.rest, sort);
-        }
+        sort_kernel.sort(&mut run.rest, sort);
         #[cfg(feature = "phase-timing")]
         stamp.lap(&mut stats.sort_ns);
         let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {

@@ -4,6 +4,7 @@
 
 use num_complex::Complex64;
 
+use crate::channel::prepared::LocalPtm;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::truncation::TruncationPolicy;
 
@@ -23,7 +24,7 @@ pub(crate) struct SortScratch<const W: usize> {
 /// Sort the columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
-pub(crate) fn sort_rows_with_scratch<const W: usize>(
+fn sort_rows_with_scratch<const W: usize>(
     columns: &mut BucketColumns<W>,
     scratch: &mut SortScratch<W>,
 ) {
@@ -59,14 +60,70 @@ pub(crate) fn sort_rows_with_scratch<const W: usize>(
     std::mem::swap(c, &mut scratch.staging_c);
 }
 
-/// Rest streams at or above which a layer uses [`sort_rows_radix_with_scratch`]; research/FINDINGS.md §Radix sort kernel for dense PTMs.
-pub(crate) const RADIX_MIN_REST_STREAMS: usize = 8;
+/// The per-run sort kernel, chosen once per layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SortKernel {
+    /// [`sort_rows_with_scratch`], the default and the only kernel a sparse-PTM layer sees.
+    Comparison,
+    /// [`sort_rows_radix_with_scratch`], for runs of many ascending streams with heavily duplicated keys.
+    Radix,
+}
+
+impl SortKernel {
+    /// The kernel for a layer with `rest_streams` rest streams; `rows_per_key` (the channel's [`rest_rows_per_key`]) is evaluated only when the second arm needs it.
+    pub(crate) fn for_layer(rest_streams: usize, rows_per_key: impl FnOnce() -> f64) -> Self {
+        if rest_streams >= RADIX_MIN_REST_STREAMS
+            || (rest_streams >= RADIX_MIN_DISJOINT_STREAMS
+                && rows_per_key() < RADIX_MAX_REST_ROWS_PER_KEY)
+        {
+            Self::Radix
+        } else {
+            Self::Comparison
+        }
+    }
+
+    /// Sort `columns` in place by the key `(x, z)` alone.
+    pub(crate) fn sort<const W: usize>(
+        self,
+        columns: &mut BucketColumns<W>,
+        scratch: &mut SortScratch<W>,
+    ) {
+        match self {
+            Self::Comparison => sort_rows_with_scratch(columns, scratch),
+            Self::Radix => sort_rows_radix_with_scratch(columns, scratch),
+        }
+    }
+}
+
+/// Rest streams at or above which a layer uses [`SortKernel::Radix`]; research/FINDINGS.md §Radix sort kernel for dense PTMs.
+const RADIX_MIN_REST_STREAMS: usize = 8;
 
 /// The radix gate's second arm: the largest `rest_rows_per_key` still treated as disjoint streams; research/FINDINGS.md §Constant recalibration and the radix gate's second arm.
-pub(crate) const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
+const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
 
 /// The radix gate's second arm: the minimum rest-stream count for disjoint streams.
-pub(crate) const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
+const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
+
+/// Mean rest rows per output key that gets any, the radix gate's second arm; ask it of the channel's own PTM, never a restricted one.
+pub(crate) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
+    let zero = Complex64::new(0.0, 0.0);
+    let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
+    let dim = 1usize << (2 * ptm.k());
+    let (mut rows, mut keys) = (0u32, 0u32);
+    for output in 0..dim {
+        let rows_here = ptm.deltas()[rest_start..]
+            .iter()
+            .filter(|delta| delta.amplitude[output ^ delta.local_delta as usize] != zero)
+            .count() as u32;
+        rows += rows_here;
+        keys += u32::from(rows_here > 0);
+    }
+    if keys == 0 {
+        0.0
+    } else {
+        f64::from(rows) / f64::from(keys)
+    }
+}
 
 /// Surrogate width the radix kernel sorts on, enough to separate duplicate-key groups rather than every key.
 const RADIX_SURROGATE_BITS: u32 = 16;
@@ -109,7 +166,7 @@ fn discriminating_window<const W: usize>(
 
 /// Sort the columns in place by the key `(x, z)` alone, by radix on a 16-bit surrogate of the first disagreeing key word.
 // Every row shares the bits above the window, so the surrogate is monotone in the key and only leaves ties, which the fixup orders on the full key.
-pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
+fn sort_rows_radix_with_scratch<const W: usize>(
     columns: &mut BucketColumns<W>,
     scratch: &mut SortScratch<W>,
 ) {

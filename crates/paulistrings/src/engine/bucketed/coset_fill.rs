@@ -4,7 +4,7 @@ use num_complex::Complex64;
 
 use super::{DeltaPlan, ExtraRows, ZERO};
 use crate::channel::prepared::LocalPtm;
-use crate::engine::merge::{merge2_into, SortKernel, SortScratch};
+use crate::engine::merge::{merge_identity_and_rest, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::phase::Phase;
@@ -176,15 +176,15 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         let (id_key_capacity, id_coeff_capacity, mut rest_capacity): (usize, usize, usize) =
             match plan {
                 DeltaPlan::Local {
-                    coords,
+                    coordinates,
                     has_identity,
                     dense_identity,
                     ..
                 } => {
                     let mut id = 0usize;
                     let mut rest = 0usize;
-                    for (entry, &coord) in coords.iter().enumerate() {
-                        let len = old[j ^ coord as usize].len();
+                    for (entry, &coordinate) in coordinates.iter().enumerate() {
+                        let len = old[j ^ coordinate as usize].len();
                         if *has_identity && entry == 0 {
                             id += len;
                         } else {
@@ -194,13 +194,13 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                     (if *dense_identity { 0 } else { id }, id, rest)
                 }
                 DeltaPlan::Rotation {
-                    coord_identity,
+                    coordinate_identity,
                     generator_coordinate,
                     generator_local,
                     ..
                 } => (
                     0,
-                    old[j ^ *coord_identity as usize].len(),
+                    old[j ^ *coordinate_identity as usize].len(),
                     if *generator_local {
                         old[j ^ *generator_coordinate as usize].len()
                     } else {
@@ -219,24 +219,38 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     match plan {
         DeltaPlan::Local {
             ptm,
-            coords,
+            coordinates,
             has_identity,
             dense_identity,
             ..
         } => {
             if members >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
-                gather_local_output_major(old, runs, ptm, coords, *has_identity, *dense_identity);
+                gather_local_output_major(
+                    old,
+                    runs,
+                    ptm,
+                    coordinates,
+                    *has_identity,
+                    *dense_identity,
+                );
             } else {
-                gather_local_input_major(old, runs, ptm, coords, *has_identity, *dense_identity);
+                gather_local_input_major(
+                    old,
+                    runs,
+                    ptm,
+                    coordinates,
+                    *has_identity,
+                    *dense_identity,
+                );
             }
         }
         DeltaPlan::Rotation {
             rotation,
-            coord_identity,
+            coordinate_identity,
             generator_coordinate,
             generator_local,
         } => {
-            // Every term emits one id row, kept even when `cos == 0` (the signed-zero contract on `merge2_into`), so the merge borrows the source keys.
+            // Every term emits one id row, kept even when `cos == 0` (the signed-zero contract on `merge_identity_and_rest`), so the merge borrows the source keys.
             for (i, source) in old.iter().enumerate() {
                 for row in 0..source.len() {
                     let key = PauliString::<W> {
@@ -244,9 +258,9 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                         z: source.z[row],
                     };
                     if key.commutes_with(&rotation.generator) {
-                        runs[i ^ *coord_identity as usize].push_id_coeff(source.coeff[row]);
+                        runs[i ^ *coordinate_identity as usize].push_id_coeff(source.coeff[row]);
                     } else {
-                        runs[i ^ *coord_identity as usize]
+                        runs[i ^ *coordinate_identity as usize]
                             .push_id_coeff(source.coeff[row] * rotation.cos);
                         if *generator_local {
                             let mut product = key;
@@ -299,8 +313,11 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                 (&source.x, &source.z)
             }
             DeltaPlan::Local { .. } => (&run.identity.x, &run.identity.z),
-            DeltaPlan::Rotation { coord_identity, .. } => {
-                let source = &old[j ^ *coord_identity as usize];
+            DeltaPlan::Rotation {
+                coordinate_identity,
+                ..
+            } => {
+                let source = &old[j ^ *coordinate_identity as usize];
                 debug_assert_eq!(source.len(), run.identity.len());
                 #[cfg(feature = "phase-timing")]
                 {
@@ -314,7 +331,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             z: a_z,
             coeff: &run.identity.coeff,
         };
-        merge2_into::<W, T>(identity, run.rest.view(), destination, policy);
+        merge_identity_and_rest::<W, T>(identity, run.rest.view(), destination, policy);
         #[cfg(feature = "phase-timing")]
         stamp.lap(&mut stats.merge_ns);
     }
@@ -340,7 +357,7 @@ pub(super) fn gather_local_input_major<const W: usize>(
     old: &[BucketColumns<W>],
     runs: &mut [GatherRun<W>],
     ptm: &LocalPtm<W>,
-    coords: &[u32],
+    coordinates: &[u32],
     has_identity: bool,
     dense_identity: bool,
 ) {
@@ -370,7 +387,7 @@ pub(super) fn gather_local_input_major<const W: usize>(
                     key_x[w] ^= delta.mask_x[w];
                     key_z[w] ^= delta.mask_z[w];
                 }
-                runs[i ^ coords[entry] as usize].push_if(
+                runs[i ^ coordinates[entry] as usize].push_if(
                     nonzero(amplitude),
                     key_x,
                     key_z,
@@ -386,7 +403,7 @@ pub(super) fn gather_local_output_major<const W: usize>(
     old: &[BucketColumns<W>],
     runs: &mut [GatherRun<W>],
     ptm: &LocalPtm<W>,
-    coords: &[u32],
+    coordinates: &[u32],
     has_identity: bool,
     dense_identity: bool,
 ) {
@@ -412,7 +429,7 @@ pub(super) fn gather_local_output_major<const W: usize>(
             }
         }
         for (entry, delta) in ptm.deltas().iter().enumerate().skip(rest_start) {
-            let source = &old[j ^ coords[entry] as usize];
+            let source = &old[j ^ coordinates[entry] as usize];
             for row in 0..source.len() {
                 let pattern = ptm.support_bits(&source.x[row], &source.z[row]);
                 let amplitude = delta.amplitude[pattern];

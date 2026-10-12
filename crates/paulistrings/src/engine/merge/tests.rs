@@ -193,34 +193,34 @@ fn sort_fixtures<const W: usize>(
 
 /// The comparison kernel satisfies the contract on every shape.
 #[test]
-fn sort_rows_with_scratch_honors_the_kernel_contract() {
+fn sort_by_comparison_honors_the_kernel_contract() {
     for (label, x, z, c) in sort_fixtures::<1>(64) {
-        assert_sort_contract(sort_rows_with_scratch::<1>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_comparison::<1>, &x, &z, &c, &label);
     }
     for (label, x, z, c) in sort_fixtures::<2>(128) {
-        assert_sort_contract(sort_rows_with_scratch::<2>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_comparison::<2>, &x, &z, &c, &label);
     }
     for (label, x, z, c) in sort_fixtures::<2>(65) {
-        assert_sort_contract(sort_rows_with_scratch::<2>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_comparison::<2>, &x, &z, &c, &label);
     }
 }
 
 /// The radix kernel satisfies the same contract, including the `thin_window` and `all_equal` fallbacks.
 #[test]
-fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
+fn sort_by_radix_honors_the_kernel_contract() {
     for (label, x, z, c) in sort_fixtures::<1>(64) {
-        assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_radix::<1>, &x, &z, &c, &label);
     }
     for (label, x, z, c) in sort_fixtures::<2>(128) {
-        assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_radix::<2>, &x, &z, &c, &label);
     }
     for (label, x, z, c) in sort_fixtures::<2>(65) {
-        assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_radix::<2>, &x, &z, &c, &label);
     }
     // Narrow qubit counts saturate the window shift at 0.
     for q in [3usize, 8, 17, 33] {
         for (label, x, z, c) in sort_fixtures::<1>(q) {
-            assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, &label);
+            assert_sort_contract(sort_by_radix::<1>, &x, &z, &c, &label);
         }
     }
 }
@@ -244,7 +244,7 @@ fn the_two_sort_kernels_reduce_to_the_same_sum() {
             coeff: &[],
         };
         let mut out = BucketColumns::default();
-        merge2_into(empty, sorted.view(), &mut out, &AlwaysKeep);
+        merge_identity_and_rest(empty, sorted.view(), &mut out, &AlwaysKeep);
         out.x
             .into_iter()
             .zip(out.z)
@@ -254,15 +254,15 @@ fn the_two_sort_kernels_reduce_to_the_same_sum() {
     }
     for (label, x, z, c) in sort_fixtures::<1>(64) {
         assert_eq!(
-            reduced(sort_rows_radix_with_scratch::<1>, &x, &z, &c),
-            reduced(sort_rows_with_scratch::<1>, &x, &z, &c),
+            reduced(sort_by_radix::<1>, &x, &z, &c),
+            reduced(sort_by_comparison::<1>, &x, &z, &c),
             "{label}",
         );
     }
     for (label, x, z, c) in sort_fixtures::<2>(128) {
         assert_eq!(
-            reduced(sort_rows_radix_with_scratch::<2>, &x, &z, &c),
-            reduced(sort_rows_with_scratch::<2>, &x, &z, &c),
+            reduced(sort_by_radix::<2>, &x, &z, &c),
+            reduced(sort_by_comparison::<2>, &x, &z, &c),
             "{label}",
         );
     }
@@ -275,7 +275,7 @@ fn radix_sort_scratch_capacity_stabilizes() {
     let fixtures = sort_fixtures::<2>(128);
     let run = |s: &mut SortScratch<2>| {
         for (_, x, z, c) in fixtures.iter() {
-            sort_rows_radix_with_scratch(&mut columns(x, z, c), s);
+            sort_by_radix(&mut columns(x, z, c), s);
         }
     };
     run(&mut scratch);
@@ -293,7 +293,7 @@ fn radix_sort_scratch_capacity_stabilizes() {
 proptest! {
     /// Randomized shapes with short runs, narrow key spaces and heavy duplication.
     #[test]
-    fn sort_rows_radix_contract_proptest(
+    fn sort_by_radix_contract_proptest(
         rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
         modulus in 1u64..64,
         spread in 0u32..60,
@@ -305,7 +305,7 @@ proptest! {
             .iter()
             .map(|r| Complex64::new((r.0 % 11) as f64 - 5.0, (r.1 % 7) as f64 - 3.0))
             .collect();
-        assert_sort_contract(sort_rows_radix_with_scratch::<1>, &x, &z, &c, "radix proptest w1");
+        assert_sort_contract(sort_by_radix::<1>, &x, &z, &c, "radix proptest w1");
 
         let x2: Vec<[u64; 2]> = rows
             .iter()
@@ -315,12 +315,12 @@ proptest! {
             .iter()
             .map(|r| [(r.1 % modulus) << spread, r.0 % modulus])
             .collect();
-        assert_sort_contract(sort_rows_radix_with_scratch::<2>, &x2, &z2, &c, "radix proptest w2");
+        assert_sort_contract(sort_by_radix::<2>, &x2, &z2, &c, "radix proptest w2");
     }
 
     /// Randomized shapes with short runs, narrow key spaces and heavy duplication.
     #[test]
-    fn sort_rows_with_scratch_contract_proptest(
+    fn sort_by_comparison_contract_proptest(
         rows in prop::collection::vec((any::<u64>(), any::<u64>()), 0..300usize),
         modulus in 1u64..64,
     ) {
@@ -330,11 +330,11 @@ proptest! {
             .iter()
             .map(|r| Complex64::new((r.0 % 11) as f64 - 5.0, (r.1 % 7) as f64 - 3.0))
             .collect();
-        assert_sort_contract(sort_rows_with_scratch::<1>, &x, &z, &c, "proptest w1");
+        assert_sort_contract(sort_by_comparison::<1>, &x, &z, &c, "proptest w1");
 
         let x2: Vec<[u64; 2]> = rows.iter().map(|r| [r.0 % modulus, r.1 % modulus]).collect();
         let z2: Vec<[u64; 2]> = rows.iter().map(|r| [r.1 % modulus, r.0 % modulus]).collect();
-        assert_sort_contract(sort_rows_with_scratch::<2>, &x2, &z2, &c, "proptest w2");
+        assert_sort_contract(sort_by_comparison::<2>, &x2, &z2, &c, "proptest w2");
     }
 }
 
@@ -342,11 +342,11 @@ proptest! {
 struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
-// ---- `sort_rows_with_scratch` ----
+// ---- `sort_by_comparison` ----
 
 /// Sortedness on distinct keys. Lex on `(x, z)`: `I < Z < X` per word, since `x[0]` dominates.
 #[test]
-fn sort_rows_with_scratch_orders_by_lex_key() {
+fn sort_by_comparison_orders_by_lex_key() {
     let mut run = BucketColumns::<1> {
         x: vec![[1], [0], [0]],
         z: vec![[0], [0], [1]],
@@ -357,7 +357,7 @@ fn sort_rows_with_scratch_orders_by_lex_key() {
         ],
     };
     let mut scratch = SortScratch::<1>::default();
-    sort_rows_with_scratch(&mut run, &mut scratch);
+    sort_by_comparison(&mut run, &mut scratch);
     assert_eq!(run.x, vec![[0u64], [0u64], [1u64]]);
     assert_eq!(run.z, vec![[0u64], [1u64], [0u64]]);
     assert_eq!(
@@ -372,14 +372,14 @@ fn sort_rows_with_scratch_orders_by_lex_key() {
 
 /// `x[0]` decides before `x[1]`, and each coefficient follows its key.
 #[test]
-fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
+fn sort_by_comparison_keeps_coefficients_with_their_keys() {
     let mut run = BucketColumns::<2> {
         x: vec![[1, 0], [0, 99]],
         z: vec![[0, 0], [0, 0]],
         coeff: vec![Complex64::new(11.0, 0.0), Complex64::new(22.0, 0.0)],
     };
     let mut scratch = SortScratch::<2>::default();
-    sort_rows_with_scratch(&mut run, &mut scratch);
+    sort_by_comparison(&mut run, &mut scratch);
     assert_eq!(run.x[0], [0, 99]);
     assert_eq!(run.coeff[0], Complex64::new(22.0, 0.0));
     assert_eq!(run.x[1], [1, 0]);
@@ -388,26 +388,26 @@ fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
 
 /// `len < 2` is a no-op.
 #[test]
-fn sort_rows_with_scratch_len_lt_2_is_noop() {
+fn sort_by_comparison_len_lt_2_is_noop() {
     let mut run = BucketColumns::<1> {
         x: vec![[5]],
         z: vec![[7]],
         coeff: vec![Complex64::new(1.0, 2.0)],
     };
     let mut scratch = SortScratch::<1>::default();
-    sort_rows_with_scratch(&mut run, &mut scratch);
+    sort_by_comparison(&mut run, &mut scratch);
     assert_eq!(run.x[0], [5]);
     assert_eq!(run.z[0], [7]);
     assert_eq!(run.coeff[0], Complex64::new(1.0, 2.0));
 
     let mut empty = BucketColumns::<1>::default();
-    sort_rows_with_scratch(&mut empty, &mut scratch);
+    sort_by_comparison(&mut empty, &mut scratch);
     assert!(empty.x.is_empty());
 }
 
-// ---- merge2_into: fused id/rest merge + reduction ----
+// ---- merge_identity_and_rest: fused id/rest merge + reduction ----
 
-/// Single-stream segmented reduction over sorted columns, for `merge2_reference`.
+/// Single-stream segmented reduction over sorted columns, for `merge_reference`.
 fn reduce_sorted<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     sorted_x: &[[u64; W]],
     sorted_z: &[[u64; W]],
@@ -436,9 +436,9 @@ fn reduce_sorted<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     (ox, oz, oc)
 }
 
-/// Reference for `merge2_into`: concatenate, sort, reduce; integer coefficients make `==` valid.
+/// Reference for `merge_identity_and_rest`: concatenate, sort, reduce; integer coefficients make `==` valid.
 #[allow(clippy::type_complexity)]
-fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+fn merge_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a: (&[[u64; W]], &[[u64; W]], &[Complex64]),
     b: (&[[u64; W]], &[[u64; W]], &[Complex64]),
     policy: &T,
@@ -462,7 +462,7 @@ fn merge2_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     reduce_sorted(&sx, &sz, &scratch, policy)
 }
 
-fn run_merge2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+fn run_merge<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     a: (&[[u64; W]], &[[u64; W]], &[Complex64]),
     b: (&[[u64; W]], &[[u64; W]], &[Complex64]),
     policy: &T,
@@ -478,13 +478,13 @@ fn run_merge2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         coeff: b.2,
     };
     let mut out = BucketColumns::default();
-    merge2_into(identity, rest, &mut out, policy);
+    merge_identity_and_rest(identity, rest, &mut out, policy);
     (out.x, out.z, out.coeff)
 }
 
 /// Randomized differential against the concat-sort-reduce reference, with cross-stream collisions.
 #[test]
-fn merge2_matches_concat_sort_reduce() {
+fn merge_matches_concat_sort_reduce() {
     let mut state = 0x1234_5678_9abc_def0u64;
     let mut next = move || {
         state ^= state << 13;
@@ -512,15 +512,15 @@ fn merge2_matches_concat_sort_reduce() {
             .map(|_| Complex64::new((next() % 9) as f64 - 4.0, 0.0))
             .collect();
 
-        let got = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
-        let want = merge2_reference((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
+        let got = run_merge((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
+        let want = merge_reference((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
         assert_eq!(got, want, "case {case} diverged from the reference");
     }
 }
 
 /// Empty id reduces the rest stream alone; empty rest passes the id stream through the filters.
 #[test]
-fn merge2_handles_empty_streams() {
+fn merge_handles_empty_streams() {
     let x: Vec<[u64; 1]> = vec![[1], [2], [3]];
     let z: Vec<[u64; 1]> = vec![[0], [0], [1]];
     let c: Vec<Complex64> = vec![
@@ -530,23 +530,23 @@ fn merge2_handles_empty_streams() {
     ];
     let empty: (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) = (vec![], vec![], vec![]);
 
-    let id_only = run_merge2((&x, &z, &c), (&empty.0, &empty.1, &empty.2), &AlwaysKeep);
+    let id_only = run_merge((&x, &z, &c), (&empty.0, &empty.1, &empty.2), &AlwaysKeep);
     assert_eq!(id_only, (x.clone(), z.clone(), c.clone()));
 
-    let rest_only = run_merge2((&empty.0, &empty.1, &empty.2), (&x, &z, &c), &AlwaysKeep);
+    let rest_only = run_merge((&empty.0, &empty.1, &empty.2), (&x, &z, &c), &AlwaysKeep);
     assert_eq!(rest_only, (x, z, c));
 }
 
 /// A cross-stream cancellation drops the key, and an exact-zero id row still participates: `-0.0 + 0.0 = +0.0`.
 #[test]
-fn merge2_cancellation_and_signed_zero() {
+fn merge_cancellation_and_signed_zero() {
     let a_x: Vec<[u64; 1]> = vec![[1], [2]];
     let a_z: Vec<[u64; 1]> = vec![[0], [0]];
     let a_c: Vec<Complex64> = vec![Complex64::new(-0.0, 0.0), Complex64::new(5.0, 0.0)];
     let b_x: Vec<[u64; 1]> = vec![[1], [2]];
     let b_z: Vec<[u64; 1]> = vec![[0], [0]];
     let b_c: Vec<Complex64> = vec![Complex64::new(0.0, 0.0), Complex64::new(-5.0, 0.0)];
-    let (ox, _, oc) = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
+    let (ox, _, oc) = run_merge((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
     // Key [2]: exact cancellation, dropped.
     // Key [1]: sums to +0.0 exactly, which the zero-drop then removes.
     assert!(ox.is_empty(), "got keys {ox:?} with coeffs {oc:?}");
@@ -554,7 +554,7 @@ fn merge2_cancellation_and_signed_zero() {
 
 /// `keep_term` sees the fully summed coefficient.
 #[test]
-fn merge2_policy_sees_summed_coefficient() {
+fn merge_policy_sees_summed_coefficient() {
     let a_x: Vec<[u64; 1]> = vec![[3]];
     let a_z: Vec<[u64; 1]> = vec![[0]];
     let a_c: Vec<Complex64> = vec![Complex64::new(0.04, 0.0)];
@@ -563,7 +563,7 @@ fn merge2_policy_sees_summed_coefficient() {
     let b_c: Vec<Complex64> = vec![Complex64::new(0.04, 0.0), Complex64::new(0.04, 0.0)];
     // Each row is below the 0.1 threshold; the sum (0.12) is above it.
     let policy = CoefficientThreshold(0.1);
-    let (ox, _, oc) = run_merge2((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &policy);
+    let (ox, _, oc) = run_merge((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &policy);
     assert_eq!(ox, vec![[3u64]]);
     assert!(approx_eq(oc[0], Complex64::new(0.12, 0.0), TOL));
 }
@@ -576,6 +576,6 @@ impl<const W: usize> SortScratch<W> {
             + self.spare.capacity()
             + self.staging_x.capacity()
             + self.staging_z.capacity()
-            + self.staging_c.capacity()
+            + self.staging_coefficient.capacity()
     }
 }

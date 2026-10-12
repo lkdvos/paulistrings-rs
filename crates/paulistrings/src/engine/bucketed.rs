@@ -127,10 +127,10 @@ pub struct GateTrace {
 
 /// A prepared channel's delta set annotated with each entry's coset coordinate, computed once per layer.
 pub(super) enum DeltaPlan<'p, const W: usize> {
-    /// Tabulated deltas; `coords[e]` pairs with `ptm.deltas()[e]`.
+    /// Tabulated deltas; `coordinates[e]` pairs with `ptm.deltas()[e]`.
     Local {
         ptm: &'p LocalPtm<W>,
-        coords: Vec<u32>,
+        coordinates: Vec<u32>,
         /// Whether `deltas()[0]` is the identity delta, whose stream goes to the run's pre-sorted `id` columns.
         has_identity: bool,
         /// Whether the identity amplitude is nonzero on every active support pattern, so the merge borrows the id keys from the source bucket (ARCHITECTURE.md §Engine).
@@ -141,7 +141,7 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
     /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
         rotation: &'p PreparedRotation<W>,
-        coord_identity: u32,
+        coordinate_identity: u32,
         generator_coordinate: u32,
         /// Whether the generator pass emits here ([`LayerKnobs::generator_local`]); `generator_coordinate` is 0 when not.
         generator_local: bool,
@@ -155,7 +155,7 @@ pub(crate) struct LayerKnobs<'k> {
     pub bucket_deltas: Option<&'k [u32]>,
     /// The channel's total rest-stream count, so every partition picks the sort kernel the unpartitioned run would.
     pub rest_streams: Option<usize>,
-    /// The unrestricted channel's [`rest_rows_per_key`](super::merge::rest_rows_per_key), since a PTM cut down to local entries can look more disjoint than the channel is.
+    /// The unrestricted channel's [`rest_rows_per_key`], since a PTM cut down to local entries can look more disjoint than the channel is.
     pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
     pub generator_local: bool,
@@ -176,13 +176,13 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
     pub(super) fn new(prepared: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
         match prepared {
             Prepared::Local(ptm) => {
-                let coords: Vec<u32> = ptm
+                let coordinates: Vec<u32> = ptm
                     .deltas()
                     .iter()
                     .map(|d| span.coordinate_of(d.bucket_delta))
                     .collect();
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
-                debug_assert!(!has_identity || coords[0] == 0);
+                debug_assert!(!has_identity || coordinates[0] == 0);
                 // `amplitude` is sized LOCAL_DIM but only `4^k` entries are populated.
                 let dim = 1usize << (2 * ptm.k());
                 let dense_identity =
@@ -195,7 +195,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 });
                 DeltaPlan::Local {
                     ptm,
-                    coords,
+                    coordinates,
                     has_identity,
                     dense_identity,
                     sort_kernel,
@@ -203,7 +203,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
             }
             Prepared::Rotation(rotation) => DeltaPlan::Rotation {
                 rotation,
-                coord_identity: span.coordinate_of(rotation.bucket_delta_identity),
+                coordinate_identity: span.coordinate_of(rotation.bucket_delta_identity),
                 // `coordinate_of` demands its argument be in the span, and a remote generator's bucket delta is not.
                 generator_coordinate: if knobs.generator_local {
                     span.coordinate_of(rotation.bucket_delta_generator)

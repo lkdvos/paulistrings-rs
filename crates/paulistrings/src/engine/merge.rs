@@ -18,13 +18,13 @@ pub(crate) struct SortScratch<const W: usize> {
     spare: Vec<u64>,
     staging_x: Vec<[u64; W]>,
     staging_z: Vec<[u64; W]>,
-    staging_c: Vec<Complex64>,
+    staging_coefficient: Vec<Complex64>,
 }
 
 /// Sort the columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
-fn sort_rows_with_scratch<const W: usize>(
+fn sort_by_comparison<const W: usize>(
     columns: &mut BucketColumns<W>,
     scratch: &mut SortScratch<W>,
 ) {
@@ -54,21 +54,21 @@ fn sort_rows_with_scratch<const W: usize>(
     scratch
         .staging_z
         .extend(scratch.permutation.iter().map(|&i| z[i as usize]));
-    scratch.staging_c.clear();
+    scratch.staging_coefficient.clear();
     scratch
-        .staging_c
+        .staging_coefficient
         .extend(scratch.permutation.iter().map(|&i| c[i as usize]));
     std::mem::swap(x, &mut scratch.staging_x);
     std::mem::swap(z, &mut scratch.staging_z);
-    std::mem::swap(c, &mut scratch.staging_c);
+    std::mem::swap(c, &mut scratch.staging_coefficient);
 }
 
 /// The per-run sort kernel, chosen once per layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SortKernel {
-    /// [`sort_rows_with_scratch`], the default and the only kernel a sparse-PTM layer sees.
+    /// [`sort_by_comparison`], the default and the only kernel a sparse-PTM layer sees.
     Comparison,
-    /// [`sort_rows_radix_with_scratch`], for runs of many ascending streams with heavily duplicated keys.
+    /// [`sort_by_radix`], for runs of many ascending streams with heavily duplicated keys.
     Radix,
 }
 
@@ -92,8 +92,8 @@ impl SortKernel {
         scratch: &mut SortScratch<W>,
     ) {
         match self {
-            Self::Comparison => sort_rows_with_scratch(columns, scratch),
-            Self::Radix => sort_rows_radix_with_scratch(columns, scratch),
+            Self::Comparison => sort_by_comparison(columns, scratch),
+            Self::Radix => sort_by_radix(columns, scratch),
         }
     }
 }
@@ -169,10 +169,7 @@ fn discriminating_window<const W: usize>(
 
 /// Sort the columns in place by the key `(x, z)` alone, by radix on a 16-bit surrogate of the first disagreeing key word.
 // Every row shares the bits above the window, so the surrogate is monotone in the key and only leaves ties, which the fixup orders on the full key.
-fn sort_rows_radix_with_scratch<const W: usize>(
-    columns: &mut BucketColumns<W>,
-    scratch: &mut SortScratch<W>,
-) {
+fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut SortScratch<W>) {
     let BucketColumns { x, z, coeff: c } = columns;
     let len = x.len();
     debug_assert_eq!(len, z.len());
@@ -190,7 +187,7 @@ fn sort_rows_radix_with_scratch<const W: usize>(
     let shift = (high_bit + 1).saturating_sub(RADIX_SURROGATE_BITS);
     let mask = (1u64 << RADIX_SURROGATE_BITS) - 1;
     if ((diff >> shift) & mask).count_ones() < RADIX_MIN_WINDOW_BITS {
-        sort_rows_with_scratch(columns, scratch);
+        sort_by_comparison(columns, scratch);
         return;
     }
 
@@ -199,7 +196,7 @@ fn sort_rows_radix_with_scratch<const W: usize>(
         spare,
         staging_x,
         staging_z,
-        staging_c,
+        staging_coefficient,
         ..
     } = scratch;
     packed.clear();
@@ -251,11 +248,11 @@ fn sort_rows_radix_with_scratch<const W: usize>(
     staging_x.extend(packed.iter().map(|&record| x[record as u32 as usize]));
     staging_z.clear();
     staging_z.extend(packed.iter().map(|&record| z[record as u32 as usize]));
-    staging_c.clear();
-    staging_c.extend(packed.iter().map(|&record| c[record as u32 as usize]));
+    staging_coefficient.clear();
+    staging_coefficient.extend(packed.iter().map(|&record| c[record as u32 as usize]));
     std::mem::swap(x, staging_x);
     std::mem::swap(z, staging_z);
-    std::mem::swap(c, staging_c);
+    std::mem::swap(c, staging_coefficient);
 }
 
 /// Merge the strictly ascending `identity` stream with the sorted `rest` stream into `out`, summing equal keys and applying `keep_term` to each full sum.
@@ -263,7 +260,7 @@ fn sort_rows_radix_with_scratch<const W: usize>(
 // Three loops, so neither stream's bound is tested in the main walk (ARCHITECTURE.md §Engine).
 // Not segment copies: research/FINDINGS.md §Segment-copy merge
 // Not a branchless walk: research/FINDINGS.md §Branchless `merge2_into`
-pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+pub(crate) fn merge_identity_and_rest<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     identity: ColumnsRef<'_, W>,
     rest: ColumnsRef<'_, W>,
     out: &mut BucketColumns<W>,
@@ -291,7 +288,7 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         let (key_x, key_z, mut sum) = if take_a {
             debug_assert!(
                 i == 0 || (a_x[i - 1], a_z[i - 1]) < (a_x[i], a_z[i]),
-                "merge2_into: identity stream must be strictly ascending at {i}",
+                "merge_identity_and_rest: identity stream must be strictly ascending at {i}",
             );
             let t = (a_x[i], a_z[i], a_c[i]);
             i += 1;
@@ -299,7 +296,7 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         } else {
             debug_assert!(
                 j == 0 || (b_x[j - 1], b_z[j - 1]) <= (b_x[j], b_z[j]),
-                "merge2_into: rest stream must be sorted at {j}",
+                "merge_identity_and_rest: rest stream must be sorted at {j}",
             );
             let t = (b_x[j], b_z[j], b_c[j]);
             j += 1;

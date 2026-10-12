@@ -4,7 +4,7 @@ use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
 use crate::channel::Prepare;
 use crate::channel::PtmChannel;
-use crate::engine::merge::{merge2_into, rest_rows_per_key, SortKernel, SortScratch};
+use crate::engine::merge::{merge_identity_and_rest, rest_rows_per_key, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -395,7 +395,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         "want a multi-member coset so the two visit orders actually differ; got r={}",
         span.dimension()
     );
-    let coords: Vec<u32> = ptm
+    let coordinates: Vec<u32> = ptm
         .deltas()
         .iter()
         .map(|d| span.coordinate_of(d.bucket_delta))
@@ -427,7 +427,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         for (j, run) in runs.iter_mut().enumerate() {
             let mut cap_id = 0usize;
             let mut cap_rest = 0usize;
-            for (e, &c) in coords.iter().enumerate() {
+            for (e, &c) in coordinates.iter().enumerate() {
                 let l = old[j ^ c as usize].len();
                 if has_identity && e == 0 {
                     cap_id += l;
@@ -438,9 +438,9 @@ fn local_gather_orders_agree_to_fp_tolerance() {
             run.reset(0, cap_id, cap_rest);
         }
         if output_major {
-            gather_local_output_major(&old, &mut runs, ptm, &coords, has_identity, true);
+            gather_local_output_major(&old, &mut runs, ptm, &coordinates, has_identity, true);
         } else {
-            gather_local_input_major(&old, &mut runs, ptm, &coords, has_identity, true);
+            gather_local_input_major(&old, &mut runs, ptm, &coordinates, has_identity, true);
         }
         let mut scratch = SortScratch::<1>::default();
         for run in runs.iter_mut() {
@@ -465,7 +465,12 @@ fn local_gather_orders_agree_to_fp_tolerance() {
                 coeff: &run.identity.coeff,
             };
             let mut merged = BucketColumns::default();
-            merge2_into::<1, AlwaysKeep>(identity, run.rest.view(), &mut merged, &AlwaysKeep);
+            merge_identity_and_rest::<1, AlwaysKeep>(
+                identity,
+                run.rest.view(),
+                &mut merged,
+                &AlwaysKeep,
+            );
             (merged.x, merged.z, merged.coeff)
         };
     for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {

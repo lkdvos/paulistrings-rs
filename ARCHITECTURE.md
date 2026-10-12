@@ -189,18 +189,18 @@ When the identity amplitude is dense (§Prepared-Channels) the id stream is 1:1 
 Sparse identity streams materialize pre-filtered keys and coefficients.
 
 **The sort.**
-Two kernels live in `engine/merge.rs` alongside their shared worker-persistent `SortScratch`, and the layer picks between them *once*, from its plan's realized rest-delta count.
+Two kernels live in `engine/merge.rs` alongside their shared worker-persistent `SortScratch`, and the layer picks between them *once* (`SortKernel::for_layer`), from its plan's realized rest-delta count.
 Both satisfy one contract and nothing more: the output is ascending in lex `(x, z)` with duplicates allowed, and is a permutation of the input triples, so they are interchangeable to floating-point tolerance (§Determinism) and never bitwise.
 `merge::tests::assert_sort_contract` holds both to it.
 
-`sort_rows_with_scratch` — the default, and the only kernel a sparse-PTM layer ever sees — is a permutation sort over the run.
+`SortKernel::Comparison` — the default, and the only kernel a sparse-PTM layer ever sees — is a permutation sort over the run.
 
 > Its comparison sort **must remain the standard library's stable adaptive `sort_by`** wherever a gather run holds more than one stream.
 > A gather run is a concatenation of per-delta streams, each drawn from one sorted bucket — piecewise-sorted data whose natural runs the adaptive driftsort detects and merges nearly for free, and which `sort_unstable_by` (pdqsort, no run detection) does not.
 > Stability per se is irrelevant; adaptivity is the point.
 > Recorded on the function's doc — do not "simplify" it.
 
-`sort_rows_radix_with_scratch` serves the dense-PTM path, where the run arrives as many ascending blocks with heavily duplicated keys.
+`SortKernel::Radix` serves the dense-PTM path, where the run arrives as many ascending blocks with heavily duplicated keys.
 Adaptivity already puts that at the information-theoretic comparison floor, so the win is not in the comparison *count* but in what one costs: each is a dependent indexed load through the permutation into a several-hundred-KiB key column.
 The radix kernel finds the most significant key word the rows actually disagree on, extracts an order-faithful 16-bit surrogate from it (every row shares the bits above, so the shifted masked window is monotone in the key), sorts `(surrogate, row index)` records with two 8-bit passes of sequential reads, and orders the residual ties on the full key at ~1 comparison per row.
 Runs whose keys are all equal return immediately; runs whose window cannot discriminate delegate to the comparison kernel.
@@ -210,7 +210,7 @@ Runs whose keys are all equal return immediately; runs whose window cannot discr
 > It is order-*oblivious*, so it does not repair a deficient delta-span rank draw (§Hash) — it removes the sort's sensitivity to one.
 
 **The merge.**
-`merge2_into` fuses the two-stream merge with the segmented reduction: a two-pointer walk over id + rest, id-first on key ties, summing equal-key coefficients, dropping exact zeros, and applying the policy's `keep_term` to the fully summed coefficient.
+`merge_identity_and_rest` fuses the two-stream merge with the segmented reduction: a two-pointer walk over id + rest, id-first on key ties, summing equal-key coefficients, dropping exact zeros, and applying the policy's `keep_term` to the fully summed coefficient.
 Exact-zero coefficient rows (a θ = π/2 rotation emits `cos·c = ±0.0` id rows) flow through to the accumulator — the only zero test is on the final sum, the **signed-zero contract**, pinned by test.
 The walk is written as three loops — both streams live, then one drain each — so the hot loop tests neither stream's bound and a channel with no identity delta runs a single-stream reduction with no `a`-side test at all.
 A segment-copy variant and a branchless comparison were both measured and rejected (`research/FINDINGS.md`); the rejections are recorded on the function's doc.
@@ -267,7 +267,7 @@ One thread inside MPI at a time is exactly the `MPI_THREAD_SERIALIZED` the trans
 A partition holds one export volume of send blocks plus one of receive payloads, both from a per-partition pool and both grow-only (`header.rows`, never `x.len()`, says how much of a column is live), so a steady-state layer neither allocates nor zeroes its megabytes again.
 
 **Received rows join the rest stream, never the id stream.**
-The rest stream is sorted anyway, so a received row may duplicate a local key and `merge2_into` still sees the key's complete sum before `keep_term` runs (§Truncation).
+The rest stream is sorted anyway, so a received row may duplicate a local key and `merge_identity_and_rest` still sees the key's complete sum before `keep_term` runs (§Truncation).
 
 The coset loop runs against a **retained delta table** — `retain_entries` rebuilds `LocalPtm` with the remote entries dropped — plus `LayerKnobs` carrying the local bucket deltas and the rest-stream count.
 Retention has one sharp edge the engine guards: a channel whose every non-identity delta is remote leaves an **identity-only table, for which `is_key_preserving` is true**, and the key-preserving `rescale_in_place` fast path would silently drop every received row, so that fast path is gated on the absence of extra rows.

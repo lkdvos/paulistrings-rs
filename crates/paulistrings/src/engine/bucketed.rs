@@ -41,10 +41,8 @@ pub struct LayerScratch<const W: usize> {
     /// Layer-level wall-clock counters; per-coset busy time lives in each `CosetScratch`.
     #[cfg(feature = "phase-timing")]
     pub(crate) stats: PhaseStats,
-    /// `None` unless [`Self::enable_term_trace`] was called.
-    pub(crate) term_trace: Option<TermTrace>,
-    /// `None` unless [`Self::enable_gate_trace`] was called.
-    pub(crate) gate_trace: Option<GateTrace>,
+    /// `None` unless [`Self::enable_trace`] was called.
+    pub(crate) trace: Option<LayerTrace>,
 }
 
 impl<const W: usize> LayerScratch<W> {
@@ -65,53 +63,22 @@ impl<const W: usize> LayerScratch<W> {
         total
     }
 
-    /// Record a [`TermTrace`] on every later call driven by this scratch; idempotent.
-    pub fn enable_term_trace(&mut self) {
-        self.term_trace.get_or_insert_with(TermTrace::default);
+    /// Record a [`LayerTrace`] on every later call driven by this scratch; idempotent.
+    pub fn enable_trace(&mut self) {
+        self.trace.get_or_insert_with(LayerTrace::default);
     }
 
-    /// Drain the term trace, or `None` if it was never enabled; tracing stays enabled.
-    pub fn take_term_trace(&mut self) -> Option<TermTrace> {
-        self.term_trace.as_mut().map(std::mem::take)
-    }
-
-    /// Record a [`GateTrace`] on every later call driven by this scratch; idempotent.
-    pub fn enable_gate_trace(&mut self) {
-        self.gate_trace.get_or_insert_with(GateTrace::default);
-    }
-
-    /// Drain the gate trace, or `None` if it was never enabled; tracing stays enabled.
-    pub fn take_gate_trace(&mut self) -> Option<GateTrace> {
-        self.gate_trace.as_mut().map(std::mem::take)
+    /// Drain the trace, or `None` if it was never enabled; tracing stays enabled.
+    pub fn take_trace(&mut self) -> Option<LayerTrace> {
+        self.trace.as_mut().map(std::mem::take)
     }
 }
 
-/// Resident term counts between layers, one entry per layer in application order.
+/// Per-layer records, one entry per layer in application order (reverse circuit order under [`Direction::Heisenberg`](crate::Direction::Heisenberg)).
 ///
-/// Counts are post-truncation; the transient expansion inside a layer is not captured.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct TermTrace {
-    /// Resident term count before each layer.
-    pub terms_in: Vec<usize>,
-    /// Resident term count after each layer's `finalize_layer`.
-    pub terms_out: Vec<usize>,
-}
-
-impl TermTrace {
-    /// Peak resident term count between layers, or `None` for a zero-layer trace.
-    pub fn peak_terms(&self) -> Option<usize> {
-        self.terms_in
-            .first()
-            .copied()
-            .into_iter()
-            .chain(self.terms_out.iter().copied())
-            .max()
-    }
-}
-
-/// Per-layer gate records, one entry per layer in application order (reverse circuit order under [`Direction::Heisenberg`](crate::Direction::Heisenberg)).
+/// Term counts are post-truncation; the transient expansion inside a layer is not captured.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GateTrace {
+pub struct LayerTrace {
     /// This layer's position in [`Circuit::channels`](crate::Circuit), independent of propagation direction.
     pub circuit_index: Vec<u32>,
     /// This layer's position in application order.
@@ -124,6 +91,18 @@ pub struct GateTrace {
     pub terms_out: Vec<usize>,
     /// Wall-clock nanoseconds for the whole layer, from `rebucket` through `finalize_layer`.
     pub nanos: Vec<u64>,
+}
+
+impl LayerTrace {
+    /// Peak resident term count between layers, or `None` for a zero-layer trace.
+    pub fn peak_terms(&self) -> Option<usize> {
+        self.terms_in
+            .first()
+            .copied()
+            .into_iter()
+            .chain(self.terms_out.iter().copied())
+            .max()
+    }
 }
 
 /// A prepared channel's delta set annotated with each entry's coset coordinate, computed once per layer.

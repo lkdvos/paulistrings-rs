@@ -11,7 +11,7 @@ use paulistrings::BuiltinTruncation;
 use paulistrings::PauliString;
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
-    propagate_with, Circuit as CoreCircuit, Direction, GateTrace, LayerScratch, PartitionConfig,
+    propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, LayerTrace, PartitionConfig,
     PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
     PauliSum as CorePauliSum, Placement, ProductBasis, ProductState, PropagateOptions,
     RotationAxis, ScatterOptions, ScatterRows, StabilizerState, TopologyError,
@@ -935,8 +935,8 @@ enum RunMode {
 
 /// The per-layer records a run produced, tagged by which engine produced them.
 enum RunTrace {
-    /// The unpartitioned engine's per-gate trace: term counts, gate identity and elapsed time.
-    Term(GateTrace),
+    /// The unpartitioned engine's per-layer trace: term counts, gate identity and elapsed time.
+    Layer(LayerTrace),
     /// An in-process partitioned run's records, plus the partition count.
     Partition(PartitionTrace, usize),
     /// A distributed run's records — **this rank's only** — plus `(rank, size)` and this rank's device, if it ran on one.
@@ -1039,7 +1039,7 @@ impl RunMode {
             RunMode::Classic => {
                 let mut scratch = LayerScratch::<W>::new();
                 if traced {
-                    scratch.enable_gate_trace();
+                    scratch.enable_trace();
                 }
                 let out = propagate_with(
                     circuit,
@@ -1051,7 +1051,7 @@ impl RunMode {
                 );
                 Ok(RunOutput {
                     sum: out,
-                    trace: scratch.take_gate_trace().map(RunTrace::Term),
+                    trace: scratch.take_trace().map(RunTrace::Layer),
                     share: None,
                     collapses: collapses_since(policy, before),
                 })
@@ -1583,19 +1583,12 @@ impl PropagationStats {
 }
 
 impl PropagationStats {
-    /// Derive the Python-facing record from a core [`GateTrace`] plus the
+    /// Derive the Python-facing record from a core [`LayerTrace`] plus the
     /// length of the propagated sum (which is what "peak" falls back to when
     /// no layer ran).
-    fn from_trace(trace: GateTrace, final_terms: usize) -> Self {
+    fn from_trace(trace: LayerTrace, final_terms: usize) -> Self {
         debug_assert_eq!(trace.terms_in.len(), trace.terms_out.len());
-        let peak_terms = trace
-            .terms_in
-            .first()
-            .copied()
-            .into_iter()
-            .chain(trace.terms_out.iter().copied())
-            .max()
-            .unwrap_or(final_terms);
+        let peak_terms = trace.peak_terms().unwrap_or(final_terms);
         Self {
             layers: trace.terms_out.len(),
             peak_terms,
@@ -1623,7 +1616,7 @@ impl PropagationStats {
         devices: Option<Vec<u32>>,
     ) -> Self {
         let sum_of = |counts: &[usize]| counts.iter().sum::<usize>();
-        let gate_trace = GateTrace {
+        let layer_trace = LayerTrace {
             circuit_index: trace.layers.iter().map(|l| l.circuit_index).collect(),
             application_index: trace.layers.iter().map(|l| l.application_index).collect(),
             gate_name: trace.layers.iter().map(|l| l.gate_name).collect(),
@@ -1639,14 +1632,14 @@ impl PropagationStats {
             partition: Some(PartitionStats::from_trace(
                 trace, partitions, ranks, devices,
             )),
-            ..Self::from_trace(gate_trace, final_terms)
+            ..Self::from_trace(layer_trace, final_terms)
         }
     }
 
     /// Whichever of the three traces the run recorded, as one record.
     fn from_run_trace(trace: RunTrace, final_terms: usize, collapses: Option<u64>) -> Self {
         let stats = match trace {
-            RunTrace::Term(trace) => Self::from_trace(trace, final_terms),
+            RunTrace::Layer(trace) => Self::from_trace(trace, final_terms),
             RunTrace::Partition(trace, partitions) => {
                 Self::from_partition_trace(&trace, partitions, final_terms, None, None)
             }

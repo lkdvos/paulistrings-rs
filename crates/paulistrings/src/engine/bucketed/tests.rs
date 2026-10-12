@@ -70,61 +70,44 @@ pub(super) fn haar_su4(q0: usize, q1: usize) -> PtmChannel {
     PtmChannel::unitary_2q(q0, q1, crate::test_support::haar_su4_matrix())
 }
 
-/// The term trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
+/// The trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
 #[test]
-fn term_trace_is_opt_in_and_drains_on_take() {
+fn trace_is_opt_in_and_drains_on_take() {
     let mut scratch = LayerScratch::<1>::new();
-    assert!(scratch.take_term_trace().is_none(), "off by default");
+    assert!(scratch.take_trace().is_none(), "off by default");
 
-    scratch.enable_term_trace();
-    scratch.term_trace.as_mut().unwrap().terms_in.push(7);
-    scratch.enable_term_trace(); // idempotent: must not clear the 7
+    scratch.enable_trace();
+    scratch.trace.as_mut().unwrap().circuit_index.push(3);
+    scratch.enable_trace(); // idempotent: must not clear the 3
     assert_eq!(
-        scratch.take_term_trace(),
-        Some(TermTrace {
-            terms_in: vec![7],
-            terms_out: vec![],
-        })
-    );
-    assert_eq!(scratch.take_term_trace(), Some(TermTrace::default()));
-}
-
-/// The gate trace's state machine mirrors [`TermTrace`]'s: off by default, `enable` idempotent and non-destructive, `take` drains but stays on.
-#[test]
-fn gate_trace_is_opt_in_and_drains_on_take() {
-    let mut scratch = LayerScratch::<1>::new();
-    assert!(scratch.take_gate_trace().is_none(), "off by default");
-
-    scratch.enable_gate_trace();
-    scratch.gate_trace.as_mut().unwrap().circuit_index.push(3);
-    scratch.enable_gate_trace(); // idempotent: must not clear the 3
-    assert_eq!(
-        scratch.take_gate_trace(),
-        Some(GateTrace {
+        scratch.take_trace(),
+        Some(LayerTrace {
             circuit_index: vec![3],
-            ..GateTrace::default()
+            ..LayerTrace::default()
         })
     );
-    assert_eq!(scratch.take_gate_trace(), Some(GateTrace::default()));
+    assert_eq!(scratch.take_trace(), Some(LayerTrace::default()));
 }
 
 /// `peak_terms` is the between-layer maximum, which includes the first `terms_in`.
 #[test]
 fn peak_terms_spans_the_first_input_and_every_output() {
-    assert_eq!(TermTrace::default().peak_terms(), None);
+    assert_eq!(LayerTrace::default().peak_terms(), None);
     assert_eq!(
-        TermTrace {
+        LayerTrace {
             terms_in: vec![9, 4],
             terms_out: vec![4, 6],
+            ..LayerTrace::default()
         }
         .peak_terms(),
         Some(9),
         "a shrinking first layer keeps the input as the peak"
     );
     assert_eq!(
-        TermTrace {
+        LayerTrace {
             terms_in: vec![1, 5],
             terms_out: vec![5, 3],
+            ..LayerTrace::default()
         }
         .peak_terms(),
         Some(5)

@@ -51,7 +51,7 @@ mod truncation;
 pub use channel::{support_mask, Channel, OutputBuffer, PauliRotation, PtmChannel};
 pub use circuit::Circuit;
 pub use collectives::Collectives;
-pub use engine::bucketed::{GateTrace, LayerScratch, TermTrace};
+pub use engine::bucketed::{LayerScratch, LayerTrace};
 #[cfg(feature = "cuda")]
 pub use engine::gpu;
 #[cfg(feature = "mpi")]

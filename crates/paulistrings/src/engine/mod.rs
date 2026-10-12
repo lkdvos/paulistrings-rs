@@ -19,7 +19,7 @@ use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
-use bucketed::LayerScratch;
+use bucketed::{LayerScratch, LayerTrace};
 use partitioned::backend::HostPartition;
 use partitioned::driver::{run_layers, PartitionContext, PartitionWork};
 use partitioned::trace::PartitionLayerRow;
@@ -118,7 +118,7 @@ where
 
 /// [`propagate`] with a caller-held [`LayerScratch`] and [`PropagateOptions`].
 ///
-/// The scratch keeps its buffer capacity across calls and carries the opt-in [`TermTrace`](crate::TermTrace) and [`GateTrace`](crate::GateTrace) (and, under `phase-timing`, the phase counters).
+/// The scratch keeps its buffer capacity across calls and carries the opt-in [`LayerTrace`](crate::LayerTrace) (and, under `phase-timing`, the phase counters).
 /// Log events are emitted on the calling thread, never inside a parallel layer.
 pub fn propagate_with<const W: usize, T>(
     circuit: &Circuit<W>,
@@ -140,7 +140,7 @@ where
     );
 
     // One partition of `run_layers` on the caller's pool (ARCHITECTURE.md §Partitioning).
-    let tracing = scratch.term_trace.is_some() || scratch.gate_trace.is_some();
+    let tracing = scratch.trace.is_some();
     let rows = PartitionRows::none(sum.num_qubits());
     let mut work = PartitionWork {
         local: HostPartition::with_layer_scratch(sum, std::mem::take(scratch)),
@@ -163,8 +163,8 @@ where
     );
     let (sum, layer_scratch) = work.local.into_parts();
     *scratch = layer_scratch;
-    if tracing {
-        record_traces(scratch, &work.rows);
+    if let Some(trace) = scratch.trace.as_mut() {
+        record_trace(trace, &work.rows);
     }
 
     log::info!(
@@ -179,21 +179,15 @@ where
     sum
 }
 
-/// Append a solo run's per-layer rows to the scratch's enabled traces.
-fn record_traces<const W: usize>(scratch: &mut LayerScratch<W>, rows: &[PartitionLayerRow]) {
-    if let Some(trace) = scratch.term_trace.as_mut() {
-        trace.terms_in.extend(rows.iter().map(|row| row.terms_in));
-        trace.terms_out.extend(rows.iter().map(|row| row.terms_out));
-    }
-    if let Some(trace) = scratch.gate_trace.as_mut() {
-        for row in rows {
-            trace.circuit_index.push(row.circuit_index);
-            trace.application_index.push(row.application_index);
-            trace.gate_name.push(row.gate_name);
-            trace.terms_in.push(row.terms_in);
-            trace.terms_out.push(row.terms_out);
-            trace.nanos.push(row.nanos);
-        }
+/// Append a solo run's per-layer rows to the scratch's trace.
+fn record_trace(trace: &mut LayerTrace, rows: &[PartitionLayerRow]) {
+    for row in rows {
+        trace.circuit_index.push(row.circuit_index);
+        trace.application_index.push(row.application_index);
+        trace.gate_name.push(row.gate_name);
+        trace.terms_in.push(row.terms_in);
+        trace.terms_out.push(row.terms_out);
+        trace.nanos.push(row.nanos);
     }
 }
 

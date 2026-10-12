@@ -82,6 +82,29 @@ def test_hand_computed_counts():
     assert stats.peak_terms >= stats.final_terms
 
 
+def test_plain_run_reports_a_one_partition_record():
+    # A plain host run is one partition underneath, as a `device=0` run is.
+    _, stats = _x0().propagate_with_stats(_three_layer_circuit())
+    part = stats.partition
+    assert isinstance(part, paulistrings.PartitionStats)
+    assert part.partitions == 1
+    assert part.rank is None and part.size is None
+    assert part.devices is None
+    assert part.terms_in == [[1], [2], [2]]
+    assert part.terms_out == [[2], [2], [3]]
+    assert part.local == [True, True, True]
+    assert part.rows_exported == [0, 0, 0]
+    assert part.bytes_exported == [0, 0, 0]
+    assert part.imbalance == [1.0, 1.0, 1.0]
+    assert [row[0] for row in part.nanos] == stats.nanos
+
+
+def test_empty_circuit_reports_a_one_partition_record():
+    _, stats = _x0().propagate_with_stats(Circuit(NUM_QUBITS))
+    assert stats.partition.partitions == 1
+    assert stats.partition.terms_in == []
+
+
 def test_counts_are_post_truncation():
     # Layer 3's third key is X₀ with coefficient sin²θ·cos θ = 0.0873..., which
     # a 0.1 threshold drops (|c| <= eps is dropped); the surviving keys carry

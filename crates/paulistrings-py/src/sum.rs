@@ -885,8 +885,7 @@ enum RunMode {
 /// The per-layer records a run produced, and where its partitions ran.
 struct RunTrace {
     trace: PartitionTrace,
-    /// `None` for an unpartitioned run, whose stats carry no `partition` record.
-    placement: Option<TracePlacement>,
+    placement: TracePlacement,
 }
 
 /// Where a traced run's partitions ran, for `PropagationStats.partition`.
@@ -925,11 +924,11 @@ impl<const W: usize> RunOutput<W> {
             sum: out.sum,
             trace: out.trace.map(|trace| RunTrace {
                 trace,
-                placement: Some(TracePlacement {
+                placement: TracePlacement {
                     partitions: size as usize,
                     ranks: Some((rank, size)),
                     devices: out.device.map(|device| vec![device]),
-                }),
+                },
             }),
             collapses: out.collapses,
         }
@@ -966,7 +965,7 @@ impl RunMode {
                     sum: out,
                     trace: scratch.take_trace().map(|trace| RunTrace {
                         trace,
-                        placement: None,
+                        placement: TracePlacement::partitions(1),
                     }),
                     collapses: collapses_since(policy, before),
                 })
@@ -990,7 +989,7 @@ impl RunMode {
                 let partitions = split.num_partitions();
                 let trace = traced.then(|| RunTrace {
                     trace: split.take_trace().unwrap_or_default(),
-                    placement: Some(TracePlacement::partitions(partitions)),
+                    placement: TracePlacement::partitions(partitions),
                 });
                 Ok(RunOutput {
                     sum: split.into_gathered(),
@@ -1012,11 +1011,11 @@ impl RunMode {
                     sum: out,
                     trace: trace.map(|trace| RunTrace {
                         trace,
-                        placement: Some(TracePlacement {
+                        placement: TracePlacement {
                             partitions: devices.len(),
                             ranks: None,
                             devices: Some(devices),
-                        }),
+                        },
                     }),
                     collapses: collapses_since(policy, before),
                 })
@@ -1410,7 +1409,7 @@ pub struct PropagationStats {
     terms_out: Vec<usize>,
     peak_terms: usize,
     final_terms: usize,
-    partition: Option<PartitionStats>,
+    partition: PartitionStats,
     circuit_index: Vec<u32>,
     application_index: Vec<u32>,
     gate_name: Vec<&'static str>,
@@ -1452,11 +1451,10 @@ impl PropagationStats {
         self.final_terms
     }
 
-    /// The partitioned run's own record, or `None` for an unpartitioned call (including `partitions="auto"` on a single-NUMA-node box).
-    /// A `device=` run fills it with one partition per device, `devices` naming them.
+    /// The run's per-partition record: one partition for an unpartitioned call (including `partitions="auto"` on a single-NUMA-node box), one per partition, rank or device otherwise, `devices` naming the devices of a `device=` run.
     /// Its per-layer lists are indexed the same way as `terms_in` / `terms_out`.
     #[getter]
-    fn partition(&self) -> Option<PartitionStats> {
+    fn partition(&self) -> PartitionStats {
         self.partition.clone()
     }
 
@@ -1503,7 +1501,7 @@ impl PropagationStats {
 }
 
 impl PropagationStats {
-    /// The Python-facing record from a run's [`PartitionTrace`], plus the length of the propagated sum (what "peak" falls back to when no layer ran) and the per-partition detail in `partition` for a partitioned run.
+    /// The Python-facing record from a run's [`PartitionTrace`], plus the length of the propagated sum (what "peak" falls back to when no layer ran) and the per-partition detail in `partition`.
     /// The layer-level term counts are the per-partition ones summed, so a partitioned run is comparable to an unpartitioned one field by field.
     /// `nanos` is the **maximum** over partitions per layer (a critical-rank proxy, documented on the getter); `circuit_index`/`application_index`/`gate_name` are identical across partitions by construction (lock-step application).
     /// A distributed run's records are this rank's only, so the term-count sum is a sum of one (documented on `PartitionStats.size`) and `nanos` is that one rank's own timing.
@@ -1524,14 +1522,12 @@ impl PropagationStats {
                 .iter()
                 .map(|l| l.nanos.iter().copied().max().unwrap_or(0))
                 .collect(),
-            partition: placement.map(|placement| {
-                PartitionStats::from_trace(
-                    &trace,
-                    placement.partitions,
-                    placement.ranks,
-                    placement.devices,
-                )
-            }),
+            partition: PartitionStats::from_trace(
+                &trace,
+                placement.partitions,
+                placement.ranks,
+                placement.devices,
+            ),
             collapses,
         }
     }
@@ -1545,17 +1541,17 @@ impl PropagationStats {
     ) -> Self {
         let run = RunTrace {
             trace,
-            placement: Some(TracePlacement {
+            placement: TracePlacement {
                 partitions: 1,
                 ranks: None,
                 devices: Some(vec![device]),
-            }),
+            },
         };
         Self::from_run_trace(run, final_terms, None)
     }
 }
 
-/// Per-layer, per-partition record of a partitioned propagation — the `partition` attribute of a [`PropagationStats`] from a `partitions=` or `comm=` call.
+/// Per-layer, per-partition record of a propagation — the `partition` attribute of every [`PropagationStats`], one partition for an unpartitioned call.
 /// Every list is one entry per layer applied, in application order; `terms_in`/`terms_out` entries are themselves one entry per partition, in rank order.
 /// Answers the two questions a partitioned run raises: how much crossed a partition boundary (`rows_exported`, `bytes_exported`, `local`), and how evenly terms were spread (`imbalance`).
 #[pyclass(frozen, module = "paulistrings._paulistrings", name = "PartitionStats")]
@@ -1582,13 +1578,13 @@ impl PartitionStats {
         self.partitions
     }
 
-    /// This process's rank in the `comm=` group, or `None` for an in-process (`partitions=`) run.
+    /// This process's rank in the `comm=` group, or `None` for a run that is not distributed.
     #[getter]
     fn rank(&self) -> Option<u32> {
         self.rank
     }
 
-    /// The `comm=` group's size, or `None` for an in-process (`partitions=`) run.
+    /// The `comm=` group's size, or `None` for a run that is not distributed.
     /// A distributed run's per-layer lists hold this rank's entry only (`terms_in[k]`/`terms_out[k]` one-element, `rows_exported[k]`/`bytes_exported[k]` this rank's, `imbalance[k]` always `1.0`) — nothing gathers the group's counters, since that would add a collective per layer for a diagnostic; reduce over `comm` yourself. The in-process case is unchanged: lists are `partitions` long.
     #[getter]
     fn size(&self) -> Option<u32> {
@@ -2162,7 +2158,7 @@ impl PauliSum {
     /// Propagate `self` through `circuit`, returning `(evolved, PropagationStats)`.
     ///
     /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so `evolved` agrees with `propagate`'s result to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
-    /// A partitioned (`partitions=`) call additionally fills `PropagationStats.partition` with per-partition detail, summed to the same layer-level `terms_in`/`terms_out` an unpartitioned run would report.
+    /// `PropagationStats.partition` holds the per-partition detail, summed to the layer-level `terms_in`/`terms_out`; an unpartitioned call reports one partition.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
     #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]

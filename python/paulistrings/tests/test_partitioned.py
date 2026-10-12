@@ -187,12 +187,12 @@ def test_none_and_one_are_the_classic_path(partitions):
     assert _as_dict(s.propagate(c, partitions=partitions)) == _as_dict(s.propagate(c))
 
 
-def test_unpartitioned_stats_report_no_partition():
+def test_unpartitioned_stats_report_one_partition():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    _, stats = s.propagate_with_stats(c)
-    assert stats.partition is None
-    _, stats = s.propagate_with_stats(c, partitions=1)
-    assert stats.partition is None
+    for partitions in (None, 1):
+        _, stats = s.propagate_with_stats(c, partitions=partitions)
+        assert stats.partition.partitions == 1
+        assert stats.partition.devices is None
 
 
 # --------------------------------------------------------------------------
@@ -264,10 +264,10 @@ def test_auto_places_one_partition_per_numa_node():
     got, stats = s.propagate_with_stats(c, partitions="auto")
     _assert_terms_close(got, s.propagate(c))
     # A single-node box (or an affinity mask inside one node) runs the classic
-    # path and reports no partition at all; anything else places one partition
-    # per node, rounded down to a power of two.
+    # path and reports one partition; anything else places one partition per
+    # node, rounded down to a power of two.
     nodes = len(numa_nodes())
-    if stats.partition is None:
+    if stats.partition.partitions == 1:
         assert nodes == 1
     else:
         assert stats.partition.partitions == 1 << (nodes.bit_length() - 1)
@@ -458,7 +458,7 @@ def test_propagation_stats_repr_is_unchanged_by_a_partitioned_run():
         "PropagationStats(layers=1, terms_in=[1], terms_out=[1], "
         "peak_terms=1, final_terms=1)"
     )
-    assert stats.partition is not None
+    assert stats.partition.partitions == 2
 
 
 # --------------------------------------------------------------------------

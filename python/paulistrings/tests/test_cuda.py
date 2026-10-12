@@ -297,7 +297,8 @@ def test_stats_name_the_device():
     assert all(len(row) == 1 for row in part.terms_in)
     assert part.local == [True] * len(c)
     assert "devices=[0]" in repr(part)
-    assert host_stats.partition is None
+    assert host_stats.partition.partitions == 1
+    assert host_stats.partition.devices is None
 
 
 @needs_cuda

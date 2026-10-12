@@ -38,7 +38,7 @@ The lists run in **application** order, which under `direction="heisenberg"` is 
 `circuit_index` recovers the position as written regardless of direction, and `application_index` is the loop counter.
 
 `terms_out[k]` is the count *after* layer `k`'s truncation, `terms_in[k + 1] == terms_out[k]`, and `peak_terms` is the maximum of those resident counts.
-`nanos` is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and `stats.partition` holds the per-partition detail, otherwise `None` ([NUMA partitions](partitions.md), [MPI ranks](mpi.md)).
+`nanos` is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and `stats.partition` holds the per-partition detail, one partition for an unpartitioned run ([NUMA partitions](partitions.md), [MPI ranks](mpi.md)).
 The full field list is in the [Library](../../library/propagate.md#propagationstats).
 
 ## Estimate the memory a run needs {#estimate-the-memory-a-run-needs}

@@ -42,8 +42,8 @@ On a single-node box `"auto"` also falls back to the unpartitioned path, and an 
 [`paulistrings.numa_nodes()`](../../library/module-helpers.md) reports what the machine offers, as one CPU list per node intersected with this process's affinity mask, so a script can decide for itself before choosing.
 `pin_memory=False` pins the threads but not their allocations; the default binds both, which is the point of the placement.
 
-`propagate_with_stats` fills `PropagationStats.partition` on a partitioned run: per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
-It is `None` for an unpartitioned run.
+`PropagationStats.partition` holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
+An unpartitioned run reports one partition.
 `local[k]` says whether layer `k` exchanged at all, which is the figure the cost/benefit split above turns on.
 
 <!-- doctest: skip -->

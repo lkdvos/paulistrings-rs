@@ -383,7 +383,7 @@ def test_in_process_stats_still_report_no_rank(observable, circuit):
     """`rank`/`size` are `None` for a run that is not distributed — the phase-1
     records are unchanged."""
     _, stats = observable.propagate_with_stats(circuit, POLICY)
-    assert stats.partition is None
+    assert stats.partition.rank is None and stats.partition.size is None
 
 
 def test_multi_rank_run_actually_exchanges(observable, circuit):

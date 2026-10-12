@@ -93,7 +93,6 @@ fn a_runtime_serves_more_than_one_sum() {
     let cfg = config(2);
     let runtime = PartitionRuntime::new(&cfg).expect("topology resolves");
     assert_eq!(runtime.num_partitions(), 2);
-    assert_eq!(runtime.slots().len(), 2);
     let circuit = circuit();
 
     for seed in [0x1u64, 0x2] {

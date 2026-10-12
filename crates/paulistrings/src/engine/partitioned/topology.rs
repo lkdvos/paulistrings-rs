@@ -263,15 +263,15 @@ pub(super) fn bind_current_thread_memory(node: Option<usize>) -> io::Result<()> 
 
 /// One resolved partition: where its pool's workers run and how many there are.
 #[derive(Clone, Debug)]
-pub struct PartitionSlot {
+pub(crate) struct PartitionSlot {
     /// CPUs to pin the pool's workers to, or `None` to leave them unpinned.
-    pub cpus: Option<CpuSet>,
+    pub(crate) cpus: Option<CpuSet>,
     /// NUMA node to bind the workers' allocations to, when the slot sits in exactly one node.
-    pub node: Option<usize>,
+    pub(crate) node: Option<usize>,
     /// Worker count for the slot's Rayon pool.
-    pub threads: usize,
+    pub(crate) threads: usize,
     /// The CUDA device a device partition runs on, `None` for a host partition.
-    pub device: Option<u32>,
+    pub(crate) device: Option<u32>,
 }
 
 /// Builds one partition's Rayon pool, each worker pinning itself before Rayon's main loop and only warning when pinning fails.
@@ -390,11 +390,7 @@ impl Default for PartitionConfig {
 
 impl PartitionConfig {
     /// Resolves the placement against the machine into one slot per partition, a power of two of them.
-    ///
-    /// # Errors
-    ///
-    /// [`TopologyError::NotPowerOfTwo`] if an explicit or unpinned partition count is not a power of two, [`TopologyError::EmptySet`] if an explicit set is empty, and [`TopologyError::CpuNotAllowed`] if an explicit set names a CPU outside the affinity mask.
-    pub fn resolve(&self) -> Result<Vec<PartitionSlot>, TopologyError> {
+    pub(crate) fn resolve(&self) -> Result<Vec<PartitionSlot>, TopologyError> {
         let mut slots = match &self.placement {
             Placement::Auto { max_partitions } => resolve_auto(*max_partitions),
             Placement::Explicit(sets) => resolve_explicit(sets)?,
@@ -417,7 +413,7 @@ impl PartitionConfig {
     ///
     /// # Errors
     ///
-    /// As [`resolve`](Self::resolve).
+    /// [`TopologyError::NotPowerOfTwo`] if an explicit or unpinned partition count is not a power of two, [`TopologyError::EmptySet`] if an explicit set is empty, and [`TopologyError::CpuNotAllowed`] if an explicit set names a CPU outside the affinity mask.
     pub fn num_partitions(&self) -> Result<usize, TopologyError> {
         Ok(self.resolve()?.len())
     }

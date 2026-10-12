@@ -32,7 +32,7 @@ impl PartitionRuntime {
     ///
     /// # Errors
     ///
-    /// Whatever [`PartitionConfig::resolve`] reports (a partition count that is not a power of two, an empty or out-of-mask explicit CPU set), or [`TopologyError::Io`] if a pool cannot be built.
+    /// Whatever [`PartitionConfig::num_partitions`] reports (a partition count that is not a power of two, an empty or out-of-mask explicit CPU set), or [`TopologyError::Io`] if a pool cannot be built.
     pub fn new(config: &PartitionConfig) -> Result<Arc<Self>, TopologyError> {
         let slots = config.resolve()?;
         let mut pools = Vec::with_capacity(slots.len());
@@ -62,7 +62,8 @@ impl PartitionRuntime {
     }
 
     /// The resolved slots, in rank order.
-    pub fn slots(&self) -> &[PartitionSlot] {
+    #[cfg(feature = "cuda")]
+    pub(crate) fn slots(&self) -> &[PartitionSlot] {
         &self.slots
     }
 

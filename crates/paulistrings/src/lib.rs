@@ -32,8 +32,8 @@ pub use engine::partitioned::mpi;
 pub use engine::partitioned::PartitionPhaseStats;
 pub use engine::partitioned::{
     numa_nodes, propagate_partitioned, CpuSet, DistributedSum, PartitionConfig,
-    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionSlot, PartitionTrace,
-    PartitionedSum, Placement, ScatterOptions, ScatterRows, TopologyError, Transport,
+    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum,
+    Placement, ScatterOptions, ScatterRows, TopologyError, Transport,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;

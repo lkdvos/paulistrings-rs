@@ -24,6 +24,6 @@ pub use runtime::PartitionRuntime;
 #[cfg(feature = "phase-timing")]
 pub use sum::PartitionPhaseStats;
 pub use sum::PartitionedSum;
-pub use topology::{numa_nodes, CpuSet, PartitionConfig, PartitionSlot, Placement, TopologyError};
+pub use topology::{numa_nodes, CpuSet, PartitionConfig, Placement, TopologyError};
 pub use trace::{PartitionLayerRecord, PartitionTrace};
 pub use transport::Transport;

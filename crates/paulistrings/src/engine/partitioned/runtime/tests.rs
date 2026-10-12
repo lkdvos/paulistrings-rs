@@ -33,7 +33,7 @@ fn threads_per_partition_overrides_the_resolved_width() {
     };
 
     let resolved = PartitionRuntime::new(&config).expect("resolve");
-    for slot in resolved.slots() {
+    for slot in &resolved.slots {
         assert_eq!(slot.threads, cpus.len());
     }
 
@@ -42,7 +42,7 @@ fn threads_per_partition_overrides_the_resolved_width() {
         ..config
     })
     .expect("resolve with an explicit width");
-    for slot in narrowed.slots() {
+    for slot in &narrowed.slots {
         assert_eq!(slot.threads, 1);
         assert_eq!(slot.cpus.as_ref(), Some(&cpus), "the CPU set is untouched");
     }

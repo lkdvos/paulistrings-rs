@@ -50,6 +50,8 @@ env -u SBATCH_RESERVATION sbatch scripts/slurm/ab-campaign.sbatch
 LAYERS="su4 rotation_local rotation_remote gu2q" NS="1000000 3000000" PAIRS=5 sbatch scripts/slurm/ab-campaign.sbatch
 # code A/B of the untouched path (P=1 both sides): baseline sha vs the working tree
 A_REV=e7de227 LAYERS="rotation_zz cnot su4" sbatch scripts/slurm/ab-campaign.sbatch
+# code A/B with both sides partitioned: P = 4 unpinned, 8 threads per partition
+A_REV=e7de227 LAYERS="rotation_zz cnot su4" NS="1000 100000" THREADS=32 PROBE_EXTRA="--partitions 4 --partition-cpus unpinned" sbatch scripts/slurm/ab-campaign.sbatch
 # runtime-knob A/B of another probe flag: B adds KNOB_B instead of the partitions knob
 LAYERS="rotation_zz cnot su4" THREADS="1 8" PROBE_EXTRA="--truncation coeff:1e-4" KNOB_B="--truncation-dispatch builtin" sbatch scripts/slurm/ab-campaign.sbatch
 # more NUMA domains:

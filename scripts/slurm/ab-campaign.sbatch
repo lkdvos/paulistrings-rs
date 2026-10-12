@@ -13,6 +13,8 @@
 #   A_REV   git rev for side A. Unset (default): runtime-knob A/B, both sides the
 #           working tree, side B adds --partitions <numa> --partition-cpus <node lists>.
 #           Set (e.g. e7de227): code A/B of the untouched path, both sides P=1.
+#           Both sides run whatever PROBE_EXTRA adds, e.g. "--partitions 2" for a
+#           partitioned code A/B (THREADS is then the total over the partitions).
 #   LAYERS  probe layers, space separated (default "su4 rotation_local rotation_remote gu2q";
 #           for a code A/B use e.g. "rotation_zz cnot su4")
 #   NS      --n values (default "1000000")

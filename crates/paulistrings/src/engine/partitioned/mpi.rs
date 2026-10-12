@@ -18,6 +18,7 @@ use pipeline::{note_slot, ChunkPipeline, SLOT_EARLY, SLOT_SEND};
 use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
 use super::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT};
+use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
 use crate::engine::{Direction, PropagateOptions};
@@ -29,9 +30,6 @@ pub use ::mpi as rsmpi;
 
 /// A [`DistributedSum`] over the MPI transport, the persistent form of a [`propagate_mpi`] run.
 pub type MpiSum<const W: usize> = DistributedSum<W, MpiTransport>;
-
-/// `log` target shared with the partition topology and runtime.
-const LOG_TARGET: &str = "paulistrings::partitioned";
 
 /// Version of the header framing, bumped when it changes.
 const WIRE_VERSION: u32 = 1;

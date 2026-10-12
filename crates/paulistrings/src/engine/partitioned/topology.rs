@@ -4,8 +4,7 @@
 use std::fmt;
 use std::io;
 
-/// Separate from the progress target, so placement diagnostics filter on their own.
-const LOG_TARGET: &str = "paulistrings::partitioned";
+use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 
 /// A set of logical CPU indices; an unsorted literal is tolerated, since every consumer normalizes.
 #[derive(Clone, Debug, PartialEq, Eq)]

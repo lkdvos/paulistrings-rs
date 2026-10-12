@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use cudarc::driver::{CudaContext, DriverError};
 
-const LOG_TARGET: &str = "paulistrings::partitioned";
+use crate::engine::partitioned::PLACEMENT_LOG_TARGET as LOG_TARGET;
 
 /// Why [`context`] could not produce a context.
 #[derive(Debug)]

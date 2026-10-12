@@ -8,8 +8,7 @@ use super::topology::{
     TopologyError,
 };
 use super::transport::InProcessTransport;
-
-const LOG_TARGET: &str = "paulistrings::partitioned";
+use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 
 /// The resolved placement and its pinned pools, built once and shared behind an [`Arc`] by every [`PartitionedSum`](crate::PartitionedSum) that runs on it.
 pub struct PartitionRuntime {

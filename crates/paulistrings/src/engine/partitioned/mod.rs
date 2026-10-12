@@ -2,6 +2,9 @@
 //! `PartitionedSum` holds every partition in one process, `DistributedSum` is one partition of a group of processes; both run `driver::run_layers`.
 //! Setting a run up returns `Result`; everything past that is a contract violation and panics, since the group is already out of step.
 
+/// `log` target of placement, pinning and transport setup, separate from the progress target so it filters on its own.
+pub(crate) const PLACEMENT_LOG_TARGET: &str = "paulistrings::partitioned";
+
 pub(crate) mod backend;
 pub(crate) mod distributed;
 pub(crate) mod driver;

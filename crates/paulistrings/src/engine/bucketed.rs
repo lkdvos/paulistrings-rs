@@ -364,33 +364,19 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                 .enumerate()
                 .for_each(|(coset_index, chunk)| {
                     let base = coset_index * coset_size;
-                    // The fresh-scratch arm is a defensive fallback; a pool worker always has an index.
-                    match rayon::current_thread_index() {
-                        Some(worker) if worker < workers.len() => {
-                            let mut worker_scratch = workers[worker].lock().unwrap();
-                            fill_coset::<W, T, X>(
-                                chunk,
-                                &plan,
-                                policy,
-                                &mut worker_scratch,
-                                extra,
-                                base,
-                                inverse_permutation,
-                            );
-                        }
-                        _ => {
-                            let mut worker_scratch = CosetScratch::<W>::default();
-                            fill_coset::<W, T, X>(
-                                chunk,
-                                &plan,
-                                policy,
-                                &mut worker_scratch,
-                                extra,
-                                base,
-                                inverse_permutation,
-                            );
-                        }
-                    }
+                    // `workers` was sized to `current_num_threads()` above, and this closure runs on that pool.
+                    let worker = rayon::current_thread_index()
+                        .expect("the coset loop runs on a Rayon pool worker");
+                    let mut worker_scratch = workers[worker].lock().unwrap();
+                    fill_coset::<W, T, X>(
+                        chunk,
+                        &plan,
+                        policy,
+                        &mut worker_scratch,
+                        extra,
+                        base,
+                        inverse_permutation,
+                    );
                 });
         }
     }

@@ -149,6 +149,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         T: TruncationPolicy<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
+        options.assert_valid();
         let n = circuit.channels.len();
         let size = self.num_partitions();
         assert_supports_partitions(policy, size);
@@ -297,7 +298,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// # Panics
     ///
-    /// If a channel's preparation declines, as the unpartitioned engine does.
+    /// If `options` fail [`PropagateOptions::validate`], or a channel's preparation declines, as the unpartitioned engine does.
     /// Before the first layer, above one partition, unless [`policy.supports_partitioned()`](TruncationPolicy::supports_partitioned) — exact [`TopN`](crate::TopN) is not yet supported partitioned.
     /// A panic in any partition is re-raised on the calling thread.
     pub fn propagate_with<T>(

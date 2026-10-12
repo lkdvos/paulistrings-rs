@@ -103,6 +103,7 @@ Every benchmark on this site is run single-threaded, `RAYON_NUM_THREADS=1` expor
 
 `target_bucket_len` and `min_buckets` size the bucketed engine's storage per layer; `PauliSum.num_buckets` reads back what was realized, which only ever grows.
 They are tuning knobs for the engine's own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
+`target_bucket_len` must be at least 1 and `min_buckets` at least 16; anything smaller is a `ValueError`.
 
 ## Determinism
 

@@ -121,7 +121,7 @@ Refine and coarsen parallelize per bucket (pair) above the same 8192-term thresh
 
 `PropagateOptions::{target_bucket_len, min_buckets}` expose both values per call.
 They are a **measurement lever, not a tuning parameter**: the defaults are the measured optimum.
-Both have to move together — above the floor, `desired_bits` clamps the count at `min_buckets` whatever the target asks for — and `min_buckets` must stay `>= 16` or the "worth splitting" gate goes non-monotone.
+Both have to move together — above the floor, `desired_bits` clamps the count at `min_buckets` whatever the target asks for — and `min_buckets` must stay `>= 16` or the "worth splitting" gate goes non-monotone, which `PropagateOptions::validate` enforces at every entry point.
 `rebucket` being grow-only, lowering either mid-run never coarsens a partition already grown.
 Pinned by `crates/paulistrings/tests/bucket_knob.rs`.
 

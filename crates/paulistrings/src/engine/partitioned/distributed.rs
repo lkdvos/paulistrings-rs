@@ -222,6 +222,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         T: TruncationPolicy<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
+        options.assert_valid();
         let layer_count = circuit.channels.len();
         let rank = self.transport.rank() as usize;
         let size = self.transport.size() as usize;
@@ -400,7 +401,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     ///
     /// # Panics
     ///
-    /// If a channel's preparation declines, or if the ranks disagree about the run's shape.
+    /// If `options` fail [`PropagateOptions::validate`], if a channel's preparation declines, or if the ranks disagree about the run's shape.
     /// Before the first layer, above one rank, unless [`policy.supports_partitioned()`](TruncationPolicy::supports_partitioned) — exact [`TopN`](crate::TopN) is not yet supported partitioned.
     pub fn propagate_with<T>(
         &mut self,

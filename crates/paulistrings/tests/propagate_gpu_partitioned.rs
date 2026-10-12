@@ -565,7 +565,7 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     circuit.push(zz_rotation::<1>(0, 63, 0.3));
     let options = PropagateOptions {
         target_bucket_len: 1 << 20,
-        min_buckets: 1,
+        min_buckets: 1 << 20,
     };
     let input = x0_terms_identity_on_q63(MAX_BUCKET_LEN + MAX_BUCKET_LEN / 2, 0xF3);
     let seed = input.hash().seed();
@@ -627,7 +627,7 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
     });
     let options = PropagateOptions {
         target_bucket_len: 1 << 20,
-        min_buckets: 1,
+        min_buckets: 1 << 20,
     };
     let r = split.propagate_with(&circuit, KeepAll, Direction::Forward, options);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{r:?}");

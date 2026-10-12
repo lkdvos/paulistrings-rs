@@ -123,3 +123,37 @@ fn min_buckets_floor_binds_above_the_target() {
         "the min_buckets floor binds: raising target_bucket_len alone is inert"
     );
 }
+
+#[test]
+#[should_panic(expected = "min_buckets must be at least 16, got 15")]
+fn min_buckets_below_16_panics() {
+    run(
+        rand_sum::<2>(10, QUBITS, 1),
+        PropagateOptions {
+            min_buckets: 15,
+            ..PropagateOptions::default()
+        },
+    );
+}
+
+#[test]
+#[should_panic(expected = "target_bucket_len must be at least 1, got 0")]
+fn zero_target_bucket_len_panics() {
+    run(
+        rand_sum::<2>(10, QUBITS, 1),
+        PropagateOptions {
+            target_bucket_len: 0,
+            ..PropagateOptions::default()
+        },
+    );
+}
+
+#[test]
+fn validate_accepts_the_defaults_and_the_bounds() {
+    assert_eq!(PropagateOptions::default().validate(), Ok(()));
+    let bounds = PropagateOptions {
+        target_bucket_len: 1,
+        min_buckets: 16,
+    };
+    assert_eq!(bounds.validate(), Ok(()));
+}

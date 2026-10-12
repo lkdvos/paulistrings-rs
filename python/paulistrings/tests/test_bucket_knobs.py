@@ -1,6 +1,9 @@
 """``target_bucket_len=`` / ``min_buckets=`` on the propagate surface (``PropagateOptions``)."""
 
+import inspect
 import random
+
+import pytest
 
 from paulistrings import Circuit, PauliSum
 
@@ -75,13 +78,11 @@ def _fanout_circuit(num_qubits, window=8, layers=10, seed=20260914):
 
 def test_target_bucket_len_and_min_buckets_realize_a_small_partition():
     """Starting from one term, `_fanout_circuit` grows the sum past the
-    default split threshold, so the defaults (`target_bucket_len=1024`,
-    `min_buckets=128`) land in many buckets.  `min_buckets=1` paired with a
-    huge `target_bucket_len` keeps `desired_bits` at its floor of zero
-    (`pauli_sum/storage.rs::desired_bits`) regardless of term count, so the realized
-    partition is a single bucket throughout — nothing in the engine enforces
-    the `min_buckets >= 16` documentation contract as a code-level clamp, so
-    `min_buckets=1` is honoured exactly, not rounded up.
+    default split threshold, so the defaults land in many buckets.
+    A `min_buckets` so large that the sum is never worth splitting, paired with
+    a huge `target_bucket_len`, keeps `desired_bits` at zero
+    (`pauli_sum/storage.rs::desired_bits`), so the realized partition is a
+    single bucket throughout.
     """
     num_qubits = 20
     s = PauliSum.from_strings({"Z" + "I" * (num_qubits - 1): 1.0}, num_qubits=num_qubits)
@@ -92,18 +93,40 @@ def test_target_bucket_len_and_min_buckets_realize_a_small_partition():
     assert len(default) > 8192, "the fanout circuit must actually cross the split threshold"
     assert default.num_buckets > 1
 
-    minimal = s.propagate(c, min_buckets=1, target_bucket_len=1 << 30)
+    minimal = s.propagate(c, min_buckets=1 << 30, target_bucket_len=1 << 30)
     assert minimal.num_buckets == 1
     _assert_terms_close(minimal, default)
 
 
-def test_target_bucket_len_and_min_buckets_default_to_todays_behaviour():
-    # `None`/`None` (the default) must be exactly `PropagateOptions::default()`,
-    # like every other additive kwarg on this surface.
+def test_the_defaults_are_the_engines():
     s, c = _observable(NUM_QUBITS), _seeded_circuit(NUM_QUBITS)
+    for method in (PauliSum.propagate, PauliSum.propagate_with_stats):
+        parameters = inspect.signature(method).parameters
+        assert parameters["target_bucket_len"].default == 1024
+        assert parameters["min_buckets"].default == 128
     assert _as_dict(s.propagate(c)) == _as_dict(
-        s.propagate(c, target_bucket_len=None, min_buckets=None)
+        s.propagate(c, target_bucket_len=1024, min_buckets=128)
     )
+
+
+@pytest.mark.parametrize("method", ["propagate", "propagate_with_stats"])
+def test_min_buckets_below_16_is_rejected(method):
+    s, c = _observable(NUM_QUBITS), _seeded_circuit(NUM_QUBITS)
+    with pytest.raises(ValueError, match="min_buckets must be at least 16, got 15"):
+        getattr(s, method)(c, min_buckets=15)
+
+
+@pytest.mark.parametrize("method", ["propagate", "propagate_with_stats"])
+def test_target_bucket_len_zero_is_rejected(method):
+    s, c = _observable(NUM_QUBITS), _seeded_circuit(NUM_QUBITS)
+    with pytest.raises(ValueError, match="target_bucket_len must be at least 1, got 0"):
+        getattr(s, method)(c, target_bucket_len=0)
+
+
+def test_none_is_not_a_bucket_knob():
+    s, c = _observable(NUM_QUBITS), _seeded_circuit(NUM_QUBITS)
+    with pytest.raises(TypeError):
+        s.propagate(c, min_buckets=None)
 
 
 def test_num_buckets_is_one_on_a_freshly_built_small_sum():

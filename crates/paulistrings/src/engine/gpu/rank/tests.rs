@@ -404,7 +404,7 @@ mod protocol {
             let run = Run {
                 options: PropagateOptions {
                     target_bucket_len: 1 << 20,
-                    min_buckets: 1,
+                    min_buckets: 1 << 20,
                 },
                 ..Run::new(&input, rows_reading_z63(), &c)
             };

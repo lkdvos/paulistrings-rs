@@ -253,6 +253,10 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry.
     /// A device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
     /// Above one partition the split is then **poisoned**: its partitions no longer hold one consistent sum, and every later `propagate` or [`Self::gather`] returns [`GpuError::Poisoned`] until the caller scatters again.
+    ///
+    /// # Panics
+    ///
+    /// If `options` fail [`PropagateOptions::validate`].
     pub fn propagate_with(
         &mut self,
         circuit: &Circuit<W>,
@@ -260,6 +264,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         direction: Direction,
         options: PropagateOptions,
     ) -> Result<(), GpuError> {
+        options.assert_valid();
         let policy = policy.into();
         let partitions = self.backends_mut();
         partitions[0].check_poison()?;

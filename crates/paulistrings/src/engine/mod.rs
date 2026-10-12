@@ -43,11 +43,38 @@ pub struct PropagateOptions {
     /// Terms per bucket the per-layer partition targets (ARCHITECTURE.md §Bucket-Policy).
     ///
     /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and rebucketing is grow-only, so lowering either mid-run never coarsens a partition.
+    /// At least 1 ([`validate`](Self::validate)).
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
     ///
-    /// Must be `>= 16`, below which a sum of at most `target_bucket_len` terms no longer reliably gets one bucket.
+    /// At least 16, below which the "worth splitting" gate goes non-monotone ([`validate`](Self::validate)).
     pub min_buckets: usize,
+}
+
+/// The smallest accepted [`PropagateOptions::min_buckets`] (ARCHITECTURE.md §Bucket-Policy).
+const SMALLEST_MIN_BUCKETS: usize = 16;
+
+impl PropagateOptions {
+    /// `Err` with the message every entry point panics with unless `target_bucket_len >= 1` and `min_buckets >= 16`.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.target_bucket_len == 0 {
+            return Err("target_bucket_len must be at least 1, got 0".to_string());
+        }
+        if self.min_buckets < SMALLEST_MIN_BUCKETS {
+            return Err(format!(
+                "min_buckets must be at least {SMALLEST_MIN_BUCKETS}, got {}",
+                self.min_buckets
+            ));
+        }
+        Ok(())
+    }
+
+    /// Panics with [`validate`](Self::validate)'s message.
+    pub(crate) fn assert_valid(&self) {
+        if let Err(message) = self.validate() {
+            panic!("{message}");
+        }
+    }
 }
 
 impl Default for PropagateOptions {
@@ -120,6 +147,10 @@ where
 ///
 /// The scratch keeps its buffer capacity across calls and carries the opt-in [`LayerTrace`](crate::LayerTrace) (and, under `phase-timing`, the phase counters).
 /// Log events are emitted on the calling thread, never inside a parallel layer.
+///
+/// # Panics
+///
+/// As [`propagate`], and if `options` fail [`PropagateOptions::validate`].
 pub fn propagate_with<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,
@@ -131,6 +162,7 @@ pub fn propagate_with<const W: usize, T>(
 where
     T: TruncationPolicy<W> + ?Sized,
 {
+    options.assert_valid();
     let num_channels = circuit.channels.len();
     let terms_in = sum.len();
     let started = std::time::Instant::now();

@@ -140,8 +140,17 @@ def test_device_leaves_the_input_untouched():
 def test_bucket_knobs_pass_through():
     s, c = _observable(68), _circuit(68)
     want = s.propagate(c, direction="heisenberg")
-    got = s.propagate(c, direction="heisenberg", device=0, target_bucket_len=64, min_buckets=4)
+    got = s.propagate(c, direction="heisenberg", device=0, target_bucket_len=64, min_buckets=16)
     _assert_terms_close(got, want)
+
+
+@needs_cuda
+def test_a_resident_sum_rejects_bucket_knobs_out_of_range():
+    resident, c = _observable(8, terms=16).to_device(), _circuit(8)
+    with pytest.raises(ValueError, match="min_buckets must be at least 16, got 4"):
+        resident.propagate(c, min_buckets=4)
+    with pytest.raises(ValueError, match="target_bucket_len must be at least 1, got 0"):
+        resident.propagate_with_stats(c, target_bucket_len=0)
 
 
 # A random key has weight about 3n/4, so these weight cuts bite at every width.

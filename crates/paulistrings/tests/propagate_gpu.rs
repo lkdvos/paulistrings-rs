@@ -821,7 +821,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         &mut LayerScratch::new(),
         PropagateOptions {
             target_bucket_len: 1 << 20,
-            min_buckets: 1,
+            min_buckets: 1 << 20,
         },
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
@@ -832,7 +832,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         Direction::Forward,
         PropagateOptions {
             target_bucket_len: 1 << 20,
-            min_buckets: 1,
+            min_buckets: 1 << 20,
         },
     )
     .expect("device propagate");

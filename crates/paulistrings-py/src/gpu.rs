@@ -85,7 +85,7 @@ mod cuda {
     use super::DeviceRequest;
     use crate::circuit::CircuitImpl;
     use crate::sum::{
-        check_num_qubits, parse_direction, parse_propagate_options, PauliSum, PropagationStats,
+        check_num_qubits, parse_direction, propagate_options, PauliSum, PropagationStats,
     };
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::PyTruncation;
@@ -286,15 +286,15 @@ mod cuda {
         /// A `GpuPauliSum` is always one device, so exact `truncation.topn` runs here (unlike `device=[...]` or `comm=` with `device=`, which raise `NotImplementedError`); a channel on more than two qubits other than a Pauli rotation still raises `NotImplementedError`.
         /// A device error mid-run leaves the sum holding the last completed layer's output, and a later call resumes from it; an exhausted device raises `MemoryError`.
         /// The GIL is released for the duration.
-        #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
+        #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128))]
         fn propagate(
             &mut self,
             py: Python<'_>,
             circuit: &crate::circuit::Circuit,
             policy: Option<&PyTruncation>,
             direction: Option<&str>,
-            target_bucket_len: Option<usize>,
-            min_buckets: Option<usize>,
+            target_bucket_len: usize,
+            min_buckets: usize,
         ) -> PyResult<()> {
             self.step(
                 py,
@@ -310,15 +310,15 @@ mod cuda {
 
         /// `propagate`, returning a `PropagationStats` for this call's layers.
         /// Its `partition` is filled as for a one-partition run, with `partition.devices` naming the device.
-        #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=None, min_buckets=None))]
+        #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128))]
         fn propagate_with_stats(
             &mut self,
             py: Python<'_>,
             circuit: &crate::circuit::Circuit,
             policy: Option<&PyTruncation>,
             direction: Option<&str>,
-            target_bucket_len: Option<usize>,
-            min_buckets: Option<usize>,
+            target_bucket_len: usize,
+            min_buckets: usize,
         ) -> PyResult<PropagationStats> {
             let trace = self
                 .step(
@@ -386,12 +386,12 @@ mod cuda {
             circuit: &crate::circuit::Circuit,
             policy: Option<&PyTruncation>,
             direction: Option<&str>,
-            target_bucket_len: Option<usize>,
-            min_buckets: Option<usize>,
+            target_bucket_len: usize,
+            min_buckets: usize,
             traced: bool,
         ) -> PyResult<Option<paulistrings::PartitionTrace>> {
             let dir = parse_direction(direction)?;
-            let options = parse_propagate_options(target_bucket_len, min_buckets);
+            let options = propagate_options(target_bucket_len, min_buckets)?;
             check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
             let policy = PyTruncation::tree_of(policy);
             let inner = &mut self.inner;

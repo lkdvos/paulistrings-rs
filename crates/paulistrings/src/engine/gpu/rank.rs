@@ -167,6 +167,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         direction: Direction,
         options: PropagateOptions,
     ) -> Result<(), GpuError> {
+        options.assert_valid();
         let policy = policy.into();
         let single = self.size() == 1;
         let partition = self.backend_mut();

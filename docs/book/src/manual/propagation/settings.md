@@ -77,6 +77,7 @@ logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)
 paulistrings.reset_log_cache()   # pyo3-log caches each logger's effective level
 ```
 
+The INFO lines read `propagate: N terms through n channels (direction), scope` and `propagate: n layers applied, before -> after terms, t s, scope`, where `scope` is `1 partition`, `P partitions [placement]`, or `partition r/P [placement]` for one rank of a `comm=` run, whose counts are that rank's own.
 A layer's DEBUG line reads `layer k/n [name]: before -> after terms, t ms (partition r/P, d remote deltas, m rows in)` at every partition count, one line per partition.
 
 Call [`reset_log_cache()`](../../library/module-helpers.md) again after changing the level mid-process; the cache is otherwise stale for the rest of the process.

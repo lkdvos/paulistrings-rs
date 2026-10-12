@@ -13,7 +13,7 @@ use super::trace::{assemble, PartitionTrace};
 use super::transport::Transport;
 use crate::circuit::Circuit;
 use crate::engine::timing::{tally, timed};
-use crate::engine::{Direction, PropagateOptions};
+use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
@@ -225,7 +225,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         B: PartitionBackend<W, T>,
     {
         options.assert_valid();
-        let layer_count = circuit.channels.len();
+        let num_layers = circuit.channels.len();
         let rank = self.transport.rank() as usize;
         let size = self.transport.size() as usize;
         assert_supports_partitions(policy, size);
@@ -233,22 +233,21 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         let started = Instant::now();
         log::info!(
             target: LOG_TARGET,
-            "propagate_distributed: rank {rank}/{size}, {terms_in} local terms through {layer_count} \
-             channels ({direction:?}) [{}]",
-            self.runtime.placement_summary(),
+            "propagate: {terms_in} terms through {num_layers} channels ({direction:?}), {}",
+            progress_scope(Some(rank), size, Some(&self.runtime.placement_summary())),
         );
 
         self.transport.check_consistency(run_fingerprint(
-            layer_count,
+            num_layers,
             direction,
             options,
             self.rows.num_qubits(),
             W,
         ));
 
-        if layer_count > 0 {
+        if num_layers > 0 {
             let tracing = self.trace.is_some();
-            let mut work = PartitionWork::take(&mut self.local, layer_count, tracing);
+            let mut work = PartitionWork::take(&mut self.local, num_layers, tracing);
 
             {
                 let runtime = Arc::clone(&self.runtime);
@@ -272,15 +271,15 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
             if let Some(trace) = self.trace.as_mut() {
                 assemble(trace, vec![work.rows], size);
             }
-            tally!(self.laps.layers, layer_count);
+            tally!(self.laps.layers, num_layers);
         }
 
         log::info!(
             target: LOG_TARGET,
-            "propagate_distributed: rank {rank}/{size}, {layer_count} layers applied, {terms_in} -> {} \
-             local terms, {:.3} s",
+            "propagate: {num_layers} layers applied, {terms_in} -> {} terms, {:.3} s, {}",
             self.local.len(),
             started.elapsed().as_secs_f64(),
+            progress_scope(Some(rank), size, Some(&self.runtime.placement_summary())),
         );
     }
 }
@@ -369,13 +368,16 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         };
         log::info!(
             target: LOG_TARGET,
-            "scatter: rank {}/{}, {} terms in, {} kept locally, {} bucket bits, {:.3} s",
-            transport.rank(),
-            transport.size(),
+            "scatter: {} terms -> {} held, {} bucket bits, {:.3} s, {}",
             sum.len(),
             local.len(),
             local.hash().bits(),
             started.elapsed().as_secs_f64(),
+            progress_scope(
+                Some(transport.rank() as usize),
+                transport.size() as usize,
+                Some(&runtime.placement_summary()),
+            ),
         );
 
         Self {

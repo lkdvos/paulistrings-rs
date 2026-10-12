@@ -48,3 +48,17 @@ fn an_unpreparable_channel_panics() {
     circuit.push(ThreeQubits);
     let _ = propagate(&circuit, sum, &AlwaysKeep, Direction::Forward);
 }
+
+#[test]
+fn progress_scope_names_the_partitions() {
+    use super::progress_scope;
+    assert_eq!(progress_scope(None, 1, None), "1 partition");
+    assert_eq!(
+        progress_scope(None, 4, Some("0:unpinned x2")),
+        "4 partitions [0:unpinned x2]"
+    );
+    assert_eq!(
+        progress_scope(Some(2), 4, Some("0:0-7x8")),
+        "partition 2/4 [0:0-7x8]"
+    );
+}

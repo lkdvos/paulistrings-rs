@@ -15,7 +15,7 @@ use crate::circuit::Circuit;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::{tally, timed};
-use crate::engine::{Direction, PropagateOptions};
+use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
 use crate::readout::product_state::ProductBasis;
@@ -149,24 +149,23 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         B: PartitionBackend<W, T>,
     {
         options.assert_valid();
-        let n = circuit.channels.len();
+        let num_layers = circuit.channels.len();
         let size = self.num_partitions();
         assert_supports_partitions(policy, size);
         let terms_in = self.len();
         let started = Instant::now();
         log::info!(
             target: LOG_TARGET,
-            "propagate_partitioned: {terms_in} terms through {n} channels ({direction:?}) \
-             on {size} partitions [{}]",
-            self.runtime.placement_summary(),
+            "propagate: {terms_in} terms through {num_layers} channels ({direction:?}), {}",
+            progress_scope(None, size, Some(&self.runtime.placement_summary())),
         );
 
-        if n > 0 {
+        if num_layers > 0 {
             let tracing = self.trace.is_some();
             let items: Vec<PartitionWork<B>> = self
                 .parts
                 .iter_mut()
-                .map(|part| PartitionWork::take(part, n, tracing))
+                .map(|part| PartitionWork::take(part, num_layers, tracing))
                 .collect();
 
             let runtime = Arc::clone(&self.runtime);
@@ -193,14 +192,15 @@ impl<const W: usize, B> PartitionedSum<W, B> {
             if let Some(trace) = self.trace.as_mut() {
                 assemble(trace, traced, size);
             }
-            tally!(self.laps.layers, n);
+            tally!(self.laps.layers, num_layers);
         }
 
         log::info!(
             target: LOG_TARGET,
-            "propagate_partitioned: {n} layers applied, {terms_in} -> {} terms, {:.3} s",
+            "propagate: {num_layers} layers applied, {terms_in} -> {} terms, {:.3} s, {}",
             self.len(),
             started.elapsed().as_secs_f64(),
+            progress_scope(None, size, Some(&self.runtime.placement_summary())),
         );
     }
 }
@@ -267,10 +267,12 @@ impl<const W: usize> PartitionedSum<W> {
         };
         log::info!(
             target: LOG_TARGET,
-            "scatter: {} terms over {size} partitions, {} bucket bits, {:.3} s",
+            "scatter: {} terms -> {} held, {} bucket bits, {:.3} s, {}",
             sum.len(),
+            locals.iter().map(PauliSum::len).sum::<usize>(),
             locals[0].hash().bits(),
             started.elapsed().as_secs_f64(),
+            progress_scope(None, size, Some(&runtime.placement_summary())),
         );
 
         Self {

@@ -28,6 +28,23 @@ use partitioned::transport::SoloTransport;
 /// `log` target for the engine's progress events, partitioned or not, and the truncation policies' own.
 pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";
 
+/// The tail every driver's `INFO` progress line ends with: `1 partition`, `4 partitions [placement]`, or one rank's share, `partition 0/4 [placement]`.
+pub(crate) fn progress_scope(
+    rank: Option<usize>,
+    partitions: usize,
+    placement: Option<&str>,
+) -> String {
+    let mut scope = match (rank, partitions) {
+        (Some(rank), _) => format!("partition {rank}/{partitions}"),
+        (None, 1) => "1 partition".to_string(),
+        (None, _) => format!("{partitions} partitions"),
+    };
+    if let Some(placement) = placement {
+        scope.push_str(&format!(" [{placement}]"));
+    }
+    scope
+}
+
 /// Propagation direction: channels in order, or in reverse with adjoints for backpropagating observables.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
@@ -98,6 +115,7 @@ impl Default for PropagateOptions {
 /// # Progress logging
 ///
 /// Through the [`log`] facade under the target `paulistrings::propagate`: `INFO` on entry and exit, `DEBUG` once per layer, named by [`Channel::debug_name`](crate::Channel::debug_name).
+/// Every driver writes the same lines, ending in the partitions they speak for (`1 partition` here).
 pub fn propagate<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,
@@ -143,7 +161,8 @@ where
     let started = std::time::Instant::now();
     log::info!(
         target: LOG_TARGET,
-        "propagate: {terms_in} terms through {num_channels} channels ({direction:?})",
+        "propagate: {terms_in} terms through {num_channels} channels ({direction:?}), {}",
+        progress_scope(None, 1, None),
     );
 
     // One partition of `run_layers` on the caller's pool (ARCHITECTURE.md §Partitioning).
@@ -176,11 +195,10 @@ where
 
     log::info!(
         target: LOG_TARGET,
-        "propagate: {} layers applied, {} -> {} terms, {:.3} s",
-        num_channels,
-        terms_in,
+        "propagate: {num_channels} layers applied, {terms_in} -> {} terms, {:.3} s, {}",
         sum.len(),
         started.elapsed().as_secs_f64(),
+        progress_scope(None, 1, None),
     );
 
     sum

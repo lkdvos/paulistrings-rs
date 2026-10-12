@@ -32,7 +32,10 @@ fn sort_rows_with_scratch<const W: usize>(
     let len = x.len();
     debug_assert_eq!(len, z.len());
     debug_assert_eq!(len, c.len());
-    debug_assert!(len <= u32::MAX as usize);
+    assert!(
+        len <= u32::MAX as usize,
+        "sort: run of {len} rows exceeds u32 row indices"
+    );
     if len < 2 {
         return;
     }
@@ -174,11 +177,11 @@ fn sort_rows_radix_with_scratch<const W: usize>(
     let len = x.len();
     debug_assert_eq!(len, z.len());
     debug_assert_eq!(len, c.len());
+    assert!(
+        len <= u32::MAX as usize,
+        "sort: run of {len} rows exceeds u32 row indices"
+    );
     if len < 2 {
-        return;
-    }
-    if len > u32::MAX as usize {
-        sort_rows_with_scratch(columns, scratch);
         return;
     }
     let Some((word, high_bit, diff)) = discriminating_window(x, z) else {

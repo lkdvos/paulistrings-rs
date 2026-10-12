@@ -610,8 +610,8 @@ fn parse_partitions(
         partition_row_seed,
         threads_per_partition: None,
     };
-    let slots = config.resolve().map_err(topology_error)?;
-    if slots.len() == 1 && matches!(config.placement, Placement::Auto { .. }) {
+    let num_partitions = config.num_partitions().map_err(topology_error)?;
+    if num_partitions == 1 && matches!(config.placement, Placement::Auto { .. }) {
         // A single-node box: nothing to partition, so run the classic path rather than pay for a pool build and pin a thread nobody asked to pin. An explicit one-element CPU list is still honoured.
         return Ok(None);
     }
@@ -1154,9 +1154,8 @@ fn parse_run_mode(
         }
     }
     if let (Some(config), PartitionRowPolicy::Cut(row_blocks)) = (&config, &rows) {
-        // `resolve()` alone (not `PartitionRuntime::new`, which builds pinned
-        // pools) is enough to learn the partition count for validation.
-        let num_partitions = config.resolve().map_err(topology_error)?.len();
+        // `num_partitions()` builds no pool, unlike `PartitionRuntime::new`.
+        let num_partitions = config.num_partitions().map_err(topology_error)?;
         validate_partition_row_blocks(
             row_blocks,
             num_qubits,

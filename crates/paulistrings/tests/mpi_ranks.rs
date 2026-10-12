@@ -35,7 +35,9 @@ use paulistrings::test_support::{
     heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts, spread_magnitudes,
     trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll,
 };
-use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
+use paulistrings::test_support::{
+    count_remote_deltas, mpi_build_library_version, mpi_with_chunk_bytes, BITS_AGREE_EVERY,
+};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
     PropagateOptions, TruncationPolicy,
@@ -242,7 +244,7 @@ impl Runner<'_> {
     {
         let mut transport = MpiTransport::from_communicator(self.world);
         if let Some(bytes) = chunk_bytes {
-            transport = transport.with_chunk_bytes(bytes);
+            transport = mpi_with_chunk_bytes(transport, bytes);
         }
         match backend {
             Backend::Host => {
@@ -361,7 +363,7 @@ fn main() {
             "mpi_ranks: {size} rank(s), thread support {threading:?}, exchange chunks {}, \
              library built against {}",
             std::env::var("PAULISTRINGS_EXCHANGE_CHUNKS").unwrap_or_else(|_| "default".to_string()),
-            MpiTransport::build_library_version(),
+            mpi_build_library_version(),
         );
         if threading < Threading::Serialized {
             println!(

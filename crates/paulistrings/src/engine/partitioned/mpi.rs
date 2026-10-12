@@ -166,7 +166,7 @@ impl MpiTransport {
             return Err(MpiError::SizeNotPowerOfTwo(size));
         }
 
-        let built = env!("PAULISTRINGS_MPI_BUILD_VERSION");
+        let built = Self::build_library_version();
         let running = ::mpi::environment::library_version().unwrap_or_default();
         let running = running.trim();
         if rank == 0 {
@@ -202,19 +202,16 @@ impl MpiTransport {
         &self.comm
     }
 
-    /// Override the largest message the transport sends, in bytes (default 1 GiB), so tests can reach the chunked path.
-    ///
-    /// # Panics
-    ///
-    /// If `bytes` is zero.
-    pub fn with_chunk_bytes(mut self, bytes: usize) -> Self {
+    /// Override the largest message in bytes (default 1 GiB), so tests reach the chunked path; panics on zero.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn with_chunk_bytes(mut self, bytes: usize) -> Self {
         assert!(bytes > 0, "the chunk size must be positive");
         self.chunk = bytes;
         self
     }
 
     /// The MPI library version string this build probed through `mpicc`.
-    pub fn build_library_version() -> &'static str {
+    pub(crate) fn build_library_version() -> &'static str {
         env!("PAULISTRINGS_MPI_BUILD_VERSION")
     }
 

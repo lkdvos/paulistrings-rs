@@ -46,6 +46,21 @@ macro_rules! require_cuda {
     };
 }
 
+/// `transport` with its largest message capped at `bytes`, so a test reaches the chunked exchange.
+#[cfg(feature = "mpi")]
+pub fn mpi_with_chunk_bytes(
+    transport: crate::mpi::MpiTransport,
+    bytes: usize,
+) -> crate::mpi::MpiTransport {
+    transport.with_chunk_bytes(bytes)
+}
+
+/// The MPI library version string this build probed through `mpicc`.
+#[cfg(feature = "mpi")]
+pub fn mpi_build_library_version() -> &'static str {
+    crate::mpi::MpiTransport::build_library_version()
+}
+
 /// `a` and `b` as a [`BuiltinTruncation`](crate::truncation::BuiltinTruncation) `And` node.
 pub fn and(
     a: crate::truncation::BuiltinTruncation,

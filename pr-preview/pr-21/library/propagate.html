@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-187d70d7.js";
+            window.path_to_searchindex_js = "../searchindex-ae07100f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -183,14 +183,14 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="propagate--propagate_with_stats"><a class="header" href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a></h1>
-<pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, target_bucket_len=None,
-               min_buckets=None, partitions=None, pin_memory=True,
+<pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
+               min_buckets=128, partitions=None, pin_memory=True,
                partition_row_seed=None, partition_row_blocks=None,
                partition_row_exclude=None, comm=None, result="gather",
                device=None) -&gt; PauliSum
 
-sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=None,
-                          min_buckets=None, partitions=None, pin_memory=True,
+sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
+                          min_buckets=128, partitions=None, pin_memory=True,
                           partition_row_seed=None, partition_row_blocks=None,
                           partition_row_exclude=None, comm=None, result="gather",
                           device=None)
@@ -208,8 +208,8 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>circuit</code></td><td><code>Circuit</code></td><td>required</td><td>must share <code>num_qubits</code> with <code>sum</code></td></tr>
 <tr><td><code>policy</code></td><td><code>Truncation | None</code></td><td><code>None</code></td><td><code>None</code> applies no per-term filtering beyond the engine’s exact-zero drop</td></tr>
 <tr><td><code>direction</code></td><td><code>"forward" | "heisenberg" | None</code></td><td><code>None</code> = <code>"forward"</code></td><td><strong>the default is not the Heisenberg picture most examples here use</strong> — pass it explicitly; see <a href="direction.html">Direction semantics</a></td></tr>
-<tr><td><code>target_bucket_len</code></td><td><code>int | None</code></td><td><code>None</code> = <code>1024</code></td><td>engine’s per-layer bucket-sizing knob</td></tr>
-<tr><td><code>min_buckets</code></td><td><code>int | None</code></td><td><code>None</code> = <code>128</code></td><td>engine’s per-layer bucket-sizing knob</td></tr>
+<tr><td><code>target_bucket_len</code></td><td><code>int</code></td><td><code>1024</code></td><td>engine’s per-layer bucket-sizing knob; at least 1, else <code>ValueError</code></td></tr>
+<tr><td><code>min_buckets</code></td><td><code>int</code></td><td><code>128</code></td><td>engine’s per-layer bucket-sizing knob; at least 16, else <code>ValueError</code></td></tr>
 <tr><td><code>partitions</code></td><td><code>None | "auto" | int | list[list[int]]</code></td><td><code>None</code></td><td>splits the sum across NUMA domains; see below</td></tr>
 <tr><td><code>pin_memory</code></td><td><code>bool</code></td><td><code>True</code></td><td>binds each partition’s allocations to its node</td></tr>
 <tr><td><code>partition_row_seed</code></td><td><code>int | None</code></td><td><code>None</code> = the sum’s own hash seed</td><td>which GF(2) rows decide a term’s partition</td></tr>
@@ -269,9 +269,9 @@ See <a href="../manual/propagation/gpu.html">CUDA devices</a>.</p>
 <pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum
 
 resident.propagate(circuit, policy=None, direction=None,
-                   target_bucket_len=None, min_buckets=None) -&gt; None
+                   target_bucket_len=1024, min_buckets=128) -&gt; None
 resident.propagate_with_stats(circuit, policy=None, direction=None,
-                              target_bucket_len=None, min_buckets=None) -&gt; PropagationStats
+                              target_bucket_len=1024, min_buckets=128) -&gt; PropagationStats
 resident.to_host() -&gt; PauliSum
 </code></pre>
 <p>A sum resident on one CUDA device: <code>propagate</code> steps it <strong>in place</strong>, <code>to_host</code> copies it back and leaves it resident.

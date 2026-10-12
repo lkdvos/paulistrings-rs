@@ -99,97 +99,60 @@
 <a href=#99 id=99 data-nosnippet>99</a>///
 <a href=#100 id=100 data-nosnippet>100</a>/// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel) and [`PauliRotation`].
 <a href=#101 id=101 data-nosnippet>101</a>/// A custom channel implements `support`, `apply` and `apply_adjoint`; the engine derives its per-layer form by probing `apply` (ARCHITECTURE.md §Prepared-Channels).
-<a href=#102 id=102 data-nosnippet>102</a>///
-<a href=#103 id=103 data-nosnippet>103</a>/// ```
-<a href=#104 id=104 data-nosnippet>104</a>/// use paulistrings::{Channel, OutputBuffer};
-<a href=#105 id=105 data-nosnippet>105</a>/// use num_complex::Complex64;
-<a href=#106 id=106 data-nosnippet>106</a>///
-<a href=#107 id=107 data-nosnippet>107</a>/// /// Multiplies every coefficient by a complex factor.
-<a href=#108 id=108 data-nosnippet>108</a>/// struct GlobalPhase {
-<a href=#109 id=109 data-nosnippet>109</a>///     factor: Complex64,
-<a href=#110 id=110 data-nosnippet>110</a>/// }
-<a href=#111 id=111 data-nosnippet>111</a>///
-<a href=#112 id=112 data-nosnippet>112</a>/// impl&lt;const W: usize&gt; Channel&lt;W&gt; for GlobalPhase {
-<a href=#113 id=113 data-nosnippet>113</a>///     fn support(&amp;self) -&gt; [u64; W] { [0; W] }
-<a href=#114 id=114 data-nosnippet>114</a>///     fn apply(
-<a href=#115 id=115 data-nosnippet>115</a>///         &amp;self,
-<a href=#116 id=116 data-nosnippet>116</a>///         input_x: &amp;[u64; W],
-<a href=#117 id=117 data-nosnippet>117</a>///         input_z: &amp;[u64; W],
-<a href=#118 id=118 data-nosnippet>118</a>///         coeff: Complex64,
-<a href=#119 id=119 data-nosnippet>119</a>///         out: &amp;mut OutputBuffer&lt;W&gt;,
-<a href=#120 id=120 data-nosnippet>120</a>///     ) {
-<a href=#121 id=121 data-nosnippet>121</a>///         out.push(*input_x, *input_z, coeff * self.factor);
-<a href=#122 id=122 data-nosnippet>122</a>///     }
-<a href=#123 id=123 data-nosnippet>123</a>///     fn apply_adjoint(
-<a href=#124 id=124 data-nosnippet>124</a>///         &amp;self,
-<a href=#125 id=125 data-nosnippet>125</a>///         input_x: &amp;[u64; W],
-<a href=#126 id=126 data-nosnippet>126</a>///         input_z: &amp;[u64; W],
-<a href=#127 id=127 data-nosnippet>127</a>///         coeff: Complex64,
-<a href=#128 id=128 data-nosnippet>128</a>///         out: &amp;mut OutputBuffer&lt;W&gt;,
-<a href=#129 id=129 data-nosnippet>129</a>///     ) {
-<a href=#130 id=130 data-nosnippet>130</a>///         out.push(*input_x, *input_z, coeff * self.factor.conj());
-<a href=#131 id=131 data-nosnippet>131</a>///     }
-<a href=#132 id=132 data-nosnippet>132</a>/// }
-<a href=#133 id=133 data-nosnippet>133</a>///
-<a href=#134 id=134 data-nosnippet>134</a>/// let channel = GlobalPhase {
-<a href=#135 id=135 data-nosnippet>135</a>///     factor: Complex64::new(0.0, 1.0),
-<a href=#136 id=136 data-nosnippet>136</a>/// };
-<a href=#137 id=137 data-nosnippet>137</a>/// let _: Box&lt;dyn Channel&lt;1&gt;&gt; = Box::new(channel);
-<a href=#138 id=138 data-nosnippet>138</a>/// ```
-<a href=#139 id=139 data-nosnippet>139</a></span><span class="kw">pub trait </span>Channel&lt;<span class="kw">const </span>W: usize&gt;: Send + Sync {
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="doccomment">/// Qubits this channel acts on, as a bitmask built with [`support_mask`].
-<a href=#141 id=141 data-nosnippet>141</a>    ///
-<a href=#142 id=142 data-nosnippet>142</a>    /// Outputs must differ from their input only at these qubits.
-<a href=#143 id=143 data-nosnippet>143</a>    </span><span class="kw">fn </span>support(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; [u64; W];
-<a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Short name for the per-layer progress log.
-<a href=#146 id=146 data-nosnippet>146</a>    ///
-<a href=#147 id=147 data-nosnippet>147</a>    /// The default is the type name without path or generics, which is unhelpful for tuples, closures and boxes; override it there.
-<a href=#148 id=148 data-nosnippet>148</a>    </span><span class="kw">fn </span>debug_name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span>full = core::any::type_name::&lt;<span class="self">Self</span>&gt;();
-<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">let </span>head = <span class="kw">match </span>full.find(<span class="string">'&lt;'</span>) {
-<a href=#151 id=151 data-nosnippet>151</a>            <span class="prelude-val">Some</span>(i) =&gt; <span class="kw-2">&amp;</span>full[..i],
-<a href=#152 id=152 data-nosnippet>152</a>            <span class="prelude-val">None </span>=&gt; full,
-<a href=#153 id=153 data-nosnippet>153</a>        };
-<a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">match </span>head.rfind(<span class="string">"::"</span>) {
-<a href=#155 id=155 data-nosnippet>155</a>            <span class="prelude-val">Some</span>(i) =&gt; <span class="kw-2">&amp;</span>head[i + <span class="number">2</span>..],
-<a href=#156 id=156 data-nosnippet>156</a>            <span class="prelude-val">None </span>=&gt; head,
-<a href=#157 id=157 data-nosnippet>157</a>        }
-<a href=#158 id=158 data-nosnippet>158</a>    }
-<a href=#159 id=159 data-nosnippet>159</a>
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// Apply the channel to one input term, pushing its outputs to `out`.
-<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">fn </span>apply(
-<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#163 id=163 data-nosnippet>163</a>        input_x: <span class="kw-2">&amp;</span>[u64; W],
-<a href=#164 id=164 data-nosnippet>164</a>        input_z: <span class="kw-2">&amp;</span>[u64; W],
-<a href=#165 id=165 data-nosnippet>165</a>        coeff: Complex64,
-<a href=#166 id=166 data-nosnippet>166</a>        out: <span class="kw-2">&amp;mut </span>OutputBuffer&lt;W&gt;,
-<a href=#167 id=167 data-nosnippet>167</a>    );
-<a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a>    <span class="doccomment">/// Apply the channel's adjoint to one input term; run by `Direction::Heisenberg`.
-<a href=#170 id=170 data-nosnippet>170</a>    ///
-<a href=#171 id=171 data-nosnippet>171</a>    /// A self-adjoint channel calls [`apply`](Self::apply).
-<a href=#172 id=172 data-nosnippet>172</a>    </span><span class="kw">fn </span>apply_adjoint(
-<a href=#173 id=173 data-nosnippet>173</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#174 id=174 data-nosnippet>174</a>        input_x: <span class="kw-2">&amp;</span>[u64; W],
-<a href=#175 id=175 data-nosnippet>175</a>        input_z: <span class="kw-2">&amp;</span>[u64; W],
-<a href=#176 id=176 data-nosnippet>176</a>        coeff: Complex64,
-<a href=#177 id=177 data-nosnippet>177</a>        out: <span class="kw-2">&amp;mut </span>OutputBuffer&lt;W&gt;,
-<a href=#178 id=178 data-nosnippet>178</a>    );
-<a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="doccomment">/// The engine form for one layer: probed from `apply` unless a built-in knows its table (ARCHITECTURE.md §Prepared-Channels).
-<a href=#181 id=181 data-nosnippet>181</a>    /// Neither callable nor overridable outside the crate, since `PrepareToken` and `Prepared` cannot be named there.
-<a href=#182 id=182 data-nosnippet>182</a>    </span><span class="attr">#[doc(hidden)]
-<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">fn </span>prepare_for_layer(
-<a href=#184 id=184 data-nosnippet>184</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#185 id=185 data-nosnippet>185</a>        hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;,
-<a href=#186 id=186 data-nosnippet>186</a>        adjoint: bool,
-<a href=#187 id=187 data-nosnippet>187</a>        <span class="kw">_</span>: PrepareToken,
-<a href=#188 id=188 data-nosnippet>188</a>    ) -&gt; <span class="prelude-ty">Option</span>&lt;Prepared&lt;W&gt;&gt; {
-<a href=#189 id=189 data-nosnippet>189</a>        Prepared::derive_local(<span class="self">self</span>, hash, adjoint)
-<a href=#190 id=190 data-nosnippet>190</a>    }
-<a href=#191 id=191 data-nosnippet>191</a>}
-<a href=#192 id=192 data-nosnippet>192</a>
-<a href=#193 id=193 data-nosnippet>193</a><span class="attr">#[cfg(test)]
-<a href=#194 id=194 data-nosnippet>194</a></span><span class="kw">mod </span>tests;
+<a href=#102 id=102 data-nosnippet>102</a></span><span class="kw">pub trait </span>Channel&lt;<span class="kw">const </span>W: usize&gt;: Send + Sync {
+<a href=#103 id=103 data-nosnippet>103</a>    <span class="doccomment">/// Qubits this channel acts on, as a bitmask built with [`support_mask`].
+<a href=#104 id=104 data-nosnippet>104</a>    ///
+<a href=#105 id=105 data-nosnippet>105</a>    /// Outputs must differ from their input only at these qubits.
+<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">fn </span>support(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; [u64; W];
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// Short name for the per-layer progress log.
+<a href=#109 id=109 data-nosnippet>109</a>    ///
+<a href=#110 id=110 data-nosnippet>110</a>    /// The default is the type name without path or generics, which is unhelpful for tuples, closures and boxes; override it there.
+<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">fn </span>debug_name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#112 id=112 data-nosnippet>112</a>        <span class="kw">let </span>full = core::any::type_name::&lt;<span class="self">Self</span>&gt;();
+<a href=#113 id=113 data-nosnippet>113</a>        <span class="kw">let </span>head = <span class="kw">match </span>full.find(<span class="string">'&lt;'</span>) {
+<a href=#114 id=114 data-nosnippet>114</a>            <span class="prelude-val">Some</span>(i) =&gt; <span class="kw-2">&amp;</span>full[..i],
+<a href=#115 id=115 data-nosnippet>115</a>            <span class="prelude-val">None </span>=&gt; full,
+<a href=#116 id=116 data-nosnippet>116</a>        };
+<a href=#117 id=117 data-nosnippet>117</a>        <span class="kw">match </span>head.rfind(<span class="string">"::"</span>) {
+<a href=#118 id=118 data-nosnippet>118</a>            <span class="prelude-val">Some</span>(i) =&gt; <span class="kw-2">&amp;</span>head[i + <span class="number">2</span>..],
+<a href=#119 id=119 data-nosnippet>119</a>            <span class="prelude-val">None </span>=&gt; head,
+<a href=#120 id=120 data-nosnippet>120</a>        }
+<a href=#121 id=121 data-nosnippet>121</a>    }
+<a href=#122 id=122 data-nosnippet>122</a>
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// Apply the channel to one input term, pushing its outputs to `out`.
+<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">fn </span>apply(
+<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#126 id=126 data-nosnippet>126</a>        input_x: <span class="kw-2">&amp;</span>[u64; W],
+<a href=#127 id=127 data-nosnippet>127</a>        input_z: <span class="kw-2">&amp;</span>[u64; W],
+<a href=#128 id=128 data-nosnippet>128</a>        coeff: Complex64,
+<a href=#129 id=129 data-nosnippet>129</a>        out: <span class="kw-2">&amp;mut </span>OutputBuffer&lt;W&gt;,
+<a href=#130 id=130 data-nosnippet>130</a>    );
+<a href=#131 id=131 data-nosnippet>131</a>
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="doccomment">/// Apply the channel's adjoint to one input term; run by `Direction::Heisenberg`.
+<a href=#133 id=133 data-nosnippet>133</a>    ///
+<a href=#134 id=134 data-nosnippet>134</a>    /// A self-adjoint channel calls [`apply`](Self::apply).
+<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">fn </span>apply_adjoint(
+<a href=#136 id=136 data-nosnippet>136</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#137 id=137 data-nosnippet>137</a>        input_x: <span class="kw-2">&amp;</span>[u64; W],
+<a href=#138 id=138 data-nosnippet>138</a>        input_z: <span class="kw-2">&amp;</span>[u64; W],
+<a href=#139 id=139 data-nosnippet>139</a>        coeff: Complex64,
+<a href=#140 id=140 data-nosnippet>140</a>        out: <span class="kw-2">&amp;mut </span>OutputBuffer&lt;W&gt;,
+<a href=#141 id=141 data-nosnippet>141</a>    );
+<a href=#142 id=142 data-nosnippet>142</a>
+<a href=#143 id=143 data-nosnippet>143</a>    <span class="doccomment">/// The engine form for one layer: probed from `apply` unless a built-in knows its table (ARCHITECTURE.md §Prepared-Channels).
+<a href=#144 id=144 data-nosnippet>144</a>    /// Neither callable nor overridable outside the crate, since `PrepareToken` and `Prepared` cannot be named there.
+<a href=#145 id=145 data-nosnippet>145</a>    </span><span class="attr">#[doc(hidden)]
+<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">fn </span>prepare_for_layer(
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#148 id=148 data-nosnippet>148</a>        hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;,
+<a href=#149 id=149 data-nosnippet>149</a>        adjoint: bool,
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">_</span>: PrepareToken,
+<a href=#151 id=151 data-nosnippet>151</a>    ) -&gt; <span class="prelude-ty">Option</span>&lt;Prepared&lt;W&gt;&gt; {
+<a href=#152 id=152 data-nosnippet>152</a>        Prepared::derive_local(<span class="self">self</span>, hash, adjoint)
+<a href=#153 id=153 data-nosnippet>153</a>    }
+<a href=#154 id=154 data-nosnippet>154</a>}
+<a href=#155 id=155 data-nosnippet>155</a>
+<a href=#156 id=156 data-nosnippet>156</a><span class="attr">#[cfg(test)]
+<a href=#157 id=157 data-nosnippet>157</a></span><span class="kw">mod </span>tests;
 </code></pre></div></section></main></body></html>

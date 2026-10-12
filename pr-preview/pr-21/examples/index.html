@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-187d70d7.js";
+            window.path_to_searchindex_js = "../searchindex-ae07100f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -183,16 +183,6 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
-<h2 id="the-2d-ising-quench"><a class="header" href="#the-2d-ising-quench">The flagship worked example: a 2D Ising quench</a></h2>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="../assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
-<p>The site’s landing figure is a transverse-field Ising quench on a periodic 4×4 and 6×6 lattice at <code>J = h = 1</code>, first-order Trotterized at <code>δt = 0.05</code> out to <code>t = 2</code>.
-The average X magnetization is Heisenberg-propagated through the 40-step circuit and read against <code>|+…+⟩</code> at every step, under <code>coeff(1e-10) &amp; topn(k)</code> with <code>k</code> of 50 000 (4×4) and 200 000 (6×6).
-The 6×6 case is <code>2³⁶</code> amplitudes, already out of reach for exact diagonalization; the quench runs in ~11–12 s on the reference host.</p>
-<p>The honest error bar there is not floating point but the <code>topn</code> tie rule: <code>topn</code> keeps or drops a magnitude-tied symmetry orbit whole, and an alternative tiebreak that always keeps exactly <code>k</code> terms moves the trajectory by up to 1.7% (4×4) and 0.37% (6×6).
-The larger lattice is the better-resolved one, because the observable averages over more sites and the truncation error self-averages.</p>
-<p>The walkthrough is a Rust one — it is the crate’s own worked example, embedded into its rustdoc — and is the hand-off point for Rust users rather than part of this book:
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>, with the source at <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/examples/ising_2d_quench.rs"><code>ising_2d_quench.rs</code></a>.
-For the same pattern in Python — one Trotter step at a time, an expectation value per step — see <a href="../manual/propagation/incremental.html">Incremental propagation</a>.</p>
 <h2 id="contents"><a class="header" href="#contents">Contents</a></h2>
 <ul>
 <li><a href="first-propagation.html">First propagation</a> — the site’s guided walkthrough: build an observable, build a circuit, propagate, validate.</li>

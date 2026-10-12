@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-187d70d7.js";
+            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -250,7 +250,7 @@ step 6  terms  4392  &lt;Z0&gt; +0.324827
 <p>The last point is identical to propagating the whole six-step circuit in one call — same 4 392 terms, same value, and the same row as the <code>1e-4</code> line of the <a href="validation.html#sweep-the-cutoff">cutoff sweep</a> on the previous page — because truncation runs after every layer either way.
 The series is therefore free: it is the same single pass, read out at every step boundary.</p>
 <p>Each <code>expectation</code> call is one masked pass over the surviving terms and does not consume the sum, so recording several observables per time point costs only those passes.
-The <a href="../../examples/index.html#the-2d-ising-quench">2D Ising quench</a> on the Examples landing page is the same pattern at 36 qubits and 40 steps, run against the crate’s Rust walkthrough rather than shown again in Python here.</p>
+The <a href="../../index.html#quenched-time-evolution">quenched time-evolution</a> on the landing page is the same pattern at 36 qubits.</p>
 <h2 id="the-heisenberg-ordering-trap"><a class="header" href="#the-heisenberg-ordering-trap">The Heisenberg-ordering trap</a></h2>
 <p>Under <code>direction="heisenberg"</code> each <code>propagate</code> call conjugates the <em>outside</em> of what is already there, so an incremental call <strong>prepends</strong> its circuit rather than appending it.
 Propagating <code>a</code> and then <code>b</code> gives what the single circuit <code>b + a</code> gives, not <code>a + b</code>.</p>

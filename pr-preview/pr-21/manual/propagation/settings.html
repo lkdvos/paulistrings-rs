@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-187d70d7.js";
+            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -253,7 +253,8 @@ The measured roofline behind those numbers is on <a href="../../examples/benchma
 <p>Every benchmark on this site is run single-threaded, <code>RAYON_NUM_THREADS=1</code> exported before the interpreter starts, so that term counts and wall times are comparable across pages (<a href="../../examples/benchmarks/index.html#comparability-rules">Comparability rules</a>).</p>
 <h2 id="bucket-sizing"><a class="header" href="#bucket-sizing">Bucket sizing</a></h2>
 <p><code>target_bucket_len</code> and <code>min_buckets</code> size the bucketed engine’s storage per layer; <code>PauliSum.num_buckets</code> reads back what was realized, which only ever grows.
-They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.</p>
+They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
+<code>target_bucket_len</code> must be at least 1 and <code>min_buckets</code> at least 16; anything smaller is a <code>ValueError</code>.</p>
 <h2 id="determinism"><a class="header" href="#determinism">Determinism</a></h2>
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
 Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.

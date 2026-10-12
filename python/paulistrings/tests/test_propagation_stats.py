@@ -1,6 +1,6 @@
 """``PauliSum.propagate_with_stats`` — per-layer term counts alongside the result.
 
-The Rust side is covered by ``crates/paulistrings/tests/term_trace.rs`` (which
+The Rust side is covered by ``crates/paulistrings/tests/layer_trace.rs`` (which
 pins the same hand-computed counts on the same circuit); this file checks the
 Python boundary: the tuple return, the ``PropagationStats`` getters, and that
 enabling the trace does not change the propagated sum.

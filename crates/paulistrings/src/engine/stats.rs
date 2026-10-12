@@ -169,6 +169,21 @@ impl PhaseStats {
     }
 }
 
+/// The partitioned engine's phase breakdown, drained by [`PartitionedSum::take_stats`](crate::PartitionedSum::take_stats).
+///
+/// The per-partition wall-clock fields are concurrent, not additive; `exchange_ns` absorbs the wait for a partner, so the load imbalance shows there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PartitionPhaseStats {
+    /// One breakdown per partition, in rank order.
+    pub per_partition: Vec<PhaseStats>,
+    /// Wall time of the scatter that built this sum.
+    pub scatter_ns: u64,
+    /// Wall time summed over [`PartitionedSum::gather`](crate::PartitionedSum::gather) calls.
+    pub gather_ns: u64,
+    /// Layers driven since the counters were last drained.
+    pub layers: u64,
+}
+
 /// One coset task's busy-time counters, held per worker slot.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CosetStats {

@@ -21,7 +21,9 @@ use crate::readout::product_state::ProductBasis;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 #[cfg(feature = "phase-timing")]
-use super::sum::{DriverLaps, PartitionPhaseStats};
+use super::sum::DriverLaps;
+#[cfg(feature = "phase-timing")]
+use crate::engine::stats::PartitionPhaseStats;
 
 /// Parts the gather ships per rank: bucket lengths, then the three columns.
 const GATHER_PARTS: usize = 4;

@@ -11,9 +11,9 @@ use crate::collectives::Collectives;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::distributed::{gather_share, group_bits};
 use crate::engine::partitioned::transport::Transport;
-#[cfg(feature = "phase-timing")]
-use crate::engine::partitioned::PartitionPhaseStats;
 use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy, ScatterRows};
+#[cfg(feature = "phase-timing")]
+use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::timed;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;

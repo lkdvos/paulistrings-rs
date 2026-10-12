@@ -15,12 +15,12 @@ use crate::circuit::Circuit;
 use crate::collectives::Collectives;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::driver::scatter_local;
-#[cfg(feature = "phase-timing")]
-use crate::engine::partitioned::PartitionPhaseStats;
 use crate::engine::partitioned::{
     PartitionConfig, PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement,
     ScatterOptions, ScatterRows,
 };
+#[cfg(feature = "phase-timing")]
+use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;

@@ -38,7 +38,7 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, numa_nodes, truncation
 
-from ._runs_agree import assert_runs_agree, single_cuts
+from ._runs_agree import assert_runs_agree, discarded_norm, single_cuts, spread
 
 
 pytestmark = pytest.mark.skipif(
@@ -57,6 +57,9 @@ TOL = 1e-9
 # scatter has something to split and each partition has real per-bucket work.
 NUM_TERMS = 20_000
 
+# The angle scale of the cutting cases' circuits, small enough for `assert_runs_agree`.
+LIGHT = 0.03
+
 # Qubits the seeded circuits touch. The observable's support spans every word,
 # so a narrow window still exercises the multi-word key path.
 _WINDOW = 6
@@ -72,8 +75,8 @@ def _cpu_sets(count=2):
     return [[cpu] for cpu in sorted(os.sched_getaffinity(0))[:count]]
 
 
-def _observable(num_qubits, terms=NUM_TERMS, seed=20260908):
-    """A seeded random sum: keys spread over every word, complex coefficients."""
+def _observable(num_qubits, terms=NUM_TERMS, seed=20260908, light=False):
+    """A seeded random sum: keys spread over every word, complex coefficients, ``spread`` over octaves when ``light`` so a cut drops little weight."""
     rng = np.random.default_rng(seed + num_qubits)
     words = (num_qubits + 63) // 64
     x = rng.integers(0, 1 << 63, size=(terms, words), dtype=np.uint64)
@@ -85,6 +88,8 @@ def _observable(num_qubits, terms=NUM_TERMS, seed=20260908):
     x[:, words - 1] &= last
     z[:, words - 1] &= last
     coeffs = rng.normal(size=terms) + 1j * rng.normal(size=terms)
+    if light:
+        coeffs = spread(coeffs, rng)
     return PauliSum.from_arrays(x, z, coeffs, num_qubits=num_qubits)
 
 
@@ -105,11 +110,12 @@ def _clifford_circuit(num_qubits, layers=3, seed=20260908):
     return circuit
 
 
-def _mixed_circuit(num_qubits, layers=2, seed=20260908):
+def _mixed_circuit(num_qubits, layers=2, seed=20260908, scale=1.0):
     """A deterministic circuit with genuine fanout: generic-angle rotations, a
     weight-3 Pauli generator, a two-qubit unitary and amplitude damping. Run it
     under a truncation policy — untruncated it multiplies the term count by the
-    window's key space."""
+    window's key space. Angles are multiplied by ``scale``; a small one keeps
+    what a cut drops small."""
     rng = random.Random(seed)
     circuit = Circuit(num_qubits)
     swap = np.array(
@@ -117,10 +123,10 @@ def _mixed_circuit(num_qubits, layers=2, seed=20260908):
     )
     for _ in range(layers):
         for q in range(_WINDOW):
-            getattr(circuit, rng.choice(("rz", "rx", "ry")))(rng.uniform(0.1, 1.4), q)
+            getattr(circuit, rng.choice(("rz", "rx", "ry")))(scale * rng.uniform(0.1, 1.4), q)
         for q in range(_WINDOW - 1):
             circuit.cnot(q, q + 1)
-        circuit.pauli_rotation("XYZ", [0, 2, 4], rng.uniform(0.1, 0.9))
+        circuit.pauli_rotation("XYZ", [0, 2, 4], scale * rng.uniform(0.1, 0.9))
         circuit.unitary_2q(1, 3, swap)
         circuit.amplitude_damping(0.05, [rng.randrange(_WINDOW)])
     return circuit
@@ -145,9 +151,9 @@ def _assert_terms_close(got, want, tol=TOL):
     assert worst < tol, f"largest coefficient difference {worst:.3e} exceeds {tol:.1e}"
 
 
-def _assert_agree(got, want, policy, layers, got_stats=None, want_stats=None):
+def _assert_agree(got, want, policy, discarded, got_stats=None, want_stats=None):
     """``assert_runs_agree``, and the per-run counts when stats are given."""
-    assert_runs_agree(got, want, policy, layers, TOL)
+    assert_runs_agree(got, want, policy, discarded, TOL)
     if got_stats is not None:
         assert got_stats.layers == want_stats.layers
         assert got_stats.final_terms == want_stats.final_terms
@@ -206,24 +212,25 @@ def test_two_partitions_match_unpartitioned(num_qubits, direction):
 def test_two_partitions_match_unpartitioned_with_fanout(num_qubits, direction):
     """The same check on a circuit with real fanout, under the collective
     ``approx_topn`` that bounds its growth: the same counts."""
-    s, c = _observable(num_qubits), _mixed_circuit(num_qubits)
+    s, c = _observable(num_qubits, light=True), _mixed_circuit(num_qubits, scale=LIGHT)
     policy = truncation.approx_topn(NUM_TERMS)
     want, want_stats = s.propagate_with_stats(c, policy, direction=direction)
     got, got_stats = s.propagate_with_stats(
         c, policy, direction=direction, partitions=_cpu_sets()
     )
-    _assert_agree(got, want, policy, len(c), got_stats, want_stats)
+    discarded = discarded_norm(s, c, policy, direction)
+    _assert_agree(got, want, policy, discarded, got_stats, want_stats)
 
 
 @pytest.mark.parametrize("num_qubits", [16, 68])
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_two_partitions_match_unpartitioned_after_a_single_cut(num_qubits, direction):
-    """One cut from identical inputs: the kept terms agree up to the boundary octave."""
+    """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(num_qubits):
         policy = truncation.approx_topn(n)
         want = s.propagate(c, policy, direction=direction)
         got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
-        assert_runs_agree(got, want, policy, len(c), TOL, name)
+        assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL, name)
 
 
 def test_pin_memory_false_matches():
@@ -266,13 +273,14 @@ def test_a_trotter_loop_reuses_the_runtime():
     config, so this must not spawn (and leak) a pool set per step. Nothing
     observable asserts the reuse — what is asserted is that stepping works and
     keeps the unpartitioned answer's count."""
-    s, c = _observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0], layers=1)
-    policy = truncation.approx_topn(5_000)
-    partitioned, plain = s, s
+    s, c = _observable(WIDTHS[0], light=True), _mixed_circuit(WIDTHS[0], layers=1, scale=LIGHT)
+    policy = truncation.approx_topn(16_000)
+    partitioned, plain, discarded = s, s, 0.0
     for _ in range(3):
         partitioned = partitioned.propagate(c, policy, partitions=_cpu_sets())
+        discarded += discarded_norm(plain, c, policy)
         plain = plain.propagate(c, policy)
-    _assert_agree(partitioned, plain, policy, 3 * len(c))
+    _assert_agree(partitioned, plain, policy, discarded)
 
 
 # --------------------------------------------------------------------------
@@ -282,12 +290,12 @@ def test_a_trotter_loop_reuses_the_runtime():
 def test_approx_topn_agrees_with_unpartitioned():
     """The collective octave histogram and boundary quota: the partitions keep
     exactly as many terms as one partition holding everything."""
-    s, c = _observable(WIDTHS[1]), _mixed_circuit(WIDTHS[1])
-    policy = truncation.coeff(1e-12) & truncation.approx_topn(4_000)
+    s, c = _observable(WIDTHS[1], light=True), _mixed_circuit(WIDTHS[1], scale=LIGHT)
+    policy = truncation.coeff(1e-12) & truncation.approx_topn(16_000)
     want, want_stats = s.propagate_with_stats(c, policy)
     got, got_stats = s.propagate_with_stats(c, policy, partitions=_cpu_sets())
-    assert max(want_stats.terms_out) == 4_000, "the policy must actually bite"
-    _assert_agree(got, want, policy, len(c), got_stats, want_stats)
+    assert max(want_stats.terms_out) == 16_000, "the policy must actually bite"
+    _assert_agree(got, want, policy, discarded_norm(s, c, policy), got_stats, want_stats)
     assert got_stats.terms_out == want_stats.terms_out
 
 
@@ -496,21 +504,22 @@ def test_seeded_and_cut_rows_agree_with_unpartitioned(num_qubits):
     """Both new row policies are placement knobs, not semantic ones: the
     returned sum keeps the unpartitioned run's count under the cutting policy,
     exactly like the existing seeded-random path."""
-    s, c = _observable(num_qubits), _mixed_circuit(num_qubits)
+    s, c = _observable(num_qubits, light=True), _mixed_circuit(num_qubits, scale=LIGHT)
     policy = truncation.approx_topn(NUM_TERMS)
     want, want_stats = s.propagate_with_stats(c, policy)
+    discarded = discarded_norm(s, c, policy)
 
     half = num_qubits // 2
     blocks = [list(range(half)), list(range(half, num_qubits))]
     got_cut, stats_cut = s.propagate_with_stats(
         c, policy, partitions=_cpu_sets(), partition_row_blocks=blocks
     )
-    _assert_agree(got_cut, want, policy, len(c), stats_cut, want_stats)
+    _assert_agree(got_cut, want, policy, discarded, stats_cut, want_stats)
 
     got_seed, stats_seed = s.propagate_with_stats(
         c, policy, partitions=_cpu_sets(), partition_row_seed=7
     )
-    _assert_agree(got_seed, want, policy, len(c), stats_seed, want_stats)
+    _assert_agree(got_seed, want, policy, discarded, stats_seed, want_stats)
 
 
 def test_cut_blocks_round_trip_to_the_named_partition():

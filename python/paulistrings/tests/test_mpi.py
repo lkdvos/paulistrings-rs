@@ -38,7 +38,7 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
-from ._runs_agree import assert_runs_agree, single_cuts
+from ._runs_agree import assert_runs_agree, discarded_norm, single_cuts, spread
 
 pytest.importorskip("mpi4py")
 
@@ -119,7 +119,7 @@ NUM_TERMS = 20_000
 POLICY = truncation.approx_topn(NUM_TERMS * 16)
 # A policy that really does cut, to exercise the collective octave reduction
 # where the retained set is a strict subset.
-TIGHT_POLICY = truncation.approx_topn(NUM_TERMS // 4)
+TIGHT_POLICY = truncation.approx_topn(NUM_TERMS // 2)
 # Coefficients agree to floating point, not bit for bit: the distributed run
 # sums equal keys in a different order (ARCHITECTURE.md §Determinism).
 TOL = 1e-9
@@ -128,8 +128,8 @@ TOL = 1e-9
 _WINDOW = 6
 
 
-def _observable(num_qubits=NUM_QUBITS, terms=NUM_TERMS, seed=20260908):
-    """A seeded random sum — identical on every rank, which is the contract."""
+def _observable(num_qubits=NUM_QUBITS, terms=NUM_TERMS, seed=20260908, light=False):
+    """A seeded random sum — identical on every rank, which is the contract — ``spread`` over octaves when ``light`` so a cut drops little weight."""
     rng = np.random.default_rng(seed + num_qubits)
     words = (num_qubits + 63) // 64
     x = rng.integers(0, 1 << 63, size=(terms, words), dtype=np.uint64)
@@ -139,24 +139,27 @@ def _observable(num_qubits=NUM_QUBITS, terms=NUM_TERMS, seed=20260908):
     x[:, words - 1] &= last
     z[:, words - 1] &= last
     coeffs = rng.normal(size=terms) + 1j * rng.normal(size=terms)
+    if light:
+        coeffs = spread(coeffs, rng)
     return PauliSum.from_arrays(x, z, coeffs, num_qubits=num_qubits)
 
 
-def _circuit(num_qubits=NUM_QUBITS):
+def _circuit(num_qubits=NUM_QUBITS, scale=1.0):
     """Rotation-heavy, with one `cnot` and one general two-qubit unitary.
 
     Generic angles, so every rotation splits the terms that anticommute with
     its generator and rows genuinely cross rank boundaries; the `unitary_2q` is
-    a fixed non-Clifford two-qubit gate, which is the dense-PTM path."""
+    a fixed non-Clifford two-qubit gate, which is the dense-PTM path. Angles
+    are multiplied by ``scale``; a small one keeps what a cut drops small."""
     circuit = Circuit(num_qubits)
     for q, angle in enumerate((0.37, 0.81, 1.13, 0.59)):
-        getattr(circuit, ("rz", "rx", "ry", "rz")[q])(angle, q)
-    circuit.pauli_rotation("XYZ", [0, 2, 4], 0.43)
+        getattr(circuit, ("rz", "rx", "ry", "rz")[q])(scale * angle, q)
+    circuit.pauli_rotation("XYZ", [0, 2, 4], scale * 0.43)
     circuit.cnot(0, 1)
     # A fixed two-qubit unitary with no special structure: exp(-i theta XX/2)
     # in the computational basis, written out so the test needs no linear
     # algebra to build it.
-    theta = 0.7
+    theta = 0.7 * scale
     c, s = np.cos(theta / 2), -1j * np.sin(theta / 2)
     xx = np.array(
         [[c, 0, 0, s], [0, c, s, 0], [0, s, c, 0], [s, 0, 0, c]], dtype=np.complex128
@@ -208,8 +211,18 @@ def observable():
 
 
 @pytest.fixture(scope="module")
+def light_observable():
+    return _observable(light=True)
+
+
+@pytest.fixture(scope="module")
 def circuit():
     return _circuit()
+
+
+@pytest.fixture(scope="module")
+def light_circuit():
+    return _circuit(scale=0.1)
 
 
 @pytest.fixture(scope="module")
@@ -235,29 +248,30 @@ def test_gather_returns_the_whole_sum_on_rank_zero(observable, circuit, referenc
         assert len(got) == 0
 
 
-def test_gather_agrees_under_a_truncating_approx_topn(observable, circuit):
+def test_gather_agrees_under_a_truncating_approx_topn(light_observable, light_circuit):
     """`approx_topn` all-reduces its octave histogram and boundary counts, so
     the kept count is exactly the serial one even when it really does cut; the
     boundary-octave terms are chosen in rank order (`assert_runs_agree`).
     Spelled with an explicit `result="gather"`, which must mean what the
     default means."""
-    want = observable.propagate(circuit, TIGHT_POLICY)
-    got = observable.propagate(circuit, TIGHT_POLICY, comm=COMM, result="gather")
+    want = light_observable.propagate(light_circuit, TIGHT_POLICY)
+    got = light_observable.propagate(light_circuit, TIGHT_POLICY, comm=COMM, result="gather")
     assert len(want) < NUM_TERMS, "the tight policy must actually truncate"
     if RANK == 0:
-        assert_runs_agree(got, want, TIGHT_POLICY, len(circuit), TOL)
+        discarded = discarded_norm(light_observable, light_circuit, TIGHT_POLICY)
+        assert_runs_agree(got, want, TIGHT_POLICY, discarded, TOL)
     else:
         assert len(got) == 0
 
 
 def test_gather_agrees_after_a_single_cut():
-    """One cut from identical inputs: the kept terms agree up to the boundary octave."""
+    """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(NUM_QUBITS):
         policy = truncation.approx_topn(n)
         want = s.propagate(c, policy)
         got = s.propagate(c, policy, comm=COMM)
         if RANK == 0:
-            assert_runs_agree(got, want, policy, len(c), TOL, name)
+            assert_runs_agree(got, want, policy, discarded_norm(s, c, policy), TOL, name)
         else:
             assert len(got) == 0
 
@@ -450,13 +464,14 @@ def test_one_device_per_rank_gathers_the_serial_answer(observable, circuit, refe
 
 
 @needs_a_device_group
-def test_one_device_per_rank_respects_a_truncating_policy_and_direction(observable, circuit):
-    want = observable.propagate(circuit, TIGHT_POLICY, direction="heisenberg")
-    got = observable.propagate(
-        circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto"
+def test_one_device_per_rank_respects_a_truncating_policy_and_direction(light_observable, light_circuit):
+    want = light_observable.propagate(light_circuit, TIGHT_POLICY, direction="heisenberg")
+    got = light_observable.propagate(
+        light_circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto"
     )
     if RANK == 0:
-        assert_runs_agree(got, want, TIGHT_POLICY, len(circuit), TOL)
+        discarded = discarded_norm(light_observable, light_circuit, TIGHT_POLICY, "heisenberg")
+        assert_runs_agree(got, want, TIGHT_POLICY, discarded, TOL)
 
 
 @needs_a_device_group

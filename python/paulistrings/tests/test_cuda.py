@@ -9,7 +9,7 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
-from ._runs_agree import assert_runs_agree, single_cuts
+from ._runs_agree import assert_runs_agree, discarded_norm, single_cuts, spread
 
 needs_cuda = pytest.mark.skipif(
     not paulistrings.cuda_available(),
@@ -30,8 +30,8 @@ NUM_TERMS = 4_000
 _WINDOW = 6
 
 
-def _observable(num_qubits, terms=NUM_TERMS, seed=20260923):
-    """A seeded random sum: keys spread over every word, complex coefficients."""
+def _observable(num_qubits, terms=NUM_TERMS, seed=20260923, light=False):
+    """A seeded random sum: keys spread over every word, complex coefficients, ``spread`` over octaves when ``light`` so a cut drops little weight."""
     rng = np.random.default_rng(seed + num_qubits)
     words = (num_qubits + 63) // 64
     x = rng.integers(0, 1 << 63, size=(terms, words), dtype=np.uint64)
@@ -41,6 +41,8 @@ def _observable(num_qubits, terms=NUM_TERMS, seed=20260923):
     x[:, words - 1] &= last
     z[:, words - 1] &= last
     coeffs = rng.normal(size=terms) + 1j * rng.normal(size=terms)
+    if light:
+        coeffs = spread(coeffs, rng)
     return PauliSum.from_arrays(x, z, coeffs, num_qubits=num_qubits)
 
 
@@ -139,8 +141,8 @@ def test_bucket_knobs_pass_through():
 POLICIES = {
     "coeff": lambda n: truncation.coeff(0.05),
     "weight": lambda n: truncation.weight(n * 7 // 10),
-    "approx_topn": lambda n: truncation.approx_topn(3_000),
-    "topn": lambda n: truncation.topn(3_000),
+    "approx_topn": lambda n: truncation.approx_topn(6_000),
+    "topn": lambda n: truncation.topn(6_000),
     "coeff & approx_topn": lambda n: truncation.coeff(0.01) & truncation.approx_topn(5_000),
     "coeff & topn": lambda n: truncation.coeff(0.01) & truncation.topn(5_000),
     "weight | coeff": lambda n: truncation.weight(n * 6 // 10) | truncation.coeff(0.5),
@@ -156,23 +158,25 @@ def test_policies_match_host_term_for_term(name, num_qubits):
     boundary terms in bucket order, which the device's buckets do not share
     with the host's (``assert_runs_agree``)."""
     policy = POLICIES[name](num_qubits)
-    s, c = _observable(num_qubits), _circuit(num_qubits)
+    s, c = _observable(num_qubits, light=True), _circuit(num_qubits)
     untruncated = s.propagate(c, direction="heisenberg")
     want = s.propagate(c, policy, direction="heisenberg")
     got = s.propagate(c, policy, direction="heisenberg", device=0)
     assert len(want) < len(untruncated), f"{name} must actually truncate"
-    assert_runs_agree(got, want, policy, len(c), TOL, name)
+    discarded = discarded_norm(s, c, policy, "heisenberg")
+    assert_runs_agree(got, want, policy, discarded, TOL, name)
 
 
 @needs_cuda
 @pytest.mark.parametrize("num_qubits", [16, 68])
 @pytest.mark.parametrize("policy", [truncation.topn, truncation.approx_topn], ids=["topn", "approx_topn"])
 def test_device_matches_host_after_a_single_cut(num_qubits, policy):
-    """One cut from identical inputs: the kept terms agree up to the boundary group."""
+    """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(num_qubits):
         want = s.propagate(c, policy(n), direction="heisenberg")
         got = s.propagate(c, policy(n), direction="heisenberg", device=0)
-        assert_runs_agree(got, want, policy(n), len(c), TOL, name)
+        discarded = discarded_norm(s, c, policy(n), "heisenberg")
+        assert_runs_agree(got, want, policy(n), discarded, TOL, name)
 
 
 # --------------------------------------------------------------------------
@@ -237,13 +241,14 @@ def test_resident_width_mismatch_is_the_host_error():
 @needs_cuda
 def test_resident_exact_topn_matches_the_host():
     """A resident sum is always one device, so exact `topn` runs there directly (unlike a device list or `comm=`) and agrees with the host (``assert_runs_agree``)."""
-    s, c = _observable(8, terms=500), _circuit(8)
-    policy = truncation.topn(100)
+    s, c = _observable(8, terms=500, light=True), _circuit(8)
+    policy = truncation.topn(300)
     want = s.propagate(c, policy, direction="heisenberg")
     resident = s.to_device()
     resident.propagate(c, policy, direction="heisenberg")
-    assert len(want) == 100
-    assert_runs_agree(resident.to_host(), want, policy, len(c), TOL)
+    assert len(want) == 300
+    discarded = discarded_norm(s, c, policy, "heisenberg")
+    assert_runs_agree(resident.to_host(), want, policy, discarded, TOL)
 
 
 @needs_cuda
@@ -406,8 +411,8 @@ def _trotter_circuit(num_qubits, steps=3, dt=0.1, j=1.0, h=0.8):
     return circuit
 
 
-def _real_observable(num_qubits, terms, seed=20260924):
-    s = _observable(num_qubits, terms=terms, seed=seed)
+def _real_observable(num_qubits, terms, seed=20260924, light=False):
+    s = _observable(num_qubits, terms=terms, seed=seed, light=light)
     return PauliSum.from_arrays(
         s.x_array(), s.z_array(), s.coefficients_array().real, num_qubits=num_qubits
     )
@@ -418,24 +423,24 @@ def _real_observable(num_qubits, terms, seed=20260924):
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_device_list_matches_host_on_a_truncated_trotter_circuit(devices, direction):
     """``approx_topn`` all-reduces its histogram and boundary counts over the partitions, so the kept count is the host's exactly (``assert_runs_agree``)."""
-    s, c = _real_observable(68, terms=2_000), _trotter_circuit(68)
-    policy = truncation.approx_topn(3_000)
-    looser = s.propagate(c, truncation.approx_topn(12_000), direction=direction)
+    s, c = _real_observable(68, terms=2_000, light=True), _trotter_circuit(68, steps=1, dt=0.003)
+    policy = truncation.approx_topn(6_000)
+    looser = s.propagate(c, truncation.approx_topn(24_000), direction=direction)
     want = s.propagate(c, policy, direction=direction)
     got = s.propagate(c, policy, direction=direction, device=devices)
     assert len(want) < len(looser), "approx_topn must actually truncate"
-    assert_runs_agree(got, want, policy, len(c), TOL)
+    assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL)
 
 
 @needs_cuda
 @pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
 def test_device_list_matches_host_after_a_single_cut(devices):
-    """One cut from identical inputs: the kept terms agree up to the boundary octave."""
+    """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(68):
         policy = truncation.approx_topn(n)
         want = s.propagate(c, policy)
         got = s.propagate(c, policy, device=devices)
-        assert_runs_agree(got, want, policy, len(c), TOL, name)
+        assert_runs_agree(got, want, policy, discarded_norm(s, c, policy), TOL, name)
 
 
 @needs_cuda

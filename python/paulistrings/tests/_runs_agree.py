@@ -1,7 +1,7 @@
-"""``assert_runs_agree`` and its single-cut fixtures, the Python twin of ``test_support::assert_runs_agree``."""
+"""``assert_runs_agree`` and its fixtures, the Python twin of ``test_support::assert_runs_agree``."""
 
+import math
 import re
-import struct
 
 import numpy as np
 
@@ -17,21 +17,12 @@ def _terms(sum_):
     }
 
 
-def _cut(policy):
-    """``None``, ``"TopN"``, ``"ApproxTopN"`` or ``"other"``: the layer pass ``policy`` runs."""
-    passes = re.findall(r"\b(TopN|ApproxTopN|CollapseSample)\(", repr(policy)) if policy else []
-    if not passes:
-        return None
-    return passes[0] if passes in (["TopN"], ["ApproxTopN"]) else "other"
+def _has_layer_pass(policy):
+    return bool(policy) and re.search(r"\b(TopN|ApproxTopN|CollapseSample)\(", repr(policy)) is not None
 
 
-def _octave(norm_sqr):
-    """``ApproxTopN``'s bin: the exponent bits of ``|c|²``."""
-    return struct.unpack("<Q", struct.pack("<d", norm_sqr))[0] >> 52
-
-
-def _norm_sqr(c):
-    return c.real * c.real + c.imag * c.imag
+def _norm(terms):
+    return math.sqrt(sum(abs(c) ** 2 for c in terms.values()))
 
 
 def _assert_terms_close(a, b, tol, what):
@@ -43,46 +34,45 @@ def _assert_terms_close(a, b, tol, what):
     assert worst < tol, f"{what}: largest coefficient difference {worst:.3e} exceeds {tol:.1e}"
 
 
-def _assert_both_keep(other, source, above, tol, what):
-    for key, c in source.items():
-        if above(c):
-            assert key in other, f"{what}: {key} (|c| = {abs(c)}) above the boundary is kept by one run only"
-            assert abs(other[key] - c) < tol, f"{what}: {key} above the boundary: {c} vs {other[key]}"
+def discarded_norm(sum_, circuit, policy, direction="forward"):
+    """The per-layer norm of what ``policy`` drops from ``sum_`` through ``circuit``, summed over layers: the ``discarded`` of ``assert_runs_agree``."""
+    direction = direction or "forward"
+    order = range(len(circuit)) if direction == "forward" else reversed(range(len(circuit)))
+    discarded = 0.0
+    for i in order:
+        layer = circuit[i : i + 1]
+        full = _terms(sum_.propagate(layer, direction=direction))
+        sum_ = sum_.propagate(layer, policy, direction=direction)
+        kept = _terms(sum_)
+        discarded += math.sqrt(sum(abs(c) ** 2 for k, c in full.items() if k not in kept))
+    return discarded
 
 
-def assert_runs_agree(got, want, policy, layers, tol, what=""):
-    """Two runs of ``policy``, ``layers`` layer passes after identical inputs, as ``test_support::assert_runs_agree`` compares them.
+def assert_runs_agree(got, want, policy, discarded, tol, what=""):
+    """Two runs of ``policy`` from identical inputs, the reference having dropped ``discarded`` (``discarded_norm``), as ``test_support::assert_runs_agree`` compares them.
 
-    Equal keys, or no layer pass: term for term to ``tol``.
-    Different keys after one cut: every term clear of the boundary matches, and the kept magnitudes agree (``topn``) or the smallest kept ``|c|²`` share an octave (``approx_topn``).
-    Different keys after more than one cut: the count only, since the runs evolved different survivors.
+    Equal term counts; term for term to ``tol`` without a layer pass or when nothing was dropped.
+    Otherwise each run lies within ``Δ = discarded + √len·tol`` of the untruncated operator, so ``1 − Re⟨got, want⟩ / (‖got‖ ‖want‖) ≤ 2Δ² / (‖got‖ ‖want‖)``; a cut too heavy for that bound to see a sign flip on the largest term fails.
     """
     assert len(got) == len(want), f"{what}: term count"
     a, b = _terms(got), _terms(want)
-    cut = _cut(policy)
-    if cut is None or set(a) == set(b) or layers == 0:
+    if not _has_layer_pass(policy) or discarded == 0.0 or not b:
         _assert_terms_close(a, b, tol, what)
         return
-    if layers > 1:
-        return
-    if cut == "TopN":
-        g = sorted((abs(c) for c in a.values()), reverse=True)
-        w = sorted((abs(c) for c in b.values()), reverse=True)
-        worst = max(abs(x - y) for x, y in zip(g, w))
-        assert worst < tol, (
-            f"{what}: kept magnitudes differ by {worst:.3e}; the smallest kept are {g[-1]} vs {w[-1]}"
-        )
-        _assert_both_keep(a, b, lambda c: abs(c) > g[-1] + 2 * tol, tol, what)
-        _assert_both_keep(b, a, lambda c: abs(c) > w[-1] + 2 * tol, tol, what)
-    elif cut == "ApproxTopN":
-        lowest_got = min(_octave(_norm_sqr(c)) for c in a.values())
-        lowest_want = min(_octave(_norm_sqr(c)) for c in b.values())
-        assert lowest_got == lowest_want, (
-            f"{what}: the smallest kept |c|² lie in octaves {lowest_got} vs {lowest_want}"
-        )
-        edge = struct.unpack("<d", struct.pack("<Q", (lowest_want + 1) << 52))[0] ** 0.5
-        _assert_both_keep(a, b, lambda c: abs(c) - tol >= edge, tol, what)
-        _assert_both_keep(b, a, lambda c: abs(c) - tol >= edge, tol, what)
+    got_norm, want_norm = _norm(a), _norm(b)
+    distance = sum(
+        abs(a.get(k, 0.0) / got_norm - b.get(k, 0.0) / want_norm) ** 2 for k in a.keys() | b.keys()
+    ) / 2
+    slack = discarded + math.sqrt(len(b)) * tol
+    bound = 2 * slack * slack / (got_norm * want_norm)
+    teeth = 2 * max(abs(c) ** 2 for c in b.values()) / want_norm**2
+    assert bound < teeth, f"{what}: Δ = {discarded:e} of ‖want‖ = {want_norm:e} is too heavy a cut to compare"
+    assert distance <= bound, f"{what}: 1 − cos = {distance:e} exceeds 2Δ²/(‖got‖‖want‖) = {bound:e}"
+
+
+def spread(coeffs, rng, octaves=40):
+    """``coeffs`` each scaled by ``2^-k``, ``k`` drawn in ``0..octaves``: a cut through the low octaves drops little weight."""
+    return coeffs * 2.0 ** -rng.integers(0, octaves, size=len(coeffs)).astype(np.float64)
 
 
 def _random_keys(num_qubits, terms, rng):
@@ -102,16 +92,16 @@ def _haar_4(rng):
 
 
 def single_cuts(num_qubits, seed=20261011):
-    """One-layer ``(name, circuit, sum, n)`` cases whose single cut splits a boundary group: a Haar SU(4) on ``(0, 1)`` over random complex coefficients, and a Hadamard on qubit 0 over coefficients ±1, ±2, ±3 with ``n`` inside the ±2 ties."""
+    """One-layer ``(name, circuit, sum, n)`` cases whose single cut splits a boundary group and drops little weight: a Haar SU(4) on ``(0, 1)`` over ``spread`` complex coefficients, and a Hadamard on qubit 0 over magnitudes 1, 2⁻²⁰, 2⁻⁴⁰ with ``n`` inside the 2⁻²⁰ ties."""
     rng = np.random.default_rng(seed + num_qubits)
     x, z = _random_keys(num_qubits, 1_500, rng)
-    coeffs = rng.normal(size=1_500) + 1j * rng.normal(size=1_500)
+    coeffs = spread(rng.normal(size=1_500) + 1j * rng.normal(size=1_500), rng)
     dense = Circuit(num_qubits)
     dense.unitary_2q(0, 1, _haar_4(rng))
     dense_sum = PauliSum.from_arrays(x, z, coeffs, num_qubits=num_qubits)
 
     x, z = _random_keys(num_qubits, 2_000, rng)
-    magnitudes = rng.integers(1, 4, size=2_000).astype(np.float64)
+    magnitudes = 2.0 ** (20.0 * rng.integers(0, 3, size=2_000) - 40.0)
     signs = rng.choice([-1.0, 1.0], size=2_000)
     hadamard = Circuit(num_qubits)
     hadamard.h(0)

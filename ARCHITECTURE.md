@@ -351,9 +351,8 @@ A partition whose layer fails before its exchange still makes the call, with one
 `gpu::local_device_for_comm` is collective over the ranks sharing a node (one `MPI_Comm_split_type` and one all-gather of each rank's CPU NUMA mask and each visible device's NUMA node from sysfs): distinct devices go to distinct ranks, preferring a device on a rank's own NUMA node, and falls back to the node-local rank modulo the device count when the ranks see different devices or the NUMA facts are unreadable.
 
 **In-process: a moved payload, shared-memory collectives.**
-`InProcessTransport` moves its payload through a `P × P` matrix of `mpsc` channels — there is nothing to encode and nothing to overlap — but the **collectives are shared atomics with a spin wait**: each rank numbers its own transport calls and publishes `(generation, kind)` plus its contribution into its own cache-line-padded slot, and a waiter spins, then yields, then sleeps briefly, with a dropped endpoint as the fail-fast signal.
-The partition threads are pinned and dedicated for the whole call, so a spin wait rather than a futex is what makes an unconditional per-layer collective affordable.
-The published `(generation, kind)` pair also makes a collective-order violation a panic naming both partitions, in every build, rather than a hang.
+`InProcessTransport` moves its payload through a `P × P` matrix of `mpsc` channels — there is nothing to encode and nothing to overlap — and its **collectives are a mutex-and-condvar rendezvous**: each rank numbers its own transport calls and records `(generation, kind)` plus its contribution under the group's lock, the last arriver combines the contributions in rank order and wakes the others, and a dropped endpoint marks itself departed and wakes them too, so a waiter fails fast instead of hanging.
+The recorded `(generation, kind)` pair also makes a collective-order violation a panic naming both partitions, in every build, rather than a hang.
 
 **`D = 1`: one rank per NUMA domain, no hybrid.**
 A distributed rank's runtime holds exactly one partition, and its placement comes from the launcher rather than from the engine: `mpirun --map-by ppr:1:numa --bind-to numa` or `srun --cpu-bind=ldoms` leaves the process an affinity mask of one domain, and `Placement::Auto` over that mask resolves to a single slot covering it.

@@ -905,3 +905,121 @@ fn a_partner_at_rank_32_that_panicked_is_reported_by_its_own_rank() {
         zero.barrier();
     });
 }
+
+/// Rank 0 is already waiting when rank 1 leaves without arriving.
+#[test]
+fn a_partner_that_departs_during_the_wait_fails_the_waiter_promptly() {
+    let mut group = InProcessTransport::group(2);
+    let one = group.pop().expect("rank 1");
+    let zero = group.pop().expect("rank 0");
+
+    let (elapsed, message) = std::thread::scope(|scope| {
+        scope.spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(one);
+        });
+        let started = Instant::now();
+        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zero.barrier()))
+            .expect_err("the waiter cannot complete a barrier alone");
+        (started.elapsed(), panic_message(payload.as_ref()))
+    });
+
+    assert!(message.contains("partition 1 terminated"), "{message}");
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the waiter took {elapsed:?}"
+    );
+}
+
+/// A partner that neither arrives nor leaves trips the backstop.
+#[test]
+fn a_silent_partner_trips_the_timeout() {
+    let mut group = InProcessTransport::group_with_timeout(2, Duration::from_millis(200));
+    let one = group.pop().expect("rank 1");
+    let zero = group.pop().expect("rank 0");
+
+    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        zero.allreduce_sum_u64(&mut [1])
+    }))
+    .expect_err("nobody else arrives");
+    let message = panic_message(payload.as_ref());
+    assert!(message.contains("no response in 200ms"), "{message}");
+    assert!(message.contains("that one at 0"), "{message}");
+    drop(one);
+}
+
+#[test]
+#[should_panic(expected = "contributed 2 values")]
+fn sums_of_different_lengths_are_rejected() {
+    let group = InProcessTransport::group(2);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = group
+            .into_iter()
+            .map(|transport| {
+                scope.spawn(move || {
+                    if transport.rank() == 0 {
+                        transport.allreduce_sum_u64(&mut [1]);
+                    } else {
+                        transport.allreduce_sum_u64(&mut [1, 2]);
+                    }
+                })
+            })
+            .collect();
+        let joined: Vec<_> = handles.into_iter().map(|h| h.join()).collect();
+        for result in joined {
+            if let Err(payload) = result {
+                std::panic::resume_unwind(payload);
+            }
+        }
+    });
+}
+
+/// An exchange against a collective at the same call panics on both sides, and one of them names both calls.
+#[test]
+fn an_exchange_against_a_collective_is_caught() {
+    let messages = on_every_rank_caught(2, |transport| {
+        if transport.rank() == 0 {
+            let _: Vec<Option<Vec<u64>>> = transport.exchange(vec![None, None], &mut Vec::new());
+        } else {
+            transport.barrier();
+        }
+    });
+    assert!(
+        messages.iter().all(Option::is_some),
+        "both ranks must panic: {messages:?}"
+    );
+    assert!(
+        messages
+            .iter()
+            .flatten()
+            .any(|m| m.contains("collective order mismatch")
+                && m.contains("exchange")
+                && m.contains("barrier")),
+        "{messages:?}",
+    );
+}
+
+/// [`on_every_rank`], with each rank's panic message (or `None`) in rank order.
+fn on_every_rank_caught(
+    size: u32,
+    f: impl Fn(&InProcessTransport) + Send + Sync,
+) -> Vec<Option<String>> {
+    let group = InProcessTransport::group(size);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = group
+            .into_iter()
+            .map(|transport| {
+                scope.spawn(move || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || f(&transport)))
+                        .err()
+                        .map(|payload| panic_message(payload.as_ref()))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("rank thread"))
+            .collect()
+    })
+}

@@ -14,10 +14,11 @@ use super::transport::Transport;
 use crate::circuit::Circuit;
 use crate::engine::timing::{tally, timed};
 use crate::engine::{Direction, PropagateOptions};
+use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
-use crate::readout::echo::{qubit_mask, RotationAxis};
-use crate::readout::product_state::ProductState;
+use crate::readout::echo::RotationAxis;
+use crate::readout::product_state::ProductBasis;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 #[cfg(feature = "phase-timing")]
@@ -428,9 +429,9 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         &self.local.sum
     }
 
-    /// This rank's contribution to `⟨ψ|O|ψ⟩` in a uniform single-qubit product state; not collective, so sum the ranks' answers.
-    pub fn local_expectation_product_state(&self, state: ProductState) -> Complex64 {
-        self.local.sum.expectation_product_state(state)
+    /// This rank's contribution to `⟨ψ|O|ψ⟩` in the product state `basis`; not collective, so sum the ranks' answers.
+    pub fn local_expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
+        self.local.sum.expectation_product(basis)
     }
 
     /// [`PauliSum::anticommute_histogram`] of the whole sum. **Collective.**

@@ -1,20 +1,8 @@
-//! Product-state read-outs: [`ProductState`], [`ProductBasis`] and the [`PauliSum`] expectation values in them.
+//! Product-state read-outs: [`ProductBasis`] and the [`PauliSum`] expectation value in one.
 
 use num_complex::Complex64;
-use rayon::prelude::*;
 
 use crate::pauli_sum::PauliSum;
-
-/// A uniform single-qubit product state, for [`PauliSum::expectation_product_state`]; [`ProductBasis`] is the per-qubit generalization.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProductState {
-    /// `|+…+⟩`, the `+1` eigenstate of `X` on every qubit.
-    XPlus,
-    /// `|+i…+i⟩`, the `+1` eigenstate of `Y` on every qubit.
-    YPlus,
-    /// `|0…0⟩`, the `+1` eigenstate of `Z` on every qubit.
-    ZPlus,
-}
 
 /// One of the three single-qubit Pauli axes: the axis a [`ProductBasis`] qubit is an eigenstate of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,21 +33,16 @@ impl PauliAxis {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductBasis<const W: usize> {
     /// `x`-bit of each qubit's axis Pauli.
-    pub axis_x: [u64; W],
+    axis_x: [u64; W],
     /// `z`-bit of each qubit's axis Pauli.
-    pub axis_z: [u64; W],
+    axis_z: [u64; W],
     /// Sign bit per qubit: `1` selects the `-1` eigenstate.
-    pub negative: [u64; W],
+    negative: [u64; W],
 }
 
 impl<const W: usize> ProductBasis<W> {
-    /// The uniform basis of a [`ProductState`]: the same axis, sign `+1`, on every qubit.
-    pub fn uniform(state: ProductState) -> Self {
-        let axis = match state {
-            ProductState::XPlus => PauliAxis::X,
-            ProductState::YPlus => PauliAxis::Y,
-            ProductState::ZPlus => PauliAxis::Z,
-        };
+    /// The `+1` eigenstate of `axis` on every qubit: `|+…+⟩`, `|+i…+i⟩` or `|0…0⟩`.
+    pub fn uniform(axis: PauliAxis) -> Self {
         let (axis_x, axis_z) = axis.bits();
         let all = |b: bool| if b { [!0u64; W] } else { [0u64; W] };
         Self {
@@ -108,41 +91,23 @@ impl<const W: usize> ProductBasis<W> {
 }
 
 impl<const W: usize> PauliSum<W> {
-    /// Expectation value `⟨ψ|O|ψ⟩` in a uniform single-qubit product state; complex since `O` need not be Hermitian.
-    pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
-        self.expectation_product_basis(&ProductBasis::<W>::uniform(state))
-    }
-
-    /// Expectation value `⟨ψ|O|ψ⟩` in a single-qubit product state with a per-qubit axis and sign; complex since `O` need not be Hermitian.
-    pub fn expectation_product_basis(&self, basis: &ProductBasis<W>) -> Complex64 {
-        self.buckets()
-            .par_iter()
-            .map(|columns| {
-                let mut partial = Complex64::new(0.0, 0.0);
-                for i in 0..columns.len() {
-                    // An equality on both key halves, not a subset test: an X factor on a Y-axis qubit must not match.
-                    let mut mismatch = 0u64;
-                    let mut sign_bits = 0u32;
-                    for w in 0..W {
-                        let x = columns.x[i][w];
-                        let z = columns.z[i][w];
-                        let support = x | z;
-                        mismatch |=
-                            (x ^ (support & basis.axis_x[w])) | (z ^ (support & basis.axis_z[w]));
-                        sign_bits += (support & basis.negative[w]).count_ones();
-                    }
-                    if mismatch == 0 {
-                        if sign_bits & 1 == 0 {
-                            partial += columns.coeff[i];
-                        } else {
-                            partial -= columns.coeff[i];
-                        }
-                    }
-                }
-                partial
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
+    /// Expectation value `⟨ψ|O|ψ⟩` in the product state `basis`; complex since `O` need not be Hermitian.
+    pub fn expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
+        self.sum_over_terms(|x, z, coeff| {
+            // An equality on both key halves, not a subset test: an X factor on a Y-axis qubit must not match.
+            let mut mismatch = 0u64;
+            let mut sign_bits = 0u32;
+            for w in 0..W {
+                let support = x[w] | z[w];
+                mismatch |=
+                    (x[w] ^ (support & basis.axis_x[w])) | (z[w] ^ (support & basis.axis_z[w]));
+                sign_bits += (support & basis.negative[w]).count_ones();
+            }
+            match (mismatch == 0, sign_bits & 1 == 0) {
+                (false, _) => Complex64::new(0.0, 0.0),
+                (true, true) => coeff,
+                (true, false) => -coeff,
+            }
+        })
     }
 }

@@ -105,3 +105,17 @@ mod props {
         }
     }
 }
+
+#[test]
+fn qubit_mask_packs_across_words() {
+    assert_eq!(
+        qubit_mask::<2>([0, 63, 64, 69], 70),
+        [1 | 1 << 63, 1 | 1 << 5]
+    );
+}
+
+#[test]
+#[should_panic(expected = "qubit 70 is outside the 70-qubit register")]
+fn qubit_mask_rejects_a_qubit_outside_the_register() {
+    qubit_mask::<2>([70], 70);
+}

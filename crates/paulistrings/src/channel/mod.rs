@@ -10,6 +10,7 @@ pub use rotation::PauliRotation;
 
 pub(crate) use prepared::Prepare;
 
+use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::Gf2Hash;
 use num_complex::Complex64;
 use prepared::{PrepareToken, Prepared};
@@ -57,13 +58,12 @@ impl<const W: usize> OutputBuffer<W> {
 }
 
 /// Pack qubit indices into a [`Channel::support`] bitmask; order and duplicates do not matter.
+///
+/// # Panics
+///
+/// If a qubit is not below `64 · W`.
 pub fn support_mask<const W: usize>(qubits: &[usize]) -> [u64; W] {
-    let mut mask = [0u64; W];
-    for &q in qubits {
-        debug_assert!(q < 64 * W, "qubit {q} out of range for W={W}");
-        mask[q / 64] |= 1u64 << (q % 64);
-    }
-    mask
+    qubit_mask(qubits.iter().copied(), 64 * W)
 }
 
 /// `(word, bit, 1 << bit)` of qubit `q`.

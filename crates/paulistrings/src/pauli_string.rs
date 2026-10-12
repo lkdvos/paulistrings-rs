@@ -155,6 +155,22 @@ pub(crate) fn word_mask(num_qubits: usize, word: usize) -> u64 {
     }
 }
 
+/// The bit mask of `qubits`, each asserted below `num_qubits`.
+pub(crate) fn qubit_mask<const W: usize>(
+    qubits: impl IntoIterator<Item = usize>,
+    num_qubits: usize,
+) -> [u64; W] {
+    let mut mask = [0u64; W];
+    for q in qubits {
+        assert!(
+            q < num_qubits,
+            "qubit {q} is outside the {num_qubits}-qubit register"
+        );
+        mask[q / 64] |= 1u64 << (q % 64);
+    }
+    mask
+}
+
 /// `0` when the bracket vanishes, `2·i^k` otherwise.
 fn scaled_phase(phase: Phase, vanishes: bool) -> Complex64 {
     if vanishes {

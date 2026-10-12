@@ -19,7 +19,7 @@ use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
 use crate::readout::echo::RotationAxis;
-use crate::readout::product_state::ProductState;
+use crate::readout::product_state::ProductBasis;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 /// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`], held across calls so a driver scatters and gathers once.
@@ -335,11 +335,11 @@ impl<const W: usize> PartitionedSum<W> {
         &self.parts[r].sum
     }
 
-    /// `⟨ψ|O|ψ⟩` in a uniform single-qubit product state, the partitions' own values added in rank order.
-    pub fn expectation_product_state(&self, state: ProductState) -> Complex64 {
+    /// `⟨ψ|O|ψ⟩` in the product state `basis`, the partitions' own values added in rank order.
+    pub fn expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
         self.parts
             .iter()
-            .map(|part| part.sum.expectation_product_state(state))
+            .map(|part| part.sum.expectation_product(basis))
             .sum()
     }
 

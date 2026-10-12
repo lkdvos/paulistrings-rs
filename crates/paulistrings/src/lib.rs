@@ -43,8 +43,7 @@ pub use pauli_sum::accumulator::BuildAccumulator;
 pub use pauli_sum::{Gf2Hash, PartitionRows, PauliSum, P_MAX_BITS};
 pub use phase::Phase;
 pub use readout::{
-    diagonal_echo, PauliAxis, ProductBasis, ProductState, RotationAxis, StabilizerError,
-    StabilizerState,
+    diagonal_echo, PauliAxis, ProductBasis, RotationAxis, StabilizerError, StabilizerState,
 };
 pub use truncation::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, CollapseSample, Or, TopN,

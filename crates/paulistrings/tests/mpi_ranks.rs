@@ -934,7 +934,7 @@ fn run_host_cases(r: &mut Runner) {
 
     // ---- expectation values, read out without a gather --------------------
     r.case("local expectations sum to the whole sum's", |r| {
-        use paulistrings::ProductState;
+        use paulistrings::{PauliAxis, ProductBasis};
 
         let circuit = cnot_ring::<1>(10);
         let sum = rand_sum_real::<1>(500, 10, 0xA050);
@@ -944,7 +944,7 @@ fn run_host_cases(r: &mut Runner) {
             DistributedSum::scatter(sum.clone(), transport, &config).expect("topology resolves");
         split.propagate(&circuit, &KeepAll, Direction::Forward);
 
-        let mine = split.local_expectation_product_state(ProductState::ZPlus);
+        let mine = split.local_expectation_product(&ProductBasis::uniform(PauliAxis::Z));
         // The scalar goes through the communicator directly — the pattern a
         // caller uses for its own observables.
         let send = [mine.re, mine.im];
@@ -954,7 +954,7 @@ fn run_host_cases(r: &mut Runner) {
         let got = Complex64::new(total[0], total[1]);
 
         let oracle = propagate(&circuit, sum, &KeepAll, Direction::Forward);
-        let want = oracle.expectation_product_state(ProductState::ZPlus);
+        let want = oracle.expectation_product(&ProductBasis::uniform(PauliAxis::Z));
         assert!(
             (got - want).norm() < 1e-9,
             "rank {}: expectation {got} vs {want}",

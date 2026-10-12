@@ -4,6 +4,7 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::{PartitionRows, PauliSum};
 
 /// The single-qubit generator `G_q` of an echo perturbation `V = ⊗_{q ∈ sites} exp(-iδ G_q)`.
@@ -54,22 +55,6 @@ pub fn diagonal_echo(hist: &[f64], delta: f64) -> f64 {
         weight *= cos;
     }
     numerator / hist.iter().sum::<f64>()
-}
-
-/// The bit mask of `qubits`, each asserted below `num_qubits`.
-pub(crate) fn qubit_mask<const W: usize>(
-    qubits: impl IntoIterator<Item = usize>,
-    num_qubits: usize,
-) -> [u64; W] {
-    let mut mask = [0u64; W];
-    for q in qubits {
-        assert!(
-            q < num_qubits,
-            "qubit {q} is outside the {num_qubits}-qubit register"
-        );
-        mask[q / 64] |= 1u64 << (q % 64);
-    }
-    mask
 }
 
 /// [`qubit_mask`] of `sites`, which must also be distinct.

@@ -3,11 +3,11 @@ fn bucketed_expectation_agrees_with_the_flat_version() {
     // Not bitwise: partials are combined in bucket order.
     for &weight in &[2usize, 4] {
         let sum = rand_low_weight_sum::<2>(20_000, 100, weight, 0xE1 + weight as u64);
-        let want = sum.expectation_product_state(ProductState::XPlus);
+        let want = sum.expectation_product(&ProductBasis::uniform(PauliAxis::X));
         for bits in [0u8, 3, 7, 11] {
             let h = Gf2Hash::<2>::new(100, bits, 0xE2);
             let b = sum.clone().with_hash(h);
-            let got = b.expectation_product_state(ProductState::XPlus);
+            let got = b.expectation_product(&ProductBasis::uniform(PauliAxis::X));
             assert!(
                 (got - want).norm() < 1e-9,
                 "weight={weight} bits={bits}: {got} vs {want}",
@@ -21,13 +21,9 @@ fn bucketed_expectation_covers_all_three_states() {
     let sum = rand_sum::<1>(5000, 20, 0xE3);
     let h = Gf2Hash::<1>::new(20, 5, 0xE4);
     let b = sum.clone().with_hash(h);
-    for state in [
-        ProductState::XPlus,
-        ProductState::YPlus,
-        ProductState::ZPlus,
-    ] {
-        let got = b.expectation_product_state(state);
-        let want = sum.expectation_product_state(state);
+    for state in [PauliAxis::X, PauliAxis::Y, PauliAxis::Z] {
+        let got = b.expectation_product(&ProductBasis::uniform(state));
+        let want = sum.expectation_product(&ProductBasis::uniform(state));
         assert!((got - want).norm() < 1e-9, "{state:?}: {got} vs {want}");
     }
 }
@@ -37,7 +33,7 @@ fn bucketed_expectation_of_an_empty_sum_is_zero() {
     let h = Gf2Hash::<1>::new(8, 3, 0xE5);
     let b = PauliSum::<1>::empty_with_hash(8, h);
     assert!(
-        b.expectation_product_state(ProductState::XPlus)
+        b.expectation_product(&ProductBasis::uniform(PauliAxis::X))
             .norm()
             .abs()
             < 1e-15
@@ -48,7 +44,7 @@ use super::*;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PartitionRows;
-use crate::readout::{PauliAxis, ProductBasis, ProductState};
+use crate::readout::{PauliAxis, ProductBasis};
 use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
 /// Low-weight keys, where a badly chosen hash would collapse into one bucket.
@@ -1080,15 +1076,27 @@ fn expectation_of_single_paulis_in_each_product_state() {
     for (pp, ex, ey, ez) in cases {
         let s = b10_build::<1>(8, &[(pp, Complex64::new(1.0, 0.0))]);
         assert!(
-            (s.expectation_product_state(ProductState::XPlus).re - ex).abs() < 1e-12,
+            (s.expectation_product(&ProductBasis::uniform(PauliAxis::X))
+                .re
+                - ex)
+                .abs()
+                < 1e-12,
             "XPlus for {pp:?}",
         );
         assert!(
-            (s.expectation_product_state(ProductState::YPlus).re - ey).abs() < 1e-12,
+            (s.expectation_product(&ProductBasis::uniform(PauliAxis::Y))
+                .re
+                - ey)
+                .abs()
+                < 1e-12,
             "YPlus for {pp:?}",
         );
         assert!(
-            (s.expectation_product_state(ProductState::ZPlus).re - ez).abs() < 1e-12,
+            (s.expectation_product(&ProductBasis::uniform(PauliAxis::Z))
+                .re
+                - ez)
+                .abs()
+                < 1e-12,
             "ZPlus for {pp:?}",
         );
     }
@@ -1111,9 +1119,26 @@ fn expectation_of_multi_qubit_products() {
             (yy, Complex64::new(100.0, 0.0)),
         ],
     );
-    assert!((s.expectation_product_state(ProductState::XPlus).re - 1.0).abs() < 1e-12);
-    assert!((s.expectation_product_state(ProductState::YPlus).re - 100.0).abs() < 1e-12);
-    assert!(s.expectation_product_state(ProductState::ZPlus).re.abs() < 1e-12);
+    assert!(
+        (s.expectation_product(&ProductBasis::uniform(PauliAxis::X))
+            .re
+            - 1.0)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (s.expectation_product(&ProductBasis::uniform(PauliAxis::Y))
+            .re
+            - 100.0)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        s.expectation_product(&ProductBasis::uniform(PauliAxis::Z))
+            .re
+            .abs()
+            < 1e-12
+    );
 }
 
 #[test]
@@ -1125,7 +1150,7 @@ fn expectation_is_linear_and_keeps_the_imaginary_part() {
             (PauliString::<1>::x(1), Complex64::new(3.0, -5.0)),
         ],
     );
-    let e = s.expectation_product_state(ProductState::XPlus);
+    let e = s.expectation_product(&ProductBasis::uniform(PauliAxis::X));
     assert!((e - Complex64::new(4.0, -3.0)).norm() < 1e-12);
 }
 
@@ -1138,8 +1163,20 @@ fn expectation_across_a_word_boundary_w2() {
             (PauliString::<2>::z(70), Complex64::new(9.0, 0.0)),
         ],
     );
-    assert!((s.expectation_product_state(ProductState::XPlus).re - 2.0).abs() < 1e-12);
-    assert!((s.expectation_product_state(ProductState::ZPlus).re - 9.0).abs() < 1e-12);
+    assert!(
+        (s.expectation_product(&ProductBasis::uniform(PauliAxis::X))
+            .re
+            - 2.0)
+            .abs()
+            < 1e-12
+    );
+    assert!(
+        (s.expectation_product(&ProductBasis::uniform(PauliAxis::Z))
+            .re
+            - 9.0)
+            .abs()
+            < 1e-12
+    );
 }
 
 /// The `|+…+⟩` expectation against a hand-rolled sum over Z-free terms.
@@ -1170,7 +1207,9 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
             want += sum.bucket(0).2[i].re;
         }
     }
-    let got = sum.expectation_product_state(ProductState::XPlus).re;
+    let got = sum
+        .expectation_product(&ProductBasis::uniform(PauliAxis::X))
+        .re;
     assert!((got - want).abs() < 1e-12, "{got} vs {want}");
 }
 
@@ -1222,7 +1261,7 @@ fn naive_labelled_expectation<const W: usize>(sum: &PauliSum<W>, labels: &str) -
 }
 
 fn expect_close<const W: usize>(sum: &PauliSum<W>, labels: &str, want: f64) {
-    let got = sum.expectation_product_basis(&basis_from_labels::<W>(labels));
+    let got = sum.expectation_product(&basis_from_labels::<W>(labels));
     assert!(
         (got - Complex64::new(want, 0.0)).norm() < 1e-12,
         "state {labels:?}: got {got}, want {want}",
@@ -1243,7 +1282,7 @@ fn single_qubit_labels_against_every_pauli<const W: usize>() {
         let labels = label.to_string();
         for (pauli, want) in [("I", ei), ("X", ex), ("Y", ey), ("Z", ez)] {
             let s = PauliSum::<W>::from_strings(&[(pauli, Complex64::new(1.0, 0.0))]);
-            let got = s.expectation_product_basis(&basis_from_labels::<W>(&labels));
+            let got = s.expectation_product(&basis_from_labels::<W>(&labels));
             assert!(
                 (got - Complex64::new(want, 0.0)).norm() < 1e-12,
                 "⟨{label}|{pauli}|{label}⟩ = {got}, want {want} (W={W})",
@@ -1321,7 +1360,7 @@ fn an_off_axis_pauli_never_matches<const W: usize>() {
     ];
     for (label, pauli) in off_axis {
         let s = PauliSum::<W>::from_strings(&[(pauli, Complex64::new(3.0, -4.0))]);
-        let got = s.expectation_product_basis(&basis_from_labels::<W>(&label.to_string()));
+        let got = s.expectation_product(&basis_from_labels::<W>(&label.to_string()));
         assert!(
             got.norm() < 1e-12,
             "⟨{label}|{pauli}|{label}⟩ = {got}, want 0 (W={W})",
@@ -1350,7 +1389,7 @@ fn labelled_expectation_is_linear_and_keeps_the_imaginary_part() {
         ("Z", Complex64::new(1.0, 2.0)),
         ("I", Complex64::new(3.0, -5.0)),
     ]);
-    let got = s.expectation_product_basis(&basis_from_labels::<1>("1"));
+    let got = s.expectation_product(&basis_from_labels::<1>("1"));
     assert!((got - Complex64::new(2.0, -7.0)).norm() < 1e-12, "{got}");
 }
 
@@ -1367,7 +1406,7 @@ fn labels_across_the_word_boundary_are_independent_w2() {
     ];
     for (p, want) in cases {
         let s = b10_build::<2>(128, &[(p, Complex64::new(1.0, 0.0))]);
-        let got = s.expectation_product_basis(&basis);
+        let got = s.expectation_product(&basis);
         assert!(
             (got - Complex64::new(want, 0.0)).norm() < 1e-12,
             "{p:?}: got {got}, want {want}",
@@ -1377,7 +1416,7 @@ fn labels_across_the_word_boundary_are_independent_w2() {
     let mut z0z64 = PauliString::<2>::z(0);
     z0z64.mul_assign(&PauliString::<2>::z(64));
     let s = b10_build::<2>(128, &[(z0z64, Complex64::new(1.0, 0.0))]);
-    let got = s.expectation_product_basis(&basis);
+    let got = s.expectation_product(&basis);
     assert!((got - Complex64::new(-1.0, 0.0)).norm() < 1e-12, "{got}");
 }
 
@@ -1385,7 +1424,7 @@ fn labels_across_the_word_boundary_are_independent_w2() {
 fn labelled_expectation_of_an_empty_sum_is_zero() {
     let h = Gf2Hash::<1>::new(8, 3, 0xE6);
     let b = PauliSum::<1>::empty_with_hash(8, h);
-    let got = b.expectation_product_basis(&basis_from_labels::<1>("01+-rl01"));
+    let got = b.expectation_product(&basis_from_labels::<1>("01+-rl01"));
     assert!(got.norm() < 1e-15, "{got}");
 }
 
@@ -1393,13 +1432,13 @@ fn uniform_states_agree_with_their_label_spellings<const W: usize>() {
     let num_qubits = 50 * W;
     let sum = rand_sum::<W>(4000, num_qubits, 0xA40 + W as u64);
     for (state, label) in [
-        (ProductState::XPlus, '+'),
-        (ProductState::YPlus, 'r'),
-        (ProductState::ZPlus, '0'),
+        (PauliAxis::X, '+'),
+        (PauliAxis::Y, 'r'),
+        (PauliAxis::Z, '0'),
     ] {
-        let want = sum.expectation_product_state(state);
+        let want = sum.expectation_product(&ProductBasis::uniform(state));
         let labels: String = std::iter::repeat_n(label, num_qubits).collect();
-        let got = sum.expectation_product_basis(&basis_from_labels::<W>(&labels));
+        let got = sum.expectation_product(&basis_from_labels::<W>(&labels));
         assert!(
             (got - want).norm() < 1e-12,
             "{state:?} vs {label:?}: {got} vs {want} (W={W})",
@@ -1428,7 +1467,7 @@ fn labelled_expectation_agrees_with_the_naive_reference<const W: usize>() {
     for &weight in &[1usize, 2, 3] {
         let sum = low_weight_sum::<W>(3000, num_qubits, weight, 0xB50 + weight as u64);
         let want = naive_labelled_expectation(&sum, &labels);
-        let got = sum.expectation_product_basis(&basis_from_labels::<W>(&labels));
+        let got = sum.expectation_product(&basis_from_labels::<W>(&labels));
         assert!(
             (got - want).norm() < 1e-9,
             "W={W} weight={weight}: {got} vs {want}",
@@ -1456,11 +1495,11 @@ fn bucketed_labelled_expectation_agrees_across_partitions() {
         .collect();
     let basis = basis_from_labels::<2>(&labels);
     let sum = low_weight_sum::<2>(20_000, 100, 3, 0xB61);
-    let want = sum.expectation_product_basis(&basis);
+    let want = sum.expectation_product(&basis);
     for bits in [0u8, 3, 7, 11] {
         let h = Gf2Hash::<2>::new(100, bits, 0xB62);
         let b = sum.clone().with_hash(h);
-        let got = b.expectation_product_basis(&basis);
+        let got = b.expectation_product(&basis);
         assert!((got - want).norm() < 1e-9, "bits={bits}: {got} vs {want}");
     }
 }

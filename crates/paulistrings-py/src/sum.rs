@@ -13,8 +13,8 @@ use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, LayerTrace, PartitionConfig,
     PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
-    PauliSum as CorePauliSum, Placement, ProductBasis, ProductState, PropagateOptions,
-    RotationAxis, ScatterOptions, ScatterRows, StabilizerState, TopologyError,
+    PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, RotationAxis,
+    ScatterOptions, ScatterRows, StabilizerState, TopologyError,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -51,16 +51,16 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.num_buckets())
     }
 
-    /// Uniform product state: the same `+1` eigenstate on every qubit.
-    pub fn expectation_uniform(&self, state: ProductState) -> Complex64 {
-        for_each_width!(self, |s| s.expectation_product_state(state))
+    /// Uniform product state: the `+1` eigenstate of `axis` on every qubit.
+    pub fn expectation_uniform(&self, axis: PauliAxis) -> Complex64 {
+        for_each_width!(self, |s| s
+            .expectation_product(&ProductBasis::uniform(axis)))
     }
 
     /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. Caller already checked one entry per qubit, so the resulting masks have no bit set past `num_qubits`.
     pub fn expectation_labels(&self, axes: &[(PauliAxis, bool)]) -> Complex64 {
-        for_each_width!(self, |s| s.expectation_product_basis(
-            &ProductBasis::from_axes(axes.iter().copied())
-        ))
+        for_each_width!(self, |s| s
+            .expectation_product(&ProductBasis::from_axes(axes.iter().copied())))
     }
 
     /// Stabilizer state given by one signed Pauli generator per qubit. Parsed at the active width and validated by the core, so a malformed string or an invalid generator set surfaces as a `ValueError`.
@@ -2066,9 +2066,9 @@ impl PauliSum {
         // meaning |+...+> at any qubit count. They cannot collide with a label
         // string: `x`, `y` and `z` are not in the per-qubit alphabet.
         let uniform = match state.to_ascii_lowercase().as_str() {
-            "x+" => Some(ProductState::XPlus),
-            "y+" => Some(ProductState::YPlus),
-            "z+" => Some(ProductState::ZPlus),
+            "x+" => Some(PauliAxis::X),
+            "y+" => Some(PauliAxis::Y),
+            "z+" => Some(PauliAxis::Z),
             _ => None,
         };
         if let Some(st) = uniform {

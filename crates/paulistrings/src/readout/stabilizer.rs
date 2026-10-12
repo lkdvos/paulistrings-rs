@@ -3,13 +3,12 @@
 use std::fmt;
 
 use num_complex::Complex64;
-use rayon::prelude::*;
 
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::PauliSum;
 use crate::phase::Phase;
 
-/// Why a set of generators does not define a stabilizer state; [`Self::InternalPhase`] is an invariant violation, the rest are input errors.
+/// Why a set of generators does not define a stabilizer state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StabilizerError {
     /// The generator count is not `num_qubits`.
@@ -38,11 +37,6 @@ pub enum StabilizerError {
         /// Index of a generator that reduced to the identity key.
         generator: usize,
     },
-    /// A product of two commuting Hermitian group elements came out imaginary; unreachable once commutation is checked.
-    InternalPhase {
-        /// Index of the generator whose row carried the imaginary phase.
-        generator: usize,
-    },
 }
 
 impl fmt::Display for StabilizerError {
@@ -69,11 +63,6 @@ impl fmt::Display for StabilizerError {
                 f,
                 "generator {generator} is a product of the others (or the generators imply \
                  -I ∈ S); stabilizer generators must be independent over GF(2)",
-            ),
-            Self::InternalPhase { generator } => write!(
-                f,
-                "internal: row {generator} of the stabilizer tableau acquired an imaginary \
-                 phase from a product of commuting Hermitian Paulis",
             ),
         }
     }
@@ -111,11 +100,11 @@ fn columns(num_qubits: usize) -> Vec<Column> {
     columns
 }
 
-/// One row of the reduced tableau: the signed group element `(-1)^neg · key`, plus the column it pivots on.
+/// One row of the reduced tableau: the signed group element `(-1)^negative · key`, plus the column it pivots on.
 #[derive(Clone, Copy, Debug)]
 struct Row<const W: usize> {
     key: PauliString<W>,
-    neg: bool,
+    negative: bool,
     pivot: Column,
 }
 
@@ -170,11 +159,11 @@ impl<const W: usize> StabilizerState<W> {
             }
         }
 
-        // `work[r] = (key, neg, origin)` is always the group element `(-1)^neg · key`; `origin` indexes the input for errors.
+        // `work[r] = (key, negative, origin)` is always the group element `(-1)^negative · key`; `origin` indexes the input for errors.
         let mut work: Vec<(PauliString<W>, bool, usize)> = generators
             .iter()
             .enumerate()
-            .map(|(i, (key, neg))| (*key, *neg, i))
+            .map(|(i, (key, negative))| (*key, *negative, i))
             .collect();
         let mut rows: Vec<Row<W>> = Vec::with_capacity(num_qubits);
 
@@ -184,20 +173,23 @@ impl<const W: usize> StabilizerState<W> {
                 continue;
             };
             work.swap(rank, p);
-            let (key, neg, _) = work[rank];
+            let (key, negative, _) = work[rank];
             for (r, row) in work.iter_mut().enumerate() {
                 if r == rank || !column.is_set(&row.0) {
                     continue;
                 }
                 let phase = row.0.mul_assign(&key);
-                if phase.exponent() & 1 != 0 {
-                    return Err(StabilizerError::InternalPhase { generator: row.2 });
-                }
-                row.1 ^= neg ^ (phase == Phase::MINUS_ONE);
+                // Both factors are Hermitian and commute (checked above), so their product is too.
+                assert_eq!(
+                    phase.exponent() & 1,
+                    0,
+                    "a product of commuting Hermitian Paulis came out imaginary"
+                );
+                row.1 ^= negative ^ (phase == Phase::MINUS_ONE);
             }
             rows.push(Row {
                 key,
-                neg,
+                negative,
                 pivot: column,
             });
             if rows.len() == num_qubits {
@@ -219,14 +211,14 @@ impl<const W: usize> StabilizerState<W> {
     }
 
     /// The stabilizer sign of `key`: `None` when `±key` is outside the group (expectation `0`), else `Some(true)` iff `⟨ψ|key|ψ⟩ = -1`.
-    pub fn sign_of(&self, key: &PauliString<W>) -> Option<bool> {
+    pub(crate) fn sign_of(&self, key: &PauliString<W>) -> Option<bool> {
         let mut reduced = *key;
         let mut phase = Phase::ONE;
-        let mut neg = false;
+        let mut negative = false;
         for row in &self.rows {
             if row.pivot.is_set(&reduced) {
                 phase += reduced.mul_assign(&row.key);
-                neg ^= row.neg;
+                negative ^= row.negative;
             }
         }
         if reduced != PauliString::<W>::identity() {
@@ -239,16 +231,7 @@ impl<const W: usize> StabilizerState<W> {
             "stabilizer membership produced an imaginary phase i^{}",
             phase.exponent(),
         );
-        Some(neg ^ (phase == Phase::MINUS_ONE))
-    }
-
-    /// `⟨ψ|key|ψ⟩`: `0.0`, `1.0` or `-1.0`.
-    pub fn expectation_of(&self, key: &PauliString<W>) -> f64 {
-        match self.sign_of(key) {
-            None => 0.0,
-            Some(false) => 1.0,
-            Some(true) => -1.0,
-        }
+        Some(negative ^ (phase == Phase::MINUS_ONE))
     }
 }
 
@@ -266,26 +249,13 @@ impl<const W: usize> PauliSum<W> {
             self.num_qubits(),
             state.num_qubits(),
         );
-        self.buckets()
-            .par_iter()
-            .map(|columns| {
-                let mut partial = Complex64::new(0.0, 0.0);
-                for i in 0..columns.len() {
-                    let key = PauliString::<W> {
-                        x: columns.x[i],
-                        z: columns.z[i],
-                    };
-                    match state.sign_of(&key) {
-                        None => {}
-                        Some(false) => partial += columns.coeff[i],
-                        Some(true) => partial -= columns.coeff[i],
-                    }
-                }
-                partial
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
+        self.sum_over_terms(
+            |x, z, coeff| match state.sign_of(&PauliString::<W> { x: *x, z: *z }) {
+                None => Complex64::new(0.0, 0.0),
+                Some(false) => coeff,
+                Some(true) => -coeff,
+            },
+        )
     }
 }
 

@@ -6,7 +6,7 @@ use paulistrings::test_support::{
     propagate_discarding, rand_sum, spread_magnitudes, unpinned_partitions, KeepAll,
 };
 use paulistrings::{
-    propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
+    propagate, Circuit, Direction, PartitionRows, PauliAxis, PauliString, PauliSum, ProductBasis,
 };
 use paulistrings::{ApproxTopN, CoefficientThreshold};
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
@@ -64,8 +64,8 @@ fn a_held_sum_propagates_across_calls() {
     assert_eq!(ps.len(), once.len(), "after one call");
     assert_terms_close(&ps.gather(), &once, TOL, "one call");
     assert!(approx_eq(
-        ps.expectation_product_state(ProductState::ZPlus),
-        once.expectation_product_state(ProductState::ZPlus),
+        ps.expectation_product(&ProductBasis::uniform(PauliAxis::Z)),
+        once.expectation_product(&ProductBasis::uniform(PauliAxis::Z)),
         1e-9,
     ));
 

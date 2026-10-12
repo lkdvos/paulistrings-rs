@@ -59,6 +59,12 @@ fn support_mask_of_empty_is_zero() {
 }
 
 #[test]
+#[should_panic(expected = "outside the 64-qubit register")]
+fn support_mask_rejects_a_qubit_past_the_width() {
+    let _: [u64; 1] = support_mask(&[64]);
+}
+
+#[test]
 fn push_appends_in_order_w1() {
     let mut buffer = OutputBuffer::<1>::new();
     buffer.push([0xAA], [0xBB], Complex64::new(1.0, 2.0));

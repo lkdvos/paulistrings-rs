@@ -482,20 +482,20 @@ fn a_seeded_row_policy_splits_as_the_configs_scatter_does() {
     assert_eq!(seen.iter().map(|&(_, got)| got).sum::<usize>(), sum.len());
 }
 
-/// `local_expectation_product_state` is per rank, and the ranks' answers sum to
+/// `local_expectation_product` is per rank, and the ranks' answers sum to
 /// the whole sum's.
 #[test]
 fn local_expectations_sum_to_the_whole_sums() {
-    use paulistrings::ProductState;
+    use paulistrings::{PauliAxis, ProductBasis};
 
     let sum = rand_sum_real::<1>(300, 6, 0x0D21);
-    let state = ProductState::ZPlus;
-    let want = sum.expectation_product_state(state);
+    let state = PauliAxis::Z;
+    let want = sum.expectation_product(&ProductBasis::uniform(state));
 
     let parts: Vec<Complex64> = on_ranks(4, |transport| {
         DistributedSum::scatter(sum.clone(), transport, &config())
             .expect("topology resolves")
-            .local_expectation_product_state(state)
+            .local_expectation_product(&ProductBasis::uniform(state))
     });
 
     let got: Complex64 = parts.iter().sum();

@@ -12,7 +12,9 @@ use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::PauliSum;
 use crate::truncation::TruncationPolicy;
 
-/// The policy-independent half of a partition; `pub` only so the drivers' `pub` methods can bound on it.
+/// The policy-independent half of a partition.
+// `pub` only because the `pub` methods of `PartitionedSum` and `DistributedSum` bound their backend parameter on it.
+#[doc(hidden)]
 pub trait PartitionStorage<const W: usize>: Send + Sized {
     fn len(&self) -> usize;
     fn hash(&self) -> &Gf2Hash<W>;
@@ -52,7 +54,9 @@ pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
 }
 
-/// A partition in host memory with its retained scratch; `pub` only so it can be a `pub` type's default backend.
+/// A partition in host memory with its retained scratch.
+// `pub` only because it is the default backend parameter of `PartitionedSum` and `DistributedSum`.
+#[doc(hidden)]
 #[derive(Debug)]
 pub struct HostPartition<const W: usize> {
     pub(crate) sum: PauliSum<W>,

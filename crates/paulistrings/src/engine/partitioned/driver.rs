@@ -25,11 +25,11 @@ use super::sum::PartitionedSum;
 pub(super) use crate::engine::LOG_TARGET;
 
 /// Layers between two bucket-count agreements, and the length of the opening ramp that precedes them (ARCHITECTURE.md §Partitioning).
-pub const BITS_AGREE_EVERY: usize = 16;
+pub(crate) const BITS_AGREE_EVERY: usize = 16;
 
-/// Whether layer `k` of a call agrees the bucket count; a pure function of `k`, so every partition answers alike.
-fn agrees_bucket_bits(k: usize) -> bool {
-    k < BITS_AGREE_EVERY || k.is_multiple_of(BITS_AGREE_EVERY)
+/// Whether the layer at `application_index` of a call agrees the bucket count; a pure function of it, so every partition answers alike.
+fn agrees_bucket_bits(application_index: usize) -> bool {
+    application_index < BITS_AGREE_EVERY || application_index.is_multiple_of(BITS_AGREE_EVERY)
 }
 
 /// A [`Collectives`] view that counts the policy finalization's calls for the trace.
@@ -117,15 +117,15 @@ fn prepare_or_panic<const W: usize>(
     hash: &Gf2Hash<W>,
     adjoint: bool,
     rank: usize,
-    index: usize,
+    circuit_index: usize,
 ) -> crate::channel::prepared::Prepared<W> {
     channel.prepare(hash, adjoint).unwrap_or_else(|| {
         let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
-            "partition {rank}, layer {index}: channel preparation declined for a channel of \
-             support {weight}: support above MAX_LOCAL_SUPPORT ({MAX_LOCAL_SUPPORT}) qubits is \
-             unsupported except for PauliRotation, and a channel must not write outside its \
-             declared support",
+            "partition {rank}, layer {circuit_index}: channel preparation declined for a \
+             channel of support {weight}: support above MAX_LOCAL_SUPPORT \
+             ({MAX_LOCAL_SUPPORT}) qubits is unsupported except for PauliRotation, and a \
+             channel must not write outside its declared support",
         )
     })
 }
@@ -150,7 +150,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         size,
         tracing,
     } = context;
-    let n = circuit.channels.len();
+    let num_layers = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
     let group_size = transport.size();
     // `finalizes_layer` is a property of the policy type, so skipping the collective call is safe on every partition alike.
@@ -161,16 +161,16 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
     let local = &mut work.local;
     let mut plan = PartitionPlan::default();
 
-    for k in 0..n {
-        let index = match direction {
-            Direction::Forward => k,
-            Direction::Heisenberg => n - 1 - k,
+    for application_index in 0..num_layers {
+        let circuit_index = match direction {
+            Direction::Forward => application_index,
+            Direction::Heisenberg => num_layers - 1 - application_index,
         };
-        let channel: &dyn Channel<W> = circuit.channels[index].as_ref();
+        let channel: &dyn Channel<W> = circuit.channels[circuit_index].as_ref();
 
-        let debug_on = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
-        let want_timer = tracing || debug_on;
-        let layer_start = want_timer.then(Instant::now);
+        let debug_enabled = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
+        let timed_layer = tracing || debug_enabled;
+        let layer_start = timed_layer.then(Instant::now);
         let terms_before = local.len();
 
         stamp!(stamp);
@@ -185,25 +185,25 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         }
 
         // Otherwise prepared before the bucket count is settled, since the plan decides whether this layer agrees it; only `bucket_delta` depends on the count, so a refining layer prepares again.
-        let mut prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
+        let mut prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, circuit_index);
         plan.rebuild(&prepared, rows, rank as u32);
         lap!(stamp, local.stats().prepare_ns);
 
         let mut collectives = 0u32;
-        if !refined_early && (solo || plan.has_remote() || agrees_bucket_bits(k)) {
-            let mut want =
+        if !refined_early && (solo || plan.has_remote() || agrees_bucket_bits(application_index)) {
+            let mut wanted_bits =
                 local.proposed_bits(&prepared, options.target_bucket_len, options.min_buckets);
             if !solo {
-                want = transport.allreduce_max_u8(want);
+                wanted_bits = transport.allreduce_max_u8(wanted_bits);
                 collectives += 1;
             }
             lap!(stamp, local.stats().collective_ns);
-            if want > local.hash().bits() {
-                while local.hash().bits() < want {
+            if wanted_bits > local.hash().bits() {
+                while local.hash().bits() < wanted_bits {
                     local.refine();
                 }
                 lap!(stamp, local.stats().rebucket_ns);
-                prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
+                prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, circuit_index);
                 plan.rebuild(&prepared, rows, rank as u32);
                 lap!(stamp, local.stats().prepare_ns);
             }
@@ -235,8 +235,8 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                     bits: local.hash().bits(),
                     remote_deltas: counts.remote_deltas as u32,
                     collectives,
-                    circuit_index: index as u32,
-                    application_index: k as u32,
+                    circuit_index: circuit_index as u32,
+                    application_index: application_index as u32,
                     gate_name: channel.debug_name(),
                     terms_in: terms_before,
                     terms_out: local.len(),
@@ -248,14 +248,14 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
             );
         }
 
-        if debug_on {
+        if debug_enabled {
             let Some(elapsed) = elapsed else { continue };
             log::debug!(
                 target: LOG_TARGET,
                 "layer {}/{} [{}]: {} -> {} terms, {:.1} ms (partition {}/{}, {} remote deltas, \
                  {} rows in)",
-                k + 1,
-                n,
+                application_index + 1,
+                num_layers,
                 channel.debug_name(),
                 terms_before,
                 local.len(),

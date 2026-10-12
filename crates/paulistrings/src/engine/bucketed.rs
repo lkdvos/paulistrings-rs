@@ -375,25 +375,12 @@ where
     T: TruncationPolicy<W> + ?Sized,
 {
     let amplitude = &ptm.deltas()[0].amplitude;
-    sum.buckets_mut().par_iter_mut().for_each(|columns| {
-        let len = columns.len();
-        let mut keep = 0usize;
-        for i in 0..len {
-            let pattern = ptm.support_bits(&columns.x[i], &columns.z[i]);
-            let coeff = columns.coeff[i] * amplitude[pattern];
-            if coeff == ZERO || !policy.keep_term(&columns.x[i], &columns.z[i], coeff) {
-                continue;
-            }
-            columns.x[keep] = columns.x[i];
-            columns.z[keep] = columns.z[i];
-            columns.coeff[keep] = coeff;
-            keep += 1;
+    sum.update_per_bucket(|_| {
+        |x: &[u64; W], z: &[u64; W], c: Complex64| {
+            let coeff = c * amplitude[ptm.support_bits(x, z)];
+            (coeff != ZERO && policy.keep_term(x, z, coeff)).then_some(coeff)
         }
-        columns.x.truncate(keep);
-        columns.z.truncate(keep);
-        columns.coeff.truncate(keep);
     });
-    sum.recount();
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();

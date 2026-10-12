@@ -487,20 +487,31 @@ impl<const W: usize> PauliSum<W> {
     where
         F: FnMut(&[u64; W], &[u64; W], Complex64) -> bool,
     {
+        self.update_per_bucket(|b| {
+            let mut keep = filter_for(b);
+            move |x: &[u64; W], z: &[u64; W], c: Complex64| keep(x, z, c).then_some(c)
+        });
+    }
+
+    /// [`retain_per_bucket`](Self::retain_per_bucket) that also rewrites each kept coefficient: `update_for(b)` maps a term to its new coefficient, or to `None` to drop it.
+    pub(crate) fn update_per_bucket<F>(&mut self, update_for: impl Fn(usize) -> F + Sync)
+    where
+        F: FnMut(&[u64; W], &[u64; W], Complex64) -> Option<Complex64>,
+    {
         self.buckets
             .par_iter_mut()
             .enumerate()
             .for_each(|(b, columns)| {
-                let mut keep = filter_for(b);
+                let mut update = update_for(b);
                 let n = columns.len();
                 let mut w = 0usize;
                 for r in 0..n {
-                    if keep(&columns.x[r], &columns.z[r], columns.coeff[r]) {
+                    if let Some(coeff) = update(&columns.x[r], &columns.z[r], columns.coeff[r]) {
                         if w != r {
                             columns.x[w] = columns.x[r];
                             columns.z[w] = columns.z[r];
-                            columns.coeff[w] = columns.coeff[r];
                         }
+                        columns.coeff[w] = coeff;
                         w += 1;
                     }
                 }

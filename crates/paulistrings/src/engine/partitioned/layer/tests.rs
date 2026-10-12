@@ -69,11 +69,15 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             for beta in 0..n {
                 let p = map.position_of(beta);
                 assert_eq!(rows.count(beta), 1, "one row per bucket");
-                let (mut x, mut z, mut c) = (Vec::new(), Vec::new(), Vec::new());
-                rows.append_into(beta, &mut x, &mut z, &mut c);
-                assert_eq!(x, vec![[u64::from(p)]], "bucket {beta} read position {p}");
-                assert_eq!(z, vec![[0u64]]);
-                assert_eq!(c, vec![Complex64::new(f64::from(p), 0.0)]);
+                let mut rest = BucketColumns::default();
+                rows.append_into(beta, &mut rest);
+                assert_eq!(
+                    rest.x,
+                    vec![[u64::from(p)]],
+                    "bucket {beta} read position {p}"
+                );
+                assert_eq!(rest.z, vec![[0u64]]);
+                assert_eq!(rest.coeff, vec![Complex64::new(f64::from(p), 0.0)]);
             }
             let waited = spy.0.into_inner().expect("spy");
             assert_eq!(waited.len(), n as usize, "one wait per append_into");

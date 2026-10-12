@@ -1119,20 +1119,14 @@ mod extra_rows_tests {
             self.rows.get(&beta).map_or(0, Vec::len)
         }
 
-        fn append_into(
-            &self,
-            beta: u32,
-            x: &mut Vec<[u64; W]>,
-            z: &mut Vec<[u64; W]>,
-            c: &mut Vec<Complex64>,
-        ) {
+        fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
             let Some(rows) = self.rows.get(&beta) else {
                 return;
             };
-            for &(rx, rz, rc) in rows {
-                x.push(rx);
-                z.push(rz);
-                c.push(rc);
+            for &(x, z, c) in rows {
+                rest.x.push(x);
+                rest.z.push(z);
+                rest.coeff.push(c);
             }
         }
     }

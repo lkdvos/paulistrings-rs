@@ -271,8 +271,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     }
     if X::NEEDS_BETA {
         for (j, run) in runs.iter_mut().enumerate() {
-            let rest = &mut run.rest;
-            extra.append_into(beta_of(j), &mut rest.x, &mut rest.z, &mut rest.coeff);
+            extra.append_into(beta_of(j), &mut run.rest);
         }
     }
     lap!(stamp, scratch.stats.gather_ns);

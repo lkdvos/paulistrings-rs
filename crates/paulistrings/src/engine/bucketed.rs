@@ -209,14 +209,8 @@ pub(crate) trait ExtraRows<const W: usize> {
     }
 
     /// Append original bucket `beta`'s rows onto the run's rest columns.
-    fn append_into(
-        &self,
-        beta: u32,
-        x: &mut Vec<[u64; W]>,
-        z: &mut Vec<[u64; W]>,
-        c: &mut Vec<Complex64>,
-    ) {
-        let _ = (beta, x, z, c);
+    fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
+        let _ = (beta, rest);
     }
 }
 

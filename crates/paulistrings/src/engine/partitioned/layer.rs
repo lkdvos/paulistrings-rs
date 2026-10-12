@@ -12,9 +12,8 @@ use crate::engine::coset::Gf2Span;
 use crate::engine::merge::rest_rows_per_key;
 use crate::engine::timing::{lap, stamp, tally, timed};
 use crate::pauli_sum::hash::PartitionRows;
-use crate::pauli_sum::storage::PauliSum;
+use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
-use num_complex::Complex64;
 
 /// Chunks a layer's bulk transfer is cut into by default; not derived from the thread count, since both sides must cut a block alike.
 const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
@@ -102,13 +101,7 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         n
     }
 
-    fn append_into(
-        &self,
-        beta: u32,
-        x: &mut Vec<[u64; W]>,
-        z: &mut Vec<[u64; W]>,
-        c: &mut Vec<Complex64>,
-    ) {
+    fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
         timed!(let start = std::time::Instant::now());
         let p = self.map.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
@@ -120,9 +113,9 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         for block in &self.blocks {
             let Some(block) = block else { continue };
             let (sx, sz, sc) = block.segment(p);
-            x.extend_from_slice(sx);
-            z.extend_from_slice(sz);
-            c.extend_from_slice(sc);
+            rest.x.extend_from_slice(sx);
+            rest.z.extend_from_slice(sz);
+            rest.coeff.extend_from_slice(sc);
         }
         timed!(self.append_ns.fetch_add(
             start.elapsed().as_nanos() as u64,

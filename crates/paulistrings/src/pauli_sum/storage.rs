@@ -102,6 +102,38 @@ pub(crate) struct ColumnsRef<'a, const W: usize> {
     pub(crate) coeff: &'a [Complex64],
 }
 
+/// Mutable `(x, z, coeff)` columns of equal length, which need not come from one [`BucketColumns`].
+#[derive(Debug)]
+pub(crate) struct ColumnsMut<'a, const W: usize> {
+    pub(crate) x: &'a mut [[u64; W]],
+    pub(crate) z: &'a mut [[u64; W]],
+    pub(crate) coeff: &'a mut [Complex64],
+}
+
+impl<'a, const W: usize> ColumnsMut<'a, W> {
+    pub(crate) fn len(&self) -> usize {
+        self.coeff.len()
+    }
+
+    pub(crate) fn split_at(self, at: usize) -> (ColumnsMut<'a, W>, ColumnsMut<'a, W>) {
+        let (x_head, x_tail) = self.x.split_at_mut(at);
+        let (z_head, z_tail) = self.z.split_at_mut(at);
+        let (coeff_head, coeff_tail) = self.coeff.split_at_mut(at);
+        (
+            ColumnsMut {
+                x: x_head,
+                z: z_head,
+                coeff: coeff_head,
+            },
+            ColumnsMut {
+                x: x_tail,
+                z: z_tail,
+                coeff: coeff_tail,
+            },
+        )
+    }
+}
+
 /// `f` over every item, on the Rayon pool once the sum holds `PARALLEL_MIN_TERMS` terms.
 pub(super) fn map_buckets<C, T>(
     num_terms: usize,

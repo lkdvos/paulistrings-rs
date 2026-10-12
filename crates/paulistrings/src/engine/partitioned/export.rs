@@ -8,7 +8,7 @@ use super::transport::{ExchangeBlock, PartnerPayload};
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
 use crate::engine::coset::CosetOrder;
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::storage::PauliSum;
+use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 
@@ -158,10 +158,10 @@ pub(crate) fn export_layer<const W: usize>(
                 ref mut coeff,
                 ..
             } = *block;
-            let columns = BlockColumns {
+            let columns = ColumnsMut {
                 x: &mut x[..rows],
                 z: &mut z[..rows],
-                c: &mut coeff[..rows],
+                coeff: &mut coeff[..rows],
             };
             fill_range(
                 local,
@@ -242,7 +242,7 @@ fn fill_range<const W: usize>(
     source_of: &[u32],
     lo: usize,
     hi: usize,
-    columns: BlockColumns<'_, W>,
+    columns: ColumnsMut<'_, W>,
 ) {
     debug_assert_eq!(columns.len(), (offsets[hi] - offsets[lo]) as usize);
     if hi - lo > 1 && columns.len() > FILL_PARALLEL_MIN_ROWS {
@@ -254,7 +254,7 @@ fn fill_range<const W: usize>(
         );
         return;
     }
-    let BlockColumns { x, z, c } = columns;
+    let ColumnsMut { x, z, coeff } = columns;
     let mut w = 0usize;
     for &source in &source_of[lo..hi] {
         let (bx, bz, bc) = local.bucket(source as usize);
@@ -262,7 +262,7 @@ fn fill_range<const W: usize>(
             if let Some((kx, kz, kc)) = emitter.emit(&bx[t], &bz[t], bc[t]) {
                 x[w] = kx;
                 z[w] = kz;
-                c[w] = kc;
+                coeff[w] = kc;
                 w += 1;
             }
         }
@@ -273,37 +273,6 @@ fn fill_range<const W: usize>(
         "export: pass 2 filled {w} rows where pass 1 counted {}",
         x.len(),
     );
-}
-
-/// One block's three columns, restricted to a source-bucket range.
-struct BlockColumns<'a, const W: usize> {
-    x: &'a mut [[u64; W]],
-    z: &'a mut [[u64; W]],
-    c: &'a mut [Complex64],
-}
-
-impl<'a, const W: usize> BlockColumns<'a, W> {
-    fn len(&self) -> usize {
-        self.c.len()
-    }
-
-    fn split_at(self, at: usize) -> (BlockColumns<'a, W>, BlockColumns<'a, W>) {
-        let (x0, x1) = self.x.split_at_mut(at);
-        let (z0, z1) = self.z.split_at_mut(at);
-        let (c0, c1) = self.c.split_at_mut(at);
-        (
-            BlockColumns {
-                x: x0,
-                z: z0,
-                c: c0,
-            },
-            BlockColumns {
-                x: x1,
-                z: z1,
-                c: c1,
-            },
-        )
-    }
 }
 
 /// Every exported row belongs to the partner it is addressed to.

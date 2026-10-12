@@ -145,6 +145,7 @@ A heavier cut compares term counts alone (`test_support::assert_runs_agree_count
 - Record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number.
 - A GPU timing is the second application of a gate on the saturated sum; its dense CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1`, never `wall/3`.
 - `PAULISTRINGS_GPU_EXCHANGE_BYTES` is the device layer's one runtime knob; the sender-side merge and the Clifford scatter path are `GpuLayerOptions` fields, so an A/B of either is a code A/B.
+- `PAULISTRINGS_EXCHANGE_CHUNKS` overrides the MPI pipeline's chunk count (default 8; `1` disables the overlap, `scripts/mpi-test.sh` uses 64 to force the pipelined receive), and every rank must see the same value.
 
 **Read `research/FINDINGS.md` before re-attempting an optimization idea.**
 

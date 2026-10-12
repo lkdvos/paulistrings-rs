@@ -8,7 +8,6 @@
 | `paulistrings.cuda_available()` | `bool`, whether this build can run `PauliSum.propagate(device=...)`: compiled with the `cuda` feature, `libcuda` and `libnvrtc` loadable, and a device visible |
 | `paulistrings.GpuPauliSum` | the device-resident sum `PauliSum.to_device` returns, present only in a build with the `cuda` feature; see [`GpuPauliSum`](propagate.md#gpupaulisum) |
 | `paulistrings.reset_log_cache()` | drops pyo3-log's cached per-logger effective level |
-| `paulistrings.diagonal_echo(hist, delta)` | `float`, the diagonal echo `sum_n w[n] cos(2 delta)**n / sum_n w[n]` of a [`PauliSum.anticommute_histogram`](measurement.md#anticommute_histogramsites-axisx-commnone) `w`; `nan` when it is all zero |
 
 ## Logging gotcha
 

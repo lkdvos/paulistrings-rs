@@ -277,8 +277,6 @@ impl<const W: usize> PartitionRows<W> {
 
     /// [`Self::from_seed`] with the coordinates in `(exclude_x, exclude_z)` cleared from every row, so keys differing only there share a partition.
     ///
-    /// [`crate::DistributedSum::rotated_overlap`] needs this with [`crate::RotationAxis::flip_mask`].
-    ///
     /// # Panics
     ///
     /// As [`Self::from_seed`], and if `bits > 0` while the exclusion covers every live column.

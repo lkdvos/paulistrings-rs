@@ -1,6 +1,5 @@
-//! Read-outs of a propagated [`PauliSum`]: expectation values in product and stabilizer states, and the operator Loschmidt-echo quantities.
+//! Read-outs of a propagated [`PauliSum`]: expectation values in product and stabilizer states.
 
-pub(crate) mod echo;
 pub(crate) mod product_state;
 pub(crate) mod stabilizer;
 
@@ -9,7 +8,6 @@ use rayon::prelude::*;
 
 use crate::pauli_sum::PauliSum;
 
-pub use echo::{diagonal_echo, RotationAxis};
 pub use product_state::{PauliAxis, ProductBasis};
 pub use stabilizer::{StabilizerError, StabilizerState};
 

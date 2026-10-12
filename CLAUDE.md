@@ -159,7 +159,6 @@ A heavier cut compares term counts alone (`test_support::assert_runs_agree_count
 - A distributed run is one partition per rank, power-of-two rank count, input replicated on every rank, raw host bytes on the wire (same architecture and `W` everywhere).
 - Partition rows are random by default; `partition_row_blocks=` and `partition_row_exclude=` are the manual levers, and automatic row choice is open (`research/FINDINGS.md §Partition rows without a known lattice`).
 - `CollapseSample` counts collapses on rank 0 only in partitioned and MPI runs, and has no device form (`GpuError::Unsupported`, `NotImplementedError` from `device=`).
-- `DistributedSum::rotated_overlap` panics unless partition rows avoid the flipped coordinates.
 - The debug test binary overflows its stack about 1 run in 4 under full parallelism; `.cargo/config.toml` sets `RUST_MIN_STACK = "16777216"`, root cause open.
 - A device partition holds one export volume and one receive volume during a remote layer; `exchange_bytes` chunks the receive only.
 - An MPI device group above one rank needs NCCL ≥ 2.22 and one device per rank; the chunked receive is untested over multi-rank NCCL, and NCCL across nodes is untested.
@@ -178,7 +177,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           engine/partitioned/{backend,distributed,driver,export,layer,mpi,plan,
                           rows,runtime,sum,topology,trace,transport,truncation},
                           engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),
-                          readout/{product_state,stabilizer,echo}, test_support
+                          readout/{product_state,stabilizer}, test_support
   tests/ benches/ examples/ (the phase_breakdown probe)
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

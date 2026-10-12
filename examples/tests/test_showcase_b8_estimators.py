@@ -192,7 +192,7 @@ def _random_case(num_qubits: int, big_class: bool):
     return ps.PauliSum.from_strings(terms, num_qubits=num_qubits), sites
 
 
-# `(num_qubits, big_class, axis, rotated_overlap, sum_n n w_n)` at delta 0.3, as the library's Rust estimators computed them.
+# `(num_qubits, big_class, axis, rotated_overlap, sum_n n w_n)` at delta 0.3, from an independent implementation.
 RUST_VALUES = [
     (12, False, "z", 4593.332499260803, 23424.086658087588),
     (12, False, "x", 4552.698258155332, 23762.99327141203),
@@ -219,6 +219,3 @@ def test_random_sums_reproduce_the_rust_estimators(num_qubits, big_class, axis, 
     hist = ole.anticommute_histogram(A, sites, axis)
     assert hist @ np.arange(len(hist)) == pytest.approx(first_moment, rel=1e-12)
     assert ole.rotated_overlap(A, sites, 0.3, axis) == pytest.approx(overlap, rel=1e-12)
-    if hasattr(A, "rotated_overlap"):
-        assert ole.rotated_overlap(A, sites, 0.3, axis) == pytest.approx(A.rotated_overlap(sites, 0.3, axis=axis), rel=1e-12)
-        np.testing.assert_allclose(hist, A.anticommute_histogram(sites, axis=axis), rtol=1e-12, atol=1e-12 * hist.sum())

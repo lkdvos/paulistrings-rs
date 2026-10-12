@@ -12,9 +12,9 @@ use paulistrings::PauliString;
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, LayerTrace, PartitionConfig,
-    PartitionRowPolicy, PartitionRows, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
-    PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, RotationAxis,
-    ScatterOptions, ScatterRows, StabilizerState, TopologyError,
+    PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
+    PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
+    ScatterRows, StabilizerState, TopologyError,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -70,16 +70,6 @@ impl PauliSumImpl {
 
     pub fn identity_coefficient(&self) -> Complex64 {
         for_each_width!(self, |s| s.identity_coefficient())
-    }
-
-    /// Caller checked `sites` with [`check_sites`], since the core panics on a bad list.
-    pub fn anticommute_histogram(&self, sites: &[usize], axis: RotationAxis) -> Vec<f64> {
-        for_each_width!(self, |s| s.anticommute_histogram(sites, axis))
-    }
-
-    /// Caller checked `sites` with [`check_sites`], since the core panics on a bad list.
-    pub fn rotated_overlap(&self, sites: &[usize], delta: f64, axis: RotationAxis) -> f64 {
-        for_each_width!(self, |s| s.rotated_overlap(sites, delta, axis))
     }
 
     /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
@@ -496,58 +486,6 @@ fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
     })
 }
 
-/// `"x"` or `"z"`, either case, as the echo read-outs' generator axis.
-fn parse_axis(axis: &str) -> PyResult<RotationAxis> {
-    match axis {
-        "x" | "X" => Ok(RotationAxis::X),
-        "z" | "Z" => Ok(RotationAxis::Z),
-        other => Err(PyValueError::new_err(format!(
-            "axis must be 'x' or 'z', got {other:?}"
-        ))),
-    }
-}
-
-/// The echo read-outs' `sites`: distinct qubits of the register, which the core asserts.
-fn check_sites(sites: &[usize], num_qubits: usize) -> PyResult<()> {
-    let mut seen = HashSet::new();
-    for &q in sites {
-        if q >= num_qubits {
-            return Err(PyValueError::new_err(format!(
-                "site {q} is out of range for num_qubits={num_qubits}"
-            )));
-        }
-        if !seen.insert(q) {
-            return Err(PyValueError::new_err(format!("site {q} is listed twice")));
-        }
-    }
-    Ok(())
-}
-
-/// `local()` on this rank, summed elementwise over `comm` with the core's all-reduce, which gives every rank the same bits. **Collective.**
-#[cfg(feature = "mpi")]
-fn reduce_over_comm(
-    py: Python<'_>,
-    comm: &Bound<'_, PyAny>,
-    local: impl FnOnce() -> Vec<f64> + Send,
-) -> PyResult<Vec<f64>> {
-    use paulistrings::Collectives;
-    let transport = crate::mpi::transport_from_comm(py, comm)?;
-    Ok(py.allow_threads(move || {
-        let mut values = local();
-        transport.allreduce_sum_f64(&mut values);
-        values
-    }))
-}
-
-#[cfg(not(feature = "mpi"))]
-fn reduce_over_comm(
-    _py: Python<'_>,
-    _comm: &Bound<'_, PyAny>,
-    _local: impl FnOnce() -> Vec<f64> + Send,
-) -> PyResult<Vec<f64>> {
-    Err(mpi_unavailable_error())
-}
-
 /// `"forward"` (the default when `None`) or `"heisenberg"`, shared by `propagate` and `propagate_with_stats` so the accepted spellings and error message cannot drift apart.
 pub(crate) fn parse_direction(direction: Option<&str>) -> PyResult<Direction> {
     match direction.unwrap_or("forward") {
@@ -960,61 +898,16 @@ enum RunTrace {
     Device(PartitionTrace, Vec<u32>),
 }
 
-/// A [`PartitionRows`] at the width of the sum it splits.
-#[derive(Clone)]
-#[cfg_attr(not(feature = "mpi"), allow(dead_code))]
-enum RowsImpl {
-    W1(PartitionRows<1>),
-    W2(PartitionRows<2>),
-    W4(PartitionRows<4>),
-    W8(PartitionRows<8>),
-    W16(PartitionRows<16>),
-}
-
-macro_rules! rows_impl_from {
-    ($($w:literal => $variant:ident),*) => {
-        $(impl From<PartitionRows<$w>> for RowsImpl {
-            fn from(rows: PartitionRows<$w>) -> Self {
-                Self::$variant(rows)
-            }
-        })*
-    };
-}
-rows_impl_from!(1 => W1, 2 => W2, 4 => W4, 8 => W8, 16 => W16);
-
-#[cfg_attr(not(feature = "mpi"), allow(dead_code))]
-impl RowsImpl {
-    /// [`PartitionRows::keeps_flip_classes`] at this width.
-    fn keeps_flip_classes(&self, sites: &[usize], axis: RotationAxis) -> bool {
-        for_each_width!(self, |rows| rows.keeps_flip_classes(sites, axis))
-    }
-}
-
-/// Where a `comm=` result sits in its group: what lets a collective read-out know that per-rank values add up to the whole.
-#[derive(Clone)]
-#[cfg_attr(not(feature = "mpi"), allow(dead_code))]
-pub(crate) struct Share {
-    rank: u32,
-    size: u32,
-    /// The rows the group's sum is split by; no rows for a gathered result, which rank 0 holds whole.
-    rows: RowsImpl,
-}
-
 /// What one run hands back besides the sum.
 struct RunOutput<const W: usize> {
     sum: CorePauliSum<W>,
     trace: Option<RunTrace>,
-    /// A distributed run's place in its group.
-    share: Option<Share>,
     /// The call's collapses, `None` without a sampler in the policy.
     collapses: Option<u64>,
 }
 
 #[cfg(feature = "mpi")]
-impl<const W: usize> RunOutput<W>
-where
-    RowsImpl: From<PartitionRows<W>>,
-{
+impl<const W: usize> RunOutput<W> {
     /// This rank's side of a `comm=` run, host or device.
     fn from_mpi(out: crate::mpi::MpiOutcome<W>) -> Self {
         let (rank, size) = (out.rank, out.size);
@@ -1023,11 +916,6 @@ where
             trace: out
                 .trace
                 .map(|trace| RunTrace::Distributed(trace, rank, size, out.device)),
-            share: Some(Share {
-                rank,
-                size,
-                rows: RowsImpl::from(out.rows),
-            }),
             collapses: out.collapses,
         }
     }
@@ -1043,10 +931,7 @@ impl RunMode {
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<RunOutput<W>, PropagateFailure>
-    where
-        RowsImpl: From<PartitionRows<W>>,
-    {
+    ) -> Result<RunOutput<W>, PropagateFailure> {
         let before = collapse_count(policy);
         match self {
             RunMode::Classic => {
@@ -1065,7 +950,6 @@ impl RunMode {
                 Ok(RunOutput {
                     sum: out,
                     trace: scratch.take_trace().map(RunTrace::Layer),
-                    share: None,
                     collapses: collapses_since(policy, before),
                 })
             }
@@ -1092,7 +976,6 @@ impl RunMode {
                 Ok(RunOutput {
                     sum: split.into_gathered(),
                     trace,
-                    share: None,
                     collapses: collapses_since(policy, before),
                 })
             }
@@ -1109,7 +992,6 @@ impl RunMode {
                 Ok(RunOutput {
                     sum: out,
                     trace: trace.map(|trace| RunTrace::Device(trace, devices)),
-                    share: None,
                     collapses: collapses_since(policy, before),
                 })
             }
@@ -1833,41 +1715,12 @@ impl PartitionStats {
 #[pyclass(module = "paulistrings._paulistrings", name = "PauliSum")]
 pub struct PauliSum {
     pub(crate) inner: PauliSumImpl,
-    /// Set only on a `comm=` propagate result; anything that could break the split clears it.
-    pub(crate) share: Option<Share>,
 }
 
 impl PauliSum {
-    /// This sum's place in `comm`'s split, or the `ValueError` a collective read-out raises on a sum that has none. Every check is local, so a rejection happens on every rank alike before any rank enters the collective.
-    #[cfg(feature = "mpi")]
-    fn check_share(&self, comm: &Bound<'_, PyAny>, method: &str) -> PyResult<&Share> {
-        let share = self.share.as_ref().ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "{method}(comm=...) adds the per-rank values of a sum split across ranks, but \
-                 this sum is not a propagate(..., comm=...) result (or was since combined with \
-                 another sum); call it without comm= for this sum alone"
-            ))
-        })?;
-        let size: u32 = comm.call_method0("Get_size")?.extract()?;
-        let rank: u32 = comm.call_method0("Get_rank")?.extract()?;
-        if (rank, size) != (share.rank, share.size) {
-            return Err(PyValueError::new_err(format!(
-                "{method}(comm=...): this sum is rank {} of a {}-rank split, but comm is rank \
-                 {rank} of {size}; pass the communicator it was propagated over",
-                share.rank, share.size,
-            )));
-        }
-        Ok(share)
-    }
-
-    #[cfg(not(feature = "mpi"))]
-    fn check_share(&self, _comm: &Bound<'_, PyAny>, _method: &str) -> PyResult<&Share> {
-        Err(mpi_unavailable_error())
-    }
-
     /// A sum with no place in a distributed split.
     pub(crate) fn plain(inner: PauliSumImpl) -> Self {
-        Self { inner, share: None }
+        Self { inner }
     }
 
     /// `self + factor · other`, with the qubit counts checked first — the core's merge asserts on a mismatch, and two different qubit counts can still share a width band.
@@ -1914,7 +1767,6 @@ impl PauliSum {
         };
         let mut this = slf.borrow_mut();
         this.inner = combined;
-        this.share = None;
         Ok(())
     }
 }
@@ -2146,71 +1998,6 @@ impl PauliSum {
         self.inner.identity_coefficient()
     }
 
-    /// `w[n]`: the total `|c|**2` of the strings that anticommute with exactly `n` of the generators `G_q`, `q in sites`, where `G = X` (`axis="x"`) or `Z` (`axis="z"`); `len(sites) + 1` entries.
-    ///
-    /// `X_q` anticommutes with a `Y` or `Z` on `q`, `Z_q` with an `X` or `Y`. `sum(w) == sum(|c|**2)`, and `sum(w[n] * cos(2 delta)**n) / sum(w)` is the diagonal approximation of the echo `rotated_overlap` computes exactly (`paulistrings.diagonal_echo`).
-    /// With `comm`, `self` must be a `propagate(..., comm=...)` result and the call is collective: every rank gets the histogram of the whole distributed sum.
-    #[pyo3(signature = (sites, axis="x", comm=None))]
-    fn anticommute_histogram(
-        &self,
-        py: Python<'_>,
-        sites: Vec<usize>,
-        axis: &str,
-        comm: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Vec<f64>> {
-        let axis = parse_axis(axis)?;
-        check_sites(&sites, self.inner.num_qubits())?;
-        let inner = &self.inner;
-        let local = move || inner.anticommute_histogram(&sites, axis);
-        if let Some(comm) = comm.filter(|comm| !comm.is_none()) {
-            self.check_share(comm, "anticommute_histogram")?;
-            return reduce_over_comm(py, comm, local);
-        }
-        Ok(py.allow_threads(local))
-    }
-
-    /// The operator Loschmidt echo `2**-n Tr(A V^dag A V)` of this sum `A`, with `V = prod_{q in sites} exp(-i delta G_q)` and `G = X` (`axis="x"`) or `Z` (`axis="z"`); exact, and without materializing `V^dag A V`.
-    ///
-    /// Strings that `V^dag . V` mixes (equal away from the flipped bits on `sites`) are grouped and paired, so the cost is dominated by the largest such class. At `delta = 0` the value is `sum(|c|**2)`; divide by that for the normalized echo.
-    /// With `comm`, `self` must be a `propagate(..., comm=...)` result whose partition rows read none of the coordinates `V` flips (the x-bits of `sites` for `axis="x"`, the z-bits for `"z"`), so every class lies on one rank; propagate with `partition_row_exclude={axis: sites}` to get such rows (`partition_row_blocks=` rows read only z-bits, so they always qualify for `axis="x"`, as does any `result="gather"`). Otherwise it raises `ValueError` on every rank. The call is collective and every rank gets the whole sum's value.
-    #[pyo3(signature = (sites, delta, axis="x", comm=None))]
-    fn rotated_overlap(
-        &self,
-        py: Python<'_>,
-        sites: Vec<usize>,
-        delta: f64,
-        axis: &str,
-        comm: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<f64> {
-        let parsed = parse_axis(axis)?;
-        check_sites(&sites, self.inner.num_qubits())?;
-        if let Some(comm) = comm.filter(|comm| !comm.is_none()) {
-            let share = self.check_share(comm, "rotated_overlap")?;
-            if !share.rows.keeps_flip_classes(&sites, parsed) {
-                let (half, cut) = match parsed {
-                    RotationAxis::X => (
-                        "x",
-                        " (or partition_row_blocks=, whose rows read only z-bits)",
-                    ),
-                    RotationAxis::Z => ("z", ""),
-                };
-                return Err(PyValueError::new_err(format!(
-                    "rotated_overlap(comm=...): this sum's partition rows read the {half}-bits of \
-                     sites the axis={axis:?} rotation flips, so strings it mixes can sit on \
-                     different ranks and the per-rank values do not add up; propagate with \
-                     partition_row_exclude={{{half:?}: sites}}{cut}"
-                )));
-            }
-            let inner = &self.inner;
-            let value = reduce_over_comm(py, comm, move || {
-                vec![inner.rotated_overlap(&sites, delta, parsed)]
-            })?;
-            return Ok(value[0]);
-        }
-        let inner = &self.inner;
-        Ok(py.allow_threads(move || inner.rotated_overlap(&sites, delta, parsed)))
-    }
-
     /// `self + other`: coefficients added on matching strings, the rest kept. Both operands are left untouched.
     fn __add__(&self, other: &Self) -> PyResult<Self> {
         Ok(Self::plain(
@@ -2239,11 +2026,7 @@ impl PauliSum {
     ///
     /// Scalar-only. Multiplying two sums is a full operator product, a much larger operation this class does not implement.
     fn __mul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
-        Ok(Self {
-            inner: self.scaled(factor)?,
-            // Scaling moves no term, so a share keeps its place in the split.
-            share: self.share.clone(),
-        })
+        Ok(Self::plain(self.scaled(factor)?))
     }
 
     /// `scalar * self`, identical to `self * scalar`.
@@ -2330,10 +2113,10 @@ impl PauliSum {
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
-    /// `partition_row_exclude`, a dict `{"x": [qubits], "z": [qubits]}` and the other alternative to `partition_row_blocks`, keeps the seeded draw (`partition_row_seed` still applies) but clears the named x-bits and z-bits from every row, so strings differing only there share a partition; `{"x": sites}` is what `rotated_overlap(sites, axis="x", comm=...)` needs of a `result="local"` share.
+    /// `partition_row_exclude`, a dict `{"x": [qubits], "z": [qubits]}` and the other alternative to `partition_row_blocks`, keeps the seeded draw (`partition_row_seed` still applies) but clears the named x-bits and z-bits from every row, so strings differing only there share a partition.
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
-    /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share, which remembers its rows for the `comm=` read-outs (`anticommute_histogram`, `rotated_overlap`). Raises `RuntimeError` without the `mpi` feature.
+    /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
     ///
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
@@ -2474,8 +2257,8 @@ impl PauliSum {
         // owns the communicator), so the side outputs escape through borrows
         // taken before it; the (unreachable) width-mismatch arm bails out with
         // an error turned into a Python exception after the GIL is reacquired.
-        let (mut trace, mut share, mut collapses) = (None, None, None);
-        let slots = (&mut trace, &mut share, &mut collapses);
+        let (mut trace, mut collapses) = (None, None);
+        let slots = (&mut trace, &mut collapses);
         let inner = py.allow_threads(move || -> Result<PauliSumImpl, PropagateFailure> {
             Ok(for_each_width_propagate!(
                 PauliSumImpl,
@@ -2484,8 +2267,7 @@ impl PauliSum {
                 |s, c, W, wrap| {
                     let out = mode.run::<W>(c, s, policy, dir, options, traced)?;
                     *slots.0 = out.trace;
-                    *slots.1 = out.share;
-                    *slots.2 = out.collapses;
+                    *slots.1 = out.collapses;
                     wrap(out.sum)
                 },
                 else {
@@ -2493,7 +2275,7 @@ impl PauliSum {
                 }
             ))
         })?;
-        Ok((Self { inner, share }, trace, collapses))
+        Ok((Self::plain(inner), trace, collapses))
     }
 }
 
@@ -2510,6 +2292,7 @@ impl PauliSum {
 #[cfg(test)]
 mod partition_row_knob_tests {
     use super::*;
+    use paulistrings::PartitionRows;
 
     /// Explicit "cut" blocks round-trip through `validate_partition_row_blocks` +
     /// `PartitionRows::cut` into a `PartitionRows` that actually assigns qubits to the

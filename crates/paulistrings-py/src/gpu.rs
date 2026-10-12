@@ -343,7 +343,7 @@ mod cuda {
             let inner = py
                 .allow_threads(|| self.inner.download())
                 .map_err(gpu_error)?;
-            Ok(PauliSum { inner, share: None })
+            Ok(PauliSum::plain(inner))
         }
 
         fn __len__(&self) -> usize {

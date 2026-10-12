@@ -88,7 +88,7 @@ evolved = observable.propagate(circuit, policy, comm=comm, result="local", parti
 ```
 
 A gate that never changes the excluded bits never moves a string between ranks: CZ and `rz` leave x-bits alone, so rows drawn on x-bits only keep a CZ/`rz` circuit's exchange to its `rx` gates.
-The distributed [echo read-out](../measurements.md#echo) `rotated_overlap` requires rows that skip the coordinates it flips, the x-bits of its sites for `axis="x"`.
+Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank [echo read-out](../measurements.md#echo) needs.
 It cannot be combined with `partition_row_blocks=`.
 
 ## result="gather" versus result="local"

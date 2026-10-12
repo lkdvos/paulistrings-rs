@@ -551,74 +551,30 @@ def test_a_device_list_under_comm_is_a_value_error(observable, circuit):
 
 
 # --------------------------------------------------------------------------
-# Echo read-outs over a split, partition_row_exclude and collapse_sample
+# partition_row_exclude and collapse_sample
 
 # Qubits the circuit touches plus some it does not, over both words.
-ECHO_SITES = [0, 2, 3, 5, 64, 67]
-# Enough sites that a seeded draw reading none of their x-bits is a 2**-24 chance per row.
-WIDE_SITES = list(range(24))
+EXCLUDED = [0, 2, 3, 5, 64, 67]
 
 
 @pytest.mark.parametrize("axis", ["x", "z"])
-def test_echo_read_outs_of_excluding_local_shares_are_the_serial_ones(observable, circuit, reference, axis):
+def test_strings_differing_only_on_excluded_coordinates_share_a_rank(observable, circuit, reference, axis):
+    """What a per-rank read-out over classes of such strings relies on: clearing the excluded bits leaves no key on two ranks."""
     local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: ECHO_SITES}
+        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: EXCLUDED}
     )
-    hist = local.anticommute_histogram(ECHO_SITES, axis=axis, comm=COMM)
-    overlap = local.rotated_overlap(ECHO_SITES, 0.3, axis=axis, comm=COMM)
-    np.testing.assert_allclose(hist, reference.anticommute_histogram(ECHO_SITES, axis=axis), rtol=1e-9)
-    assert overlap == pytest.approx(reference.rotated_overlap(ECHO_SITES, 0.3, axis=axis), rel=1e-9)
-    # The core all-reduce hands every rank the same bits.
-    assert COMM.allgather(overlap) == [overlap] * SIZE
-    assert COMM.allgather(hist) == [hist] * SIZE
-
-
-def test_the_histogram_of_any_local_share_adds_up(observable, circuit, reference):
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
-    np.testing.assert_allclose(
-        local.anticommute_histogram(ECHO_SITES, comm=COMM),
-        reference.anticommute_histogram(ECHO_SITES),
-        rtol=1e-9,
-    )
-
-
-def test_cut_rows_read_no_x_bit_so_they_serve_an_x_axis_overlap(observable, circuit, reference):
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local", partition_row_blocks=_cut_blocks())
-    assert local.rotated_overlap(WIDE_SITES, 0.3, comm=COMM) == pytest.approx(
-        reference.rotated_overlap(WIDE_SITES, 0.3), rel=1e-9
-    )
-
-
-def test_a_gathered_result_serves_either_axis(observable, circuit, reference):
-    whole = observable.propagate(circuit, POLICY, comm=COMM)
-    for axis in ("x", "z"):
-        assert whole.rotated_overlap(WIDE_SITES, 0.3, axis=axis, comm=COMM) == pytest.approx(
-            reference.rotated_overlap(WIDE_SITES, 0.3, axis=axis), rel=1e-9
-        )
-
-
-def test_rows_reading_a_flipped_coordinate_are_refused(observable, circuit):
-    """Rows excluding the z-bits say nothing about the x-bits an ``axis="x"`` rotation flips, so every rank refuses alike; one rank has no rows at all."""
-    local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={"z": WIDE_SITES}
-    )
-    if SIZE > 1:
-        with pytest.raises(ValueError, match="partition_row_exclude"):
-            local.rotated_overlap(WIDE_SITES, 0.3, axis="x", comm=COMM)
+    x, z, _ = local.to_arrays()
+    mask = np.zeros(x.shape[1], dtype=np.uint64)
+    for q in EXCLUDED:
+        mask[q // 64] |= np.uint64(1 << (q % 64))
+    if axis == "x":
+        x = x & ~mask
     else:
-        local.rotated_overlap(WIDE_SITES, 0.3, axis="x", comm=COMM)
-
-
-def test_a_sum_outside_a_split_is_refused_under_comm(observable, circuit):
-    with pytest.raises(ValueError, match="not a propagate"):
-        observable.anticommute_histogram(ECHO_SITES, comm=COMM)
-    local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={"x": ECHO_SITES}
-    )
-    with pytest.raises(ValueError, match="not a propagate"):
-        (local + local).rotated_overlap(ECHO_SITES, 0.3, comm=COMM)
-    base = local.rotated_overlap(ECHO_SITES, 0.3, comm=COMM)
-    assert (local * 2.0).rotated_overlap(ECHO_SITES, 0.3, comm=COMM) == pytest.approx(4 * base, rel=1e-12)
+        z = z & ~mask
+    mine = {(tuple(a), tuple(b)) for a, b in zip(x.tolist(), z.tolist())}
+    every = COMM.allgather(mine)
+    assert sum(len(keys) for keys in every) == len(set().union(*every))
+    assert COMM.allreduce(len(local)) == len(reference)
 
 
 def test_distributed_partition_row_exclude_is_validated_first(observable, circuit):

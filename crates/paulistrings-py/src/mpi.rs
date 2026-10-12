@@ -11,9 +11,8 @@ use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::BuiltinTruncation;
 use paulistrings::Collectives;
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRows, PartitionRuntime,
-    PartitionTrace, PauliSum as CorePauliSum, PropagateOptions, ScatterOptions, ScatterRows,
-    TopologyError,
+    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRuntime, PartitionTrace,
+    PauliSum as CorePauliSum, PropagateOptions, ScatterOptions, ScatterRows, TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -130,8 +129,6 @@ pub struct MpiRun {
 pub struct MpiOutcome<const W: usize> {
     /// The gathered sum on rank 0 (empty elsewhere), or this rank's own partition.
     pub sum: CorePauliSum<W>,
-    /// The rows `sum` is split by across the group: the scatter's for a local share, [`PartitionRows::none`] for a gathered one, which rank 0 holds whole.
-    pub rows: PartitionRows<W>,
     pub rank: u32,
     pub size: u32,
     /// This rank's [`PartitionTrace`], when asked for.
@@ -180,12 +177,11 @@ impl MpiRun {
         let (rank, size) = (split.rank(), split.size());
         // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
         let trace = traced.then(|| split.take_trace().unwrap_or_default());
-        let (out, rows) = harvest(&split, gather);
+        let out = harvest(&split, gather);
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
         Ok(MpiOutcome {
             sum: out,
-            rows,
             rank,
             size,
             trace,
@@ -209,16 +205,15 @@ fn agreed_collapses(
     })
 }
 
-/// What this rank returns, with the rows it is split by: the gathered sum on rank 0 (an empty sum elsewhere) under [`PartitionRows::none`], or its own partition under the scatter's rows.
-fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> (CorePauliSum<W>, PartitionRows<W>) {
+/// What this rank returns: the gathered sum on rank 0 (an empty sum elsewhere), or its own partition.
+fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
     if gather {
         // Collective; `Some` on rank 0 only.
-        let whole = split
+        split
             .gather()
-            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()));
-        (whole, PartitionRows::<W>::none(split.num_qubits()))
+            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
     } else {
-        (split.local().clone(), split.rows().clone())
+        split.local().clone()
     }
 }
 
@@ -319,12 +314,11 @@ impl MpiGpuRun {
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
         let trace = traced.then(|| split.take_trace().unwrap_or_default());
-        let (out, rows) = if gather {
-            let whole = split
+        let out = if gather {
+            split
                 .gather()
                 .map_err(MpiGpuFailure::Gpu)?
-                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()));
-            (whole, PartitionRows::<W>::none(split.num_qubits()))
+                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
         } else {
             // A local download: agreed here so a rank whose download fails does not leave its peers a call ahead.
             let share = split.local_to_host();
@@ -332,14 +326,13 @@ impl MpiGpuRun {
             match (share, failed) {
                 (Err(err), _) => return Err(MpiGpuFailure::Gpu(err)),
                 (Ok(_), Some((rank, _))) => return Err(MpiGpuFailure::PeerDownload(rank)),
-                (Ok(share), None) => (share, split.rows().clone()),
+                (Ok(share), None) => share,
             }
         };
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
         Ok(MpiOutcome {
             sum: out,
-            rows,
             rank,
             size,
             trace,

@@ -36,7 +36,7 @@ Exact `topn` has no partitioned form, so `approx_topn` is the policy for [NUMA p
 
 **`collapse_sample(cache, seed)` samples instead of filtering.**
 Whenever a gate leaves more than `cache` strings it draws one string with probability `|c|² / Σ|c|²` and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as [`diagonal_echo`](../measurements.md#echo); average many seeds and report the standard error.
+It is unbiased only for weight-diagonal read-outs such as the [diagonal echo](../measurements.md#echo); average many seeds and report the standard error.
 `PropagationStats.collapses` counts the draws.
 
 ```python

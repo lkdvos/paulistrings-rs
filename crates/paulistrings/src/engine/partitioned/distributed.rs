@@ -17,7 +17,6 @@ use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
-use crate::readout::echo::RotationAxis;
 use crate::readout::product_state::ProductBasis;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
@@ -34,7 +33,7 @@ pub enum PartitionRowPolicy {
     Seeded(Option<u64>),
     /// [`PartitionRows::cut`]: one disjoint qubit block per rank, in rank order; the rows are z-only.
     Cut(Vec<Vec<usize>>),
-    /// [`PartitionRows::from_seed_excluding`]: a seeded draw whose rows read neither the x-bits of `exclude_x` nor the z-bits of `exclude_z`, as [`DistributedSum::rotated_overlap`] needs.
+    /// [`PartitionRows::from_seed_excluding`]: a seeded draw whose rows read neither the x-bits of `exclude_x` nor the z-bits of `exclude_z`, so keys differing only there share a partition.
     SeededExcluding {
         /// As in [`Seeded`](Self::Seeded).
         seed: Option<u64>,
@@ -432,38 +431,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// This rank's contribution to `⟨ψ|O|ψ⟩` in the product state `basis`; not collective, so sum the ranks' answers.
     pub fn local_expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
         self.local.sum.expectation_product(basis)
-    }
-
-    /// [`PauliSum::anticommute_histogram`] of the whole sum. **Collective.**
-    pub fn anticommute_histogram(&self, sites: &[usize], axis: RotationAxis) -> Vec<f64> {
-        let local = &self.local.sum;
-        let mut histogram = self
-            .runtime
-            .install(move || local.anticommute_histogram(sites, axis));
-        self.transport.allreduce_sum_f64(&mut histogram);
-        histogram
-    }
-
-    /// [`PauliSum::rotated_overlap`] of the whole sum without a gather. **Collective.**
-    ///
-    /// The partition rows must avoid the coordinates the rotation flips; scatter with [`PartitionRowPolicy::SeededExcluding`], or [`Cut`](PartitionRowPolicy::Cut) rows for an `X` axis.
-    ///
-    /// # Panics
-    ///
-    /// On every rank, before communicating, if the rows read a flipped coordinate, or as [`PauliSum::rotated_overlap`].
-    pub fn rotated_overlap(&self, sites: &[usize], delta: f64, axis: RotationAxis) -> f64 {
-        assert!(
-            self.rows.keeps_flip_classes(sites, axis),
-            "DistributedSum::rotated_overlap: the partition rows read coordinates the rotation \
-             flips, so its classes span ranks; scatter with PartitionRowPolicy::SeededExcluding \
-             over {axis:?}-axis sites {sites:?}",
-        );
-        let local = &self.local.sum;
-        let mut value = [self
-            .runtime
-            .install(move || local.rotated_overlap(sites, delta, axis))];
-        self.transport.allreduce_sum_f64(&mut value);
-        value[0]
     }
 
     /// Drain this rank's phase counters; `per_partition` has one entry.

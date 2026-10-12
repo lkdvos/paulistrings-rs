@@ -16,14 +16,13 @@ use num_complex::Complex64;
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, collapsing_circuit,
-    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_on, rand_sum_real,
-    single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions, z0_sum, zz_rotation,
-    KeepAll,
+    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
+    spread_magnitudes, trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
 };
 use paulistrings::PtmChannel;
 use paulistrings::{
     propagate, BuildAccumulator, BuiltinTruncation, Circuit, Direction, PauliString, PauliSum,
-    RotationAxis, TruncationPolicy,
+    TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{
@@ -592,102 +591,4 @@ fn collapse_sample_distributed_picks_by_weight() {
         }
         assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
     }
-}
-
-// ---- echo read-outs -----------------------------------------------------------
-
-/// Every rank's `(rotated_overlap, anticommute_histogram, len_local)` after a Heisenberg run on `size` ranks scattered by `policy`.
-fn distributed_echo<const W: usize>(
-    circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
-    policy: &PartitionRowPolicy,
-    size: u32,
-    sites: &[usize],
-    axis: RotationAxis,
-) -> Vec<(f64, Vec<f64>, usize)> {
-    on_ranks(size, |transport| {
-        let mut split = scatter_by_policy(sum.clone(), transport, policy.clone());
-        split.propagate(circuit, &KeepAll, Direction::Heisenberg);
-        (
-            split.rotated_overlap(sites, 0.3, axis),
-            split.anticommute_histogram(sites, axis),
-            split.len_local(),
-        )
-    })
-}
-
-/// With rows excluding the coordinates `V` flips, the gather-free echo equals the single-process one on every rank, for both axes and both widths.
-fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[usize], sites: &[usize]) {
-    let sum = rand_sum_on::<W>(400, num_qubits, window, 0xEC40);
-    let mut circuit = Circuit::<W>::new(num_qubits);
-    for pair in window.windows(2) {
-        circuit.push(PtmChannel::cnot(pair[0], pair[1]));
-    }
-    circuit.push(PtmChannel::unitary_2q(
-        window[0],
-        window[1],
-        haar_su4_matrix(),
-    ));
-    circuit.push(zz_rotation::<W>(window[1], window[3], 0.31));
-    let evolved = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
-    let flipped = sites.to_vec();
-
-    for axis in [RotationAxis::Z, RotationAxis::X] {
-        let want = evolved.rotated_overlap(sites, 0.3, axis);
-        let want_hist = evolved.anticommute_histogram(sites, axis);
-        let (exclude_x, exclude_z) = match axis {
-            RotationAxis::Z => (vec![], flipped.clone()),
-            RotationAxis::X => (flipped.clone(), vec![]),
-        };
-        let policy = PartitionRowPolicy::SeededExcluding {
-            seed: Some(0x5EED_0E40),
-            exclude_x,
-            exclude_z,
-        };
-        for size in [2u32, 4] {
-            let ranks = distributed_echo(&circuit, &sum, &policy, size, sites, axis);
-            assert!(
-                ranks.iter().filter(|r| r.2 > 0).count() > 1,
-                "W={W} {axis:?} ranks={size}: the split must be nontrivial",
-            );
-            for (rank, (got, hist, _)) in ranks.iter().enumerate() {
-                let what = format!("W={W} {axis:?} ranks={size} rank {rank}");
-                assert!((got - want).abs() < 1e-10, "{what}: {got} vs {want}");
-                assert_eq!(got.to_bits(), ranks[0].0.to_bits(), "{what}: ranks agree");
-                for (h, w) in hist.iter().zip(&want_hist) {
-                    assert!((h - w).abs() < 1e-10, "{what}: {hist:?} vs {want_hist:?}");
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn distributed_echo_read_outs_match_the_single_process_ones_w1() {
-    check_distributed_echo::<1>(10, &[0, 2, 3, 5, 6, 9], &[2, 3, 6]);
-}
-
-#[test]
-fn distributed_echo_read_outs_match_the_single_process_ones_w2() {
-    check_distributed_echo::<2>(70, &[61, 62, 63, 64, 65, 68], &[62, 63, 64]);
-}
-
-/// Rows that read a flipped coordinate would split a class across ranks, so every rank refuses before communicating.
-#[test]
-fn distributed_rotated_overlap_rejects_rows_that_split_classes() {
-    let sum = rand_sum_on::<1>(200, 10, &[0, 2, 3, 5, 6, 9], 0xEC41);
-    let sites = [2usize, 3, 6];
-    let policy = PartitionRowPolicy::Seeded(Some(0x5EED_0E40));
-    let results: Vec<_> = on_ranks(2, |transport| {
-        let split = scatter_by_policy(sum.clone(), transport, policy.clone());
-        assert!(
-            !split.rows().keeps_flip_classes(&sites, RotationAxis::Z),
-            "the fixture rows must read a flip"
-        );
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            split.rotated_overlap(&sites, 0.3, RotationAxis::Z)
-        }))
-        .is_err()
-    });
-    assert_eq!(results, vec![true, true], "every rank must refuse");
 }

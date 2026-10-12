@@ -602,14 +602,14 @@ def test_seed_and_blocks_are_mutually_exclusive():
 
 
 # --------------------------------------------------------------------------
-# partition_row_exclude, the echo read-outs and collapse_sample
+# partition_row_exclude and collapse_sample
 
 
 _SITES = [0, 2, 3, 5]
 
 
 def _real_observable(num_qubits, terms=2_000, seed=20260926):
-    """``_observable`` with real coefficients, the Hermitian case the echo is defined for."""
+    """``_observable`` with real coefficients."""
     s = _observable(num_qubits, terms=terms, seed=seed)
     coeffs = np.random.default_rng(seed).normal(size=len(s))
     return PauliSum.from_arrays(s.x_array(), s.z_array(), coeffs, num_qubits=num_qubits)
@@ -617,7 +617,7 @@ def _real_observable(num_qubits, terms=2_000, seed=20260926):
 
 @pytest.mark.parametrize("num_qubits", WIDTHS)
 @pytest.mark.parametrize("axis", ["x", "z"])
-def test_excluding_rows_match_unpartitioned_echo_read_outs(num_qubits, axis):
+def test_excluding_rows_match_the_unpartitioned_run(num_qubits, axis):
     s, c = _real_observable(num_qubits), _mixed_circuit(num_qubits)
     policy = truncation.coeff(1e-6)
     want = s.propagate(c, policy, direction="heisenberg")
@@ -625,12 +625,6 @@ def test_excluding_rows_match_unpartitioned_echo_read_outs(num_qubits, axis):
         c, policy, direction="heisenberg", partitions=_cpu_sets(), partition_row_exclude={axis: _SITES}
     )
     _assert_terms_close(got, want)
-    np.testing.assert_allclose(
-        got.anticommute_histogram(_SITES, axis=axis), want.anticommute_histogram(_SITES, axis=axis), rtol=1e-9
-    )
-    assert got.rotated_overlap(_SITES, 0.3, axis=axis) == pytest.approx(
-        want.rotated_overlap(_SITES, 0.3, axis=axis), rel=1e-9
-    )
 
 
 def test_excluded_coordinates_are_read_by_no_row():

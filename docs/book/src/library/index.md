@@ -10,5 +10,5 @@ Signatures and tables for the Python API. Usage and rationale are in the [Manual
 | [propagate / propagate_with_stats](propagate.md) | full signatures, engine/bucket/partition knobs, stats field tables |
 | [Truncation policies](truncation.md) | `coeff`/`weight`/`topn`/`approx_topn`/`collapse_sample`, `&`/`\|` combinators |
 | [Direction semantics](direction.md) | `"forward"`/`"heisenberg"`, push-order note |
-| [Measurement](measurement.md) | `expectation`, `expectation_stabilizer`, `overlap`, `identity_coefficient`, `anticommute_histogram`, `rotated_overlap` |
-| [Module helpers](module-helpers.md) | `numa_nodes`, `mpi_available`, `reset_log_cache`, `diagonal_echo` |
+| [Measurement](measurement.md) | `expectation`, `expectation_stabilizer`, `overlap`, `identity_coefficient` |
+| [Module helpers](module-helpers.md) | `numa_nodes`, `mpi_available`, `reset_log_cache` |

@@ -18,7 +18,6 @@ use crate::engine::timing::{tally, timed};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
-use crate::readout::echo::RotationAxis;
 use crate::readout::product_state::ProductBasis;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
@@ -341,32 +340,6 @@ impl<const W: usize> PartitionedSum<W> {
             .iter()
             .map(|part| part.sum.expectation_product(basis))
             .sum()
-    }
-
-    /// [`PauliSum::anticommute_histogram`] of the whole sum, the partitions' histograms added in rank order.
-    pub fn anticommute_histogram(&self, sites: &[usize], axis: RotationAxis) -> Vec<f64> {
-        let mut histogram = vec![0.0f64; sites.len() + 1];
-        for part in &self.parts {
-            for (h, v) in histogram
-                .iter_mut()
-                .zip(part.sum.anticommute_histogram(sites, axis))
-            {
-                *h += v;
-            }
-        }
-        histogram
-    }
-
-    /// [`PauliSum::rotated_overlap`] of the whole sum; gathers first unless the rows avoid the flipped coordinates of `sites`.
-    pub fn rotated_overlap(&self, sites: &[usize], delta: f64, axis: RotationAxis) -> f64 {
-        if self.rows.keeps_flip_classes(sites, axis) {
-            self.parts
-                .iter()
-                .map(|part| part.sum.rotated_overlap(sites, delta, axis))
-                .sum()
-        } else {
-            self.gather().rotated_overlap(sites, delta, axis)
-        }
     }
 
     /// Drain the per-phase timing counters, zeroing them.

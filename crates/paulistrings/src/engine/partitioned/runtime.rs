@@ -7,7 +7,7 @@ use super::topology::{
     bind_current_thread_memory, build_pool, pin_current_thread, PartitionConfig, PartitionSlot,
     TopologyError,
 };
-use super::transport::InProcessTransport;
+use super::transport::{InProcessTransport, DEFAULT_WAIT_TIMEOUT};
 use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 
 /// The resolved placement and its pinned pools, built once and shared behind an [`Arc`] by every [`PartitionedSum`](crate::PartitionedSum) that runs on it.
@@ -20,8 +20,6 @@ pub struct PartitionRuntime {
     /// How long a partition waits for a partner's collective before declaring it dead.
     wait_timeout: std::time::Duration,
 }
-
-const DEFAULT_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Longer, since device partitions may share a device and its queue.
 const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);

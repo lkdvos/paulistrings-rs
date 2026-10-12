@@ -1,5 +1,4 @@
 use super::exchange_block::{check_stride, BlockHeader, PARTS_PER_BLOCK};
-use super::in_process::WAIT_TIMEOUT;
 use super::*;
 use crate::engine::coset::Gf2Span;
 use num_complex::Complex64;
@@ -667,7 +666,7 @@ fn a_partner_that_dies_between_collectives_fails_the_others_promptly() {
     assert!(message.contains("partition 1"), "{message}");
     assert!(
         elapsed < Duration::from_secs(2),
-        "the survivor waited {elapsed:?}, so it fell back on the {WAIT_TIMEOUT:?} timeout \
+        "the survivor waited {elapsed:?}, so it fell back on the {DEFAULT_WAIT_TIMEOUT:?} timeout \
          instead of noticing the departure",
     );
 }

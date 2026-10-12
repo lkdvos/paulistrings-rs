@@ -29,8 +29,7 @@ impl CallKind {
 }
 
 /// Backstop for a partner that is neither arriving nor departed; a panicking partner is reported through its departure instead.
-#[cfg(any(test, feature = "test-utils"))]
-pub(super) const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One rank's latest transport call.
 #[derive(Default)]
@@ -290,7 +289,7 @@ impl InProcessTransport {
     /// A group of `size` endpoints wired to each other, in rank order.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn group(size: u32) -> Vec<InProcessTransport> {
-        Self::group_with_timeout(size, WAIT_TIMEOUT)
+        Self::group_with_timeout(size, DEFAULT_WAIT_TIMEOUT)
     }
 
     /// [`Self::group`] with the collective wait's backstop set to `timeout`.

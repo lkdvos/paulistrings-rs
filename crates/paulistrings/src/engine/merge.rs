@@ -219,12 +219,6 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         z: b_z,
         coeff: b_c,
     } = rest;
-    let BucketColumns {
-        x: out_x,
-        z: out_z,
-        coeff: out_coeff,
-    } = out;
-    let zero = Complex64::new(0.0, 0.0);
     let (a_len, b_len) = (a_c.len(), b_c.len());
     debug_assert_eq!(a_len, a_x.len());
     debug_assert_eq!(a_len, a_z.len());
@@ -255,20 +249,12 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             sum += b_c[j];
             j += 1;
         }
-        if sum != zero && policy.keep_term(&key_x, &key_z, sum) {
-            out_x.push(key_x);
-            out_z.push(key_z);
-            out_coeff.push(sum);
-        }
+        emit_if_kept(out, policy, key_x, key_z, sum);
     }
     while i < a_len {
         let (key_x, key_z, sum) = (a_x[i], a_z[i], a_c[i]);
         i += 1;
-        if sum != zero && policy.keep_term(&key_x, &key_z, sum) {
-            out_x.push(key_x);
-            out_z.push(key_z);
-            out_coeff.push(sum);
-        }
+        emit_if_kept(out, policy, key_x, key_z, sum);
     }
     while j < b_len {
         let (key_x, key_z) = (b_x[j], b_z[j]);
@@ -278,11 +264,23 @@ pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             sum += b_c[j];
             j += 1;
         }
-        if sum != zero && policy.keep_term(&key_x, &key_z, sum) {
-            out_x.push(key_x);
-            out_z.push(key_z);
-            out_coeff.push(sum);
-        }
+        emit_if_kept(out, policy, key_x, key_z, sum);
+    }
+}
+
+/// Push one reduced key unless its sum is exactly zero or `keep_term` drops it.
+#[inline(always)]
+fn emit_if_kept<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    out: &mut BucketColumns<W>,
+    policy: &T,
+    key_x: [u64; W],
+    key_z: [u64; W],
+    sum: Complex64,
+) {
+    if sum != Complex64::new(0.0, 0.0) && policy.keep_term(&key_x, &key_z, sum) {
+        out.x.push(key_x);
+        out.z.push(key_z);
+        out.coeff.push(sum);
     }
 }
 

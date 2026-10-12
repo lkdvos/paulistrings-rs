@@ -105,7 +105,7 @@ fn export_rank<const W: usize>(
         plan,
         nb,
         want,
-        want_rows: want_counts.rows_to,
+        want_rows: want_counts.rows_sent,
         dev,
         scratch,
         got,

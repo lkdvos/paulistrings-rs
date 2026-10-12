@@ -148,7 +148,7 @@ pub(crate) struct LayerExchangeCounts {
 }
 
 impl LayerExchangeCounts {
-    #[cfg(feature = "cuda")]
+    /// Zero counts for `size` partners.
     pub(crate) fn none(size: u32) -> Self {
         Self {
             remote_deltas: 0,
@@ -187,11 +187,11 @@ where
     let mut order = std::mem::take(&mut state.layer.order);
     order.rebuild(&span, true);
     state.chunks = ChunkMap::of_order(&order, exchange_chunks());
-    let (send, export) = export_layer(local, prepared, plan, size, &order, &mut state.export);
+    let (send, mut counts) = export_layer(local, prepared, plan, size, &order, &mut state.export);
     lap!(stamp, state.layer.stats.export_ns);
     tally!(
         state.layer.stats.rows_exported,
-        export.rows_to.iter().sum::<u64>()
+        counts.rows_sent.iter().sum::<u64>()
     );
     #[cfg(debug_assertions)]
     {
@@ -287,12 +287,9 @@ where
     export_scratch.pool.extend(recv.into_iter().flatten());
     layer_scratch.order = order;
 
-    LayerExchangeCounts {
-        remote_deltas: plan.remote.len(),
-        rows_sent: export.rows_to,
-        bytes_sent: export.bytes_to,
-        rows_received,
-    }
+    counts.remote_deltas = plan.remote.len();
+    counts.rows_received = rows_received;
+    counts
 }
 
 #[cfg(test)]

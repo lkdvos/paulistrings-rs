@@ -29,7 +29,7 @@ fn order_for(plan: &PartitionPlan, num_buckets: usize) -> CosetOrder {
 struct Exported<const W: usize> {
     rank: u32,
     send: Vec<Option<PartnerPayload<W>>>,
-    counts: ExportCounts,
+    counts: LayerExchangeCounts,
 }
 
 /// Split `input` across `rows`'s partitions and export one layer from each.
@@ -135,9 +135,9 @@ fn a_single_bucket_h_layer_exports_the_swapped_keys() {
     // Partition 1 holds X₀ (coeff 1) and ships Z₀ to partition 0.
     let expected: [(u32, [u64; 1], [u64; 1], f64); 2] = [(1, [1], [0], 2.0), (0, [0], [1], 1.0)];
     for (e, (partner, kx, kz, kc)) in exports.iter().zip(expected) {
-        assert_eq!(e.counts.rows_to[partner as usize], 1);
-        assert_eq!(e.counts.rows_to.iter().sum::<u64>(), 1, "one row only");
-        assert!(e.counts.bytes_to[partner as usize] > 0);
+        assert_eq!(e.counts.rows_sent[partner as usize], 1);
+        assert_eq!(e.counts.rows_sent.iter().sum::<u64>(), 1, "one row only");
+        assert!(e.counts.bytes_sent[partner as usize] > 0);
         let payload = e.send[partner as usize]
             .as_ref()
             .unwrap_or_else(|| panic!("rank {} sent nothing to {partner}", e.rank));
@@ -181,7 +181,7 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
         "commuting terms emit nothing"
     );
     for e in &exports {
-        assert!(e.counts.rows_to.iter().all(|&r| r == 0));
+        assert!(e.counts.rows_sent.iter().all(|&r| r == 0));
         let blocks: Vec<_> = e.send.iter().flatten().flat_map(|p| &p.blocks).collect();
         assert_eq!(blocks.len(), 1, "the empty block is still exported");
         assert_eq!(blocks[0].rows(), 0);
@@ -242,7 +242,7 @@ fn the_counted_rows_are_the_filled_rows() {
                     let rows = PartitionRows::<1>::from_seed(8, pbits, 0x1234);
                     let exports = export_all(&input, channel.as_ref(), adjoint, bits, 0xAB, &rows);
                     for e in &exports {
-                        let mut rows_to = vec![0u64; rows.num_partitions()];
+                        let mut rows_sent = vec![0u64; rows.num_partitions()];
                         for (q, payload) in e.send.iter().enumerate() {
                             let Some(payload) = payload else { continue };
                             for block in &payload.blocks {
@@ -260,10 +260,10 @@ fn the_counted_rows_are_the_filled_rows() {
                                     Some(block.header.rows),
                                     "{what}: offsets",
                                 );
-                                rows_to[q] += block.rows() as u64;
+                                rows_sent[q] += block.rows() as u64;
                             }
                         }
-                        assert_eq!(e.counts.rows_to, rows_to, "{name}: reported rows");
+                        assert_eq!(e.counts.rows_sent, rows_sent, "{name}: reported rows");
                     }
                 }
             }
@@ -363,8 +363,8 @@ fn a_layer_with_no_remote_delta_exports_nothing() {
     let exports = export_all(&input, &PtmChannel::hadamard(3), false, 3, 0x55, &rows);
     for e in &exports {
         assert!(e.send.iter().all(Option::is_none));
-        assert_eq!(e.counts.rows_to, vec![0, 0]);
-        assert_eq!(e.counts.bytes_to, vec![0, 0]);
+        assert_eq!(e.counts.rows_sent, vec![0, 0]);
+        assert_eq!(e.counts.bytes_sent, vec![0, 0]);
     }
 }
 

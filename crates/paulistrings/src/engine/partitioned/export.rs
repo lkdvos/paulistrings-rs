@@ -3,6 +3,7 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+use super::layer::LayerExchangeCounts;
 use super::plan::PartitionPlan;
 use super::transport::{ExchangeBlock, PartnerPayload};
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
@@ -26,14 +27,6 @@ pub(crate) struct ExportScratch<const W: usize> {
     source_of: Vec<u32>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W>>,
-}
-
-/// What one layer's export sent, indexed by partner rank.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ExportCounts {
-    pub rows_to: Vec<u64>,
-    /// Wire bytes ([`ExchangeBlock::bytes`]), the same under every transport.
-    pub bytes_to: Vec<u64>,
 }
 
 /// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
@@ -70,14 +63,11 @@ pub(crate) fn export_layer<const W: usize>(
     size: u32,
     order: &CosetOrder,
     scratch: &mut ExportScratch<W>,
-) -> (Vec<Option<PartnerPayload<W>>>, ExportCounts) {
+) -> (Vec<Option<PartnerPayload<W>>>, LayerExchangeCounts) {
     let k = plan.remote.len();
     let num_buckets = local.num_buckets();
     let mut send: Vec<Option<PartnerPayload<W>>> = (0..size).map(|_| None).collect();
-    let mut counts = ExportCounts {
-        rows_to: vec![0; size as usize],
-        bytes_to: vec![0; size as usize],
-    };
+    let mut counts = LayerExchangeCounts::none(size);
     if k == 0 {
         return (send, counts);
     }
@@ -170,8 +160,8 @@ pub(crate) fn export_layer<const W: usize>(
                 columns,
             );
         }
-        counts.rows_to[q] += rows as u64;
-        counts.bytes_to[q] += block.bytes() as u64;
+        counts.rows_sent[q] += rows as u64;
+        counts.bytes_sent[q] += block.bytes() as u64;
     }
     // A pooled payload may carry more blocks than this layer fills; the extras must not travel.
     for (q, payload) in send.iter_mut().enumerate() {

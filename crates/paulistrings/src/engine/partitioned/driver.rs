@@ -122,11 +122,10 @@ fn prepare_or_panic<const W: usize>(
     channel.prepare(hash, adjoint).unwrap_or_else(|| {
         let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
-            "partition {rank}, layer {index}: channel preparation declined, so this channel \
-             cannot be propagated. The engine tabulates channels of support ≤ \
-             {MAX_LOCAL_SUPPORT} qubits (this one declares {weight}), and a channel must \
-             not write outside its declared support. See \
-             research/FINDINGS.md",
+            "partition {rank}, layer {index}: channel preparation declined for a channel of \
+             support {weight}: support above MAX_LOCAL_SUPPORT ({MAX_LOCAL_SUPPORT}) qubits is \
+             unsupported except for PauliRotation, and a channel must not write outside its \
+             declared support",
         )
     })
 }

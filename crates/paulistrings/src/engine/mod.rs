@@ -93,7 +93,7 @@ impl Default for PropagateOptions {
 ///
 /// # Panics
 ///
-/// If a channel's support exceeds `MAX_LOCAL_SUPPORT` (two qubits), which no built-in channel does; [`PauliRotation`](crate::PauliRotation) is exempt at any support.
+/// If a channel's preparation declines: its support exceeds `MAX_LOCAL_SUPPORT` (two qubits), which only [`PauliRotation`](crate::PauliRotation) may, or it writes outside its declared support.
 ///
 /// # Progress logging
 ///

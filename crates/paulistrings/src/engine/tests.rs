@@ -38,7 +38,7 @@ impl<const W: usize> Channel<W> for ThreeQubits {
 }
 
 #[test]
-#[should_panic(expected = "channel preparation declined")]
+#[should_panic(expected = "unsupported except for PauliRotation")]
 fn an_unpreparable_channel_panics() {
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 1);
     accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));

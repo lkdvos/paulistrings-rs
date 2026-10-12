@@ -201,6 +201,8 @@ Doc bugs fixed: `Gf2Hash::coarsen` merges `(b, b+B/2)` not `(2i, 2i+1)`; pipelin
 Python: `Truncation.__repr__` kept `Coeff(...)` via a `tree_repr` in the bindings.
 Verified at `2489250`: fmt/clippy (default, `cuda,phase-timing,test-utils`, py `cuda`, `cuda,mpi`), rustdoc `-D warnings`, 758 workspace tests, `cuda` 888 passed on the A6000 (device tests ran), pytest 523/101, `mpi-test.sh --ranks 2,4` Rust and `--python`, `cuda,mpi` `mpi_ranks` one rank 33 ok (two ranks on one GPU unsupported by NCCL).
 Not yet measured: code A/B against `89bdcca` (D8).
+- **D44** Cross-configuration run comparisons use the normalised operator overlap `Re⟨a, b⟩ / (‖a‖ ‖b‖)` against a tolerance of the order of the truncation (plus equal counts), replacing the magnitude/octave/count-only rules.
+- **D45** Chunk 7: `merge2_into` takes `ColumnsRef`/`BucketColumns` instead of 10 slices; one inline emit helper (no A/B, the user remeasures later); `SortKernel` owns the radix gate and its constants; a real `u32` length assert replaces the radix fallback; `Gf2Span` drops `space_mask`, privatises `is_representative`/`rank_of_representative`, renames `r` → `dimension`, `coord_of` → `coordinate_of`; `merge2_into` → `merge_identity_and_rest`, sorts → `sort_by_comparison`/`sort_by_radix`.
 
 ## Possible improvements
 
@@ -232,4 +234,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on job 7216669 (`ab-campaign.sbatch`, `KNOB_B="--truncation-dispatch builtin"`, PS_REV `b4df80d`), D16 on its own A/B. Next: chunk 7 (`engine/merge.rs`, `engine/coset.rs`), then chunk 8 (bucketed layer; TermTrace/GateTrace cut, phase-timing fold).
+Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on job 7216669 (`ab-campaign.sbatch`, `KNOB_B="--truncation-dispatch builtin"`, PS_REV `b4df80d`), D16 on its own A/B. Chunk 7 (D45) and D44 implementing; next chunk 8 (bucketed layer; TermTrace/GateTrace cut, phase-timing fold).

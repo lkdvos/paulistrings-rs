@@ -50,7 +50,7 @@ impl<const W: usize> LayerScratch<W> {
         Self::default()
     }
 
-    /// Drain the phase counters accumulated since the last drain, across layers and calls, as a one-partition [`PartitionPhaseStats`].
+    /// Drain the phase counters since the last drain, zeroing them; `per_partition` has one entry.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let stats = self.take_phase_stats();
@@ -74,7 +74,7 @@ impl<const W: usize> LayerScratch<W> {
         total
     }
 
-    /// Start recording a one-partition [`PartitionTrace`] on every later call driven by this scratch; idempotent.
+    /// Start recording a one-partition [`PartitionTrace`] on every later propagation driven by this scratch; idempotent.
     pub fn enable_trace(&mut self) {
         self.trace.get_or_insert_with(PartitionTrace::default);
     }

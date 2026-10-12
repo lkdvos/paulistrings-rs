@@ -127,7 +127,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         &self.runtime
     }
 
-    /// Start recording a [`PartitionTrace`] on every subsequent propagation; idempotent.
+    /// Start recording a [`PartitionTrace`] on every later propagation; idempotent.
     pub fn enable_trace(&mut self) {
         self.trace.get_or_insert_with(PartitionTrace::default);
     }
@@ -344,7 +344,7 @@ impl<const W: usize> PartitionedSum<W> {
             .sum()
     }
 
-    /// Drain the per-phase timing counters, zeroing them.
+    /// Drain the phase counters since the last drain, zeroing them; `per_partition` has one entry per partition.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let (scatter_ns, gather_ns, layers) = self.laps.take();

@@ -158,12 +158,12 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         &self.runtime
     }
 
-    /// Start recording a [`PartitionTrace`] of this rank's layers; idempotent.
+    /// Start recording a [`PartitionTrace`] of this rank's layers on every later propagation; idempotent.
     pub fn enable_trace(&mut self) {
         self.trace.get_or_insert_with(PartitionTrace::default);
     }
 
-    /// Drain this rank's records, or `None` if tracing was never enabled.
+    /// Drain this rank's per-layer records, or `None` if tracing was never enabled; tracing stays enabled.
     ///
     /// `terms_in`, `terms_out` and `rows_received` have one entry, while `rows_sent[0]` and `bytes_sent[0]` are indexed by destination rank.
     pub fn take_trace(&mut self) -> Option<PartitionTrace> {
@@ -437,7 +437,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         self.local.sum.expectation_product(basis)
     }
 
-    /// Drain this rank's phase counters; `per_partition` has one entry.
+    /// Drain this rank's phase counters since the last drain, zeroing them; `per_partition` has one entry.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let (scatter_ns, gather_ns, layers) = self.laps.take();

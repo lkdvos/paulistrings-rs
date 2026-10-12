@@ -39,7 +39,7 @@ fn fine() -> PropagateOptions {
 }
 
 fn config(partitions: usize) -> PartitionConfig {
-    unpinned_partitions(partitions, 2, 0x0C0F_FEE0_1234_5678)
+    unpinned_partitions(partitions, 2)
 }
 
 /// The chain bisected: `[0, 16)` and `[16, 32)`. A cut row is z-only, so a

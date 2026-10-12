@@ -671,7 +671,6 @@ pub fn default_config() -> PartitionConfig {
             max_partitions: Some(1),
         },
         bind_memory: true,
-        partition_row_seed: None,
         threads_per_partition: None,
     }
 }

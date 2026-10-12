@@ -98,7 +98,6 @@ pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuEr
             per_device: 1,
         },
         bind_memory: false,
-        partition_row_seed: None,
         threads_per_partition: None,
     };
     let runtime = PartitionRuntime::new(&config).map_err(GpuError::Topology)?;
@@ -160,7 +159,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         )
     }
 
-    /// Splits `sum` across the device partitions `config` places, by seeded rows as [`PartitionedSum::scatter`] draws them.
+    /// Splits `sum` across the device partitions `config` places, by the default rows as [`PartitionedSum::scatter`] draws them.
     ///
     /// # Errors
     ///
@@ -171,7 +170,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     ) -> Result<Self, GpuError> {
         let options = ScatterOptions {
             runtime: PartitionRuntime::new(config).map_err(GpuError::Topology)?,
-            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config.partition_row_seed)),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
         };
         Self::scatter_to_devices_with(sum, options)
     }

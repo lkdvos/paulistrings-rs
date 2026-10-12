@@ -152,7 +152,7 @@ fn partitioned_stats_are_attributed() {
     }
     let sum = rand_sum_real::<1>(20_000, 16, 0x9A17);
 
-    let config = unpinned_partitions(2, 1, 0x51A75);
+    let config = unpinned_partitions(2, 1);
     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
     let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
     let mut split = PartitionedSum::scatter_with(
@@ -227,7 +227,7 @@ fn distributed_stats_are_attributed() {
             .map(|transport| {
                 let (circuit, sum) = (&circuit, sum.clone());
                 scope.spawn(move || {
-                    let config = unpinned_partitions(1, 1, 0x51A75);
+                    let config = unpinned_partitions(1, 1);
                     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
                     let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
                     let mut split = DistributedSum::scatter_with(

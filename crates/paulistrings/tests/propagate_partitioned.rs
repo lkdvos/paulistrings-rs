@@ -27,7 +27,7 @@ const THETA: f64 = 0.01;
 /// `P` unpinned partitions of two threads each: the shape of a partitioned run
 /// without its placement.
 fn config(partitions: usize) -> PartitionConfig {
-    unpinned_partitions(partitions, 2, 0x5EED_C0FF_EE00_1234)
+    unpinned_partitions(partitions, 2)
 }
 
 /// One policy against one circuit: the unpartitioned engine is the oracle, and
@@ -310,7 +310,6 @@ fn auto_placement_agrees() {
             max_partitions: Some(2),
         },
         bind_memory: false,
-        partition_row_seed: None,
         threads_per_partition: None,
     };
     let (want, discarded) =

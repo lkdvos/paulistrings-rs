@@ -313,7 +313,7 @@ impl<const W: usize, X: Transport, B: PartitionStorage<W>> DistributedSum<W, X, 
 }
 
 impl<const W: usize, X: Transport> DistributedSum<W, X> {
-    /// Split the replicated `sum` across `transport`'s group by seeded rows, keeping this rank's share on the one-partition runtime `config` describes.
+    /// Split the replicated `sum` across `transport`'s group by the default rows ([`PartitionRowPolicy::Seeded`] at the sum's own hash seed), keeping this rank's share on the one-partition runtime `config` describes.
     ///
     /// # Errors
     ///
@@ -329,7 +329,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     ) -> Result<Self, TopologyError> {
         let options = ScatterOptions {
             runtime: PartitionRuntime::new(config)?,
-            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config.partition_row_seed)),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
         };
         Ok(Self::scatter_with(sum, transport, options))
     }

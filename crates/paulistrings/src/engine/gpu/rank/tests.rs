@@ -579,7 +579,7 @@ mod protocol {
                     .map(|t| {
                         let (input, rows, circuit) = (&input, &rows, &circuit);
                         s.spawn(move || {
-                            let runtime = PartitionRuntime::new(&unpinned_partitions(1, 2, 0))
+                            let runtime = PartitionRuntime::new(&unpinned_partitions(1, 2))
                                 .expect("topology");
                             let options = ScatterOptions {
                                 runtime,

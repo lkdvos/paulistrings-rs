@@ -228,7 +228,7 @@ impl<const W: usize, B: PartitionStorage<W>> PartitionedSum<W, B> {
 }
 
 impl<const W: usize> PartitionedSum<W> {
-    /// Splits `sum` across the partitions `config` places, by seeded rows ([`PartitionRowPolicy::Seeded`] at `config.partition_row_seed`).
+    /// Splits `sum` across the partitions `config` places, by the default rows ([`PartitionRowPolicy::Seeded`] at the sum's own hash seed); other rows go through [`scatter_with`](Self::scatter_with).
     ///
     /// # Errors
     ///
@@ -240,7 +240,7 @@ impl<const W: usize> PartitionedSum<W> {
     pub fn scatter(sum: PauliSum<W>, config: &PartitionConfig) -> Result<Self, TopologyError> {
         let options = ScatterOptions {
             runtime: PartitionRuntime::new(config)?,
-            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config.partition_row_seed)),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
         };
         Ok(Self::scatter_with(sum, options))
     }

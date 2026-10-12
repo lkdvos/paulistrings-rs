@@ -512,14 +512,12 @@ pub(crate) fn propagate_options(
     Ok(options)
 }
 
-/// `partitions=` / `pin_memory=` / `partition_row_seed=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
+/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
 /// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or `list[list[int]]` (one partition per CPU list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
-/// `partition_row_seed=None` (the default) reproduces today's behaviour exactly: the engine falls back to the sum's own hash seed, same as before this knob existed.
 /// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
 fn parse_partitions(
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
-    partition_row_seed: Option<u64>,
 ) -> PyResult<Option<PartitionConfig>> {
     let Some(obj) = partitions else {
         return Ok(None);
@@ -607,7 +605,6 @@ fn parse_partitions(
     let config = PartitionConfig {
         placement,
         bind_memory: pin_memory,
-        partition_row_seed,
         threads_per_partition: None,
     };
     let num_partitions = config.num_partitions().map_err(topology_error)?;
@@ -1117,7 +1114,7 @@ fn parse_run_mode(
              unpartitioned path)",
         ));
     }
-    let config = parse_partitions(partitions, pin_memory, partition_row_seed)?;
+    let config = parse_partitions(partitions, pin_memory)?;
     if (distributed || config.is_some()) && !policy.supports_partitioned() {
         return Err(topn_partitioned_error(if distributed {
             None
@@ -1295,7 +1292,6 @@ fn parse_device_mode(
                 per_device: 1,
             },
             bind_memory: false,
-            partition_row_seed,
             threads_per_partition: None,
         };
         Ok(RunMode::Devices(config, devices, rows))

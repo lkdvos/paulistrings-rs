@@ -1481,7 +1481,6 @@ fn run_cell_gpu<const W: usize>(
             per_device: cfg.gpu_partitions,
         },
         bind_memory: false,
-        partition_row_seed: cfg.partition_seed,
         threads_per_partition: None,
     };
     let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
@@ -1915,7 +1914,6 @@ where
     let config = PartitionConfig {
         placement: cfg.partition_cpus.placement(partitions),
         bind_memory: cfg.bind_memory,
-        partition_row_seed: cfg.partition_seed,
         threads_per_partition: Some(threads / partitions),
     };
     let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
@@ -2064,7 +2062,6 @@ where
     let config = PartitionConfig {
         placement: cfg.partition_cpus.placement(1),
         bind_memory: cfg.bind_memory,
-        partition_row_seed: cfg.partition_seed,
         threads_per_partition: Some(threads),
     };
     let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {

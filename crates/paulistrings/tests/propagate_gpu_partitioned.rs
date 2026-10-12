@@ -19,7 +19,7 @@ use paulistrings::{
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
-use paulistrings::{PtmChannel, ScatterOptions, ScatterRows};
+use paulistrings::{PartitionRowPolicy, PtmChannel, ScatterOptions, ScatterRows};
 
 const TOL: f64 = 1e-11;
 const THETA: f64 = 0.01;
@@ -58,14 +58,17 @@ fn config(partitions: usize) -> PartitionConfig {
     PartitionConfig {
         placement,
         bind_memory: false,
-        partition_row_seed: Some(ROW_SEED),
         threads_per_partition: None,
     }
 }
 
 /// A split of `sum` over `p` partitions.
 fn split_of<const W: usize>(sum: &PauliSum<W>, p: usize) -> GpuPartitionedSum<W> {
-    GpuPartitionedSum::scatter_to_devices(sum, &config(p)).expect("scatter")
+    let options = ScatterOptions {
+        runtime: PartitionRuntime::new(&config(p)).expect("placement"),
+        rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(ROW_SEED))),
+    };
+    GpuPartitionedSum::scatter_to_devices_with(sum, options).expect("scatter")
 }
 
 /// One propagation and gather.

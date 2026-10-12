@@ -33,7 +33,7 @@ use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, haar_su4_matrix,
     heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
+    trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
@@ -139,8 +139,8 @@ impl Runner<'_> {
     /// production `Auto`: a CI container or an oversubscribed workstation may
     /// hand several ranks the same CPUs, and pinning them all to it would
     /// serialize the run. Placement itself is covered by `topology`'s tests.
-    fn config(&self, seed: u64) -> PartitionConfig {
-        unpinned_partitions(1, 2, seed)
+    fn config(&self) -> PartitionConfig {
+        unpinned_partitions(1, 2)
     }
 
     /// Run one collective case, all-reduce its verdict, and report it on rank
@@ -246,8 +246,11 @@ impl Runner<'_> {
         }
         match backend {
             Backend::Host => {
-                let mut split = DistributedSum::scatter(sum.clone(), transport, &self.config(seed))
-                    .expect("topology resolves");
+                let mut split = DistributedSum::scatter_with(
+                    sum.clone(),
+                    transport,
+                    unpinned_scatter(1, 2, seed),
+                );
                 split.assert_invariants();
                 split.propagate(circuit, policy, direction);
                 split.assert_invariants();
@@ -657,9 +660,8 @@ fn run_host_cases(r: &mut Runner) {
         let sum = rand_sum::<1>(300, 10, 0xA010);
 
         let transport = MpiTransport::from_communicator(r.world);
-        let config = r.config(SEED);
         let mut split =
-            DistributedSum::scatter(sum.clone(), transport, &config).expect("topology resolves");
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, SEED));
         split.enable_trace();
         split.propagate(&circuit, &KeepAll, Direction::Forward);
         let trace = split.take_trace().expect("tracing is on");
@@ -696,7 +698,7 @@ fn run_host_cases(r: &mut Runner) {
         let rows = block_cut::<1>(NQ, r.size as usize);
         let sum = rand_sum_real::<1>(600, NQ, 0xA021);
 
-        let config = r.config(SEED);
+        let config = r.config();
         let runtime = PartitionRuntime::new(&config).expect("topology resolves");
         let transport = MpiTransport::from_communicator(r.world);
         let options = ScatterOptions {
@@ -760,7 +762,7 @@ fn run_host_cases(r: &mut Runner) {
 
         let transport = MpiTransport::from_communicator(r.world);
         let options = ScatterOptions {
-            runtime: PartitionRuntime::new(&r.config(SEED)).expect("topology resolves"),
+            runtime: PartitionRuntime::new(&r.config()).expect("topology resolves"),
             rows: ScatterRows::Policy(PartitionRowPolicy::Cut(blocks.clone())),
         };
         let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
@@ -845,9 +847,7 @@ fn run_host_cases(r: &mut Runner) {
         }
 
         let transport = MpiTransport::from_communicator(r.world);
-        let config = r.config(SEED);
-        let mut split =
-            DistributedSum::scatter(sum, transport, &config).expect("topology resolves");
+        let mut split = DistributedSum::scatter_with(sum, transport, unpinned_scatter(1, 2, SEED));
         let out = std::panic::catch_unwind(AssertUnwindSafe(|| {
             split.propagate(&circuit, &KeepAll, Direction::Forward);
         }));
@@ -871,8 +871,11 @@ fn run_host_cases(r: &mut Runner) {
                 // One policy per process, as a launcher gives each rank its own.
                 let policy = CollapseSample::new(CACHE, seed);
                 let transport = MpiTransport::from_communicator(r.world);
-                let mut split = DistributedSum::scatter(input.clone(), transport, &r.config(SEED))
-                    .expect("topology resolves");
+                let mut split = DistributedSum::scatter_with(
+                    input.clone(),
+                    transport,
+                    unpinned_scatter(1, 2, SEED),
+                );
                 split.propagate(&circuit, &policy, Direction::Heisenberg);
                 assert!(split.len() <= CACHE, "seed {seed}: {} terms", split.len());
                 let got = split.gather();
@@ -907,9 +910,8 @@ fn run_host_cases(r: &mut Runner) {
         let circuit = cnot_ring::<1>(10);
         let sum = rand_sum_real::<1>(500, 10, 0xA050);
         let transport = MpiTransport::from_communicator(r.world);
-        let config = r.config(SEED);
         let mut split =
-            DistributedSum::scatter(sum.clone(), transport, &config).expect("topology resolves");
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, SEED));
         split.propagate(&circuit, &KeepAll, Direction::Forward);
 
         let mine = split.local_expectation_product(&ProductBasis::uniform(PauliAxis::Z));

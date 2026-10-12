@@ -365,8 +365,6 @@ pub struct PartitionConfig {
     pub placement: Placement,
     /// Whether each pool's workers bind their allocations to the partition's NUMA node (Python's `pin_memory=`).
     pub bind_memory: bool,
-    /// Seed of the partition rows, or `None` for the sum's own hash seed.
-    pub partition_row_seed: Option<u64>,
     /// Workers in every partition's pool (at least one) on the CPU set the placement resolved, or `None` for the placement's own count.
     ///
     /// A measurement knob for holding the total thread count fixed across partition counts; it overrides a device partition's small host pool too.
@@ -374,14 +372,13 @@ pub struct PartitionConfig {
 }
 
 impl Default for PartitionConfig {
-    /// One partition per NUMA node, memory bound to it, default partition rows.
+    /// One partition per NUMA node, memory bound to it.
     fn default() -> Self {
         Self {
             placement: Placement::Auto {
                 max_partitions: None,
             },
             bind_memory: true,
-            partition_row_seed: None,
             threads_per_partition: None,
         }
     }

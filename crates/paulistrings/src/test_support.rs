@@ -1397,18 +1397,30 @@ pub fn z0_sum() -> PauliSum<1> {
     acc.finalize()
 }
 
-/// A partitioned placement with no placement: `partitions` unpinned pools of `threads` workers each, drawing partition rows from `row_seed`.
+/// A partitioned placement with no placement: `partitions` unpinned pools of `threads` workers each.
 /// Every partitioned test uses this rather than `Placement::Auto`, so the suite runs on a one-node box or a `taskset`ed CI container.
 pub fn unpinned_partitions(
     partitions: usize,
     threads: usize,
-    row_seed: u64,
 ) -> crate::engine::partitioned::PartitionConfig {
     crate::engine::partitioned::PartitionConfig {
         placement: crate::engine::partitioned::Placement::Unpinned { partitions },
         bind_memory: false,
-        partition_row_seed: Some(row_seed),
         threads_per_partition: Some(threads),
+    }
+}
+
+/// [`unpinned_partitions`] as `scatter_with` options, drawing partition rows from `row_seed`.
+pub fn unpinned_scatter<const W: usize>(
+    partitions: usize,
+    threads: usize,
+    row_seed: u64,
+) -> crate::engine::partitioned::ScatterOptions<W> {
+    use crate::engine::partitioned::{PartitionRowPolicy, PartitionRuntime, ScatterRows};
+    crate::engine::partitioned::ScatterOptions {
+        runtime: PartitionRuntime::new(&unpinned_partitions(partitions, threads))
+            .expect("an unpinned placement resolves"),
+        rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(row_seed))),
     }
 }
 

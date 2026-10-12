@@ -6,7 +6,6 @@ fn config(partitions: usize) -> PartitionConfig {
     PartitionConfig {
         placement: Placement::Unpinned { partitions },
         bind_memory: false,
-        partition_row_seed: None,
         threads_per_partition: Some(2),
     }
 }
@@ -28,7 +27,6 @@ fn threads_per_partition_overrides_the_resolved_width() {
     let config = PartitionConfig {
         placement,
         bind_memory: false,
-        partition_row_seed: None,
         threads_per_partition: None,
     };
 

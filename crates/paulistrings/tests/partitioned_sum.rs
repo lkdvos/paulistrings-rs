@@ -14,8 +14,11 @@ use paulistrings::{PauliRotation, PtmChannel};
 const TOL: f64 = 1e-11;
 const NQ: usize = 16;
 
+/// Partition-row seed of every seeded scatter here.
+const ROW_SEED: u64 = 0x0BAD_F00D;
+
 fn config(partitions: usize) -> PartitionConfig {
-    unpinned_partitions(partitions, 2, 0x0BAD_F00D)
+    unpinned_partitions(partitions, 2)
 }
 
 /// A short mixed circuit: a Clifford, a weight-2 rotation and a weight-4 one,
@@ -51,7 +54,7 @@ fn a_held_sum_propagates_across_calls() {
         sum,
         ScatterOptions {
             runtime: runtime.clone(),
-            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(config(4).partition_row_seed)),
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(ROW_SEED))),
         },
     );
     assert_eq!(ps.num_partitions(), 4);
@@ -107,7 +110,7 @@ fn a_runtime_serves_more_than_one_sum() {
             sum,
             ScatterOptions {
                 runtime: runtime.clone(),
-                rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(cfg.partition_row_seed)),
+                rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(ROW_SEED))),
             },
         );
         ps.propagate(

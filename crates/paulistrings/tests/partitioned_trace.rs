@@ -2,7 +2,7 @@
 
 use paulistrings::test_support::desired_bits;
 use paulistrings::test_support::{
-    low_weight_sum, partition_rows, rand_sum, unpinned_partitions, KeepAll,
+    low_weight_sum, partition_rows, rand_sum, unpinned_partitions, unpinned_scatter, KeepAll,
 };
 use paulistrings::{Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
 use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
@@ -12,7 +12,7 @@ use paulistrings::{ScatterOptions, ScatterRows};
 const NQ: usize = 16;
 
 fn config(partitions: usize) -> PartitionConfig {
-    unpinned_partitions(partitions, 2, 0x7_ACED_7ACE)
+    unpinned_partitions(partitions, 2)
 }
 
 /// A mixed circuit: two Cliffords (whose non-identity delta may or may not
@@ -48,8 +48,10 @@ fn rows_seeing_qubit_0_x() -> PartitionRows<1> {
 
 #[test]
 fn tracing_is_off_by_default() {
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x1), &config(2))
-        .expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum::<1>(200, NQ, 0x1),
+        unpinned_scatter(2, 2, 0x7_ACED_7ACE),
+    );
     ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     assert!(ps.take_trace().is_none(), "no trace unless asked for");
 }
@@ -59,8 +61,10 @@ fn tracing_is_off_by_default() {
 #[test]
 fn a_trace_records_every_layer() {
     let circuit = circuit();
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x2), &config(4))
-        .expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum::<1>(600, NQ, 0x2),
+        unpinned_scatter(4, 2, 0x7_ACED_7ACE),
+    );
     ps.enable_trace();
     ps.enable_trace(); // idempotent
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
@@ -151,8 +155,10 @@ fn a_key_preserving_layer_is_local() {
 
     let mut circuit = Circuit::<1>::new(NQ);
     circuit.push(PtmChannel::depolarizing(3, 0.1));
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x4), &config(2))
-        .expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum::<1>(200, NQ, 0x4),
+        unpinned_scatter(2, 2, 0x7_ACED_7ACE),
+    );
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -164,8 +170,10 @@ fn a_key_preserving_layer_is_local() {
 /// Random rows on a big dense sum balance the split to within a few percent.
 #[test]
 fn imbalance_is_near_one_for_random_rows() {
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(20_000, NQ, 0x5), &config(4))
-        .expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum::<1>(20_000, NQ, 0x5),
+        unpinned_scatter(4, 2, 0x7_ACED_7ACE),
+    );
     ps.enable_trace();
     ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -241,8 +249,10 @@ fn bits_are_uniform_and_grow_only() {
 #[test]
 fn gate_identity_and_timing_are_recorded_per_layer() {
     let circuit = circuit();
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(600, NQ, 0x4), &config(4))
-        .expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum::<1>(600, NQ, 0x4),
+        unpinned_scatter(4, 2, 0x7_ACED_7ACE),
+    );
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Forward);
     let trace = ps.take_trace().expect("tracing is on");
@@ -265,8 +275,10 @@ fn gate_identity_and_timing_are_recorded_per_layer() {
 fn heisenberg_reverses_circuit_index_not_application_index() {
     let circuit = circuit();
     let n = circuit.len();
-    let mut ps = PartitionedSum::scatter(rand_sum::<1>(200, NQ, 0x5), &config(2))
-        .expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        rand_sum::<1>(200, NQ, 0x5),
+        unpinned_scatter(2, 2, 0x7_ACED_7ACE),
+    );
     ps.enable_trace();
     ps.propagate(&circuit, &KeepAll, Direction::Heisenberg);
     let trace = ps.take_trace().expect("tracing is on");

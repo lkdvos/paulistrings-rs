@@ -861,7 +861,7 @@ pub fn haar_su4_matrix() -> [[Complex64; 4]; 4] {
 /// GF(2) rank of a set of bucket indices, by Gaussian elimination.
 ///
 /// One pivot slot per bit position, so each vector is either absorbed by an existing pivot or becomes a new one — the same reduced-basis subtlety `engine::coset::Gf2Span::new` handles by back-substituting.
-/// `Gf2Span::r()` is exactly this rank applied to a prepared channel's `bucket_deltas()`, the coset dimension the engine gets for a layer (research/FINDINGS.md).
+/// `Gf2Span::dimension()` is exactly this rank applied to a prepared channel's `bucket_deltas()`, the coset dimension the engine gets for a layer (research/FINDINGS.md).
 pub fn gf2_rank(vs: &[u32]) -> usize {
     let mut pivot = [0u32; 32];
     let mut r = 0usize;
@@ -955,7 +955,7 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
             Box::new(PtmChannel::unitary_2q(1, 5, sqrt_swap_matrix())),
         ),
         (
-            // A dense SU(4): every PTM entry nonzero (fanout ~15) — the shape the per-run sort kernel is selected on (`merge::sort_rows_radix_with_scratch`).
+            // A dense SU(4): every PTM entry nonzero (fanout ~15) — the shape the per-run sort kernel is selected on (`merge::SortKernel::Radix`).
             "haar_su4",
             Box::new(PtmChannel::unitary_2q(1, 5, haar_su4_matrix())),
         ),

@@ -8,7 +8,7 @@ use crate::engine::merge::{
     merge2_into, sort_rows_radix_with_scratch, sort_rows_with_scratch, SortScratch,
 };
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::storage::BucketColumns;
+use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
@@ -32,14 +32,10 @@ pub(in crate::engine) struct CosetScratch<const W: usize> {
 /// One output member's gather run, split into the identity stream and the rest.
 #[derive(Clone, Debug, Default)]
 pub(in crate::engine) struct GatherRun<const W: usize> {
-    /// The identity-delta stream, already sorted; under a dense identity only `id_coeff` is filled.
-    pub(super) id_x: Vec<[u64; W]>,
-    pub(super) id_z: Vec<[u64; W]>,
-    pub(super) id_coeff: Vec<Complex64>,
+    /// The identity-delta stream, already sorted; under a dense identity only `coeff` is filled.
+    pub(super) identity: BucketColumns<W>,
     /// Every other delta's rows, unsorted until the per-run sort.
-    pub(super) x: Vec<[u64; W]>,
-    pub(super) z: Vec<[u64; W]>,
-    pub(super) coeff: Vec<Complex64>,
+    pub(super) rest: BucketColumns<W>,
 }
 
 /// `value != ZERO`, without the `||` short-circuit — one flag, no branch.
@@ -54,35 +50,34 @@ impl<const W: usize> GatherRun<W> {
         id_coeff_capacity: usize,
         rest_capacity: usize,
     ) {
-        self.id_x.clear();
-        self.id_z.clear();
-        self.id_coeff.clear();
-        self.x.clear();
-        self.z.clear();
-        self.coeff.clear();
+        self.identity.clear();
+        self.rest.clear();
         // One slot past the exact capacity: `append_if` writes a discarded row at `len` before deciding not to publish it.
-        self.id_x.reserve(id_key_capacity + 1);
-        self.id_z.reserve(id_key_capacity + 1);
-        self.id_coeff.reserve(id_coeff_capacity + 1);
-        self.x.reserve(rest_capacity + 1);
-        self.z.reserve(rest_capacity + 1);
-        self.coeff.reserve(rest_capacity + 1);
+        self.identity.x.reserve(id_key_capacity + 1);
+        self.identity.z.reserve(id_key_capacity + 1);
+        self.identity.coeff.reserve(id_coeff_capacity + 1);
+        self.rest.x.reserve(rest_capacity + 1);
+        self.rest.z.reserve(rest_capacity + 1);
+        self.rest.coeff.reserve(rest_capacity + 1);
     }
 
     /// Write one row at `len` and publish it iff `keep`.
     ///
     /// # Safety
     ///
-    /// `xs.len() < xs.capacity()` and likewise for `zs` and `cs`, which [`GatherRun::reset`] guarantees.
+    /// `len < capacity` on each of the three columns, which [`GatherRun::reset`] guarantees.
     unsafe fn append_if(
-        xs: &mut Vec<[u64; W]>,
-        zs: &mut Vec<[u64; W]>,
-        cs: &mut Vec<Complex64>,
+        columns: &mut BucketColumns<W>,
         keep: bool,
         x: [u64; W],
         z: [u64; W],
         c: Complex64,
     ) {
+        let BucketColumns {
+            x: xs,
+            z: zs,
+            coeff: cs,
+        } = columns;
         let len = xs.len();
         debug_assert!(len < xs.capacity());
         debug_assert!(len < zs.capacity());
@@ -101,7 +96,7 @@ impl<const W: usize> GatherRun<W> {
     /// Branchless filtered append to the rest stream.
     pub(super) fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
         // SAFETY: `reset` reserved `rest_capacity + 1` on all three columns, and `rest_capacity` bounds every row the plan's deltas can emit into this run.
-        unsafe { Self::append_if(&mut self.x, &mut self.z, &mut self.coeff, keep, x, z, c) }
+        unsafe { Self::append_if(&mut self.rest, keep, x, z, c) }
     }
 
     /// Unconditional append to the rest stream.
@@ -112,33 +107,24 @@ impl<const W: usize> GatherRun<W> {
     /// Branchless filtered append to the identity stream.
     pub(super) fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
         // SAFETY: as `push_if`, with `id_key_capacity` / `id_coeff_capacity` bounding the identity stream's rows.
-        unsafe {
-            Self::append_if(
-                &mut self.id_x,
-                &mut self.id_z,
-                &mut self.id_coeff,
-                keep,
-                x,
-                z,
-                c,
-            )
-        }
+        unsafe { Self::append_if(&mut self.identity, keep, x, z, c) }
     }
 
     /// Unchecked append to the identity coefficient column, the only one a dense identity materializes.
     pub(super) fn push_id_coeff(&mut self, c: Complex64) {
-        let len = self.id_coeff.len();
-        debug_assert!(len < self.id_coeff.capacity());
+        let coeff = &mut self.identity.coeff;
+        let len = coeff.len();
+        debug_assert!(len < coeff.capacity());
         // SAFETY: `reset` reserved `id_coeff_capacity + 1`, and `id_coeff_capacity` is the source bucket's length, exactly the number of calls made.
         unsafe {
-            self.id_coeff.as_mut_ptr().add(len).write(c);
-            self.id_coeff.set_len(len + 1);
+            coeff.as_mut_ptr().add(len).write(c);
+            coeff.set_len(len + 1);
         }
     }
 
     #[cfg(any(test, feature = "phase-timing"))]
     pub(super) fn len(&self) -> usize {
-        self.id_coeff.len() + self.coeff.len()
+        self.identity.len() + self.rest.len()
     }
 }
 
@@ -281,7 +267,8 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     }
     if X::NEEDS_BETA {
         for (j, run) in runs.iter_mut().enumerate() {
-            extra.append_into(beta_of(j), &mut run.x, &mut run.z, &mut run.coeff);
+            let rest = &mut run.rest;
+            extra.append_into(beta_of(j), &mut rest.x, &mut rest.z, &mut rest.coeff);
         }
     }
     #[cfg(feature = "phase-timing")]
@@ -298,12 +285,12 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         #[cfg(feature = "phase-timing")]
         {
             stats.rows_gathered += run.len() as u64;
-            stats.rows_sorted += run.coeff.len() as u64;
+            stats.rows_sorted += run.rest.len() as u64;
         }
         if radix {
-            sort_rows_radix_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
+            sort_rows_radix_with_scratch(&mut run.rest, sort);
         } else {
-            sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, sort);
+            sort_rows_with_scratch(&mut run.rest, sort);
         }
         #[cfg(feature = "phase-timing")]
         stamp.lap(&mut stats.sort_ns);
@@ -313,17 +300,17 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                 ..
             } => {
                 let source = &old[j];
-                debug_assert_eq!(source.len(), run.id_coeff.len());
+                debug_assert_eq!(source.len(), run.identity.len());
                 #[cfg(feature = "phase-timing")]
                 {
                     stats.rows_id += source.len() as u64;
                 }
                 (&source.x, &source.z)
             }
-            DeltaPlan::Local { .. } => (&run.id_x, &run.id_z),
+            DeltaPlan::Local { .. } => (&run.identity.x, &run.identity.z),
             DeltaPlan::Rotation { coord_identity, .. } => {
                 let source = &old[j ^ *coord_identity as usize];
-                debug_assert_eq!(source.len(), run.id_coeff.len());
+                debug_assert_eq!(source.len(), run.identity.len());
                 #[cfg(feature = "phase-timing")]
                 {
                     stats.rows_id += source.len() as u64;
@@ -331,18 +318,12 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                 (&source.x, &source.z)
             }
         };
-        merge2_into::<W, T>(
-            a_x,
-            a_z,
-            &run.id_coeff,
-            &run.x,
-            &run.z,
-            &run.coeff,
-            &mut destination.x,
-            &mut destination.z,
-            &mut destination.coeff,
-            policy,
-        );
+        let identity = ColumnsRef {
+            x: a_x,
+            z: a_z,
+            coeff: &run.identity.coeff,
+        };
+        merge2_into::<W, T>(identity, run.rest.view(), destination, policy);
         #[cfg(feature = "phase-timing")]
         stamp.lap(&mut stats.merge_ns);
     }

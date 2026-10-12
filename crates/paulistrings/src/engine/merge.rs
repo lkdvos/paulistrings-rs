@@ -4,6 +4,7 @@
 
 use num_complex::Complex64;
 
+use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::truncation::TruncationPolicy;
 
 /// Worker-persistent scratch for the per-run sorts.
@@ -19,15 +20,14 @@ pub(crate) struct SortScratch<const W: usize> {
     staging_c: Vec<Complex64>,
 }
 
-/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, by comparison through a permutation.
+/// Sort the columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
 pub(crate) fn sort_rows_with_scratch<const W: usize>(
-    x: &mut Vec<[u64; W]>,
-    z: &mut Vec<[u64; W]>,
-    c: &mut Vec<Complex64>,
+    columns: &mut BucketColumns<W>,
     scratch: &mut SortScratch<W>,
 ) {
+    let BucketColumns { x, z, coeff: c } = columns;
     let len = x.len();
     debug_assert_eq!(len, z.len());
     debug_assert_eq!(len, c.len());
@@ -107,14 +107,13 @@ fn discriminating_window<const W: usize>(
     None
 }
 
-/// Sort `(x, z, c)` columns in place by the key `(x, z)` alone, by radix on a 16-bit surrogate of the first disagreeing key word.
+/// Sort the columns in place by the key `(x, z)` alone, by radix on a 16-bit surrogate of the first disagreeing key word.
 // Every row shares the bits above the window, so the surrogate is monotone in the key and only leaves ties, which the fixup orders on the full key.
 pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
-    x: &mut Vec<[u64; W]>,
-    z: &mut Vec<[u64; W]>,
-    c: &mut Vec<Complex64>,
+    columns: &mut BucketColumns<W>,
     scratch: &mut SortScratch<W>,
 ) {
+    let BucketColumns { x, z, coeff: c } = columns;
     let len = x.len();
     debug_assert_eq!(len, z.len());
     debug_assert_eq!(len, c.len());
@@ -122,7 +121,7 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
         return;
     }
     if len > u32::MAX as usize {
-        sort_rows_with_scratch(x, z, c, scratch);
+        sort_rows_with_scratch(columns, scratch);
         return;
     }
     let Some((word, high_bit, diff)) = discriminating_window(x, z) else {
@@ -131,7 +130,7 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     let shift = (high_bit + 1).saturating_sub(RADIX_SURROGATE_BITS);
     let mask = (1u64 << RADIX_SURROGATE_BITS) - 1;
     if ((diff >> shift) & mask).count_ones() < RADIX_MIN_WINDOW_BITS {
-        sort_rows_with_scratch(x, z, c, scratch);
+        sort_rows_with_scratch(columns, scratch);
         return;
     }
 
@@ -199,24 +198,32 @@ pub(crate) fn sort_rows_radix_with_scratch<const W: usize>(
     std::mem::swap(c, staging_c);
 }
 
-/// Merge the strictly ascending id stream `a` with the sorted rest stream `b` into the `out` columns, summing equal keys and applying `keep_term` to each full sum.
+/// Merge the strictly ascending `identity` stream with the sorted `rest` stream into `out`, summing equal keys and applying `keep_term` to each full sum.
 // Signed-zero contract: exact-zero rows are summed like any other, and the only zero test is on the final sum.
 // Three loops, so neither stream's bound is tested in the main walk (ARCHITECTURE.md §Engine).
 // Not segment copies: research/FINDINGS.md §Segment-copy merge
 // Not a branchless walk: research/FINDINGS.md §Branchless `merge2_into`
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn merge2_into<const W: usize, T: TruncationPolicy<W> + ?Sized>(
-    a_x: &[[u64; W]],
-    a_z: &[[u64; W]],
-    a_c: &[Complex64],
-    b_x: &[[u64; W]],
-    b_z: &[[u64; W]],
-    b_c: &[Complex64],
-    out_x: &mut Vec<[u64; W]>,
-    out_z: &mut Vec<[u64; W]>,
-    out_coeff: &mut Vec<Complex64>,
+    identity: ColumnsRef<'_, W>,
+    rest: ColumnsRef<'_, W>,
+    out: &mut BucketColumns<W>,
     policy: &T,
 ) {
+    let ColumnsRef {
+        x: a_x,
+        z: a_z,
+        coeff: a_c,
+    } = identity;
+    let ColumnsRef {
+        x: b_x,
+        z: b_z,
+        coeff: b_c,
+    } = rest;
+    let BucketColumns {
+        x: out_x,
+        z: out_z,
+        coeff: out_coeff,
+    } = out;
     let zero = Complex64::new(0.0, 0.0);
     let (a_len, b_len) = (a_c.len(), b_c.len());
     debug_assert_eq!(a_len, a_x.len());

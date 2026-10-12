@@ -9,20 +9,33 @@ const TOL: f64 = 1e-12;
 //
 // Output ascending in lex `(x, z)` with duplicates allowed, as a permutation of the input triples; equal-key order is unpinned, so the check is a multiset comparison.
 
-type SortKernel<const W: usize> =
-    fn(&mut Vec<[u64; W]>, &mut Vec<[u64; W]>, &mut Vec<Complex64>, &mut SortScratch<W>);
+type SortFn<const W: usize> = fn(&mut BucketColumns<W>, &mut SortScratch<W>);
+
+/// Owned columns from slices.
+fn columns<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], c: &[Complex64]) -> BucketColumns<W> {
+    BucketColumns {
+        x: x.to_vec(),
+        z: z.to_vec(),
+        coeff: c.to_vec(),
+    }
+}
 
 /// Assert the contract above for `kernel` on one run.
 fn assert_sort_contract<const W: usize>(
-    kernel: SortKernel<W>,
+    kernel: SortFn<W>,
     x: &[[u64; W]],
     z: &[[u64; W]],
     c: &[Complex64],
     what: &str,
 ) {
-    let (mut gx, mut gz, mut gc) = (x.to_vec(), z.to_vec(), c.to_vec());
+    let mut sorted = columns(x, z, c);
     let mut scratch = SortScratch::<W>::default();
-    kernel(&mut gx, &mut gz, &mut gc, &mut scratch);
+    kernel(&mut sorted, &mut scratch);
+    let BucketColumns {
+        x: gx,
+        z: gz,
+        coeff: gc,
+    } = sorted;
 
     assert_eq!(gx.len(), x.len(), "{what}: row count changed");
     assert_eq!(gz.len(), z.len(), "{what}: row count changed");
@@ -217,30 +230,25 @@ fn sort_rows_radix_with_scratch_honors_the_kernel_contract() {
 fn the_two_sort_kernels_reduce_to_the_same_sum() {
     #[allow(clippy::type_complexity)]
     fn reduced<const W: usize>(
-        kernel: SortKernel<W>,
+        kernel: SortFn<W>,
         x: &[[u64; W]],
         z: &[[u64; W]],
         c: &[Complex64],
     ) -> Vec<([u64; W], [u64; W], Complex64)> {
-        let (mut gx, mut gz, mut gc) = (x.to_vec(), z.to_vec(), c.to_vec());
+        let mut sorted = columns(x, z, c);
         let mut scratch = SortScratch::<W>::default();
-        kernel(&mut gx, &mut gz, &mut gc, &mut scratch);
-        let (mut ox, mut oz, mut oc) = (Vec::new(), Vec::new(), Vec::new());
-        merge2_into(
-            &[],
-            &[],
-            &[],
-            &gx,
-            &gz,
-            &gc,
-            &mut ox,
-            &mut oz,
-            &mut oc,
-            &AlwaysKeep,
-        );
-        ox.into_iter()
-            .zip(oz)
-            .zip(oc)
+        kernel(&mut sorted, &mut scratch);
+        let empty = ColumnsRef {
+            x: &[],
+            z: &[],
+            coeff: &[],
+        };
+        let mut out = BucketColumns::default();
+        merge2_into(empty, sorted.view(), &mut out, &AlwaysKeep);
+        out.x
+            .into_iter()
+            .zip(out.z)
+            .zip(out.coeff)
             .map(|((a, b), v)| (a, b, v))
             .collect()
     }
@@ -267,8 +275,7 @@ fn radix_sort_scratch_capacity_stabilizes() {
     let fixtures = sort_fixtures::<2>(128);
     let run = |s: &mut SortScratch<2>| {
         for (_, x, z, c) in fixtures.iter() {
-            let (mut gx, mut gz, mut gc) = (x.clone(), z.clone(), c.clone());
-            sort_rows_radix_with_scratch(&mut gx, &mut gz, &mut gc, s);
+            sort_rows_radix_with_scratch(&mut columns(x, z, c), s);
         }
     };
     run(&mut scratch);
@@ -340,19 +347,21 @@ impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 /// Sortedness on distinct keys. Lex on `(x, z)`: `I < Z < X` per word, since `x[0]` dominates.
 #[test]
 fn sort_rows_with_scratch_orders_by_lex_key() {
-    let mut x: Vec<[u64; 1]> = vec![[1], [0], [0]];
-    let mut z: Vec<[u64; 1]> = vec![[0], [0], [1]];
-    let mut c: Vec<Complex64> = vec![
-        Complex64::new(7.0, 0.0), // X
-        Complex64::new(8.0, 0.0), // I
-        Complex64::new(9.0, 0.0), // Z
-    ];
+    let mut run = BucketColumns::<1> {
+        x: vec![[1], [0], [0]],
+        z: vec![[0], [0], [1]],
+        coeff: vec![
+            Complex64::new(7.0, 0.0), // X
+            Complex64::new(8.0, 0.0), // I
+            Complex64::new(9.0, 0.0), // Z
+        ],
+    };
     let mut scratch = SortScratch::<1>::default();
-    sort_rows_with_scratch(&mut x, &mut z, &mut c, &mut scratch);
-    assert_eq!(x, vec![[0u64], [0u64], [1u64]]);
-    assert_eq!(z, vec![[0u64], [1u64], [0u64]]);
+    sort_rows_with_scratch(&mut run, &mut scratch);
+    assert_eq!(run.x, vec![[0u64], [0u64], [1u64]]);
+    assert_eq!(run.z, vec![[0u64], [1u64], [0u64]]);
     assert_eq!(
-        c,
+        run.coeff,
         vec![
             Complex64::new(8.0, 0.0),
             Complex64::new(9.0, 0.0),
@@ -364,34 +373,36 @@ fn sort_rows_with_scratch_orders_by_lex_key() {
 /// `x[0]` decides before `x[1]`, and each coefficient follows its key.
 #[test]
 fn sort_rows_with_scratch_keeps_coefficients_with_their_keys() {
-    let mut x: Vec<[u64; 2]> = vec![[1, 0], [0, 99]];
-    let mut z: Vec<[u64; 2]> = vec![[0, 0], [0, 0]];
-    let mut c: Vec<Complex64> = vec![Complex64::new(11.0, 0.0), Complex64::new(22.0, 0.0)];
+    let mut run = BucketColumns::<2> {
+        x: vec![[1, 0], [0, 99]],
+        z: vec![[0, 0], [0, 0]],
+        coeff: vec![Complex64::new(11.0, 0.0), Complex64::new(22.0, 0.0)],
+    };
     let mut scratch = SortScratch::<2>::default();
-    sort_rows_with_scratch(&mut x, &mut z, &mut c, &mut scratch);
-    assert_eq!(x[0], [0, 99]);
-    assert_eq!(c[0], Complex64::new(22.0, 0.0));
-    assert_eq!(x[1], [1, 0]);
-    assert_eq!(c[1], Complex64::new(11.0, 0.0));
+    sort_rows_with_scratch(&mut run, &mut scratch);
+    assert_eq!(run.x[0], [0, 99]);
+    assert_eq!(run.coeff[0], Complex64::new(22.0, 0.0));
+    assert_eq!(run.x[1], [1, 0]);
+    assert_eq!(run.coeff[1], Complex64::new(11.0, 0.0));
 }
 
 /// `len < 2` is a no-op.
 #[test]
 fn sort_rows_with_scratch_len_lt_2_is_noop() {
-    let mut x: Vec<[u64; 1]> = vec![[5]];
-    let mut z: Vec<[u64; 1]> = vec![[7]];
-    let mut c: Vec<Complex64> = vec![Complex64::new(1.0, 2.0)];
+    let mut run = BucketColumns::<1> {
+        x: vec![[5]],
+        z: vec![[7]],
+        coeff: vec![Complex64::new(1.0, 2.0)],
+    };
     let mut scratch = SortScratch::<1>::default();
-    sort_rows_with_scratch(&mut x, &mut z, &mut c, &mut scratch);
-    assert_eq!(x[0], [5]);
-    assert_eq!(z[0], [7]);
-    assert_eq!(c[0], Complex64::new(1.0, 2.0));
+    sort_rows_with_scratch(&mut run, &mut scratch);
+    assert_eq!(run.x[0], [5]);
+    assert_eq!(run.z[0], [7]);
+    assert_eq!(run.coeff[0], Complex64::new(1.0, 2.0));
 
-    let mut empty_x: Vec<[u64; 1]> = vec![];
-    let mut empty_z: Vec<[u64; 1]> = vec![];
-    let mut empty_c: Vec<Complex64> = vec![];
-    sort_rows_with_scratch(&mut empty_x, &mut empty_z, &mut empty_c, &mut scratch);
-    assert!(empty_x.is_empty());
+    let mut empty = BucketColumns::<1>::default();
+    sort_rows_with_scratch(&mut empty, &mut scratch);
+    assert!(empty.x.is_empty());
 }
 
 // ---- merge2_into: fused id/rest merge + reduction ----
@@ -456,13 +467,19 @@ fn run_merge2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     b: (&[[u64; W]], &[[u64; W]], &[Complex64]),
     policy: &T,
 ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
-    let mut ox = vec![];
-    let mut oz = vec![];
-    let mut oc = vec![];
-    merge2_into(
-        a.0, a.1, a.2, b.0, b.1, b.2, &mut ox, &mut oz, &mut oc, policy,
-    );
-    (ox, oz, oc)
+    let identity = ColumnsRef {
+        x: a.0,
+        z: a.1,
+        coeff: a.2,
+    };
+    let rest = ColumnsRef {
+        x: b.0,
+        z: b.1,
+        coeff: b.2,
+    };
+    let mut out = BucketColumns::default();
+    merge2_into(identity, rest, &mut out, policy);
+    (out.x, out.z, out.coeff)
 }
 
 /// Randomized differential against the concat-sort-reduce reference, with cross-stream collisions.

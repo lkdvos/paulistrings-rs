@@ -8,6 +8,7 @@ use crate::engine::merge::{merge2_into, sort_rows_with_scratch, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
+use crate::pauli_sum::storage::ColumnsRef;
 use crate::pauli_sum::PauliSum;
 use crate::test_support::IdentityChannel;
 use crate::truncation::builtin::{And, CoefficientThreshold, WeightCutoff};
@@ -25,20 +26,20 @@ fn push_if_publishes_only_kept_rows_and_never_overruns() {
     run.reset(0, 0, 2);
     let c = |v: f64| Complex64::new(v, 0.0);
     run.push_if(false, [7], [7], c(9.0)); // discarded at len 0
-    assert_eq!(run.x.len(), 0);
+    assert_eq!(run.rest.x.len(), 0);
     run.push_if(true, [1], [2], c(1.0));
     run.push_if(false, [7], [7], c(9.0)); // discarded at len 1
     run.push_if(true, [3], [4], c(2.0)); // the last countable row
-    assert_eq!(run.x.as_slice(), &[[1], [3]]);
-    assert_eq!(run.z.as_slice(), &[[2], [4]]);
-    assert_eq!(run.coeff.as_slice(), &[c(1.0), c(2.0)]);
+    assert_eq!(run.rest.x.as_slice(), &[[1], [3]]);
+    assert_eq!(run.rest.z.as_slice(), &[[2], [4]]);
+    assert_eq!(run.rest.coeff.as_slice(), &[c(1.0), c(2.0)]);
     // The identity stream answers the same contract.
     run.reset(1, 1, 0);
     run.push_id_if(false, [5], [6], c(3.0));
-    assert_eq!(run.id_x.len(), 0);
+    assert_eq!(run.identity.x.len(), 0);
     run.push_id_if(true, [5], [6], c(3.0));
-    assert_eq!(run.id_x.as_slice(), &[[5]]);
-    assert_eq!(run.id_coeff.as_slice(), &[c(3.0)]);
+    assert_eq!(run.identity.x.as_slice(), &[[5]]);
+    assert_eq!(run.identity.coeff.as_slice(), &[c(3.0)]);
 }
 
 /// `nonzero` agrees with `!= ZERO`, signed zeros and NaN included.
@@ -443,7 +444,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         }
         let mut scratch = SortScratch::<1>::default();
         for run in runs.iter_mut() {
-            sort_rows_with_scratch(&mut run.x, &mut run.z, &mut run.coeff, &mut scratch);
+            sort_rows_with_scratch(&mut run.rest, &mut scratch);
         }
         runs
     };
@@ -457,23 +458,15 @@ fn local_gather_orders_agree_to_fp_tolerance() {
     let merge_run =
         |j: usize, run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
             let src = &old[j];
-            assert_eq!(src.len(), run.id_coeff.len(), "dense id must be 1:1");
-            let mut mx = Vec::new();
-            let mut mz = Vec::new();
-            let mut mc = Vec::new();
-            merge2_into::<1, AlwaysKeep>(
-                &src.x,
-                &src.z,
-                &run.id_coeff,
-                &run.x,
-                &run.z,
-                &run.coeff,
-                &mut mx,
-                &mut mz,
-                &mut mc,
-                &AlwaysKeep,
-            );
-            (mx, mz, mc)
+            assert_eq!(src.len(), run.identity.len(), "dense id must be 1:1");
+            let identity = ColumnsRef {
+                x: &src.x,
+                z: &src.z,
+                coeff: &run.identity.coeff,
+            };
+            let mut merged = BucketColumns::default();
+            merge2_into::<1, AlwaysKeep>(identity, run.rest.view(), &mut merged, &AlwaysKeep);
+            (merged.x, merged.z, merged.coeff)
         };
     for (j, (ra, rb)) in a.iter().zip(b.iter()).enumerate() {
         let (max, maz, mac) = merge_run(j, ra);
@@ -1022,7 +1015,7 @@ fn capacity_stabilizes_across_repeated_layers() {
             })
             .sum();
         let old_cap: usize = scratch.task.old.iter().map(|c| c.x.capacity()).sum();
-        let run_cap: usize = scratch.task.runs.iter().map(|r| r.x.capacity()).sum();
+        let run_cap: usize = scratch.task.runs.iter().map(|r| r.rest.x.capacity()).sum();
         let sort_cap = scratch.task.sort.total_capacity();
         bucket_cap
             + old_cap

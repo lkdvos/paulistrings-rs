@@ -84,6 +84,22 @@ impl<const W: usize> BucketColumns<W> {
         self.z.extend_from_slice(&other.z[start..]);
         self.coeff.extend_from_slice(&other.coeff[start..]);
     }
+
+    pub(crate) fn view(&self) -> ColumnsRef<'_, W> {
+        ColumnsRef {
+            x: &self.x,
+            z: &self.z,
+            coeff: &self.coeff,
+        }
+    }
+}
+
+/// Borrowed `(x, z, coeff)` columns of equal length, which need not come from one [`BucketColumns`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ColumnsRef<'a, const W: usize> {
+    pub(crate) x: &'a [[u64; W]],
+    pub(crate) z: &'a [[u64; W]],
+    pub(crate) coeff: &'a [Complex64],
 }
 
 /// `f` over every item, on the Rayon pool once the sum holds `PARALLEL_MIN_TERMS` terms.

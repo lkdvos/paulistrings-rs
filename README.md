@@ -62,23 +62,6 @@ evolved = observable.propagate(circuit, direction="heisenberg")
 print(evolved.expectation("x+").real)
 ```
 
-## Rust quickstart
-
-The crate is [`paulistrings`](https://docs.rs/paulistrings) on crates.io; see its [README](crates/paulistrings/README.md) and rustdoc for the full API.
-The same idea, directly against the core:
-
-```rust
-use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, propagate};
-use paulistrings::{PtmChannel, TopN};
-use num_complex::Complex64;
-
-let mut acc = BuildAccumulator::<1>::new(1);
-acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
-let mut circuit = Circuit::<1>::new(1);
-circuit.push(PtmChannel::hadamard(0));
-let evolved = propagate(&circuit, acc.finalize(), &TopN(10), Direction::Heisenberg);
-```
-
 ## Showcase
 
 A 2D transverse-field Ising quench, evolved by Heisenberg-propagating the average-X-magnetization observable through a Trotter circuit on a 6×6 lattice — a regime where exact diagonalization is already infeasible (`2^36` amplitudes) but Pauli propagation with modest truncation finishes in seconds to minutes.
@@ -130,7 +113,11 @@ research/
   HARDWARE.md           # measured host facts (bandwidth ceilings, roofline tables, node types)
 ```
 
-## Development
+## Building from source and developing
+
+Python is the user interface, documented on the [documentation site](https://lkdvos.github.io/paulistrings-rs/).
+The Rust crate's rustdoc is a developer guide to the engine rather than a user API.
+[`CLAUDE.md`](CLAUDE.md) lists the build, test and benchmark commands, and [`ARCHITECTURE.md`](ARCHITECTURE.md) is the design source of truth.
 
 ```bash
 module load uv                    # Flatiron; elsewhere see https://docs.astral.sh/uv/

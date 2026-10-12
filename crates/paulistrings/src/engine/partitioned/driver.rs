@@ -231,16 +231,20 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         if tracing {
             record_layer_row(
                 &mut work.rows,
-                size,
-                local.hash().bits(),
-                collectives,
-                index as u32,
-                k as u32,
-                channel.debug_name(),
-                terms_before,
-                local.len(),
-                counts,
-                elapsed.unwrap_or_default().as_nanos() as u64,
+                PartitionLayerRow {
+                    bits: local.hash().bits(),
+                    remote_deltas: counts.remote_deltas as u32,
+                    collectives,
+                    circuit_index: index as u32,
+                    application_index: k as u32,
+                    gate_name: channel.debug_name(),
+                    terms_in: terms_before,
+                    terms_out: local.len(),
+                    rows_sent: counts.rows_sent,
+                    bytes_sent: counts.bytes_sent,
+                    rows_received: counts.rows_received,
+                    nanos: elapsed.unwrap_or_default().as_nanos() as u64,
+                },
             );
         }
 

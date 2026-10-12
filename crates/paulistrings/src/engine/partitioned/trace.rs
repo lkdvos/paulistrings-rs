@@ -1,7 +1,5 @@
 //! [`PartitionTrace`], the opt-in per-layer record of a partitioned run, and the per-partition rows it is transposed from.
 
-use super::layer::LayerExchangeCounts;
-
 /// What one layer did across the whole group; the per-partition vectors are indexed by rank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionLayerRecord {
@@ -109,41 +107,16 @@ pub(crate) struct PartitionLayerRow {
 /// Append one layer's record; cold and out of line to keep it from perturbing the inlined merge kernels' layout.
 #[cold]
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn record_layer_row(
-    rows: &mut Vec<PartitionLayerRow>,
-    size: usize,
-    bits: u8,
-    collectives: u32,
-    circuit_index: u32,
-    application_index: u32,
-    gate_name: &'static str,
-    terms_in: usize,
-    terms_out: usize,
-    mut counts: LayerExchangeCounts,
-    nanos: u64,
-) {
-    // A layer without an exchange reports empty per-partner vectors.
-    counts.rows_sent.resize(size, 0);
-    counts.bytes_sent.resize(size, 0);
-    rows.push(PartitionLayerRow {
-        bits,
-        remote_deltas: counts.remote_deltas as u32,
-        collectives,
-        circuit_index,
-        application_index,
-        gate_name,
-        terms_in,
-        terms_out,
-        rows_sent: counts.rows_sent,
-        bytes_sent: counts.bytes_sent,
-        rows_received: counts.rows_received,
-        nanos,
-    });
+pub(super) fn record_layer_row(rows: &mut Vec<PartitionLayerRow>, row: PartitionLayerRow) {
+    rows.push(row);
 }
 
-/// Transposes the partitions' rows into per-layer records appended to `trace`, panicking if the partitions disagree on a collective decision.
-pub(super) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<PartitionLayerRow>>) {
+/// Transposes the partitions' rows into per-layer records appended to `trace`, the per-partner vectors padded to `partners`; panics if the partitions disagree on a collective decision.
+pub(super) fn assemble(
+    trace: &mut PartitionTrace,
+    per_partition: Vec<Vec<PartitionLayerRow>>,
+    partners: usize,
+) {
     let size = per_partition.len();
     let layers = per_partition[0].len();
     for (rank, rows) in per_partition.iter().enumerate() {
@@ -206,8 +179,13 @@ pub(super) fn assemble(trace: &mut PartitionTrace, per_partition: Vec<Vec<Partit
             );
             record.terms_in.push(row.terms_in);
             record.terms_out.push(row.terms_out);
-            record.rows_sent.push(row.rows_sent.clone());
-            record.bytes_sent.push(row.bytes_sent.clone());
+            // A layer without an exchange reports empty per-partner vectors.
+            let mut rows_sent = row.rows_sent.clone();
+            rows_sent.resize(partners, 0);
+            let mut bytes_sent = row.bytes_sent.clone();
+            bytes_sent.resize(partners, 0);
+            record.rows_sent.push(rows_sent);
+            record.bytes_sent.push(bytes_sent);
             record.rows_received.push(row.rows_received);
             record.nanos.push(row.nanos);
         }

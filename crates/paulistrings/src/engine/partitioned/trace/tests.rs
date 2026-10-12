@@ -26,6 +26,7 @@ fn two_layer_trace() -> PartitionTrace {
             vec![row(3, 0, 100, vec![0, 0]), row(4, 2, 120, vec![0, 7])],
             vec![row(3, 0, 300, vec![0, 0]), row(4, 2, 280, vec![5, 0])],
         ],
+        2,
     );
     trace
 }
@@ -72,6 +73,7 @@ fn an_all_empty_layer_is_perfectly_balanced() {
             vec![row(0, 0, 0, vec![0, 0])],
             vec![row(0, 0, 0, vec![0, 0])],
         ],
+        2,
     );
     assert_eq!(trace.imbalance(), vec![1.0]);
 }
@@ -86,6 +88,7 @@ fn assemble_rejects_disagreeing_bucket_bits() {
             vec![row(3, 0, 1, vec![0, 0])],
             vec![row(4, 0, 1, vec![0, 0])],
         ],
+        2,
     );
 }
 
@@ -99,5 +102,18 @@ fn assemble_rejects_a_short_partition() {
             vec![row(3, 0, 1, vec![0, 0]), row(3, 0, 1, vec![0, 0])],
             vec![row(3, 0, 1, vec![0, 0])],
         ],
+        2,
     );
+}
+
+#[test]
+fn assemble_pads_a_local_layers_per_partner_vectors() {
+    let mut trace = PartitionTrace::default();
+    assemble(
+        &mut trace,
+        vec![vec![row(3, 0, 1, vec![])], vec![row(3, 0, 1, vec![])]],
+        2,
+    );
+    assert_eq!(trace.layers[0].rows_sent, vec![vec![0, 0], vec![0, 0]]);
+    assert_eq!(trace.layers[0].bytes_sent, vec![vec![0, 0], vec![0, 0]]);
 }

@@ -268,7 +268,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
 
             self.local = work.local;
             if let Some(trace) = self.trace.as_mut() {
-                assemble(trace, vec![work.rows]);
+                assemble(trace, vec![work.rows], size);
             }
             tally!(self.laps.layers, layer_count);
         }

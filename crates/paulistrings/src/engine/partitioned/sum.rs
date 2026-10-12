@@ -191,7 +191,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
                 }
             }
             if let Some(trace) = self.trace.as_mut() {
-                assemble(trace, traced);
+                assemble(trace, traced, size);
             }
             tally!(self.laps.layers, n);
         }

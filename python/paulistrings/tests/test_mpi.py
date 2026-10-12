@@ -333,6 +333,21 @@ def test_local_shares_cover_exactly_the_gathered_keys(observable, circuit, refer
     assert fold == _key_checksum(reference)
 
 
+def test_local_share_arrays_reassemble_the_gathered_sum(observable, circuit, reference):
+    """`to_arrays` on a share is this rank's terms; gathered and fed to `from_arrays` they are the whole sum."""
+    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    x, z, c = local.to_arrays()
+    assert len(c) == len(local)
+    parts = COMM.allgather((x, z, c))
+    whole = PauliSum.from_arrays(
+        np.concatenate([p[0] for p in parts]),
+        np.concatenate([p[1] for p in parts]),
+        np.concatenate([p[2] for p in parts]),
+        NUM_QUBITS,
+    )
+    _assert_terms_close(whole, reference)
+
+
 # --------------------------------------------------------------------------
 # Stats
 

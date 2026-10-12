@@ -152,6 +152,17 @@ impl PauliSumImpl {
         for_each_width!(self, |s| xz_of(s))
     }
 
+    /// `(width, x_flat, z_flat, coefficients)` from one snapshot of the columns; see [`Self::xz_flat`].
+    pub fn columns_flat(&self) -> (usize, Vec<u64>, Vec<u64>, Vec<Complex64>) {
+        fn columns_of<const W: usize>(
+            s: &CorePauliSum<W>,
+        ) -> (usize, Vec<u64>, Vec<u64>, Vec<Complex64>) {
+            let (x, z, c) = s.to_arrays();
+            (W, x.concat(), z.concat(), c)
+        }
+        for_each_width!(self, |s| columns_of(s))
+    }
+
     /// Build from a `{pauli_string: coefficient}` Python dict. `num_qubits` is inferred from the first key's length when `None`.
     pub fn from_strings_dict(
         terms: &Bound<'_, PyDict>,
@@ -2273,6 +2284,32 @@ impl PauliSum {
             .into_pyarray_bound(py)
             .reshape([n, w])
             .expect("flat length is n*w by construction")
+    }
+
+    /// `(x, z, coefficients)` as NumPy arrays, the exact inverse of `from_arrays`: `x`/`z` are `uint64` of shape `(len, width)` and `coefficients` is `complex128` of shape `(len,)`, row `i` of each describing the same term.
+    ///
+    /// On a `propagate(..., comm=..., result="local")` share it is this rank's terms only.
+    #[allow(clippy::type_complexity)]
+    fn to_arrays<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> (
+        Bound<'py, PyArray2<u64>>,
+        Bound<'py, PyArray2<u64>>,
+        Bound<'py, PyArray1<Complex64>>,
+    ) {
+        let (w, x_flat, z_flat, coeffs) = self.inner.columns_flat();
+        let n = coeffs.len();
+        let reshape = |flat: Vec<u64>| {
+            flat.into_pyarray_bound(py)
+                .reshape([n, w])
+                .expect("flat length is n*w by construction")
+        };
+        (
+            reshape(x_flat),
+            reshape(z_flat),
+            coeffs.into_pyarray_bound(py),
+        )
     }
 
     /// Active monomorphized width `W` (number of `u64` words per term).

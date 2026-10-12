@@ -238,15 +238,13 @@ Words are 64 bits, and a sum's `width` is how many words each term carries: one 
 `x_array()` and `z_array()` return the two columns as `uint64` arrays of shape `(len, width)`, where column `j` covers qubits `64*j .. 64*j + 63`; `coefficients_array()` is the matching `complex128` column.
 
 All three are snapshots — owned copies, not views — so writing into one leaves the sum untouched, and the three taken together are the sum at one instant.
-`from_arrays` is the inverse, taking the same three columns back into a `PauliSum`.
+`to_arrays()` returns all three at once, and `from_arrays` is its inverse, taking the same three columns back into a `PauliSum`.
 Duplicate rows sum their coefficients, arrays narrower than the sum's width tier are zero-padded, and a set bit at or beyond `num_qubits` is a `ValueError`.
 
 ```python
 import numpy as np
 
-x = hamiltonian.x_array()
-z = hamiltonian.z_array()
-c = hamiltonian.coefficients_array()
+x, z, c = hamiltonian.to_arrays()
 print(x.dtype, x.shape, c.dtype, hamiltonian.width)
 
 rebuilt = PauliSum.from_arrays(x, z, c, num_qubits=n)

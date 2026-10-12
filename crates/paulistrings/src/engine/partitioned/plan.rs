@@ -78,15 +78,13 @@ impl PartitionPlan {
             }
         }
 
-        // `engine::bucketed`'s `rest_streams`, over the whole realized delta set (ARCHITECTURE.md §Bucketing).
         self.rest_streams_total = match prepared {
             Prepared::Local(ptm) => {
-                let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
                 debug_assert!(
-                    !has_identity || self.local_entries[0],
+                    !ptm.has_identity() || self.local_entries[0],
                     "the identity delta must be local: part(0) = 0",
                 );
-                ptm.deltas().len() - has_identity as usize
+                ptm.rest_streams()
             }
             Prepared::Rotation(_) => {
                 debug_assert!(self.local_entries[0], "the identity pass must be local");

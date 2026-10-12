@@ -161,15 +161,13 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                     .iter()
                     .map(|d| span.coordinate_of(d.bucket_delta))
                     .collect();
-                let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
+                let has_identity = ptm.has_identity();
                 debug_assert!(!has_identity || coordinates[0] == 0);
                 // `amplitude` is sized LOCAL_DIM but only `4^k` entries are populated.
                 let dim = 1usize << (2 * ptm.k());
                 let dense_identity =
                     has_identity && ptm.deltas()[0].amplitude[..dim].iter().all(|a| *a != ZERO);
-                let rest_streams = knobs
-                    .rest_streams
-                    .unwrap_or(ptm.deltas().len() - has_identity as usize);
+                let rest_streams = knobs.rest_streams.unwrap_or(ptm.rest_streams());
                 let sort_kernel = SortKernel::for_layer(rest_streams, || {
                     knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
                 });

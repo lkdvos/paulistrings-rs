@@ -110,7 +110,7 @@ const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
 /// Mean rest rows per output key that gets any, the radix gate's second arm; ask it of the channel's own PTM, never a restricted one.
 pub(crate) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
     let zero = Complex64::new(0.0, 0.0);
-    let rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == 0));
+    let rest_start = usize::from(ptm.has_identity());
     let dim = 1usize << (2 * ptm.k());
     let (mut rows, mut keys) = (0u32, 0u32);
     for output in 0..dim {

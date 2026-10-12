@@ -103,6 +103,16 @@ impl<const W: usize> LocalPtm<W> {
         &self.deltas
     }
 
+    /// Whether the first entry is the identity delta.
+    pub(crate) fn has_identity(&self) -> bool {
+        self.deltas.first().is_some_and(|d| d.local_delta == 0)
+    }
+
+    /// Non-identity realized deltas: the rest streams the sort-kernel gate counts (ARCHITECTURE.md §Bucketing).
+    pub(crate) fn rest_streams(&self) -> usize {
+        self.deltas.len() - usize::from(self.has_identity())
+    }
+
     /// Number of key deltas.
     #[cfg(test)]
     pub(crate) fn num_deltas(&self) -> usize {

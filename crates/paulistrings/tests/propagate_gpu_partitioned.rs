@@ -8,15 +8,16 @@ use paulistrings::gpu::{
 use paulistrings::require_cuda;
 use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_same_terms, assert_terms_close, propagate_discarding, rand_sum,
-    rand_sum_real, random_circuit, rows_reading_z63, single_cuts, spread_magnitudes, su4_chain,
-    trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
+    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, random_circuit, rows_reading_z63,
+    single_cuts, spread_magnitudes, su4_chain, trotter_circuit, with_hash,
+    x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
     PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
+use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
 use paulistrings::{PtmChannel, ScatterOptions, ScatterRows};
 
@@ -97,6 +98,25 @@ fn check<const W: usize, T>(
             let got = run(circuit, sum, policy, direction, p).expect("device propagate");
             let what = format!("{name} P={p} {direction:?}");
             assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
+        }
+    }
+}
+
+/// Every layer of [`heavy_cut`] cuts through ties or an octave, too heavily for the operator check (`assert_runs_agree_count_only` asserts so): the counts must still match, `ApproxTopN` at `P = 2, 4` and exact `TopN` at `P = 1`.
+#[test]
+fn heavy_cuts_keep_the_host_count() {
+    require_cuda!();
+    let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA5);
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let policies: [(BuiltinTruncation, &[usize]); 2] =
+            [(ApproxTopN(400).into(), &[2, 4]), (TopN(400).into(), &[1])];
+        for (policy, partitions) in policies {
+            let (want, discarded) = propagate_discarding(&circuit, sum.clone(), &policy, direction);
+            for &p in partitions {
+                let got = run(&circuit, &sum, &policy, direction, p).expect("device propagate");
+                let what = format!("heavy {policy:?} P={p} {direction:?}");
+                assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
+            }
         }
     }
 }

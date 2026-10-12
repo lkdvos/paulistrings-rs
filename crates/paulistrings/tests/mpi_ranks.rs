@@ -31,9 +31,9 @@ use std::panic::AssertUnwindSafe;
 use num_complex::Complex64;
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, haar_su4_matrix, propagate_discarding, rand_sum,
-    rand_sum_real, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions,
-    zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, haar_su4_matrix,
+    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts, spread_magnitudes,
+    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
@@ -221,11 +221,30 @@ impl Runner<'_> {
     ) where
         T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
+        let got = self.split_run(backend, circuit, sum, policy, direction, seed, chunk_bytes);
+        self.compare(circuit, sum, policy, direction, got, what);
+    }
+
+    /// Scatter `sum` over the group on `backend`, propagate, and gather on rank 0.
+    #[allow(clippy::too_many_arguments)]
+    fn split_run<const W: usize, T>(
+        &self,
+        backend: Backend,
+        circuit: &Circuit<W>,
+        sum: &PauliSum<W>,
+        policy: &T,
+        direction: Direction,
+        seed: u64,
+        chunk_bytes: Option<usize>,
+    ) -> Option<PauliSum<W>>
+    where
+        T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
+    {
         let mut transport = MpiTransport::from_communicator(self.world);
         if let Some(bytes) = chunk_bytes {
             transport = transport.with_chunk_bytes(bytes);
         }
-        let got = match backend {
+        match backend {
             Backend::Host => {
                 let mut split = DistributedSum::scatter(sum.clone(), transport, &self.config(seed))
                     .expect("topology resolves");
@@ -251,8 +270,7 @@ impl Runner<'_> {
                     .expect("device propagate");
                 split.gather().expect("device gather")
             }
-        };
-        self.compare(circuit, sum, policy, direction, got, what);
+        }
     }
 
     /// Rank 0's gathered result against [`propagate`], term count included; every other rank must hold `None`.
@@ -267,16 +285,24 @@ impl Runner<'_> {
     ) where
         T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
     {
+        if let Some(got) = self.root_result(got, what) {
+            let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
+            let what = format!("{what} ranks={} {direction:?}", self.size);
+            assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
+        }
+    }
+
+    /// Rank 0's gathered result; every other rank must hold `None`.
+    fn root_result<const W: usize>(
+        &self,
+        got: Option<PauliSum<W>>,
+        what: &str,
+    ) -> Option<PauliSum<W>> {
         match (self.rank, got) {
-            (0, Some(got)) => {
-                let (want, discarded) =
-                    propagate_discarding(circuit, sum.clone(), policy, direction);
-                let what = format!("{what} ranks={} {direction:?}", self.size);
-                assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
-            }
+            (0, Some(got)) => Some(got),
             (0, None) => panic!("{what}: rank 0 did not gather"),
             (r, Some(_)) => panic!("{what}: rank {r} gathered but is not the root"),
-            (_, None) => {}
+            (_, None) => None,
         }
     }
 
@@ -499,6 +525,27 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
             SEED,
             "approx tight",
         );
+    });
+
+    // Every layer cuts through ties or an octave, too heavily for the operator check (`assert_runs_agree_count_only` asserts so).
+    r.case(&format!("{tag}heavy cut, counts only"), |r| {
+        use paulistrings::TopN;
+        let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA3);
+        let mut policies: Vec<BuiltinTruncation> = vec![ApproxTopN(400).into()];
+        if r.size == 1 && backend == Backend::Host {
+            policies.push(TopN(400).into());
+        }
+        for policy in &policies {
+            for direction in [Direction::Forward, Direction::Heisenberg] {
+                let got = r.split_run(backend, &circuit, &sum, policy, direction, SEED, None);
+                let what = format!("heavy {policy:?} ranks={} {direction:?}", r.size);
+                if let Some(got) = r.root_result(got, &what) {
+                    let (want, discarded) =
+                        propagate_discarding(&circuit, sum.clone(), policy, direction);
+                    assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
+                }
+            }
+        }
     });
 
     r.case(&format!("{tag}an all-remote rotation"), |r| {

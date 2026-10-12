@@ -15,9 +15,10 @@
 use num_complex::Complex64;
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, collapsing_circuit, haar_su4_matrix,
-    propagate_discarding, rand_sum, rand_sum_on, rand_sum_real, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, collapsing_circuit,
+    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_on, rand_sum_real,
+    single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions, z0_sum, zz_rotation,
+    KeepAll,
 };
 use paulistrings::PtmChannel;
 use paulistrings::{
@@ -169,6 +170,25 @@ fn trotter_matches_propagate_w2() {
     let circuit = trotter_circuit::<2>(24, THETA);
     let sum = spread_magnitudes(&rand_sum_real::<2>(900, 24, 0x0D16), 40, 0x0D16);
     check(&circuit, &sum, &ApproxTopN(1_500), "trotter w2");
+}
+
+/// Every layer of [`heavy_cut`] cuts through ties or an octave, too heavily for the operator check (`assert_runs_agree_count_only` asserts so): the counts must still match, `ApproxTopN` on 2 and 4 ranks and exact `TopN` on one.
+#[test]
+fn heavy_cuts_keep_the_reference_count() {
+    use paulistrings::TopN;
+    let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA2);
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let policies: [(BuiltinTruncation, &[u32]); 2] =
+            [(ApproxTopN(400).into(), &[2, 4]), (TopN(400).into(), &[1])];
+        for (policy, sizes) in policies {
+            let (want, discarded) = propagate_discarding(&circuit, sum.clone(), &policy, direction);
+            for &size in sizes {
+                let got = distributed(&circuit, &sum, &policy, direction, size);
+                let what = format!("heavy {policy:?} ranks={size} {direction:?}");
+                assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
+            }
+        }
+    }
 }
 
 /// Exact `TopN` runs on one rank and panics on every rank of two before the first layer.

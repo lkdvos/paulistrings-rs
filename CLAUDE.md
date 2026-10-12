@@ -127,6 +127,7 @@ A test pinning exact bits is a tripwire: when it trips under a change that is co
 Never design, constrain or reject an optimization to keep output bits stable.
 `propagate_partitioned` at `P = 1` is byte-identical to `propagate`; across partition counts the bar is tolerance; a device run is bitwise reproducible on one device.
 `TopN`/`ApproxTopN` fill from their boundary in bucket order, so runs at different bucket counts, partition counts or on a device keep different boundary terms and agree as operators: equal term counts, and a normalised overlap within the bound set by the norm the cuts discarded (`test_support::assert_runs_agree`), which needs a cut light enough for that bound to see a sign flip on the largest term.
+A heavier cut compares term counts alone (`test_support::assert_runs_agree_count_only`, which refuses a light one); each cross-configuration net keeps one such case on `test_support::heavy_cut`.
 
 ## Performance discipline
 

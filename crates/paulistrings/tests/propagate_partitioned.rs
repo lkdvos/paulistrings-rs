@@ -10,9 +10,9 @@
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, propagate_discarding, rand_sum, rand_sum_real,
-    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions,
-    zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, heavy_cut,
+    propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts, spread_magnitudes,
+    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -44,17 +44,48 @@ fn check<const W: usize, T>(
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
         for &p in partitions {
-            let got = propagate_partitioned(
-                circuit,
-                sum.clone(),
-                policy,
-                direction,
-                &config(p),
-                PropagateOptions::default(),
-            )
-            .expect("topology resolves");
+            let got = partitioned(circuit, sum, policy, direction, p);
             let what = format!("{name} P={p} {direction:?}");
             assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
+        }
+    }
+}
+
+fn partitioned<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    partitions: usize,
+) -> PauliSum<W>
+where
+    T: TruncationPolicy<W>,
+{
+    propagate_partitioned(
+        circuit,
+        sum.clone(),
+        policy,
+        direction,
+        &config(partitions),
+        PropagateOptions::default(),
+    )
+    .expect("topology resolves")
+}
+
+/// Every layer of [`heavy_cut`] cuts through ties or an octave, too heavily for the operator check (`assert_runs_agree_count_only` asserts so): the counts must still match, `ApproxTopN` at `P = 2, 4` and exact `TopN` at `P = 1`.
+#[test]
+fn heavy_cuts_keep_the_reference_count() {
+    let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA1);
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let policies: [(BuiltinTruncation, &[usize]); 2] =
+            [(ApproxTopN(400).into(), &[2, 4]), (TopN(400).into(), &[1])];
+        for (policy, partitions) in policies {
+            let (want, discarded) = propagate_discarding(&circuit, sum.clone(), &policy, direction);
+            for &p in partitions {
+                let got = partitioned(&circuit, &sum, &policy, direction, p);
+                let what = format!("heavy {policy:?} P={p} {direction:?}");
+                assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
+            }
         }
     }
 }

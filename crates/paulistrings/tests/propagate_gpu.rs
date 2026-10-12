@@ -4,10 +4,10 @@
 use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    and, assert_runs_agree, assert_terms_close, cancellation_channel, cancellation_sum,
-    differential_channels_w1, differential_channels_w2, haar_su4_matrix, or, propagate_discarding,
-    rand_sum, random_circuit, single_cuts, spread_magnitudes, trotter_circuit, with_hash,
-    zz_rotation, KeepAll, ShiftX, Xs64,
+    and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, cancellation_channel,
+    cancellation_sum, differential_channels_w1, differential_channels_w2, haar_su4_matrix,
+    heavy_cut, or, propagate_discarding, rand_sum, random_circuit, single_cuts, spread_magnitudes,
+    trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
@@ -266,8 +266,8 @@ fn builtin_policy_types_lower_and_match_the_host() {
     );
 }
 
-/// An `ApproxTopN` that cuts every layer keeps the device and host counts equal through a long run, and the count stays within `n`.
-/// The cut is too heavy for [`assert_runs_agree`]'s overlap check, so only the counts are compared.
+/// An `ApproxTopN` that cuts every layer keeps the device and host counts equal through a long run.
+/// The cut is too heavy for [`assert_runs_agree`]'s overlap check (`assert_runs_agree_count_only` asserts so), so only the counts are compared.
 #[test]
 fn approx_top_n_bounds_every_layer_like_the_host() {
     require_cuda!();
@@ -275,10 +275,25 @@ fn approx_top_n_bounds_every_layer_like_the_host() {
     let circuit = random_circuit::<1>(12, 30, 0x5558, true);
     let policy = ApproxTopN(1500);
     for direction in [Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(&circuit, input.clone(), &policy, direction);
+        let (want, discarded) = propagate_discarding(&circuit, input.clone(), &policy, direction);
         let (got, _) = device_run(&circuit, &input, &policy, direction, None, &[]);
-        assert_eq!(got.len(), want.len(), "{direction:?}: term count");
-        assert!(got.len() <= 1500 && !got.is_empty(), "{direction:?}");
+        assert_runs_agree_count_only(policy, discarded, &got, &want, &format!("{direction:?}"));
+    }
+}
+
+/// Every layer of [`heavy_cut`] cuts through ties or an octave, too heavily for the operator check (`assert_runs_agree_count_only` asserts so): the device keeps the host's count under `ApproxTopN` and exact `TopN`.
+#[test]
+fn heavy_cuts_keep_the_host_count() {
+    require_cuda!();
+    let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA4);
+    let policies: [BuiltinTruncation; 2] = [ApproxTopN(400).into(), TopN(400).into()];
+    for policy in &policies {
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let (want, discarded) = propagate_discarding(&circuit, sum.clone(), policy, direction);
+            let (got, _) = device_run(&circuit, &sum, policy, direction, None, &[]);
+            let what = format!("heavy {policy:?} {direction:?}");
+            assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
+        }
     }
 }
 

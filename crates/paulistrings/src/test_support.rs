@@ -703,21 +703,89 @@ pub fn assert_runs_agree<const W: usize>(
         assert_terms_close(got, want, tol, what);
         return;
     }
-    let (got_norm, want_norm) = (norm_sqr(got).sqrt(), norm_sqr(want).sqrt());
-    // `1 − cos = ‖got/‖got‖ − want/‖want‖‖² / 2`, free of cancellation.
-    let difference = scaled(got, 1.0 / got_norm).add(&scaled(want, -1.0 / want_norm));
-    let distance = norm_sqr(&difference) / 2.0;
-    let slack = discarded + (want.len() as f64).sqrt() * tol;
-    let bound = 2.0 * slack * slack / (got_norm * want_norm);
-    let largest = want.iter().map(|t| t.2.norm_sqr()).fold(0.0, f64::max);
+    let overlap = Overlap::of(discarded, got, want, tol);
     assert!(
-        bound < 2.0 * largest / (want_norm * want_norm),
-        "{what}: Δ = {discarded:e} of ‖want‖ = {want_norm:e} is too heavy a cut to compare"
+        overlap.sees_a_sign_flip,
+        "{what}: Δ = {discarded:e} of ‖want‖ = {:e} is too heavy a cut to compare",
+        overlap.want_norm,
     );
     assert!(
-        distance <= bound,
-        "{what}: 1 − cos = {distance:e} exceeds 2Δ²/(‖got‖‖want‖) = {bound:e} (Δ = {slack:e})"
+        overlap.distance <= overlap.bound,
+        "{what}: 1 − cos = {:e} exceeds 2Δ²/(‖got‖‖want‖) = {:e} (Δ = {:e})",
+        overlap.distance,
+        overlap.bound,
+        overlap.slack,
     );
+}
+
+/// [`assert_runs_agree`]'s operator check: `1 − cos` between the runs, its bound from `Δ`, and whether that bound could see a sign flip on the reference's largest term.
+struct Overlap {
+    distance: f64,
+    bound: f64,
+    slack: f64,
+    want_norm: f64,
+    sees_a_sign_flip: bool,
+}
+
+impl Overlap {
+    fn of<const W: usize>(discarded: f64, got: &PauliSum<W>, want: &PauliSum<W>, tol: f64) -> Self {
+        let (got_norm, want_norm) = (norm_sqr(got).sqrt(), norm_sqr(want).sqrt());
+        // `1 − cos = ‖got/‖got‖ − want/‖want‖‖² / 2`, free of cancellation.
+        let difference = scaled(got, 1.0 / got_norm).add(&scaled(want, -1.0 / want_norm));
+        let slack = discarded + (want.len() as f64).sqrt() * tol;
+        let bound = 2.0 * slack * slack / (got_norm * want_norm);
+        let largest = want.iter().map(|t| t.2.norm_sqr()).fold(0.0, f64::max);
+        Self {
+            distance: norm_sqr(&difference) / 2.0,
+            bound,
+            slack,
+            want_norm,
+            sees_a_sign_flip: bound < 2.0 * largest / (want_norm * want_norm),
+        }
+    }
+}
+
+/// Two runs of `policy`, a bare `TopN(n)` or `ApproxTopN(n)`, through a cut too heavy for [`assert_runs_agree`] to compare as operators: both keep exactly `n` terms, all finite.
+/// Panics if the cut is light enough for [`assert_runs_agree`], which is then the check to use.
+pub fn assert_runs_agree_count_only<const W: usize>(
+    policy: impl Into<crate::truncation::BuiltinTruncation>,
+    discarded: f64,
+    got: &PauliSum<W>,
+    want: &PauliSum<W>,
+    what: &str,
+) {
+    use crate::truncation::BuiltinTruncation as T;
+    let n = match policy.into() {
+        T::TopN(n) | T::ApproxTopN(n) => n,
+        other => {
+            panic!("{what}: a count-only comparison needs a bare TopN or ApproxTopN, got {other:?}")
+        }
+    };
+    assert_eq!(got.len(), want.len(), "{what}: term count");
+    assert_eq!(want.len(), n, "{what}: the last layer must cut");
+    for (run, sum) in [("got", got), ("want", want)] {
+        assert!(
+            sum.iter().all(|t| t.2.re.is_finite() && t.2.im.is_finite()),
+            "{what}: {run} has a non-finite coefficient"
+        );
+    }
+    assert!(
+        !Overlap::of(discarded, got, want, 0.0).sees_a_sign_flip,
+        "{what}: Δ = {discarded:e} is light enough for assert_runs_agree"
+    );
+}
+
+/// [`trotter_steps`] at angle `0.4` over [`tie_heavy_sum`] of `terms`: under a `TopN`/`ApproxTopN` well below `terms`, every layer cuts through a tie group or an octave, too heavily for [`assert_runs_agree`].
+pub fn heavy_cut<const W: usize>(
+    num_qubits: usize,
+    steps: usize,
+    terms: usize,
+    seed: u64,
+) -> (crate::Circuit<W>, PauliSum<W>) {
+    (
+        trotter_steps(num_qubits, 0.4, steps),
+        tie_heavy_sum(terms, num_qubits, seed),
+    )
 }
 
 /// One-layer circuits whose single cut splits a boundary group and drops little weight, each with its input and the `n` that cuts it: a Haar SU(4) on `(0, 1)` over [`spread_magnitudes`] of [`rand_sum`], and a Hadamard on qubit 0 over magnitudes `1`, `2⁻²⁰`, `2⁻⁴⁰`, where `n` falls inside the `2⁻²⁰` ties.

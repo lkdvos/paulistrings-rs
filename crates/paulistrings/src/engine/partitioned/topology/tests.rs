@@ -72,6 +72,10 @@ fn unpinned_placement_requires_a_power_of_two() {
         cfg.resolve(),
         Err(TopologyError::NotPowerOfTwo(3))
     ));
+    assert!(matches!(
+        cfg.num_partitions(),
+        Err(TopologyError::NotPowerOfTwo(3))
+    ));
 }
 
 #[test]
@@ -83,6 +87,7 @@ fn unpinned_placement_resolves_to_unpinned_slots() {
     };
     let slots = cfg.resolve().unwrap();
     assert_eq!(slots.len(), 4);
+    assert_eq!(cfg.num_partitions().unwrap(), 4);
     for slot in &slots {
         assert_eq!(slot.threads, 2);
         assert!(slot.cpus.is_none());

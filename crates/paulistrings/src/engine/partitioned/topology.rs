@@ -412,6 +412,15 @@ impl PartitionConfig {
         }
         Ok(slots)
     }
+
+    /// The partition count the placement resolves to on this machine, without building any pool.
+    ///
+    /// # Errors
+    ///
+    /// As [`resolve`](Self::resolve).
+    pub fn num_partitions(&self) -> Result<usize, TopologyError> {
+        Ok(self.resolve()?.len())
+    }
 }
 
 #[cfg(feature = "cuda")]

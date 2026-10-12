@@ -97,7 +97,7 @@ def main(argv=None) -> int:
         outdir.mkdir(parents=True, exist_ok=True)
 
     # Partition rows on x-bits only: CZ and rz never change a string's x-bits, so only rx exchanges.
-    # The exact overlap additionally needs the probe sites' x-bits unread.
+    # The exact overlap additionally needs the probe sites' x-bits unread, so each rank's classes are whole and the per-rank overlaps add.
     exclude = {"z": list(range(obs.num_qubits))}
     if args.exact_overlap:
         exclude["x"] = sites
@@ -108,15 +108,13 @@ def main(argv=None) -> int:
         kwargs["partitions"] = args.partitions if args.partitions == "auto" else int(args.partitions)
         kwargs["partition_row_exclude"] = exclude
 
-    import paulistrings
-
     for seed in _seeds(args.seeds):
         t0 = time.perf_counter()
         result, stats = obs.propagate_with_stats(
             circuit, build_policy(args, seed), direction="heisenberg", **kwargs
         )
         t_prop = time.perf_counter() - t0
-        hist = result.anticommute_histogram(sites, axis="x", comm=comm)
+        hist = ole.anticommute_histogram(result, sites, "x", comm=comm)
         record = {
             "config": {
                 "L": args.L,
@@ -131,7 +129,7 @@ def main(argv=None) -> int:
                 "mpi_ranks": comm.Get_size() if comm is not None else 1,
                 "partitions": args.partitions,
             },
-            "S_diag": paulistrings.diagonal_echo(hist, delta),
+            "S_diag": ole.diagonal_echo(hist, delta),
             "norm": float(sum(hist)),
             "hist": [float(w) for w in hist],
             "collapses": stats.collapses,
@@ -140,7 +138,7 @@ def main(argv=None) -> int:
         }
         if args.exact_overlap:
             t1 = time.perf_counter()
-            raw = result.rotated_overlap(sites, delta, axis="x", comm=comm)
+            raw = ole.rotated_overlap(result, sites, delta, "x", comm=comm)
             record["S_exact"] = raw / record["norm"] if record["norm"] > 0 else math.nan
             record["overlap_s"] = time.perf_counter() - t1
         peak_kb = peak_memory_kb() or 0.0

@@ -1,7 +1,7 @@
 """Operator Loschmidt echo on the 56-qubit ibm_boston heavy-hex patch (arXiv:2607.25998).
 
 Circuits come from the vendored Quantum Advantage Tracker QASM; `echo_half` rebuilds the measured half for any `(L, eta)`.
-Estimators: the paper's diagonal OLE from an anticommutation histogram, and the exact `rotated_overlap`.
+Estimators, in numpy over `PauliSum.to_arrays()`: the paper's diagonal OLE from an anticommutation histogram, and the exact `rotated_overlap`.
 """
 
 from __future__ import annotations
@@ -163,3 +163,115 @@ def truncated_series(hist, delta: float, order_2m: int) -> float:
     return float(
         sum((-1) ** m * delta ** (2 * m) / math.factorial(2 * m) * c for m, c in enumerate(moments))
     )
+
+
+# Estimators on a propagated `A`, with `V = prod_{q in sites} exp(-i delta G_q)` and `G_q` the single-qubit `X` (`axis="x"`) or `Z`.
+# With `comm`, `A` is a `result="local"` share and the per-rank values are summed.
+
+_BYTE_POPCOUNT = np.array([bin(b).count("1") for b in range(256)], dtype=np.uint8)
+_PAIR_CHUNK = 1 << 22
+
+
+def _popcount(words: np.ndarray) -> np.ndarray:
+    """Set bits per row of a `uint64` array of shape `(..., W)`."""
+    if hasattr(np, "bitwise_count"):
+        return np.bitwise_count(words).sum(axis=-1, dtype=np.int64)
+    as_bytes = np.ascontiguousarray(words).view(np.uint8)
+    return _BYTE_POPCOUNT[as_bytes].sum(axis=-1, dtype=np.int64)
+
+
+def _site_mask(sites, num_qubits: int, width: int) -> np.ndarray:
+    sites = [int(q) for q in sites]
+    if len(set(sites)) != len(sites):
+        raise ValueError(f"a site is listed twice in {sites}")
+    mask = np.zeros(width, dtype=np.uint64)
+    for q in sites:
+        if not 0 <= q < num_qubits:
+            raise ValueError(f"site {q} is outside the {num_qubits}-qubit register")
+        mask[q // 64] |= np.uint64(1 << (q % 64))
+    return mask
+
+
+def _halves(x: np.ndarray, z: np.ndarray, axis: str) -> tuple[np.ndarray, np.ndarray]:
+    """`(selector, flip)`: `G_q` anticommutes with a term iff its selector bit is set on `q`, and `V` then flips its other half there."""
+    if axis == "z":
+        return x, z
+    if axis == "x":
+        return z, x
+    raise ValueError(f"axis must be 'x' or 'z', got {axis!r}")
+
+
+def _allreduce(value, comm):
+    return value if comm is None else comm.allreduce(value)
+
+
+def anticommute_histogram(A, sites, axis: str = "x", comm=None) -> np.ndarray:
+    """`w[n] = sum |c_P|^2` over the strings `P` anticommuting with exactly `n` of the `G_q`; length `len(sites) + 1`."""
+    x, z, c = A.to_arrays()
+    mask = _site_mask(sites, A.num_qubits, x.shape[1])
+    selector, _ = _halves(x, z, axis)
+    counts = _popcount(selector & mask)
+    hist = np.bincount(counts, weights=np.abs(c) ** 2, minlength=len(sites) + 1).astype(float)
+    return _allreduce(hist, comm)
+
+
+def diagonal_echo(hist, delta: float) -> float:
+    """`sum_n w_n cos(2 delta)^n / sum_n w_n`: the class-diagonal part of `rotated_overlap`, normalized by `sum |c|^2`."""
+    w = np.asarray(hist, dtype=float)
+    return float(np.dot(w, np.cos(2.0 * delta) ** np.arange(len(w))) / w.sum())
+
+
+def rotated_overlap_complex(A, sites, delta: float, axis: str = "x") -> complex:
+    """`2^-n Tr(A^dagger V^dagger A V)` of one sum (or share), without materializing `V^dagger A V`.
+
+    Strings agreeing off the flipped bits on their anticommuting sites form a class that `V^dagger . V` mixes; each class of `k` strings costs `k^2` pairs.
+    """
+    x, z, c = A.to_arrays()
+    mask = _site_mask(sites, A.num_qubits, x.shape[1])
+    selector, flip = _halves(x, z, axis)
+    k = selector & mask
+    moving = _popcount(k) > 0
+    fixed = float(np.sum(np.abs(c[~moving]) ** 2))
+    selector, flip, k, c = selector[moving], flip[moving], k[moving], c[moving]
+    if len(c) == 0:
+        return complex(fixed)
+    # Group by class: the selector half and the flip half with its moving bits cleared.
+    key = np.concatenate([selector, flip & ~k], axis=1)
+    order = np.lexsort(key.T[::-1])
+    key, flip, k, c = key[order], (flip & k)[order], k[order], c[order]
+    new_class = np.ones(len(c), dtype=bool)
+    new_class[1:] = np.any(key[1:] != key[:-1], axis=1)
+    starts = np.flatnonzero(new_class)
+    sizes = np.diff(np.append(starts, len(c)))
+    member_size = np.repeat(sizes, sizes)
+    member_start = np.repeat(starts, sizes)
+    sites_k = _popcount(k)
+
+    sin, cos = math.sin(2.0 * delta), math.cos(2.0 * delta)
+    powers = np.arange(len(sites) + 1)
+    cos_pow, sin_pow = cos**powers, sin**powers
+    total = 0.0j
+    # Every ordered pair (p, q) of one class, in chunks of about `_PAIR_CHUNK` pairs.
+    bounds = np.searchsorted(np.cumsum(member_size), np.arange(_PAIR_CHUNK, member_size.sum(), _PAIR_CHUNK))
+    for lo, hi in zip(np.r_[0, bounds], np.r_[bounds, len(c)]):
+        if lo == hi:
+            continue
+        pair_counts = member_size[lo:hi]
+        p = np.repeat(np.arange(lo, hi), pair_counts)
+        offset = np.arange(len(p)) - np.repeat(np.cumsum(pair_counts) - pair_counts, pair_counts)
+        q = member_start[p] + offset
+        d = flip[p] ^ flip[q]
+        flipped = _popcount(d)
+        # R[P, Q] is `-sin 2 delta` where P holds Y against Q's X (Z axis), or P holds Z against Q's Y (X axis).
+        negative = _popcount((flip[p] if axis == "z" else flip[q]) & d) % 2 == 1
+        magnitude = cos_pow[sites_k[p] - flipped] * sin_pow[flipped]
+        total += np.sum(np.conj(c[p]) * c[q] * np.where(negative, -magnitude, magnitude))
+    return complex(total + fixed)
+
+
+def rotated_overlap(A, sites, delta: float, axis: str = "x", comm=None) -> float:
+    """The operator Loschmidt echo `2^-n Tr(A V^dagger A V)`: the real part of `rotated_overlap_complex`, which is the echo itself for a Hermitian `A`.
+
+    With `comm`, every class must lie on one rank; `run_b8.py` ensures it by excluding the flipped bits of `sites` from the partition rows.
+    """
+    return _allreduce(rotated_overlap_complex(A, sites, delta, axis).real, comm)

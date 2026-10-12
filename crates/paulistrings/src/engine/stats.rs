@@ -4,7 +4,7 @@ use std::time::Instant;
 
 /// Cumulative per-phase breakdown of the layers driven since the counters were last drained, in nanoseconds.
 ///
-/// Read through `LayerScratch::take_stats` or the partitioned sums' `take_stats`.
+/// One partition's entry of the [`PartitionPhaseStats`] every driver's `take_stats` drains.
 /// Two clock domains are mixed: the wall-clock phases (`rebucket_ns` through `exchange_ns`) are measured once per layer on the driving thread, while the busy-time phases (`swap_ns` through `clear_ns`) are summed over every Rayon worker and so exceed `coset_loop_ns` under parallelism.
 /// The sub-phases `append_ns` and `chunk_wait_ns` are contained in `gather_ns` and `append_ns` respectively, never additional to them.
 /// Fields marked partitioned- or device-only are zero elsewhere.
@@ -169,16 +169,16 @@ impl PhaseStats {
     }
 }
 
-/// The partitioned engine's phase breakdown, drained by [`PartitionedSum::take_stats`](crate::PartitionedSum::take_stats).
+/// A run's phase breakdown, one [`PhaseStats`] per partition, drained by every driver's `take_stats` (a plain [`LayerScratch`](crate::LayerScratch) holds one partition).
 ///
 /// The per-partition wall-clock fields are concurrent, not additive; `exchange_ns` absorbs the wait for a partner, so the load imbalance shows there.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionPhaseStats {
     /// One breakdown per partition, in rank order.
     pub per_partition: Vec<PhaseStats>,
-    /// Wall time of the scatter that built this sum.
+    /// Wall time of the scatter that built this sum; zero for a plain run.
     pub scatter_ns: u64,
-    /// Wall time summed over [`PartitionedSum::gather`](crate::PartitionedSum::gather) calls.
+    /// Wall time summed over the driver's `gather` calls; zero for a plain run.
     pub gather_ns: u64,
     /// Layers driven since the counters were last drained.
     pub layers: u64,

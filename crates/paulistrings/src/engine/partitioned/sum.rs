@@ -350,7 +350,7 @@ impl<const W: usize> PartitionedSum<W> {
             per_partition: self
                 .parts
                 .iter_mut()
-                .map(|part| part.state.layer.take_stats())
+                .map(|part| part.state.layer.take_phase_stats())
                 .collect(),
             scatter_ns,
             gather_ns,

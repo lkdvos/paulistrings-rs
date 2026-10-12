@@ -45,7 +45,7 @@ fn stats_sum_approximates_total() {
     });
     assert!(!out.is_empty());
 
-    let stats = scratch.take_stats();
+    let stats = scratch.take_stats().per_partition[0];
     assert_eq!(stats.layers, 4);
     assert!(stats.cosets > 0, "coset tasks must be counted: {stats:?}");
     assert!(stats.runs >= stats.cosets);
@@ -93,9 +93,13 @@ fn take_stats_drains() {
     );
 
     let first = scratch.take_stats();
-    assert!(first.layers == 1 && first.coset_loop_ns > 0);
+    assert_eq!(first.layers, 1);
+    assert_eq!(first.per_partition.len(), 1, "a plain run is one partition");
+    assert!(first.per_partition[0].layers == 1 && first.per_partition[0].coset_loop_ns > 0);
+    assert_eq!((first.scatter_ns, first.gather_ns), (0, 0));
     let second = scratch.take_stats();
-    assert_eq!(second, PhaseStats::default());
+    assert_eq!(second.per_partition, vec![PhaseStats::default()]);
+    assert_eq!(second.layers, 0);
 }
 
 #[test]
@@ -114,7 +118,7 @@ fn rescale_path_is_attributed() {
         PropagateOptions::default(),
     );
 
-    let stats = scratch.take_stats();
+    let stats = scratch.take_stats().per_partition[0];
     assert!(stats.rescale_ns > 0, "{stats:?}");
     assert_eq!(stats.coset_loop_ns, 0, "{stats:?}");
     assert_eq!(stats.cosets, 0);
@@ -306,7 +310,7 @@ fn the_unpartitioned_engine_reports_no_exchange() {
         PropagateOptions::default(),
     );
 
-    let stats = scratch.take_stats();
+    let stats = scratch.take_stats().per_partition[0];
     assert_eq!(stats.collective_ns, 0, "{stats:?}");
     assert_eq!(stats.export_ns, 0, "{stats:?}");
     assert_eq!(stats.exchange_ns, 0, "{stats:?}");

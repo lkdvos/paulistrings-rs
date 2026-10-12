@@ -15,7 +15,7 @@ use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 #[cfg(feature = "phase-timing")]
-use super::stats::PhaseStats;
+use super::stats::{PartitionPhaseStats, PhaseStats};
 use super::timing::{lap, stamp};
 
 mod coset_fill;
@@ -50,9 +50,21 @@ impl<const W: usize> LayerScratch<W> {
         Self::default()
     }
 
-    /// Drain the phase counters accumulated since the last drain, across layers and calls.
+    /// Drain the phase counters accumulated since the last drain, across layers and calls, as a one-partition [`PartitionPhaseStats`].
     #[cfg(feature = "phase-timing")]
-    pub fn take_stats(&mut self) -> PhaseStats {
+    pub fn take_stats(&mut self) -> PartitionPhaseStats {
+        let stats = self.take_phase_stats();
+        PartitionPhaseStats {
+            layers: stats.layers,
+            per_partition: vec![stats],
+            scatter_ns: 0,
+            gather_ns: 0,
+        }
+    }
+
+    /// Drain this scratch's own counters, one partition's entry of a driver's [`PartitionPhaseStats`].
+    #[cfg(feature = "phase-timing")]
+    pub(crate) fn take_phase_stats(&mut self) -> PhaseStats {
         let mut total = std::mem::take(&mut self.stats);
         total.absorb_coset(&std::mem::take(&mut self.task.stats));
         for slot in &self.workers {

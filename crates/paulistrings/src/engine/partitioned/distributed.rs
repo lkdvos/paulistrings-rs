@@ -440,7 +440,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let (scatter_ns, gather_ns, layers) = self.laps.take();
         PartitionPhaseStats {
-            per_partition: vec![self.local.state.layer.take_stats()],
+            per_partition: vec![self.local.state.layer.take_phase_stats()],
             scatter_ns,
             gather_ns,
             layers,

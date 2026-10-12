@@ -1378,7 +1378,7 @@ where
                     options,
                 );
                 wall_ns += start.elapsed().as_nanos() as u64;
-                stats.add(&scratch.take_stats());
+                stats.add(&scratch.take_stats().per_partition[0]);
                 if Some(step) == cfg.occupancy_at {
                     occupancy = Some(occupancy_histogram(&sum, step));
                 }
@@ -1409,7 +1409,7 @@ where
                 options,
             );
             let wall_ns = start.elapsed().as_nanos() as u64;
-            let stats = scratch.take_stats();
+            let stats = scratch.take_stats().per_partition[0];
             std::hint::black_box(&output);
 
             (steady_n, wall_ns, stats, None)

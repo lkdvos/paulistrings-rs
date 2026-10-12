@@ -9,7 +9,7 @@ use rayon::prelude::*;
 
 use super::coset::{CosetOrder, Gf2Span};
 use super::merge::{rest_rows_per_key, SortKernel};
-use super::partitioned::trace::PartitionTrace;
+use super::trace::PartitionTrace;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;

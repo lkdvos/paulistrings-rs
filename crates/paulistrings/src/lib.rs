@@ -29,14 +29,15 @@ pub use engine::gpu;
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;
 pub use engine::partitioned::{
-    numa_nodes, propagate_partitioned, CpuSet, DistributedSum, PartitionConfig,
-    PartitionLayerRecord, PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum,
-    Placement, ScatterOptions, ScatterRows, TopologyError, Transport,
+    numa_nodes, propagate_partitioned, CpuSet, DistributedSum, PartitionConfig, PartitionRowPolicy,
+    PartitionRuntime, PartitionedSum, Placement, ScatterOptions, ScatterRows, TopologyError,
+    Transport,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PartitionPhaseStats;
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
+pub use engine::trace::{PartitionLayerRecord, PartitionTrace};
 pub use engine::{propagate, propagate_with, Direction, PropagateOptions};
 pub use pauli_string::PauliString;
 pub use pauli_sum::accumulator::BuildAccumulator;

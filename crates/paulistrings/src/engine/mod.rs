@@ -13,6 +13,7 @@ pub(crate) mod partitioned;
 #[cfg(feature = "phase-timing")]
 pub(crate) mod stats;
 pub(crate) mod timing;
+pub(crate) mod trace;
 
 use crate::circuit::Circuit;
 use crate::pauli_sum::hash::PartitionRows;
@@ -22,8 +23,8 @@ use crate::truncation::TruncationPolicy;
 use bucketed::LayerScratch;
 use partitioned::backend::HostPartition;
 use partitioned::driver::{run_layers, PartitionContext, PartitionWork};
-use partitioned::trace::assemble;
 use partitioned::transport::SoloTransport;
+use trace::assemble;
 
 /// `log` target for the engine's progress events, partitioned or not, and the truncation policies' own.
 pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";

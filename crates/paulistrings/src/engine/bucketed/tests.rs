@@ -73,7 +73,7 @@ pub(super) fn haar_su4(q0: usize, q1: usize) -> PtmChannel {
 /// The trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
 #[test]
 fn trace_is_opt_in_and_drains_on_take() {
-    use crate::engine::partitioned::{PartitionLayerRecord, PartitionTrace};
+    use crate::engine::trace::{PartitionLayerRecord, PartitionTrace};
 
     let mut scratch = LayerScratch::<1>::new();
     assert!(scratch.take_trace().is_none(), "off by default");

@@ -10,11 +10,11 @@ use super::distributed::{PartitionRowPolicy, ScatterOptions, ScatterRows};
 use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, LOG_TARGET};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
-use super::trace::{assemble, PartitionTrace};
 use crate::circuit::Circuit;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::{tally, timed};
+use crate::engine::trace::{assemble, PartitionTrace};
 use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;

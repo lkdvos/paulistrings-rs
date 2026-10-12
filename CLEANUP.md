@@ -203,6 +203,7 @@ Verified at `2489250`: fmt/clippy (default, `cuda,phase-timing,test-utils`, py `
 Not yet measured: code A/B against `89bdcca` (D8).
 - **D44** Cross-configuration run comparisons use the normalised operator overlap `Re⟨a, b⟩ / (‖a‖ ‖b‖)` against a tolerance of the order of the truncation (plus equal counts), replacing the magnitude/octave/count-only rules.
 - **D45** Chunk 7: `merge2_into` takes `ColumnsRef`/`BucketColumns` instead of 10 slices; one inline emit helper (no A/B, the user remeasures later); `SortKernel` owns the radix gate and its constants; a real `u32` length assert replaces the radix fallback; `Gf2Span` drops `space_mask`, privatises `is_representative`/`rank_of_representative`, renames `r` → `dimension`, `coord_of` → `coordinate_of`; `merge2_into` → `merge_identity_and_rest`, sorts → `sort_by_comparison`/`sort_by_radix`.
+- **D46** Chunk 8: one `LayerTrace` (the old `GateTrace`, with `peak_terms`; `enable_trace`/`take_trace`) replaces `TermTrace` and `GateTrace`; `phase-timing` scaffolding folded crate-wide behind no-op macros/ZST, gated on a byte-identical default-build `.text`; the parallel coset loop's fresh-scratch fallback becomes an `expect`; `PhaseStats` stays one struct (stage-B split item closed); `ExtraRows::append_into` takes `&mut BucketColumns`, `id_*` → `identity_*`, `push_row` inlined if trivial, `rescale_in_place` via `retain_per_bucket` if codegen holds.
 
 ## Possible improvements
 
@@ -234,4 +235,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on job 7216669 (`ab-campaign.sbatch`, `KNOB_B="--truncation-dispatch builtin"`, PS_REV `b4df80d`), D16 on its own A/B. Chunk 7 (D45) and D44 implementing; next chunk 8 (bucketed layer; TermTrace/GateTrace cut, phase-timing fold).
+Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on job 7216669 (`ab-campaign.sbatch`, `KNOB_B="--truncation-dispatch builtin"`, PS_REV `b4df80d`), D16 on its own A/B. Chunk 7 (D45) and D44 implementing; chunk 8 (D46) implementing on top of `chunk7`; next chunk 9 (front door).

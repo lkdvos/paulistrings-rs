@@ -541,11 +541,7 @@ fn resolve_unpinned(partitions: usize) -> Result<Vec<PartitionSlot>, TopologyErr
 
 /// The largest power of two `<= n`, and 1 for `n == 0`.
 fn prev_power_of_two(n: usize) -> usize {
-    if n <= 1 {
-        1
-    } else {
-        1 << (usize::BITS - 1 - n.leading_zeros())
-    }
+    1 << n.max(1).ilog2()
 }
 
 fn available_parallelism() -> usize {

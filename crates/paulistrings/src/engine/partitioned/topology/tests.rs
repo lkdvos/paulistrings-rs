@@ -254,3 +254,12 @@ fn current_cpu() -> Option<usize> {
         None
     }
 }
+
+#[test]
+fn prev_power_of_two_rounds_down_and_floors_at_one() {
+    let got: Vec<usize> = [0, 1, 2, 3, 4, 5, 7, 8, 9, 64, 65]
+        .into_iter()
+        .map(prev_power_of_two)
+        .collect();
+    assert_eq!(got, vec![1, 1, 2, 2, 4, 4, 4, 8, 8, 64, 64]);
+}

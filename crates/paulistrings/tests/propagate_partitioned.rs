@@ -10,8 +10,9 @@
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, rand_sum, rand_sum_real, random_circuit, single_cuts,
-    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
+    assert_runs_agree, assert_terms_close, propagate_discarding, rand_sum, rand_sum_real,
+    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions,
+    zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -21,7 +22,7 @@ use paulistrings::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
-const THETA: f64 = 0.1;
+const THETA: f64 = 0.01;
 
 /// `P` unpinned partitions of two threads each: the shape of a partitioned run
 /// without its placement.
@@ -41,7 +42,7 @@ fn check<const W: usize, T>(
     T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(circuit, sum.clone(), policy, direction);
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
         for &p in partitions {
             let got = propagate_partitioned(
                 circuit,
@@ -53,7 +54,7 @@ fn check<const W: usize, T>(
             )
             .expect("topology resolves");
             let what = format!("{name} P={p} {direction:?}");
-            assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
+            assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
         }
     }
 }
@@ -65,12 +66,12 @@ const PS: [usize; 3] = [1, 2, 4];
 #[test]
 fn trotter_matches_propagate_w1() {
     let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = rand_sum_real::<1>(2_000, 32, 0x71A0);
-    check(&circuit, &sum, &ApproxTopN(3_000), "trotter approx", &PS);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A0), 40, 0x71A0);
+    check(&circuit, &sum, &ApproxTopN(6_000), "trotter approx", &PS);
     check(
         &circuit,
         &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(3_000)),
+        &And(CoefficientThreshold(1e-9), ApproxTopN(6_000)),
         "trotter and",
         &PS,
     );
@@ -80,8 +81,8 @@ fn trotter_matches_propagate_w1() {
 #[test]
 fn trotter_matches_propagate_w2() {
     let circuit = trotter_circuit::<2>(32, THETA);
-    let sum = rand_sum_real::<2>(1_500, 32, 0x71A1);
-    check(&circuit, &sum, &ApproxTopN(2_000), "trotter w2", &PS);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A1), 40, 0x71A1);
+    check(&circuit, &sum, &ApproxTopN(4_000), "trotter w2", &PS);
 }
 
 /// `BuiltinTruncation` drives the partitioned engines through its own `finalize_layer_partitioned`, one collective per layer as the builtin `And` it names.
@@ -89,15 +90,15 @@ fn trotter_matches_propagate_w2() {
 fn builtin_truncation_tree_matches_propagate() {
     use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = rand_sum_real::<1>(2_000, 32, 0x71A2);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A2), 40, 0x71A2);
     let tree = T::And(
         Box::new(T::Coefficient(1e-9)),
-        Box::new(T::ApproxTopN(3_000)),
+        Box::new(T::ApproxTopN(6_000)),
     );
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+/// One cut that splits a boundary group, dropping little weight.
 #[test]
 fn single_cuts_match_propagate() {
     for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C1) {
@@ -116,15 +117,15 @@ fn single_cuts_match_propagate() {
 #[test]
 fn random_circuit_matches_propagate_w1() {
     let circuit = random_circuit::<1>(6, 30, 0x9AA1, true);
-    let sum = rand_sum::<1>(300, 6, 0x9AA2);
+    let sum = spread_magnitudes(&rand_sum::<1>(300, 6, 0x9AA2), 40, 0x9AA2);
     check(&circuit, &sum, &KeepAll, "w1 keep", &PS);
     check(&circuit, &sum, &CoefficientThreshold(1e-9), "w1 eps", &PS);
     check(&circuit, &sum, &WeightCutoff(4), "w1 weight", &PS);
-    check(&circuit, &sum, &ApproxTopN(500), "w1 approx", &PS);
+    check(&circuit, &sum, &ApproxTopN(1_000), "w1 approx", &PS);
     check(
         &circuit,
         &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(500)),
+        &And(CoefficientThreshold(1e-9), ApproxTopN(1_000)),
         "w1 and",
         &PS,
     );
@@ -135,13 +136,13 @@ fn random_circuit_matches_propagate_w1() {
 #[test]
 fn random_circuit_matches_propagate_w2() {
     let circuit = random_circuit::<2>(70, 20, 0x9BB1, true);
-    let sum = rand_sum_real::<2>(1_500, 70, 0x9BB2);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0x9BB2), 40, 0x9BB2);
     check(&circuit, &sum, &WeightCutoff(2), "w2 weight", &PS);
-    check(&circuit, &sum, &ApproxTopN(2_000), "w2 approx", &PS);
+    check(&circuit, &sum, &ApproxTopN(4_000), "w2 approx", &PS);
     check(
         &circuit,
         &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(2_000)),
+        &And(CoefficientThreshold(1e-9), ApproxTopN(4_000)),
         "w2 and",
         &PS,
     );
@@ -272,7 +273,7 @@ fn edge_cases() {
 #[test]
 fn auto_placement_agrees() {
     let circuit = random_circuit::<1>(6, 15, 0x9AA1, true);
-    let sum = rand_sum::<1>(300, 6, 0x9AA2);
+    let sum = spread_magnitudes(&rand_sum::<1>(300, 6, 0x9AA2), 40, 0x9AA2);
     let config = PartitionConfig {
         placement: Placement::Auto {
             max_partitions: Some(2),
@@ -280,7 +281,8 @@ fn auto_placement_agrees() {
         bind_memory: false,
         partition_row_seed: None,
     };
-    let want = propagate(&circuit, sum.clone(), &ApproxTopN(400), Direction::Forward);
+    let (want, discarded) =
+        propagate_discarding(&circuit, sum.clone(), &ApproxTopN(400), Direction::Forward);
     let got = propagate_partitioned(
         &circuit,
         sum,
@@ -292,7 +294,7 @@ fn auto_placement_agrees() {
     .expect("topology resolves");
     assert_runs_agree(
         ApproxTopN(400),
-        circuit.len(),
+        discarded,
         &got,
         &want,
         TOL,

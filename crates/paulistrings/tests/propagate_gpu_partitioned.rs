@@ -8,9 +8,9 @@ use paulistrings::gpu::{
 use paulistrings::require_cuda;
 use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_same_terms, assert_terms_close, rand_sum, rand_sum_real,
-    random_circuit, rows_reading_z63, single_cuts, su4_chain, trotter_circuit, with_hash,
-    x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    assert_runs_agree, assert_same_terms, assert_terms_close, propagate_discarding, rand_sum,
+    rand_sum_real, random_circuit, rows_reading_z63, single_cuts, spread_magnitudes, su4_chain,
+    trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
@@ -21,7 +21,7 @@ use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
 use paulistrings::{PtmChannel, ScatterOptions, ScatterRows};
 
 const TOL: f64 = 1e-11;
-const THETA: f64 = 0.1;
+const THETA: f64 = 0.01;
 const ROW_SEED: u64 = 0x5EED_C0FF_EE00_1234;
 const PS: [usize; 3] = [1, 2, 4];
 
@@ -92,16 +92,16 @@ fn check<const W: usize, T>(
     T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(circuit, sum.clone(), policy, direction);
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
         for &p in partitions {
             let got = run(circuit, sum, policy, direction, p).expect("device propagate");
             let what = format!("{name} P={p} {direction:?}");
-            assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
+            assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
         }
     }
 }
 
-/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+/// One cut that splits a boundary group, dropping little weight.
 #[test]
 fn single_cuts_match_propagate() {
     require_cuda!();
@@ -117,12 +117,12 @@ fn single_cuts_match_propagate() {
 fn trotter_matches_propagate_w1() {
     require_cuda!();
     let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = rand_sum_real::<1>(2_000, 32, 0x71A0);
-    check(&circuit, &sum, &ApproxTopN(3_000), "trotter approx", &PS);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A0), 40, 0x71A0);
+    check(&circuit, &sum, &ApproxTopN(6_000), "trotter approx", &PS);
     check(
         &circuit,
         &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(3_000)),
+        &And(CoefficientThreshold(1e-9), ApproxTopN(6_000)),
         "trotter and",
         &PS,
     );
@@ -132,15 +132,15 @@ fn trotter_matches_propagate_w1() {
 fn trotter_matches_propagate_w2() {
     require_cuda!();
     let circuit = trotter_circuit::<2>(32, THETA);
-    let sum = rand_sum_real::<2>(1_500, 32, 0x71A1);
-    check(&circuit, &sum, &ApproxTopN(2_000), "trotter w2", &PS);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A1), 40, 0x71A1);
+    check(&circuit, &sum, &ApproxTopN(4_000), "trotter w2", &PS);
 }
 
 /// Dense: a Haar SU(4) under random rows has about half its deltas remote at `P = 2`.
 #[test]
 fn random_circuit_matches_propagate_w1() {
     require_cuda!();
-    let sum = rand_sum::<1>(300, 6, 0x9AA2);
+    let sum = spread_magnitudes(&rand_sum::<1>(300, 6, 0x9AA2), 40, 0x9AA2);
     let dense = random_circuit::<1>(6, 30, 0x9AA1, true);
     check(&dense, &sum, &KeepAll, "w1 dense keep", &PS);
     check(
@@ -151,11 +151,11 @@ fn random_circuit_matches_propagate_w1() {
         &PS,
     );
     check(&dense, &sum, &WeightCutoff(4), "w1 dense weight", &PS);
-    check(&dense, &sum, &ApproxTopN(500), "w1 dense approx", &PS);
+    check(&dense, &sum, &ApproxTopN(1_000), "w1 dense approx", &PS);
     check(
         &dense,
         &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(500)),
+        &And(CoefficientThreshold(1e-9), ApproxTopN(1_000)),
         "w1 dense and",
         &PS,
     );
@@ -166,14 +166,14 @@ fn random_circuit_matches_propagate_w1() {
 #[test]
 fn random_circuit_matches_propagate_w2() {
     require_cuda!();
-    let sum = rand_sum_real::<2>(1_500, 70, 0x9BB2);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0x9BB2), 40, 0x9BB2);
     let dense = random_circuit::<2>(70, 20, 0x9BB1, true);
     check(&dense, &sum, &WeightCutoff(2), "w2 dense weight", &PS);
-    check(&dense, &sum, &ApproxTopN(2_000), "w2 dense approx", &PS);
+    check(&dense, &sum, &ApproxTopN(4_000), "w2 dense approx", &PS);
     check(
         &dense,
         &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(2_000)),
+        &And(CoefficientThreshold(1e-9), ApproxTopN(4_000)),
         "w2 dense and",
         &PS,
     );
@@ -217,7 +217,7 @@ fn a_rotation_crossing_the_partition_agrees() {
 fn cut_rows_agree() {
     require_cuda!();
     let nq = 16;
-    let sum = rand_sum_real::<1>(1_500, nq, 0xC077);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(1_500, nq, 0xC077), 40, 0xC077);
     let circuit = trotter_circuit::<1>(nq, THETA);
     for p in [2usize, 4] {
         let blocks: Vec<Vec<usize>> = (0..p)
@@ -225,7 +225,8 @@ fn cut_rows_agree() {
             .collect();
         let rows = PartitionRows::<1>::cut(nq, &blocks);
         for direction in [Direction::Forward, Direction::Heisenberg] {
-            let want = propagate(&circuit, sum.clone(), &ApproxTopN(2_500), direction);
+            let (want, discarded) =
+                propagate_discarding(&circuit, sum.clone(), &ApproxTopN(2_500), direction);
             let runtime = PartitionRuntime::new(&config(p)).expect("placement");
             let mut split = GpuPartitionedSum::scatter_to_devices_with(
                 &sum,
@@ -246,7 +247,7 @@ fn cut_rows_agree() {
             );
             let got = split.gather().expect("gather");
             let what = format!("cut P={p} {direction:?}");
-            assert_runs_agree(ApproxTopN(2_500), circuit.len(), &got, &want, TOL, &what);
+            assert_runs_agree(ApproxTopN(2_500), discarded, &got, &want, TOL, &what);
         }
     }
 }
@@ -287,9 +288,10 @@ fn edge_cases() {
 fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
     require_cuda!();
     let circuit = random_circuit::<2>(70, 15, 0x9BB1, true);
-    let sum = rand_sum::<2>(2_000, 70, 0x9BB2);
+    let sum = spread_magnitudes(&rand_sum::<2>(2_000, 70, 0x9BB2), 40, 0x9BB2);
     for direction in [Direction::Forward, Direction::Heisenberg] {
-        let host = propagate(&circuit, sum.clone(), &ApproxTopN(4_000), direction);
+        let (host, discarded) =
+            propagate_discarding(&circuit, sum.clone(), &ApproxTopN(4_000), direction);
         let mut dev = GpuPauliSum::from_host(&sum, test_devices()[0]).expect("upload");
         dev.propagate(&circuit, ApproxTopN(4_000), direction)
             .expect("device");
@@ -301,7 +303,7 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
         );
         assert_runs_agree(
             ApproxTopN(4_000),
-            circuit.len(),
+            discarded,
             &want,
             &host,
             TOL,
@@ -317,24 +319,24 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
 #[test]
 fn repeated_propagate_on_one_split() {
     require_cuda!();
-    let mut host = rand_sum::<1>(2_000, 8, 0x8E9);
+    let mut host = spread_magnitudes(&rand_sum::<1>(2_000, 8, 0x8E9), 40, 0x8E9);
     let mut split = split_of(&host, 2);
     let circuits = [
         random_circuit::<1>(8, 4, 0x1111, false),
         random_circuit::<1>(8, 3, 0x2222, true),
         random_circuit::<1>(8, 5, 0x3333, true),
     ];
-    let mut layers = 0;
+    let mut discarded = 0.0;
     for (i, c) in circuits.iter().enumerate() {
-        layers += c.len();
-        host = propagate(c, host, &ApproxTopN(3_000), Direction::Heisenberg);
+        let (next, d) = propagate_discarding(c, host, &ApproxTopN(10_000), Direction::Heisenberg);
+        (host, discarded) = (next, discarded + d);
         split
-            .propagate(c, ApproxTopN(3_000), Direction::Heisenberg)
+            .propagate(c, ApproxTopN(10_000), Direction::Heisenberg)
             .expect("propagate");
         assert_eq!(split.len(), host.len(), "call {i}");
         assert_runs_agree(
-            ApproxTopN(3_000),
-            layers,
+            ApproxTopN(10_000),
+            discarded,
             &split.gather().expect("gather"),
             &host,
             TOL,
@@ -380,7 +382,7 @@ fn options_are_honoured() {
 fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
     require_cuda!();
     let nq = 12;
-    let sum = rand_sum::<1>(3_000, nq, 0x7ACE);
+    let sum = spread_magnitudes(&rand_sum::<1>(3_000, nq, 0x7ACE), 40, 0x7ACE);
     let circuit = random_circuit::<1>(nq, 16, 0x7ACF, true);
     for p in [2usize, 4] {
         let mut split = split_of(&sum, p);
@@ -420,7 +422,7 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
                 "P={p} rank {r}"
             );
         }
-        let want = propagate(
+        let (want, discarded) = propagate_discarding(
             &circuit,
             sum.clone(),
             &ApproxTopN(6_000),
@@ -428,7 +430,7 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
         );
         assert_runs_agree(
             ApproxTopN(6_000),
-            circuit.len(),
+            discarded,
             &split.gather().expect("gather"),
             &want,
             TOL,
@@ -616,13 +618,13 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
 fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     require_cuda!();
     let nq = 16;
-    let sum = rand_sum::<1>(2_000, nq, 0x1F04);
+    let sum = spread_magnitudes(&rand_sum::<1>(2_000, nq, 0x1F04), 40, 0x1F04);
     let circuit = random_circuit::<1>(nq, 20, 0x1F05, true);
     let rows = PartitionRows::<1>::cut(nq, &[(0..3).collect(), (3..16).collect()]);
-    let want = propagate(
+    let (want, discarded) = propagate_discarding(
         &circuit,
         sum.clone(),
-        &ApproxTopN(4_000),
+        &ApproxTopN(8_000),
         Direction::Forward,
     );
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
@@ -636,21 +638,14 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     .expect("scatter");
     split.enable_trace();
     split
-        .propagate(&circuit, ApproxTopN(4_000), Direction::Forward)
+        .propagate(&circuit, ApproxTopN(8_000), Direction::Forward)
         .expect("propagate");
     let trace = split.take_trace().expect("tracing on");
     assert_eq!(trace.layers.len(), 20);
     assert!(trace.local_layers() > 0);
     let got = split.gather().expect("gather");
     assert_eq!(got.len(), want.len());
-    assert_runs_agree(
-        ApproxTopN(4_000),
-        circuit.len(),
-        &got,
-        &want,
-        TOL,
-        "uneven cut",
-    );
+    assert_runs_agree(ApproxTopN(8_000), discarded, &got, &want, TOL, "uneven cut");
 }
 
 /// Four cut blocks with gates only inside blocks and between blocks 0 and 1: the partner pairs at partition delta 2 and 3 never exchange.
@@ -659,7 +654,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     require_cuda!();
     use paulistrings::test_support::haar_su4_matrix;
     let nq = 16;
-    let sum = rand_sum::<1>(1_500, nq, 0x1F06);
+    let sum = spread_magnitudes(&rand_sum::<1>(1_500, nq, 0x1F06), 40, 0x1F06);
     let blocks: Vec<Vec<usize>> = (0..4).map(|k| (4 * k..4 * k + 4).collect()).collect();
     let rows = PartitionRows::<1>::cut(nq, &blocks);
     let mut circuit = Circuit::<1>::new(nq);
@@ -684,7 +679,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     .expect("scatter");
     split.enable_trace();
     split
-        .propagate(&circuit, ApproxTopN(6_000), Direction::Forward)
+        .propagate(&circuit, ApproxTopN(20_000), Direction::Forward)
         .expect("propagate");
     let trace = split.take_trace().expect("tracing on");
     // The partition deltas a layer can realize are those of its channel's key-delta masks; every other partner pair must show zero.
@@ -716,10 +711,11 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
         zero_pairs > 0 && sent > 0,
         "the fixture has both idle pairs and traffic"
     );
-    let want = propagate(&circuit, sum, &ApproxTopN(6_000), Direction::Forward);
+    let (want, discarded) =
+        propagate_discarding(&circuit, sum, &ApproxTopN(20_000), Direction::Forward);
     assert_runs_agree(
-        ApproxTopN(6_000),
-        circuit.len(),
+        ApproxTopN(20_000),
+        discarded,
         &split.gather().expect("gather"),
         &want,
         TOL,

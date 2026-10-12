@@ -2,8 +2,8 @@
 //! accessors, and the runtime shared between sums.
 
 use paulistrings::test_support::{
-    approx_eq, assert_runs_agree, assert_terms_close, low_weight_sum, partition_rows, rand_sum,
-    unpinned_partitions, KeepAll,
+    approx_eq, assert_runs_agree, assert_terms_close, low_weight_sum, partition_rows,
+    propagate_discarding, rand_sum, spread_magnitudes, unpinned_partitions, KeepAll,
 };
 use paulistrings::{
     propagate, Circuit, Direction, PartitionRows, PauliString, PauliSum, ProductState,
@@ -130,8 +130,9 @@ fn explicit_rows_may_be_lopsided() {
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let circuit = circuit();
     // Weight-2 keys over 16 qubits, so few of them touch qubit 13 at all.
-    let sum = low_weight_sum::<1>(400, NQ, 2, 0xBEEF);
-    let want = propagate(&circuit, sum.clone(), &ApproxTopN(200), Direction::Forward);
+    let sum = spread_magnitudes(&low_weight_sum::<1>(400, NQ, 2, 0xBEEF), 40, 0xBEEF);
+    let (want, discarded) =
+        propagate_discarding(&circuit, sum.clone(), &ApproxTopN(200), Direction::Forward);
 
     // One row seeing only qubit 13's `x` bit: a term is in partition 1 only if
     // it carries `X` or `Y` there — roughly one term in twelve.
@@ -156,7 +157,7 @@ fn explicit_rows_may_be_lopsided() {
     let got = ps.into_gathered();
     assert_runs_agree(
         ApproxTopN(200),
-        circuit.len(),
+        discarded,
         &got,
         &want,
         TOL,

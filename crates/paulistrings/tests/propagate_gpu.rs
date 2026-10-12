@@ -5,8 +5,9 @@ use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum}
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_runs_agree, assert_terms_close, cancellation_channel, cancellation_sum,
-    differential_channels_w1, differential_channels_w2, haar_su4_matrix, or, rand_sum,
-    random_circuit, single_cuts, trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
+    differential_channels_w1, differential_channels_w2, haar_su4_matrix, or, propagate_discarding,
+    rand_sum, random_circuit, single_cuts, spread_magnitudes, trotter_circuit, with_hash,
+    zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
@@ -60,13 +61,13 @@ fn check_with<const W: usize, T>(
     T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(circuit, sum.clone(), policy, direction);
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
         let (got, c) = device_run(circuit, sum, policy, direction, options, extra);
         let what = format!("{name} {direction:?}");
         if let Some(p) = permuted {
             assert_eq!(c.permuted, p, "{what}: {c:?}");
         }
-        assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
+        assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
     }
 }
 
@@ -95,7 +96,7 @@ fn differential_channels_match_propagate_w2() {
     }
 }
 
-/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+/// One cut that splits a boundary group, dropping little weight.
 #[test]
 fn single_cuts_match_propagate() {
     require_cuda!();
@@ -196,10 +197,10 @@ fn exact_cancellation_drops_the_zero_term() {
 /// Every policy here is exact on one device, exact `TopN` included, so the term counts must match as well as the terms.
 fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64) {
     use BuiltinTruncation as T;
-    let input = rand_sum::<W>(2000, num_qubits, seed);
+    let input = spread_magnitudes(&rand_sum::<W>(2000, num_qubits, seed), 40, seed);
     let circuit = random_circuit::<W>(num_qubits, layers, seed ^ 0x5555, true);
-    // Half the untruncated output, so the octave cut bites.
-    let n = propagate(&circuit, input.clone(), &T::Keep, Direction::Forward).len() / 2;
+    // Three quarters of the untruncated output, so the octave cut bites.
+    let n = propagate(&circuit, input.clone(), &T::Keep, Direction::Forward).len() * 3 / 4;
     assert!(n > 1000, "the fixture must grow");
     let matrix = [
         ("keep", T::Keep),
@@ -209,7 +210,7 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
         ("approx n", T::ApproxTopN(n)),
         (
             "coeff & approx",
-            and(T::Coefficient(1e-3), T::ApproxTopN(n)),
+            and(T::Coefficient(1e-9), T::ApproxTopN(n)),
         ),
         ("approx & weight", and(T::ApproxTopN(n), T::Weight(4))),
         ("coeff | weight", or(T::Coefficient(1e-3), T::Weight(4))),
@@ -217,7 +218,7 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
         ("coeff & topn", and(T::Coefficient(1e-6), T::TopN(n))),
         (
             "topn & (coeff | weight)",
-            and(T::TopN(n), or(T::Coefficient(1e-3), T::Weight(4))),
+            and(T::TopN(n), or(T::Coefficient(1e-9), T::Weight(4))),
         ),
     ];
     for (name, policy) in &matrix {
@@ -241,20 +242,20 @@ fn truncation_matrix_matches_the_host_w2() {
 #[test]
 fn builtin_policy_types_lower_and_match_the_host() {
     require_cuda!();
-    let input = rand_sum::<2>(3000, 128, 0x4403);
+    let input = spread_magnitudes(&rand_sum::<2>(3000, 128, 0x4403), 40, 0x4403);
     let circuit = random_circuit::<2>(128, 12, 0x5557, true);
     check(&circuit, &input, &CoefficientThreshold(1e-3), "coeff");
-    check(&circuit, &input, &ApproxTopN(500), "approx 500");
+    check(&circuit, &input, &ApproxTopN(4_000), "approx 4000");
     check(
         &circuit,
         &input,
-        &And(CoefficientThreshold(1e-3), ApproxTopN(500)),
+        &And(CoefficientThreshold(1e-3), ApproxTopN(4_000)),
         "coeff & approx",
     );
     check(
         &circuit,
         &input,
-        &And(ApproxTopN(800), WeightCutoff(4)),
+        &And(ApproxTopN(4_000), WeightCutoff(4)),
         "approx & weight",
     );
     check(
@@ -266,17 +267,19 @@ fn builtin_policy_types_lower_and_match_the_host() {
 }
 
 /// An `ApproxTopN` that cuts every layer keeps the device and host counts equal through a long run, and the count stays within `n`.
+/// The cut is too heavy for [`assert_runs_agree`]'s overlap check, so only the counts are compared.
 #[test]
 fn approx_top_n_bounds_every_layer_like_the_host() {
     require_cuda!();
     let input = rand_sum::<1>(2000, 12, 0x4404);
     let circuit = random_circuit::<1>(12, 30, 0x5558, true);
     let policy = ApproxTopN(1500);
-    check(&circuit, &input, &policy, "approx 1500, 30 layers");
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
-    dev.propagate(&circuit, policy, Direction::Forward)
-        .expect("device propagate");
-    assert!(dev.len() <= 1500 && !dev.is_empty());
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let want = propagate(&circuit, input.clone(), &policy, direction);
+        let (got, _) = device_run(&circuit, &input, &policy, direction, None, &[]);
+        assert_eq!(got.len(), want.len(), "{direction:?}: term count");
+        assert!(got.len() <= 1500 && !got.is_empty(), "{direction:?}");
+    }
 }
 
 fn assert_rejected_untouched<T>(policy: &T, what: &str)

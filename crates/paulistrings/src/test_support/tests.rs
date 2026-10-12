@@ -56,8 +56,12 @@ mod runs_agree {
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::pauli_sum::PauliSum;
-    use crate::test_support::assert_runs_agree;
+    use crate::test_support::{
+        assert_runs_agree, canonical_triples, propagate_discarding, spread_magnitudes,
+        tie_heavy_sum, trotter_circuit, DiscardMeter,
+    };
     use crate::truncation::{And, ApproxTopN, CoefficientThreshold, TopN};
+    use crate::{propagate_with, Direction, LayerScratch, PropagateOptions};
     use num_complex::Complex64;
 
     /// Term `k` is `X` on the bits of `k + 1`, so every index is its own key.
@@ -84,62 +88,124 @@ mod runs_agree {
         sum_of(&indices.into_iter().map(|k| input[k]).collect::<Vec<_>>())
     }
 
-    /// `TopN(15)` with the five boundary slots filled from different ties.
+    /// `TopN(15)` of [`input`], and the norm its cut dropped.
+    fn want() -> (PauliSum<1>, f64) {
+        let mut sum = sum_of(&input());
+        let meter = DiscardMeter::new(&TopN(15));
+        crate::TruncationPolicy::<1>::finalize_layer(&meter, &mut sum);
+        assert_eq!(sum.len(), 15);
+        (sum, meter.discarded())
+    }
+
     #[test]
-    fn top_n_accepts_different_ties() {
-        let want = kept((0..10).chain(10..15));
+    fn the_meter_reports_the_dropped_norm() {
+        let dropped: f64 = input()[15..].iter().map(|(_, m)| m * m).sum();
+        assert!((want().1 - dropped.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_different_choice_of_boundary_ties_passes() {
+        let (want, discarded) = want();
         let got = kept((0..10).chain(15..20));
-        assert_runs_agree(TopN(15), 1, &got, &want, 1e-12, "ties");
-    }
-
-    #[test]
-    #[should_panic(expected = "smallest kept")]
-    fn top_n_rejects_dropping_the_smallest_kept() {
-        let want = kept((0..10).chain(10..15));
-        let got = kept((0..10).chain(10..13).chain([20, 21]));
-        assert_runs_agree(TopN(15), 1, &got, &want, 1e-12, "dropped ties");
-    }
-
-    #[test]
-    #[should_panic(expected = "above the boundary")]
-    fn top_n_rejects_swapping_a_term_above_the_boundary() {
-        let want = kept((0..10).chain(10..15));
-        let mut terms = input()[1..15].to_vec();
-        terms.push((30, 8.0));
-        let got = sum_of(&terms);
-        assert_runs_agree(TopN(15), 1, &got, &want, 1e-12, "swapped top");
-    }
-
-    /// The ties and the `0.1 .. 0.055` tail: `ApproxTopN(15)` cuts in the octave `[0.25, 0.5)` of `|c|²`.
-    #[test]
-    fn approx_top_n_accepts_different_boundary_octave_terms() {
-        let want = kept((0..10).chain(10..15));
-        let got = kept((0..10).chain(15..20));
+        assert_runs_agree(TopN(15), discarded, &got, &want, 1e-12, "ties");
         let policy = And(CoefficientThreshold(1e-9), ApproxTopN(15));
-        assert_runs_agree(policy, 1, &got, &want, 1e-12, "octave");
+        assert_runs_agree(policy, discarded, &got, &want, 1e-12, "octave");
     }
 
     #[test]
-    #[should_panic(expected = "smallest kept")]
-    fn approx_top_n_rejects_dropping_the_boundary_octave() {
-        let want = kept((0..10).chain(10..15));
-        let got = kept((0..10).chain(20..25));
-        assert_runs_agree(ApproxTopN(15), 1, &got, &want, 1e-12, "dropped octave");
+    #[should_panic(expected = "exceeds")]
+    fn a_sign_flipped_on_a_large_term_fails() {
+        let (want, discarded) = want();
+        let mut terms: Vec<_> = input()[..15].to_vec();
+        terms[0].1 = -8.0;
+        terms[14] = (19, 0.6);
+        let got = sum_of(&terms);
+        assert_runs_agree(TopN(15), discarded, &got, &want, 1e-12, "sign");
     }
 
     #[test]
-    #[should_panic(expected = "above the boundary")]
-    fn approx_top_n_rejects_swapping_a_term_above_the_boundary_octave() {
-        let want = kept((0..10).chain(10..15));
-        let got = kept((0..9).chain(10..16));
-        assert_runs_agree(ApproxTopN(15), 1, &got, &want, 1e-12, "swapped top");
+    #[should_panic(expected = "exceeds")]
+    fn a_large_term_dropped_fails() {
+        let (want, discarded) = want();
+        let got = kept((1..10).chain(10..16));
+        assert_runs_agree(TopN(15), discarded, &got, &want, 1e-12, "dropped");
     }
 
-    /// After two cuts the survivors evolve apart, so only the count is compared.
     #[test]
-    fn a_repeated_cut_compares_the_count() {
-        let want = kept((0..10).chain(10..15));
-        let got = kept((0..10).chain(20..25));
-        assert_runs_agree(TopN(15), 2, &got, &want, 1e-12, "two layers");
+    #[should_panic(expected = "exceeds")]
+    fn a_wrong_boundary_coefficient_fails() {
+        let (want, discarded) = want();
+        let mut terms: Vec<_> = input()[..10].to_vec();
+        terms.extend((15..20).map(|k| (k, 0.6)));
+        terms[14].1 = 5.6;
+        let got = sum_of(&terms);
+        assert_runs_agree(TopN(15), discarded, &got, &want, 1e-12, "boundary");
+    }
+
+    #[test]
+    #[should_panic(expected = "term count")]
+    fn a_different_count_fails() {
+        let (want, discarded) = want();
+        assert_runs_agree(TopN(15), discarded, &kept(0..14), &want, 1e-12, "count");
+    }
+
+    #[test]
+    #[should_panic(expected = "too heavy")]
+    fn a_too_heavy_cut_fails() {
+        let (want, _) = want();
+        let got = kept((0..10).chain(15..20));
+        assert_runs_agree(TopN(15), 10.0, &got, &want, 1e-12, "heavy");
+    }
+
+    #[test]
+    #[should_panic(expected = "key mismatch")]
+    fn different_keys_without_a_layer_pass_fail() {
+        let (want, discarded) = want();
+        let got = kept((0..10).chain(15..20));
+        let policy = CoefficientThreshold(1e-9);
+        assert_runs_agree(policy, discarded, &got, &want, 1e-12, "no cut");
+    }
+
+    /// Two runs of a 32-layer Trotter circuit over four magnitudes spread across octaves, at two bucket counts: the cuts split tie groups, so the runs keep different survivors.
+    fn many_layer_runs(direction: Direction) -> (PauliSum<1>, PauliSum<1>, f64) {
+        let sum = spread_magnitudes(&tie_heavy_sum::<1>(1_500, 16, 0x7E5), 40, 0x7E5);
+        let circuit = trotter_circuit::<1>(16, 0.01);
+        let policy = TopN(3_000);
+        let (want, discarded) = propagate_discarding(&circuit, sum.clone(), &policy, direction);
+        let options = PropagateOptions {
+            target_bucket_len: 16,
+            min_buckets: 256,
+        };
+        let mut scratch = LayerScratch::new();
+        let got = propagate_with(&circuit, sum, &policy, direction, &mut scratch, options);
+        assert_ne!(
+            canonical_triples(&got),
+            canonical_triples(&want),
+            "the bucket counts should choose different ties",
+        );
+        (got, want, discarded)
+    }
+
+    #[test]
+    fn different_tie_choices_over_many_layers_pass() {
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let (got, want, discarded) = many_layer_runs(direction);
+            assert_runs_agree(TopN(3_000), discarded, &got, &want, 1e-12, "many layers");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds")]
+    fn a_sign_flipped_on_the_largest_term_after_many_layers_fails() {
+        let (got, want, discarded) = many_layer_runs(Direction::Forward);
+        let terms = canonical_triples(&got);
+        let largest = terms.iter().map(|t| t.2.norm()).fold(0.0, f64::max);
+        let mut accumulator = BuildAccumulator::<1>::new(16);
+        for (x, z, c) in terms {
+            let c = if c.norm() == largest { -c } else { c };
+            accumulator.add_term(PauliString::<1> { x, z }, c);
+        }
+        let got = accumulator.finalize();
+        assert_runs_agree(TopN(3_000), discarded, &got, &want, 1e-12, "flipped");
     }
 }

@@ -47,9 +47,9 @@ mod protocol {
     use super::*;
     use crate::engine::partitioned::{PartitionRuntime, ScatterOptions, ScatterRows};
     use crate::test_support::{
-        assert_runs_agree, assert_terms_close, rand_sum_real, random_circuit, rows_reading_z63,
-        single_cuts, su4_chain, trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63,
-        zz_rotation, CallLog, LoggingTransport,
+        assert_runs_agree, assert_terms_close, propagate_discarding, rand_sum_real, random_circuit,
+        rows_reading_z63, single_cuts, spread_magnitudes, su4_chain, trotter_circuit,
+        unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog, LoggingTransport,
     };
     use crate::truncation::ApproxTopN;
 
@@ -95,7 +95,12 @@ mod protocol {
 
         /// The host oracle.
         fn want(&self) -> PauliSum<W> {
-            crate::propagate(
+            self.want_discarding().0
+        }
+
+        /// The host oracle and the norm its policy dropped.
+        fn want_discarding(&self) -> (PauliSum<W>, f64) {
+            propagate_discarding(
                 self.circuit,
                 self.input.clone(),
                 &self.policy,
@@ -140,8 +145,8 @@ mod protocol {
         /// [`Self::on`] a fresh healthy group of `size`, rank 0's result checked against [`Self::want`].
         fn check(&self, size: u32, what: &str) {
             let got = rank0(self.on(wired(size).0, &|_| {}));
-            let want = self.want();
-            assert_runs_agree(&self.policy, self.circuit.len(), &got, &want, 1e-11, what);
+            let (want, discarded) = self.want_discarding();
+            assert_runs_agree(&self.policy, discarded, &got, &want, 1e-11, what);
         }
     }
 
@@ -186,8 +191,8 @@ mod protocol {
         crate::require_cuda!();
         let dense = random_circuit::<1>(8, 12, 0xD15, true);
         let input = rand_sum::<1>(400, 8, 0xD16);
-        let trotter = trotter_circuit::<2>(24, 0.1);
-        let real = rand_sum_real::<2>(900, 24, 0xD17);
+        let trotter = trotter_circuit::<2>(24, 0.01);
+        let real = spread_magnitudes(&rand_sum_real::<2>(900, 24, 0xD17), 40, 0xD17);
         let cuts = single_cuts::<1>(16, 0xD18);
         for direction in [Direction::Forward, Direction::Heisenberg] {
             for size in [1u32, 2, 4] {
@@ -199,7 +204,7 @@ mod protocol {
                 run.check(size, &format!("w1 dense {what}"));
                 let run = Run {
                     direction,
-                    policy: BuiltinTruncation::ApproxTopN(1_200),
+                    policy: BuiltinTruncation::ApproxTopN(1_500),
                     ..Run::new(&real, seeded_rows(24, size), &trotter)
                 };
                 run.check(size, &format!("w2 trotter {what}"));

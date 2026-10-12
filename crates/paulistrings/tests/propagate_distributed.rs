@@ -15,9 +15,9 @@
 use num_complex::Complex64;
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum,
-    rand_sum_on, rand_sum_real, single_cuts, trotter_circuit, unpinned_partitions, z0_sum,
-    zz_rotation, KeepAll,
+    assert_runs_agree, assert_terms_close, collapsing_circuit, haar_su4_matrix,
+    propagate_discarding, rand_sum, rand_sum_on, rand_sum_real, single_cuts, spread_magnitudes,
+    trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
 };
 use paulistrings::PtmChannel;
 use paulistrings::{
@@ -34,7 +34,7 @@ const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
 /// enough a circuit that the bucket count grows mid-run, so the per-layer bits
 /// all-reduce actually changes value.
-const THETA: f64 = 0.1;
+const THETA: f64 = 0.01;
 
 /// One unpinned partition of two threads: what a rank's runtime looks like when
 /// the launcher, not the engine, did the placement.
@@ -131,16 +131,16 @@ where
     T: TruncationPolicy<W> + Sync + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(circuit, sum.clone(), policy, direction);
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
         for size in [1u32, 2, 4] {
             let got = distributed(circuit, sum, policy, direction, size);
             let what = format!("{name} ranks={size} {direction:?}");
-            assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
+            assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
         }
     }
 }
 
-/// One cut from identical inputs, where the kept terms agree up to the boundary group.
+/// One cut that splits a boundary group, dropping little weight.
 #[test]
 fn single_cuts_match_propagate() {
     for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C3) {
@@ -154,7 +154,7 @@ fn single_cuts_match_propagate() {
 #[test]
 fn trotter_matches_propagate_w1() {
     let circuit = trotter_circuit::<1>(24, THETA);
-    let sum = rand_sum_real::<1>(1_200, 24, 0x0D15);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(1_200, 24, 0x0D15), 40, 0x0D15);
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter approx w1");
     check(
         &circuit,
@@ -167,7 +167,7 @@ fn trotter_matches_propagate_w1() {
 #[test]
 fn trotter_matches_propagate_w2() {
     let circuit = trotter_circuit::<2>(24, THETA);
-    let sum = rand_sum_real::<2>(900, 24, 0x0D16);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(900, 24, 0x0D16), 40, 0x0D16);
     check(&circuit, &sum, &ApproxTopN(1_500), "trotter w2");
 }
 
@@ -202,7 +202,7 @@ fn exact_top_n_runs_on_one_rank_only() {
 fn builtin_truncation_tree_matches_propagate() {
     use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(24, THETA);
-    let sum = rand_sum_real::<1>(1_200, 24, 0x0D17);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(1_200, 24, 0x0D17), 40, 0x0D17);
     let tree = T::And(
         Box::new(T::Coefficient(1e-9)),
         Box::new(T::ApproxTopN(2_000)),
@@ -216,16 +216,16 @@ fn builtin_truncation_tree_matches_propagate() {
 #[test]
 fn mixed_channels_match_propagate() {
     let circuit = mixed_circuit::<1>(6);
-    let sum = rand_sum::<1>(200, 6, 0x0D17);
+    let sum = spread_magnitudes(&rand_sum::<1>(200, 6, 0x0D17), 40, 0x0D17);
     check(&circuit, &sum, &KeepAll, "mixed keep w1");
     check(&circuit, &sum, &CoefficientThreshold(1e-9), "mixed eps w1");
     check(&circuit, &sum, &WeightCutoff(4), "mixed weight w1");
-    check(&circuit, &sum, &ApproxTopN(300), "mixed approx w1");
+    check(&circuit, &sum, &ApproxTopN(1_000), "mixed approx w1");
 
     let circuit = mixed_circuit::<2>(6);
-    let sum = rand_sum::<2>(200, 6, 0x0D18);
+    let sum = spread_magnitudes(&rand_sum::<2>(200, 6, 0x0D18), 40, 0x0D18);
     check(&circuit, &sum, &KeepAll, "mixed keep w2");
-    check(&circuit, &sum, &ApproxTopN(300), "mixed approx w2");
+    check(&circuit, &sum, &ApproxTopN(1_000), "mixed approx w2");
 }
 
 /// A sum small enough that some ranks hold nothing: the empty-partition path

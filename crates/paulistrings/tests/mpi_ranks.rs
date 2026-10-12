@@ -31,8 +31,9 @@ use std::panic::AssertUnwindSafe;
 use num_complex::Complex64;
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
-    assert_runs_agree, assert_terms_close, haar_su4_matrix, rand_sum, rand_sum_real, single_cuts,
-    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
+    assert_runs_agree, assert_terms_close, haar_su4_matrix, propagate_discarding, rand_sum,
+    rand_sum_real, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions,
+    zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, BITS_AGREE_EVERY};
 use paulistrings::{
@@ -51,7 +52,7 @@ use rsmpi::Threading;
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
-const THETA: f64 = 0.1;
+const THETA: f64 = 0.01;
 
 // ---- circuits -----------------------------------------------------------
 
@@ -268,9 +269,10 @@ impl Runner<'_> {
     {
         match (self.rank, got) {
             (0, Some(got)) => {
-                let want = propagate(circuit, sum.clone(), policy, direction);
+                let (want, discarded) =
+                    propagate_discarding(circuit, sum.clone(), policy, direction);
                 let what = format!("{what} ranks={} {direction:?}", self.size);
-                assert_runs_agree(policy, circuit.len(), &got, &want, TOL, &what);
+                assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
             }
             (0, None) => panic!("{what}: rank 0 did not gather"),
             (r, Some(_)) => panic!("{what}: rank {r} gathered but is not the root"),
@@ -436,7 +438,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
     r.case(&format!("{tag}w1 trotter, 32 layers"), |r| {
         let circuit = trotter_circuit::<1>(16, THETA);
         assert!(circuit.len() >= 20, "the bits collective must move");
-        let sum = rand_sum_real::<1>(800, 16, 0xA004);
+        let sum = spread_magnitudes(&rand_sum_real::<1>(800, 16, 0xA004), 40, 0xA004);
         r.both_directions(
             backend,
             &circuit,
@@ -455,7 +457,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
 
     r.case(&format!("{tag}w2 trotter, 32 layers"), |r| {
         let circuit = trotter_circuit::<2>(16, THETA);
-        let sum = rand_sum_real::<2>(600, 16, 0xA006);
+        let sum = spread_magnitudes(&rand_sum_real::<2>(600, 16, 0xA006), 40, 0xA006);
         r.both_directions(
             backend,
             &circuit,
@@ -477,7 +479,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
 
     r.case(&format!("{tag}approx-topn firing every layer"), |r| {
         let circuit = trotter_circuit::<1>(14, THETA);
-        let sum = rand_sum_real::<1>(600, 14, 0xA008);
+        let sum = spread_magnitudes(&rand_sum_real::<1>(600, 14, 0xA008), 40, 0xA008);
         let want = propagate(
             &circuit,
             sum.clone(),
@@ -539,7 +541,7 @@ fn run_host_cases(r: &mut Runner) {
         circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
         circuit.push(zz_rotation::<1>(0, 4, 0.31));
         circuit.push(PtmChannel::unitary_2q(2, 3, haar_su4_matrix()));
-        let sum = rand_sum::<1>(250, 8, 0xA007);
+        let sum = spread_magnitudes(&rand_sum::<1>(250, 8, 0xA007), 40, 0xA007);
 
         r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "policy none");
         r.both_directions(
@@ -562,7 +564,7 @@ fn run_host_cases(r: &mut Runner) {
             backend,
             &circuit,
             &sum,
-            &ApproxTopN(400),
+            &ApproxTopN(3_000),
             SEED,
             "policy approx",
         );
@@ -570,7 +572,7 @@ fn run_host_cases(r: &mut Runner) {
             backend,
             &circuit,
             &sum,
-            &And(CoefficientThreshold(1e-12), ApproxTopN(400)),
+            &And(CoefficientThreshold(1e-12), ApproxTopN(3_000)),
             SEED,
             "policy and",
         );

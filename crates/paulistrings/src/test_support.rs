@@ -438,6 +438,21 @@ pub fn tie_heavy_sum_unmasked<const W: usize>(
     acc.finalize()
 }
 
+/// `sum` with each term scaled by `2^-k`, `k` drawn per term in `0..octaves`: a cut through the low octaves drops little weight, as [`assert_runs_agree`] needs.
+pub fn spread_magnitudes<const W: usize>(
+    sum: &PauliSum<W>,
+    octaves: u32,
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(sum.num_qubits(), sum.len());
+    for (x, z, c) in sum.iter() {
+        let k = (rng.next_u64() % u64::from(octaves)) as i32;
+        acc.add_term(PauliString::<W> { x: *x, z: *z }, c * 2f64.powi(-k));
+    }
+    acc.finalize()
+}
+
 /// Complex numbers equal to within `tol`.
 pub fn approx_eq(a: Complex64, b: Complex64, tol: f64) -> bool {
     (a - b).norm() <= tol
@@ -589,139 +604,123 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
-/// The layer pass of a policy tree, as [`assert_runs_agree`] reads it.
-#[derive(Clone, Copy, PartialEq)]
-enum Cut {
-    None,
-    TopN,
-    ApproxTopN,
-    Other,
+/// `policy` that also sums, over layers, the 2-norm of the terms it drops for their coefficient: the `Δ` of [`assert_runs_agree`].
+pub struct DiscardMeter<'p, P: ?Sized> {
+    policy: &'p P,
+    /// `Σ|c|²` the per-term filter dropped in the current layer, as `f64` bits.
+    pending: std::sync::atomic::AtomicU64,
+    /// `Σ_layers sqrt(dropped Σ|c|²)`, as `f64` bits.
+    total: std::sync::atomic::AtomicU64,
 }
 
-fn cut_of(policy: &crate::truncation::BuiltinTruncation) -> Cut {
-    use crate::truncation::BuiltinTruncation as T;
-    match policy {
-        T::Keep | T::Coefficient(_) | T::Weight(_) | T::Or(..) => Cut::None,
-        T::TopN(_) => Cut::TopN,
-        T::ApproxTopN(_) => Cut::ApproxTopN,
-        T::CollapseSample(_) => Cut::Other,
-        T::And(a, b) => match (cut_of(a), cut_of(b)) {
-            (Cut::None, cut) | (cut, Cut::None) => cut,
-            _ => Cut::Other,
-        },
+fn add_f64(cell: &std::sync::atomic::AtomicU64, v: f64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let _ = cell.fetch_update(Relaxed, Relaxed, |b| {
+        Some((f64::from_bits(b) + v).to_bits())
+    });
+}
+
+impl<'p, P: ?Sized> DiscardMeter<'p, P> {
+    pub fn new(policy: &'p P) -> Self {
+        Self {
+            policy,
+            pending: 0f64.to_bits().into(),
+            total: 0f64.to_bits().into(),
+        }
+    }
+
+    /// The summed per-layer discarded norm so far.
+    pub fn discarded(&self) -> f64 {
+        f64::from_bits(self.total.load(std::sync::atomic::Ordering::Relaxed))
     }
 }
 
-type Triple<const W: usize> = ([u64; W], [u64; W], Complex64);
+impl<const W: usize, P: TruncationPolicy<W> + ?Sized> TruncationPolicy<W> for DiscardMeter<'_, P> {
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
+        let keep = self.policy.keep_term(x, z, c);
+        // A key-only rejection is an orthogonal projection, part of the channel rather than a cut.
+        if !keep && self.policy.keep_term(x, z, Complex64::new(1e300, 0.0)) {
+            add_f64(&self.pending, c.norm_sqr());
+        }
+        keep
+    }
 
-/// Two runs of `policy` over differently bucketed, partitioned or placed sums, `layers` layer passes after identical inputs.
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        let mut dropped = 0.0;
+        if self.policy.finalizes_layer() {
+            let before = sum.clone();
+            self.policy.finalize_layer(sum);
+            if sum.len() != before.len() {
+                // Kept terms cancel exactly, leaving the dropped ones.
+                dropped = norm_sqr(&before.add(&scaled(sum, -1.0)));
+            }
+        }
+        let pending = f64::from_bits(self.pending.swap(0, std::sync::atomic::Ordering::Relaxed));
+        add_f64(&self.total, (pending + dropped).sqrt());
+    }
+}
+
+fn norm_sqr<const W: usize>(sum: &PauliSum<W>) -> f64 {
+    sum.overlap(sum).re
+}
+
+fn scaled<const W: usize>(sum: &PauliSum<W>, factor: f64) -> PauliSum<W> {
+    let mut out = sum.clone();
+    out.scale(Complex64::new(factor, 0.0));
+    out
+}
+
+/// [`propagate`](crate::propagate) under `policy`, and the summed per-layer norm of what `policy` dropped ([`DiscardMeter`]).
+pub fn propagate_discarding<const W: usize, P: TruncationPolicy<W> + ?Sized>(
+    circuit: &crate::Circuit<W>,
+    sum: PauliSum<W>,
+    policy: &P,
+    direction: crate::Direction,
+) -> (PauliSum<W>, f64) {
+    let meter = DiscardMeter::new(policy);
+    let out = crate::propagate(circuit, sum, &meter, direction);
+    (out, meter.discarded())
+}
+
+/// Two runs of `policy` from identical inputs, where the reference dropped a summed per-layer norm `discarded` ([`propagate_discarding`]).
 ///
-/// Without a layer pass, or when both runs kept the same keys, [`assert_terms_close`].
-/// `TopN`/`ApproxTopN` keep boundary terms in bucket order (rank order across partitions), so the runs may keep different terms; then, after a single cut, every term clear of the boundary matches term for term, and the kept magnitudes agree to `tol` (`TopN`) or the smallest kept `|c|²` lie in one octave (`ApproxTopN`).
-/// After more than one cut the runs evolve different survivors and only the term count is shared.
+/// Equal term counts always; term for term to `tol` without a layer pass or when the reference dropped nothing.
+/// Otherwise the runs may keep different boundary terms (`TopN`/`ApproxTopN` fill in bucket order), and each lies within `Δ = discarded + √len·tol` of the untruncated operator, so `1 − Re⟨got, want⟩ / (‖got‖ ‖want‖) ≤ 2Δ² / (‖got‖ ‖want‖)`.
+/// Panics if that bound could not see a sign flip on the largest term: such a cut is too heavy to compare.
 pub fn assert_runs_agree<const W: usize>(
     policy: impl Into<crate::truncation::BuiltinTruncation>,
-    layers: usize,
+    discarded: f64,
     got: &PauliSum<W>,
     want: &PauliSum<W>,
     tol: f64,
     what: &str,
 ) {
-    let cut = cut_of(&policy.into());
+    let cuts = <crate::truncation::BuiltinTruncation as TruncationPolicy<W>>::finalizes_layer(
+        &policy.into(),
+    );
     assert_eq!(got.len(), want.len(), "{what}: term count");
-    let got_terms = canonical_triples(got);
-    let want_terms = canonical_triples(want);
-    let same_keys = got_terms
-        .iter()
-        .zip(&want_terms)
-        .all(|(g, w)| (g.0, g.1) == (w.0, w.1));
-    if cut == Cut::None || same_keys || layers == 0 {
+    if !cuts || discarded == 0.0 || want.is_empty() {
         assert_terms_close(got, want, tol, what);
         return;
     }
-    if layers > 1 {
-        // The runs evolved different survivors; neither the kept magnitudes nor their lowest octave need agree.
-        return;
-    }
-    match cut {
-        Cut::TopN => assert_top_n_cut_agrees(&got_terms, &want_terms, tol, what),
-        Cut::ApproxTopN => assert_approx_top_n_cut_agrees(&got_terms, &want_terms, tol, what),
-        Cut::None | Cut::Other => {}
-    }
-}
-
-/// Sorted kept magnitudes agree to `tol` (a top-`n` of magnitudes that agree to `tol` does), and every term more than `2 tol` above the other run's smallest kept is in both.
-fn assert_top_n_cut_agrees<const W: usize>(
-    got: &[Triple<W>],
-    want: &[Triple<W>],
-    tol: f64,
-    what: &str,
-) {
-    let descending = |terms: &[Triple<W>]| {
-        let mut m: Vec<f64> = terms.iter().map(|t| t.2.norm()).collect();
-        m.sort_unstable_by(|a, b| b.total_cmp(a));
-        m
-    };
-    let (g, w) = (descending(got), descending(want));
-    let (got_min, want_min) = (g[g.len() - 1], w[w.len() - 1]);
-    for (i, (a, b)) in g.iter().zip(&w).enumerate() {
-        assert!(
-            (a - b).abs() < tol,
-            "{what}: kept magnitude {i} of {} is {a} vs {b}; the smallest kept are {got_min} vs {want_min}",
-            g.len(),
-        );
-    }
-    assert_both_keep(want, got, |c| c.norm() > got_min + 2.0 * tol, tol, what);
-    assert_both_keep(got, want, |c| c.norm() > want_min + 2.0 * tol, tol, what);
-}
-
-/// The smallest kept `|c|²` lie in one octave, and every term at least `tol` clear of that octave's upper edge is in both runs.
-fn assert_approx_top_n_cut_agrees<const W: usize>(
-    got: &[Triple<W>],
-    want: &[Triple<W>],
-    tol: f64,
-    what: &str,
-) {
-    use crate::truncation::builtin::octave;
-    let lowest = |terms: &[Triple<W>]| terms.iter().map(|t| octave(t.2.norm_sqr())).min();
-    let (got_octave, want_octave) = (lowest(got), lowest(want));
-    assert_eq!(
-        got_octave, want_octave,
-        "{what}: the smallest kept |c|² lie in different octaves"
+    let (got_norm, want_norm) = (norm_sqr(got).sqrt(), norm_sqr(want).sqrt());
+    // `1 − cos = ‖got/‖got‖ − want/‖want‖‖² / 2`, free of cancellation.
+    let difference = scaled(got, 1.0 / got_norm).add(&scaled(want, -1.0 / want_norm));
+    let distance = norm_sqr(&difference) / 2.0;
+    let slack = discarded + (want.len() as f64).sqrt() * tol;
+    let bound = 2.0 * slack * slack / (got_norm * want_norm);
+    let largest = want.iter().map(|t| t.2.norm_sqr()).fold(0.0, f64::max);
+    assert!(
+        bound < 2.0 * largest / (want_norm * want_norm),
+        "{what}: Δ = {discarded:e} of ‖want‖ = {want_norm:e} is too heavy a cut to compare"
     );
-    let Some(boundary) = want_octave else { return };
-    let edge = f64::from_bits(((boundary + 1) as u64) << 52).sqrt();
-    let clear = |c: Complex64| c.norm() - tol >= edge;
-    assert_both_keep(got, want, clear, tol, what);
-    assert_both_keep(want, got, clear, tol, what);
+    assert!(
+        distance <= bound,
+        "{what}: 1 − cos = {distance:e} exceeds 2Δ²/(‖got‖‖want‖) = {bound:e} (Δ = {slack:e})"
+    );
 }
 
-/// Every term of `from` that `above` selects is in `other` (canonical order) with a coefficient within `tol`.
-fn assert_both_keep<const W: usize>(
-    other: &[Triple<W>],
-    from: &[Triple<W>],
-    above: impl Fn(Complex64) -> bool,
-    tol: f64,
-    what: &str,
-) {
-    for (x, z, c) in from.iter().filter(|t| above(t.2)) {
-        let found = other.binary_search_by_key(&(x, z), |(ox, oz, _)| (ox, oz));
-        let i = found.unwrap_or_else(|_| {
-            panic!(
-                "{what}: key {x:?}/{z:?} (|c| = {}) above the boundary is kept by one run only",
-                c.norm()
-            )
-        });
-        let d = (other[i].2 - c).norm();
-        assert!(
-            d < tol,
-            "{what}: key {x:?}/{z:?} above the boundary: coeff {c} vs {} (delta {d:e})",
-            other[i].2,
-        );
-    }
-}
-
-/// One-layer circuits whose single cut splits a boundary group, each with its input and the `n` that cuts it: a Haar SU(4) on `(0, 1)` over [`rand_sum`], and a Hadamard on qubit 0 over coefficients `±1`, `±2`, `±3`, where `n` falls inside the `±2` ties.
+/// One-layer circuits whose single cut splits a boundary group and drops little weight, each with its input and the `n` that cuts it: a Haar SU(4) on `(0, 1)` over [`spread_magnitudes`] of [`rand_sum`], and a Hadamard on qubit 0 over magnitudes `1`, `2⁻²⁰`, `2⁻⁴⁰`, where `n` falls inside the `2⁻²⁰` ties.
 pub fn single_cuts<const W: usize>(
     num_qubits: usize,
     seed: u64,
@@ -732,15 +731,17 @@ pub fn single_cuts<const W: usize>(
     hadamard.push(PtmChannel::hadamard(0));
     let mut tied = BuildAccumulator::<W>::new(num_qubits);
     for (x, z, c) in rand_sum_real::<W>(2_000, num_qubits, seed ^ 1).iter() {
-        let magnitude = 1.0 + (c.re.abs() * 3.0).floor().min(2.0);
+        let class = (c.re.abs() * 3.0).floor().min(2.0) as i32;
         let p = PauliString::<W> { x: *x, z: *z };
+        let magnitude = 2f64.powi(20 * class - 40);
         tied.add_term(p, Complex64::new(magnitude.copysign(c.re), 0.0));
     }
+    let random = rand_sum::<W>(1_500, num_qubits, seed);
     vec![
         (
             "dense cut",
             dense,
-            rand_sum::<W>(1_500, num_qubits, seed),
+            spread_magnitudes(&random, 40, seed),
             2_000,
         ),
         ("tied cut", hadamard, tied.finalize(), 1_300),

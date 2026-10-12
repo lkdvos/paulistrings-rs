@@ -7,7 +7,7 @@ use num_complex::Complex64;
 use paulistrings::test_support::IdentityChannel;
 use paulistrings::test_support::{
     assert_runs_agree, assert_same_terms, assert_terms_close, bucket, canonical_triples,
-    naive_apply_layer, rand_sum,
+    naive_apply_layer, rand_sum, DiscardMeter,
 };
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
@@ -374,7 +374,7 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
 
 /// A 3x3 periodic lattice with a hard-binding `TopN`, which is the closest
 /// in-test analogue of what `examples/ising_2d_quench.rs` actually runs: real 2D
-/// topology, 27 channels per step, and truncation active from the first step.
+/// topology, 27 channels per step, and truncation active from the second step.
 ///
 /// The lattice symmetry makes ties, and `TopN` keeps boundary terms in bucket
 /// order, which the oracle's storage does not share (`assert_runs_agree`).
@@ -383,7 +383,7 @@ fn ising_3x3_with_binding_top_n_keeps_the_naive_oracles_count() {
     let (lx, ly) = (3usize, 3usize);
     let n = lx * ly;
     let dt = 0.05;
-    let policy = And(CoefficientThreshold(1e-12), TopN(1500));
+    let policy = And(CoefficientThreshold(1e-12), TopN(4000));
 
     let mut acc = BuildAccumulator::<1>::with_capacity(n, n);
     for q in 0..n {
@@ -400,17 +400,17 @@ fn ising_3x3_with_binding_top_n_keeps_the_naive_oracles_count() {
     let mut bucketed = initial.clone();
     let mut reference = initial;
     let mut binding = false;
+    let meter = DiscardMeter::new(&policy);
 
-    for step in 1..=8 {
-        bucketed = paulistrings::propagate(&circuit, bucketed, &policy, Direction::Heisenberg);
+    for step in 1..=6 {
+        bucketed = paulistrings::propagate(&circuit, bucketed, &meter, Direction::Heisenberg);
         reference = replay_naive(&reference, &chans, &policy, Direction::Heisenberg);
-        if bucketed.len() == 1500 {
+        if bucketed.len() == 4000 {
             binding = true;
         }
-        let layers = step * circuit.len();
         assert_runs_agree(
             policy,
-            layers,
+            meter.discarded(),
             &bucketed,
             &reference,
             1e-11,

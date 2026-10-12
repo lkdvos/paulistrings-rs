@@ -176,7 +176,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           truncation/{builtin,tree},
                           engine/{bucketed,coset,merge,direct,stats,cuda_context},
                           engine/partitioned/{backend,distributed,driver,export,layer,mpi,plan,
-                          rows,runtime,sum,topology,trace,transport,truncation},
+                          runtime,sum,topology,trace,transport,truncation},
                           engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),
                           readout/{product_state,stabilizer}, test_support
   tests/ benches/ examples/ (the phase_breakdown probe)

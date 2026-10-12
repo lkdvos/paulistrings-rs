@@ -14,10 +14,11 @@ use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 
+mod rows;
+pub use rows::{circuit_generators, count_remote_deltas, GeneratorWeight};
+
 pub use crate::engine::bucketed::apply_layer_bucketed;
 pub use crate::engine::partitioned::driver::BITS_AGREE_EVERY;
-pub use crate::engine::partitioned::plan::count_remote_deltas;
-pub use crate::engine::partitioned::rows::{circuit_generators, GeneratorWeight};
 pub use crate::engine::partitioned::transport::InProcessTransport;
 pub use crate::pauli_sum::hash::B_MAX_BITS;
 pub use crate::pauli_sum::storage::{

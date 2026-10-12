@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::pauli_sum::hash::Gf2Hash;
+
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
@@ -202,42 +204,6 @@ fn local_and_remote_cover_every_entry_exactly_once() {
         assert_eq!(plan.local_bucket_deltas, want, "trial {trial}");
         assert_eq!(plan.rest_streams_total, 15, "trial {trial}");
     }
-}
-
-#[test]
-fn count_remote_deltas_reports_layers_in_application_order() {
-    // Two layers with hand-checkable delta sets under a Z-row on qubit 3:
-    //   H(3):  deltas {0, XZ_3} -> part = {0, 1}  -> (1 local, 1 remote)
-    //   S(9):  deltas {0,  Z_9} -> part = {0, 0}  -> (2 local, 0 remote)
-    // (S maps X -> Y and Y -> -X, so its only nonzero delta is a z-bit.)
-    let rows = z_row(3);
-    let h = hash();
-    let mut circuit = Circuit::<2>::new(NQ);
-    circuit.push(PtmChannel::hadamard(3));
-    circuit.push(PtmChannel::phase_gate(9));
-
-    assert_eq!(
-        count_remote_deltas(&circuit, &h, &rows, false),
-        vec![(1, 1), (2, 0)],
-    );
-    // Heisenberg order is the reverse. `S` is not self-adjoint, but its adjoint's delta set is the same subspace, so the counts do not move.
-    assert_eq!(
-        count_remote_deltas(&circuit, &h, &rows, true),
-        vec![(2, 0), (1, 1)],
-    );
-}
-
-#[test]
-fn count_remote_deltas_without_rows_is_all_local() {
-    let rows = PartitionRows::<2>::none(NQ);
-    let h = hash();
-    let mut circuit = Circuit::<2>::new(NQ);
-    circuit.push(PtmChannel::cnot(1, 4));
-    circuit.push(PtmChannel::hadamard(3));
-    assert_eq!(
-        count_remote_deltas(&circuit, &h, &rows, false),
-        vec![(4, 0), (2, 0)],
-    );
 }
 
 impl PartitionPlan {

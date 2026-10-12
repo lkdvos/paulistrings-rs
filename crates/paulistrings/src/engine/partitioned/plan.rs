@@ -1,12 +1,6 @@
 //! Per-layer classification of a prepared channel's deltas into local (`part(d) = 0`) and remote ones (ARCHITECTURE.md §Partitioning).
 
 use crate::channel::prepared::Prepared;
-#[cfg(any(test, feature = "test-utils"))]
-use crate::channel::Prepare;
-#[cfg(any(test, feature = "test-utils"))]
-use crate::circuit::Circuit;
-#[cfg(any(test, feature = "test-utils"))]
-use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::hash::PartitionRows;
 
 /// One delta of a prepared channel that crosses a partition boundary.
@@ -34,19 +28,7 @@ pub(crate) struct PartitionPlan {
 }
 
 impl PartitionPlan {
-    /// Classify `prepared`'s deltas under `rows`, as seen from partition `rank`.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn new<const W: usize>(
-        prepared: &Prepared<W>,
-        rows: &PartitionRows<W>,
-        rank: u32,
-    ) -> Self {
-        let mut plan = Self::default();
-        plan.rebuild(prepared, rows, rank);
-        plan
-    }
-
-    /// [`new`](Self::new) in place, keeping the allocations across layers.
+    /// Classify `prepared`'s deltas under `rows`, as seen from partition `rank`, keeping the allocations across layers.
     pub(crate) fn rebuild<const W: usize>(
         &mut self,
         prepared: &Prepared<W>,
@@ -125,34 +107,6 @@ impl PartitionPlan {
     pub(crate) fn remote_for_partner(&self, q: u32) -> impl Iterator<Item = &RemoteDelta> {
         self.remote.iter().filter(move |r| r.partner == q)
     }
-}
-
-/// Per layer in application order, `(local, remote)` delta counts of `circuit`'s channels prepared against `hash` under `rows`.
-///
-/// # Panics
-///
-/// If any channel's preparation declines.
-#[cfg(any(test, feature = "test-utils"))]
-pub fn count_remote_deltas<const W: usize>(
-    circuit: &Circuit<W>,
-    hash: &Gf2Hash<W>,
-    rows: &PartitionRows<W>,
-    adjoint: bool,
-) -> Vec<(usize, usize)> {
-    let n = circuit.channels.len();
-    (0..n)
-        .map(|k| if adjoint { n - 1 - k } else { k })
-        .map(|index| {
-            let prepared = circuit.channels[index]
-                .prepare(hash, adjoint)
-                .unwrap_or_else(|| {
-                    panic!("count_remote_deltas: layer {index} declined preparation")
-                });
-            let plan = PartitionPlan::new(&prepared, rows, 0);
-            let local = plan.local_entries.iter().filter(|b| **b).count();
-            (local, plan.remote.len())
-        })
-        .collect()
 }
 
 #[cfg(test)]

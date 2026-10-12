@@ -13,8 +13,6 @@ pub(crate) mod layer;
 #[cfg(feature = "mpi")]
 pub mod mpi;
 pub(crate) mod plan;
-#[cfg(any(test, feature = "test-utils"))]
-pub(crate) mod rows;
 pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;

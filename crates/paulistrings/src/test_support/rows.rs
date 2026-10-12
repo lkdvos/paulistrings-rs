@@ -1,11 +1,13 @@
-//! The circuit's key delta masks with the number of layers carrying each, for judging partition rows (ARCHITECTURE.md §Partitioning).
+//! Partition-row diagnostics: a circuit's key delta masks with their layer counts, and per-layer local/remote delta counts under given rows (ARCHITECTURE.md §Partitioning).
 //! A row `r` leaves a delta local iff `⟨r, d⟩ = parity(rx & dx) ^ parity(rz & dz) = 0`.
 
-use crate::channel::Prepare;
 use std::collections::HashMap;
 
+use crate::channel::prepared::Prepared;
+use crate::channel::Prepare;
 use crate::circuit::Circuit;
-use crate::pauli_sum::hash::Gf2Hash;
+use crate::engine::partitioned::plan::PartitionPlan;
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 
 /// One key delta mask the circuit produces, with how many layers carry it.
 #[derive(Clone, Debug, PartialEq)]
@@ -67,6 +69,47 @@ type Mask<const W: usize> = ([u64; W], [u64; W]);
 
 fn mask_is_zero<const W: usize>(m: &Mask<W>) -> bool {
     m.0.iter().chain(m.1.iter()).all(|w| *w == 0)
+}
+
+/// Per layer in application order, `(local, remote)` delta counts of `circuit`'s channels prepared against `hash` under `rows`.
+///
+/// # Panics
+///
+/// If any channel's preparation declines.
+pub fn count_remote_deltas<const W: usize>(
+    circuit: &Circuit<W>,
+    hash: &Gf2Hash<W>,
+    rows: &PartitionRows<W>,
+    adjoint: bool,
+) -> Vec<(usize, usize)> {
+    let n = circuit.channels.len();
+    (0..n)
+        .map(|k| if adjoint { n - 1 - k } else { k })
+        .map(|index| {
+            let prepared = circuit.channels[index]
+                .prepare(hash, adjoint)
+                .unwrap_or_else(|| {
+                    panic!("count_remote_deltas: layer {index} declined preparation")
+                });
+            let plan = PartitionPlan::new(&prepared, rows, 0);
+            let local = plan.local_entries.iter().filter(|b| **b).count();
+            (local, plan.remote.len())
+        })
+        .collect()
+}
+
+// The engine only ever rebuilds a plan in place; tests build one fresh.
+impl PartitionPlan {
+    /// A fresh plan of `prepared` under `rows`, as seen from partition `rank`.
+    pub(crate) fn new<const W: usize>(
+        prepared: &Prepared<W>,
+        rows: &PartitionRows<W>,
+        rank: u32,
+    ) -> Self {
+        let mut plan = Self::default();
+        plan.rebuild(prepared, rows, rank);
+        plan
+    }
 }
 
 #[cfg(test)]

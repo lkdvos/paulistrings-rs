@@ -14,6 +14,7 @@ use crate::engine::partitioned::transport::Transport;
 #[cfg(feature = "phase-timing")]
 use crate::engine::partitioned::PartitionPhaseStats;
 use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy, ScatterRows};
+use crate::engine::timing::timed;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
@@ -215,12 +216,10 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     /// [`GpuError::Poisoned`] after a failed `propagate`, otherwise any rank's download error, agreed over the group.
     pub fn gather(&self) -> Result<Option<PauliSum<W>>, GpuError> {
         self.backend().check_poison()?;
-        #[cfg(feature = "phase-timing")]
-        let started = Instant::now();
+        timed!(let started = Instant::now());
         let share = agree(self.transport(), self.local_to_host())?;
         let out = gather_share(&share, self.transport());
-        #[cfg(feature = "phase-timing")]
-        self.lap_gather(started.elapsed().as_nanos() as u64);
+        timed!(self.lap_gather(started.elapsed().as_nanos() as u64));
         Ok(out)
     }
 

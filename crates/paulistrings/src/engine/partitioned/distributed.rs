@@ -12,6 +12,7 @@ use super::topology::{PartitionConfig, TopologyError};
 use super::trace::{assemble, PartitionTrace};
 use super::transport::Transport;
 use crate::circuit::Circuit;
+use crate::engine::timing::{tally, timed};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
@@ -20,7 +21,7 @@ use crate::readout::product_state::ProductState;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 #[cfg(feature = "phase-timing")]
-use super::sum::PartitionPhaseStats;
+use super::sum::{DriverLaps, PartitionPhaseStats};
 
 /// Parts the gather ships per rank: bucket lengths, then the three columns.
 const GATHER_PARTS: usize = 4;
@@ -125,52 +126,8 @@ pub struct DistributedSum<const W: usize, X: Transport, B = HostPartition<W>> {
     runtime: Arc<PartitionRuntime>,
     transport: X,
     trace: Option<PartitionTrace>,
+    #[cfg(feature = "phase-timing")]
     laps: DriverLaps,
-}
-
-/// The driver's own laps since they were last drained; empty without `phase-timing`.
-struct DriverLaps {
-    #[cfg(feature = "phase-timing")]
-    scatter_ns: u64,
-    /// Atomic because `gather` takes `&self`.
-    #[cfg(feature = "phase-timing")]
-    gather_ns: std::sync::atomic::AtomicU64,
-    #[cfg(feature = "phase-timing")]
-    layers: u64,
-}
-
-impl DriverLaps {
-    fn new(scatter_ns: u64) -> Self {
-        #[cfg(not(feature = "phase-timing"))]
-        let _ = scatter_ns;
-        Self {
-            #[cfg(feature = "phase-timing")]
-            scatter_ns,
-            #[cfg(feature = "phase-timing")]
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "phase-timing")]
-            layers: 0,
-        }
-    }
-
-    fn add_layers(&mut self, layers: usize) {
-        #[cfg(not(feature = "phase-timing"))]
-        let _ = layers;
-        #[cfg(feature = "phase-timing")]
-        {
-            self.layers += layers as u64;
-        }
-    }
-
-    /// Drain scatter time, gather time and layers driven.
-    #[cfg(feature = "phase-timing")]
-    fn take(&mut self) -> (u64, u64, u64) {
-        (
-            std::mem::take(&mut self.scatter_ns),
-            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
-            std::mem::take(&mut self.layers),
-        )
-    }
 }
 
 impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
@@ -220,12 +177,15 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         transport: X,
         scatter_ns: u64,
     ) -> Self {
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = scatter_ns;
         Self {
             local,
             rows,
             runtime,
             transport,
             trace: None,
+            #[cfg(feature = "phase-timing")]
             laps: DriverLaps::new(scatter_ns),
         }
     }
@@ -248,9 +208,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
 
     #[cfg(feature = "phase-timing")]
     pub(crate) fn lap_gather(&self, ns: u64) {
-        self.laps
-            .gather_ns
-            .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
+        self.laps.lap_gather(ns);
     }
 
     /// [`DistributedSum::propagate_with`] on any backend.
@@ -311,7 +269,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
             if let Some(trace) = self.trace.as_mut() {
                 assemble(trace, vec![work.rows]);
             }
-            self.laps.add_layers(layer_count);
+            tally!(self.laps.layers, layer_count);
         }
 
         log::info!(
@@ -423,6 +381,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
             runtime,
             transport,
             trace: None,
+            #[cfg(feature = "phase-timing")]
             laps: DriverLaps::new(started.elapsed().as_nanos() as u64),
         }
     }
@@ -457,11 +416,9 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 
     /// Collect the whole sum on rank 0, `None` elsewhere, leaving `self` intact. **Collective.**
     pub fn gather(&self) -> Option<PauliSum<W>> {
-        #[cfg(feature = "phase-timing")]
-        let started = Instant::now();
+        timed!(let started = Instant::now());
         let out = gather_share(&self.local.sum, &self.transport);
-        #[cfg(feature = "phase-timing")]
-        self.lap_gather(started.elapsed().as_nanos() as u64);
+        timed!(self.lap_gather(started.elapsed().as_nanos() as u64));
         out
     }
 

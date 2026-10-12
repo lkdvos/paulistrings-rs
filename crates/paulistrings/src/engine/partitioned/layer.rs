@@ -10,6 +10,7 @@ use crate::engine::bucketed::{
 };
 use crate::engine::coset::Gf2Span;
 use crate::engine::merge::rest_rows_per_key;
+use crate::engine::timing::{lap, stamp, tally, timed};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::PauliSum;
 use crate::truncation::TruncationPolicy;
@@ -108,16 +109,14 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
         z: &mut Vec<[u64; W]>,
         c: &mut Vec<Complex64>,
     ) {
-        #[cfg(feature = "phase-timing")]
-        let start = std::time::Instant::now();
+        timed!(let start = std::time::Instant::now());
         let p = self.map.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
         self.wait.wait_chunk(self.map.chunk_of_position(p));
-        #[cfg(feature = "phase-timing")]
-        self.chunk_wait_ns.fetch_add(
+        timed!(self.chunk_wait_ns.fetch_add(
             start.elapsed().as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
-        );
+        ));
         for block in &self.blocks {
             let Some(block) = block else { continue };
             let (sx, sz, sc) = block.segment(p);
@@ -125,11 +124,10 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
             z.extend_from_slice(sz);
             c.extend_from_slice(sc);
         }
-        #[cfg(feature = "phase-timing")]
-        self.append_ns.fetch_add(
+        timed!(self.append_ns.fetch_add(
             start.elapsed().as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
-        );
+        ));
     }
 }
 
@@ -187,8 +185,7 @@ where
         return LayerExchangeCounts::default();
     }
 
-    #[cfg(feature = "phase-timing")]
-    let mut stamp = crate::engine::stats::Stamp::now();
+    stamp!(stamp);
     // The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count.
     let span = Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits());
     state
@@ -202,11 +199,11 @@ where
         &state.chunks,
         &mut state.export,
     );
-    #[cfg(feature = "phase-timing")]
-    {
-        stamp.lap(&mut state.layer.stats.export_ns);
-        state.layer.stats.rows_exported += export.rows_to.iter().sum::<u64>();
-    }
+    lap!(stamp, state.layer.stats.export_ns);
+    tally!(
+        state.layer.stats.rows_exported,
+        export.rows_to.iter().sum::<u64>()
+    );
     #[cfg(debug_assertions)]
     {
         super::export::debug_assert_exported_partitions(&send, rows);
@@ -246,16 +243,13 @@ where
         export: export_scratch,
         chunks: map,
     } = state;
-    #[cfg(feature = "phase-timing")]
-    let body_ns = std::cell::Cell::new(0u64);
-    #[cfg(feature = "phase-timing")]
-    let exchange_start = std::time::Instant::now();
+    timed!(let body_ns = std::cell::Cell::new(0u64));
+    timed!(let exchange_start = std::time::Instant::now());
 
     // The rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
     let (recv, rows_received) =
         transport.exchange_layer(send, &mut export_scratch.pool, map, |recv, wait| {
-            #[cfg(feature = "phase-timing")]
-            let body_start = std::time::Instant::now();
+            timed!(let body_start = std::time::Instant::now());
             #[cfg(debug_assertions)]
             for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
                 debug_assert_eq!(
@@ -282,8 +276,7 @@ where
                 &recv_rows,
                 knobs,
             );
-            #[cfg(feature = "phase-timing")]
-            {
+            timed! {
                 layer_scratch.stats.recv_rows += rows_received;
                 layer_scratch.stats.append_ns += recv_rows
                     .append_ns
@@ -295,8 +288,7 @@ where
             }
             rows_received
         });
-    #[cfg(feature = "phase-timing")]
-    {
+    timed! {
         // Excludes the body it wraps: the transfer the coset loop did not hide.
         layer_scratch.stats.exchange_ns +=
             exchange_start.elapsed().as_nanos() as u64 - body_ns.get();

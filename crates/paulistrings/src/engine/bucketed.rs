@@ -14,7 +14,8 @@ use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 #[cfg(feature = "phase-timing")]
-use super::stats::{PhaseStats, Stamp};
+use super::stats::PhaseStats;
+use super::timing::{lap, stamp};
 
 mod coset_fill;
 
@@ -276,15 +277,13 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     T: TruncationPolicy<W> + ?Sized,
     X: ExtraRows<W> + Sync,
 {
-    #[cfg(feature = "phase-timing")]
-    let mut stamp = Stamp::now();
+    stamp!(stamp);
 
     // A partitioned layer's local table can look key-preserving while received rows still need merging.
     if let Prepared::Local(ptm) = prepared {
         if !X::NEEDS_BETA && ptm.is_key_preserving() {
             rescale_in_place(sum, ptm, policy);
-            #[cfg(feature = "phase-timing")]
-            stamp.lap(&mut scratch.stats.rescale_ns);
+            lap!(stamp, scratch.stats.rescale_ns);
             return;
         }
     }
@@ -301,8 +300,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     let plan = DeltaPlan::new(prepared, &span, knobs);
     let coset_size = span.coset_size();
     let num_cosets = span.num_cosets();
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut scratch.stats.span_plan_ns);
+    lap!(stamp, scratch.stats.span_plan_ns);
 
     // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the permutation is the identity and the handle passes are skipped.
     let identity_perm = span.dimension() == 0;
@@ -330,8 +328,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             }
         }
     }
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut scratch.stats.permute_ns);
+    lap!(stamp, scratch.stats.permute_ns);
 
     // Each coset reads and writes only its own chunk (ARCHITECTURE.md §Parallelism).
     {
@@ -397,8 +394,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                 });
         }
     }
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut scratch.stats.coset_loop_ns);
+    lap!(stamp, scratch.stats.coset_loop_ns);
 
     if !identity_perm {
         let buckets = sum.buckets_mut();
@@ -406,11 +402,9 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             *columns = std::mem::take(&mut scratch.staging[scratch.permutation[beta] as usize]);
         }
     }
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut scratch.stats.unpermute_ns);
+    lap!(stamp, scratch.stats.unpermute_ns);
     sum.recount();
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut scratch.stats.recount_ns);
+    lap!(stamp, scratch.stats.recount_ns);
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();

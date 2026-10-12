@@ -7,6 +7,7 @@ use crate::engine::gpu::layer::{timed_transfer, LayerScratch, Transfer, Transfer
 use crate::engine::gpu::sum::{launch_fingerprint, GpuSum};
 use crate::engine::gpu::wire::{ScheduledOp, Skeleton, WireColumn, WireGroup, WireOpKind};
 use crate::engine::partitioned::transport::ChunkMap;
+use crate::engine::timing::{tally, timed};
 
 use super::{recv_row_bytes, DeviceExport, PendingRecv, MAX_RECV_SEGMENT};
 
@@ -199,17 +200,13 @@ pub(crate) fn receive_chunk<const W: usize>(
     scratch: &mut LayerScratch<W>,
     c: usize,
 ) -> Result<usize, GpuError> {
-    #[cfg(feature = "phase-timing")]
-    let t = std::time::Instant::now();
+    timed!(let t = std::time::Instant::now());
     let export = &mut scratch.export;
     let mut pending = export.pending.take().expect("a pending receive");
     debug_assert_eq!(pending.next, c);
     let r = move_chunk(sum, export, &mut pending, c, true, &mut scratch.transfer_ns);
     export.pending = Some(pending);
-    #[cfg(feature = "phase-timing")]
-    {
-        scratch.laps.exchange_ns += t.elapsed().as_nanos() as u64;
-    }
+    tally!(scratch.laps.exchange_ns, t.elapsed().as_nanos());
     #[cfg(any(test, feature = "test-utils"))]
     if r.is_ok() && scratch.export.fail_after_chunk == Some(c) {
         scratch.export.fail_after_chunk = None;

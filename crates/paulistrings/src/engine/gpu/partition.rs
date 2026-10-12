@@ -16,6 +16,7 @@ use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::engine::timing::timed;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
@@ -235,8 +236,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             }
             return LayerExchangeCounts::none(size);
         }
-        #[cfg(feature = "phase-timing")]
-        let (started, before) = (std::time::Instant::now(), scratch.kernel_ms);
+        timed!(let (started, before) = (std::time::Instant::now(), scratch.kernel_ms));
         let result = apply_layer_device(
             sum,
             prepared,
@@ -246,13 +246,12 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             self.hash.bits(),
             transport,
         );
-        #[cfg(feature = "phase-timing")]
-        fold_layer_stats(
+        timed!(fold_layer_stats(
             &mut self.stats,
             scratch,
             before,
             started.elapsed().as_nanos() as u64,
-        );
+        ));
         self.hash = sum.hash().clone();
         match result {
             Ok(counts) => counts,

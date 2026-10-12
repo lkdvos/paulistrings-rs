@@ -13,8 +13,7 @@ use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
-#[cfg(feature = "phase-timing")]
-use crate::engine::stats::Stamp;
+use crate::engine::timing::{lap, stamp, tally, timed};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
@@ -175,28 +174,21 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         let layer_start = want_timer.then(Instant::now);
         let terms_before = local.len();
 
-        #[cfg(feature = "phase-timing")]
-        let mut stamp = Stamp::now();
-        #[cfg(feature = "phase-timing")]
-        {
-            let stats = local.stats();
-            stats.layers += 1;
-            stats.terms_in += terms_before as u64;
-        }
+        stamp!(stamp);
+        tally!(local.stats().layers, 1);
+        tally!(local.stats().terms_in, terms_before);
 
         // Alone, a backend that sizes its buckets without the prepared channel settles the count first, so a growing layer prepares once.
         let refined_early =
             solo && local.refine_unprepared(options.target_bucket_len, options.min_buckets);
-        #[cfg(feature = "phase-timing")]
         if refined_early {
-            stamp.lap(&mut local.stats().rebucket_ns);
+            lap!(stamp, local.stats().rebucket_ns);
         }
 
         // Otherwise prepared before the bucket count is settled, since the plan decides whether this layer agrees it; only `bucket_delta` depends on the count, so a refining layer prepares again.
         let mut prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
         plan.rebuild(&prepared, rows, rank as u32);
-        #[cfg(feature = "phase-timing")]
-        stamp.lap(&mut local.stats().prepare_ns);
+        lap!(stamp, local.stats().prepare_ns);
 
         let mut collectives = 0u32;
         if !refined_early && (solo || plan.has_remote() || agrees_bucket_bits(k)) {
@@ -206,24 +198,20 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                 want = transport.allreduce_max_u8(want);
                 collectives += 1;
             }
-            #[cfg(feature = "phase-timing")]
-            stamp.lap(&mut local.stats().collective_ns);
+            lap!(stamp, local.stats().collective_ns);
             if want > local.hash().bits() {
                 while local.hash().bits() < want {
                     local.refine();
                 }
-                #[cfg(feature = "phase-timing")]
-                stamp.lap(&mut local.stats().rebucket_ns);
+                lap!(stamp, local.stats().rebucket_ns);
                 prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, index);
                 plan.rebuild(&prepared, rows, rank as u32);
-                #[cfg(feature = "phase-timing")]
-                stamp.lap(&mut local.stats().prepare_ns);
+                lap!(stamp, local.stats().prepare_ns);
             }
         }
 
         let counts = local.apply_layer(&prepared, &plan, rows, policy, transport);
-        #[cfg(feature = "phase-timing")]
-        stamp.rearm();
+        timed!(stamp.rearm());
 
         if finalizes {
             policy_calls.store(0, Ordering::Relaxed);
@@ -234,12 +222,8 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
             local.finalize_layer(policy, &counting);
             collectives += policy_calls.load(Ordering::Relaxed);
         }
-        #[cfg(feature = "phase-timing")]
-        {
-            stamp.lap(&mut local.stats().finalize_ns);
-            let terms_out = local.len() as u64;
-            local.stats().terms_out += terms_out;
-        }
+        lap!(stamp, local.stats().finalize_ns);
+        tally!(local.stats().terms_out, local.len());
 
         // The trace sits behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion.
         let remote_deltas = counts.remote_deltas;

@@ -16,6 +16,7 @@ use super::wire::{schedule, BlockSkeletons, DeviceWire, ScheduledOp, Skeleton};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::{ChunkMap, Transport};
+use crate::engine::timing::{tally, timed};
 
 mod premerge;
 mod receive;
@@ -151,8 +152,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
     let size = transport.size();
-    #[cfg(feature = "phase-timing")]
-    let t_export = std::time::Instant::now();
+    timed!(let t_export = std::time::Instant::now());
     let (send, mut counts) = match export_blocks_device(sum, table, plan, scratch, size) {
         Ok(v) => v,
         Err(e) => {
@@ -160,17 +160,16 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
             return Err(e);
         }
     };
-    #[cfg(feature = "phase-timing")]
-    {
-        scratch.laps.export_ns += t_export.elapsed().as_nanos() as u64;
-        scratch.laps.rows_exported += counts.rows_sent.iter().sum::<u64>();
-    }
+    tally!(scratch.laps.export_ns, t_export.elapsed().as_nanos());
+    tally!(
+        scratch.laps.rows_exported,
+        counts.rows_sent.iter().sum::<u64>()
+    );
     let b = sum.hash.num_buckets();
     let cap_rows = recv_cap_rows::<W>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
     let transfer_ns = &mut scratch.transfer_ns;
-    #[cfg(feature = "phase-timing")]
-    let t_exchange = std::time::Instant::now();
+    timed!(let t_exchange = std::time::Instant::now());
     let skeletons: Vec<Option<BlockSkeletons<W>>> = send
         .iter()
         .map(|slot| {
@@ -224,15 +223,9 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
         }
         None => export.sends.extend(send.into_iter().flatten()),
     }
-    #[cfg(feature = "phase-timing")]
-    {
-        scratch.laps.exchange_ns += t_exchange.elapsed().as_nanos() as u64;
-    }
+    tally!(scratch.laps.exchange_ns, t_exchange.elapsed().as_nanos());
     let rows_received = rows?;
-    #[cfg(feature = "phase-timing")]
-    {
-        scratch.laps.recv_rows += rows_received;
-    }
+    tally!(scratch.laps.recv_rows, rows_received);
     counts.rows_received = rows_received;
     counts.remote_deltas = plan.remote.len();
     Ok(counts)
@@ -458,8 +451,7 @@ fn export_blocks_device<const W: usize>(
             payload.blocks.truncate(blocks_used[q]);
         }
     }
-    #[cfg(feature = "phase-timing")]
-    stream.synchronize()?;
+    timed!(stream.synchronize()?);
     Ok((send, counts))
 }
 

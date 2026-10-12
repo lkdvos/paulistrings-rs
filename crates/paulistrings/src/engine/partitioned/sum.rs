@@ -14,6 +14,7 @@ use super::trace::{assemble, PartitionTrace};
 use crate::circuit::Circuit;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::engine::timing::{tally, timed};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
@@ -33,12 +34,41 @@ pub struct PartitionedSum<const W: usize, B = HostPartition<W>> {
     /// `None` unless [`enable_trace`](Self::enable_trace) was called.
     trace: Option<PartitionTrace>,
     #[cfg(feature = "phase-timing")]
+    laps: DriverLaps,
+}
+
+/// A driver's own laps since they were last drained.
+#[cfg(feature = "phase-timing")]
+pub(super) struct DriverLaps {
     scatter_ns: u64,
-    /// Atomic because [`gather`](Self::gather) takes `&self`.
-    #[cfg(feature = "phase-timing")]
+    /// Atomic because `gather` takes `&self`.
     gather_ns: std::sync::atomic::AtomicU64,
-    #[cfg(feature = "phase-timing")]
-    layers: u64,
+    pub(super) layers: u64,
+}
+
+#[cfg(feature = "phase-timing")]
+impl DriverLaps {
+    pub(super) fn new(scatter_ns: u64) -> Self {
+        Self {
+            scatter_ns,
+            gather_ns: std::sync::atomic::AtomicU64::new(0),
+            layers: 0,
+        }
+    }
+
+    pub(super) fn lap_gather(&self, ns: u64) {
+        self.gather_ns
+            .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Drain scatter time, gather time and layers driven.
+    pub(super) fn take(&mut self) -> (u64, u64, u64) {
+        (
+            std::mem::take(&mut self.scatter_ns),
+            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
+            std::mem::take(&mut self.layers),
+        )
+    }
 }
 
 impl<const W: usize, B> PartitionedSum<W, B> {
@@ -58,11 +88,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
             runtime,
             trace: None,
             #[cfg(feature = "phase-timing")]
-            scatter_ns,
-            #[cfg(feature = "phase-timing")]
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "phase-timing")]
-            layers: 0,
+            laps: DriverLaps::new(scatter_ns),
         }
     }
 
@@ -79,17 +105,12 @@ impl<const W: usize, B> PartitionedSum<W, B> {
     /// Drain scatter time, gather time and layers driven.
     #[cfg(all(feature = "cuda", feature = "phase-timing"))]
     pub(crate) fn take_driver_laps(&mut self) -> (u64, u64, u64) {
-        (
-            std::mem::take(&mut self.scatter_ns),
-            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
-            std::mem::take(&mut self.layers),
-        )
+        self.laps.take()
     }
 
     #[cfg(all(feature = "cuda", feature = "phase-timing"))]
     pub(crate) fn lap_gather(&self, ns: u64) {
-        self.gather_ns
-            .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
+        self.laps.lap_gather(ns);
     }
 
     /// Partitions this sum is split across.
@@ -172,10 +193,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
             if let Some(trace) = self.trace.as_mut() {
                 assemble(trace, traced);
             }
-            #[cfg(feature = "phase-timing")]
-            {
-                self.layers += n as u64;
-            }
+            tally!(self.laps.layers, n);
         }
 
         log::info!(
@@ -261,11 +279,7 @@ impl<const W: usize> PartitionedSum<W> {
             runtime,
             trace: None,
             #[cfg(feature = "phase-timing")]
-            scatter_ns: started.elapsed().as_nanos() as u64,
-            #[cfg(feature = "phase-timing")]
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(feature = "phase-timing")]
-            layers: 0,
+            laps: DriverLaps::new(started.elapsed().as_nanos() as u64),
         }
     }
 
@@ -300,14 +314,9 @@ impl<const W: usize> PartitionedSum<W> {
 
     /// Merges the partitions back into one sum on the calling thread, leaving `self` intact.
     pub fn gather(&self) -> PauliSum<W> {
-        #[cfg(feature = "phase-timing")]
-        let started = Instant::now();
+        timed!(let started = Instant::now());
         let out = PauliSum::merge_partitions(self.parts.iter().map(|p| p.sum.clone()).collect());
-        #[cfg(feature = "phase-timing")]
-        self.gather_ns.fetch_add(
-            started.elapsed().as_nanos() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        timed!(self.laps.lap_gather(started.elapsed().as_nanos() as u64));
         out
     }
 
@@ -362,15 +371,16 @@ impl<const W: usize> PartitionedSum<W> {
     /// Drain the per-phase timing counters, zeroing them.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
+        let (scatter_ns, gather_ns, layers) = self.laps.take();
         PartitionPhaseStats {
             per_partition: self
                 .parts
                 .iter_mut()
                 .map(|part| part.state.layer.take_stats())
                 .collect(),
-            scatter_ns: std::mem::take(&mut self.scatter_ns),
-            gather_ns: self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
-            layers: std::mem::take(&mut self.layers),
+            scatter_ns,
+            gather_ns,
+            layers,
         }
     }
 

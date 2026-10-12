@@ -1,6 +1,7 @@
 //! [`GpuPartitionedSum`], [`PartitionedSum`] over device partitions, its one-device form [`GpuPauliSum`], and their front doors.
 
 use crate::channel::Prepare;
+use crate::engine::timing::timed;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -308,8 +309,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     pub fn gather(&self) -> Result<PauliSum<W>, GpuError> {
         let partitions = self.backends();
         partitions[0].check_poison()?;
-        #[cfg(feature = "phase-timing")]
-        let started = Instant::now();
+        timed!(let started = Instant::now());
         let shares = std::thread::scope(|scope| {
             let downloads: Vec<_> = partitions
                 .iter()
@@ -321,8 +321,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
                 .collect::<Result<Vec<_>, _>>()
         })?;
         let out = PauliSum::merge_partitions(shares);
-        #[cfg(feature = "phase-timing")]
-        self.lap_gather(started.elapsed().as_nanos() as u64);
+        timed!(self.lap_gather(started.elapsed().as_nanos() as u64));
         Ok(out)
     }
 

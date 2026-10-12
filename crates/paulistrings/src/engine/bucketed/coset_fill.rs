@@ -11,7 +11,8 @@ use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
 #[cfg(feature = "phase-timing")]
-use crate::engine::stats::{CosetStats, Stamp};
+use crate::engine::stats::CosetStats;
+use crate::engine::timing::{lap, stamp, tally};
 
 /// One coset task's working set: the swapped-out input columns and the per-output-member gather runs.
 #[derive(Clone, Debug, Default)]
@@ -150,17 +151,10 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             inverse_permutation[chunk_base + j]
         }
     };
-    #[cfg(feature = "phase-timing")]
     let CosetScratch {
-        old,
-        runs,
-        sort,
-        stats,
+        old, runs, sort, ..
     } = scratch;
-    #[cfg(not(feature = "phase-timing"))]
-    let CosetScratch { old, runs, sort } = scratch;
-    #[cfg(feature = "phase-timing")]
-    let mut stamp = Stamp::now();
+    stamp!(stamp);
     old.resize_with(members, BucketColumns::default);
     runs.resize_with(members, GatherRun::default);
 
@@ -168,8 +162,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         std::mem::swap(slot, columns);
         slot.clear();
     }
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut stats.swap_ns);
+    lap!(stamp, scratch.stats.swap_ns);
 
     // Exact per-run capacity per stream; it is also the bound `append_if`'s safety relies on.
     for (j, run) in runs.iter_mut().enumerate() {
@@ -213,8 +206,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         }
         run.reset(id_key_capacity, id_coeff_capacity, rest_capacity);
     }
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut stats.size_ns);
+    lap!(stamp, scratch.stats.size_ns);
 
     match plan {
         DeltaPlan::Local {
@@ -283,22 +275,17 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             extra.append_into(beta_of(j), &mut rest.x, &mut rest.z, &mut rest.coeff);
         }
     }
-    #[cfg(feature = "phase-timing")]
-    stamp.lap(&mut stats.gather_ns);
+    lap!(stamp, scratch.stats.gather_ns);
 
     let sort_kernel = match plan {
         DeltaPlan::Local { sort_kernel, .. } => *sort_kernel,
         DeltaPlan::Rotation { .. } => SortKernel::Comparison,
     };
     for (j, (run, destination)) in runs.iter_mut().zip(chunk.iter_mut()).enumerate() {
-        #[cfg(feature = "phase-timing")]
-        {
-            stats.rows_gathered += run.len() as u64;
-            stats.rows_sorted += run.rest.len() as u64;
-        }
+        tally!(scratch.stats.rows_gathered, run.len());
+        tally!(scratch.stats.rows_sorted, run.rest.len());
         sort_kernel.sort(&mut run.rest, sort);
-        #[cfg(feature = "phase-timing")]
-        stamp.lap(&mut stats.sort_ns);
+        lap!(stamp, scratch.stats.sort_ns);
         let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {
             DeltaPlan::Local {
                 dense_identity: true,
@@ -306,10 +293,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             } => {
                 let source = &old[j];
                 debug_assert_eq!(source.len(), run.identity.len());
-                #[cfg(feature = "phase-timing")]
-                {
-                    stats.rows_id += source.len() as u64;
-                }
+                tally!(scratch.stats.rows_id, source.len());
                 (&source.x, &source.z)
             }
             DeltaPlan::Local { .. } => (&run.identity.x, &run.identity.z),
@@ -319,10 +303,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             } => {
                 let source = &old[j ^ *coordinate_identity as usize];
                 debug_assert_eq!(source.len(), run.identity.len());
-                #[cfg(feature = "phase-timing")]
-                {
-                    stats.rows_id += source.len() as u64;
-                }
+                tally!(scratch.stats.rows_id, source.len());
                 (&source.x, &source.z)
             }
         };
@@ -332,19 +313,15 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             coeff: &run.identity.coeff,
         };
         merge_identity_and_rest::<W, T>(identity, run.rest.view(), destination, policy);
-        #[cfg(feature = "phase-timing")]
-        stamp.lap(&mut stats.merge_ns);
+        lap!(stamp, scratch.stats.merge_ns);
     }
 
     for columns in old.iter_mut() {
         columns.clear();
     }
-    #[cfg(feature = "phase-timing")]
-    {
-        stamp.lap(&mut stats.clear_ns);
-        stats.cosets += 1;
-        stats.runs += members as u64;
-    }
+    lap!(stamp, scratch.stats.clear_ns);
+    tally!(scratch.stats.cosets, 1);
+    tally!(scratch.stats.runs, members);
 }
 
 /// Coset dimension at or above which the gather switches to output-major, trading re-reads for fewer open write streams.

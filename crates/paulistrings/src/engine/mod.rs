@@ -12,6 +12,7 @@ mod merge;
 pub(crate) mod partitioned;
 #[cfg(feature = "phase-timing")]
 pub(crate) mod stats;
+pub(crate) mod timing;
 
 use crate::circuit::Circuit;
 use crate::pauli_sum::hash::PartitionRows;

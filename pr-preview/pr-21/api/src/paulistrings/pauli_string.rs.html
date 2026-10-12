@@ -155,21 +155,37 @@
 <a href=#155 id=155 data-nosnippet>155</a>    </span>}
 <a href=#156 id=156 data-nosnippet>156</a>}
 <a href=#157 id=157 data-nosnippet>157</a>
-<a href=#158 id=158 data-nosnippet>158</a><span class="doccomment">/// `0` when the bracket vanishes, `2·i^k` otherwise.
-<a href=#159 id=159 data-nosnippet>159</a></span><span class="kw">fn </span>scaled_phase(phase: Phase, vanishes: bool) -&gt; Complex64 {
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="kw">if </span>vanishes {
-<a href=#161 id=161 data-nosnippet>161</a>        Complex64::new(<span class="number">0.0</span>, <span class="number">0.0</span>)
-<a href=#162 id=162 data-nosnippet>162</a>    } <span class="kw">else </span>{
-<a href=#163 id=163 data-nosnippet>163</a>        phase.to_complex() * <span class="number">2.0
-<a href=#164 id=164 data-nosnippet>164</a>    </span>}
-<a href=#165 id=165 data-nosnippet>165</a>}
-<a href=#166 id=166 data-nosnippet>166</a>
-<a href=#167 id=167 data-nosnippet>167</a><span class="kw">impl</span>&lt;<span class="kw">const </span>W: usize&gt; Default <span class="kw">for </span>PauliString&lt;W&gt; {
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="self">Self</span>::identity()
+<a href=#158 id=158 data-nosnippet>158</a><span class="doccomment">/// The bit mask of `qubits`, each asserted below `num_qubits`.
+<a href=#159 id=159 data-nosnippet>159</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>qubit_mask&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#160 id=160 data-nosnippet>160</a>    qubits: <span class="kw">impl </span>IntoIterator&lt;Item = usize&gt;,
+<a href=#161 id=161 data-nosnippet>161</a>    num_qubits: usize,
+<a href=#162 id=162 data-nosnippet>162</a>) -&gt; [u64; W] {
+<a href=#163 id=163 data-nosnippet>163</a>    <span class="kw">let </span><span class="kw-2">mut </span>mask = [<span class="number">0u64</span>; W];
+<a href=#164 id=164 data-nosnippet>164</a>    <span class="kw">for </span>q <span class="kw">in </span>qubits {
+<a href=#165 id=165 data-nosnippet>165</a>        <span class="macro">assert!</span>(
+<a href=#166 id=166 data-nosnippet>166</a>            q &lt; num_qubits,
+<a href=#167 id=167 data-nosnippet>167</a>            <span class="string">"qubit {q} is outside the {num_qubits}-qubit register"
+<a href=#168 id=168 data-nosnippet>168</a>        </span>);
+<a href=#169 id=169 data-nosnippet>169</a>        mask[q / <span class="number">64</span>] |= <span class="number">1u64 </span>&lt;&lt; (q % <span class="number">64</span>);
 <a href=#170 id=170 data-nosnippet>170</a>    }
-<a href=#171 id=171 data-nosnippet>171</a>}
-<a href=#172 id=172 data-nosnippet>172</a>
-<a href=#173 id=173 data-nosnippet>173</a><span class="attr">#[cfg(test)]
-<a href=#174 id=174 data-nosnippet>174</a></span><span class="kw">mod </span>tests;
+<a href=#171 id=171 data-nosnippet>171</a>    mask
+<a href=#172 id=172 data-nosnippet>172</a>}
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a><span class="doccomment">/// `0` when the bracket vanishes, `2·i^k` otherwise.
+<a href=#175 id=175 data-nosnippet>175</a></span><span class="kw">fn </span>scaled_phase(phase: Phase, vanishes: bool) -&gt; Complex64 {
+<a href=#176 id=176 data-nosnippet>176</a>    <span class="kw">if </span>vanishes {
+<a href=#177 id=177 data-nosnippet>177</a>        Complex64::new(<span class="number">0.0</span>, <span class="number">0.0</span>)
+<a href=#178 id=178 data-nosnippet>178</a>    } <span class="kw">else </span>{
+<a href=#179 id=179 data-nosnippet>179</a>        phase.to_complex() * <span class="number">2.0
+<a href=#180 id=180 data-nosnippet>180</a>    </span>}
+<a href=#181 id=181 data-nosnippet>181</a>}
+<a href=#182 id=182 data-nosnippet>182</a>
+<a href=#183 id=183 data-nosnippet>183</a><span class="kw">impl</span>&lt;<span class="kw">const </span>W: usize&gt; Default <span class="kw">for </span>PauliString&lt;W&gt; {
+<a href=#184 id=184 data-nosnippet>184</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="self">Self</span>::identity()
+<a href=#186 id=186 data-nosnippet>186</a>    }
+<a href=#187 id=187 data-nosnippet>187</a>}
+<a href=#188 id=188 data-nosnippet>188</a>
+<a href=#189 id=189 data-nosnippet>189</a><span class="attr">#[cfg(test)]
+<a href=#190 id=190 data-nosnippet>190</a></span><span class="kw">mod </span>tests;
 </code></pre></div></section></main></body></html>

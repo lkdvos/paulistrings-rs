@@ -19,7 +19,7 @@
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::hash::PartitionRows;
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::PauliSum;
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">crate</span>::readout::echo::RotationAxis;
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">crate</span>::readout::product_state::ProductState;
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">crate</span>::readout::product_state::ProductBasis;
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">crate</span>::truncation::{assert_supports_partitions, TruncationPolicy};
 <a href=#24 id=24 data-nosnippet>24</a>
 <a href=#25 id=25 data-nosnippet>25</a><span class="doccomment">/// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`], held across calls so a driver scatters and gathers once.
@@ -335,11 +335,11 @@
 <a href=#335 id=335 data-nosnippet>335</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.parts[r].sum
 <a href=#336 id=336 data-nosnippet>336</a>    }
 <a href=#337 id=337 data-nosnippet>337</a>
-<a href=#338 id=338 data-nosnippet>338</a>    <span class="doccomment">/// `⟨ψ|O|ψ⟩` in a uniform single-qubit product state, the partitions' own values added in rank order.
-<a href=#339 id=339 data-nosnippet>339</a>    </span><span class="kw">pub fn </span>expectation_product_state(<span class="kw-2">&amp;</span><span class="self">self</span>, state: ProductState) -&gt; Complex64 {
+<a href=#338 id=338 data-nosnippet>338</a>    <span class="doccomment">/// `⟨ψ|O|ψ⟩` in the product state `basis`, the partitions' own values added in rank order.
+<a href=#339 id=339 data-nosnippet>339</a>    </span><span class="kw">pub fn </span>expectation_product(<span class="kw-2">&amp;</span><span class="self">self</span>, basis: <span class="kw-2">&amp;</span>ProductBasis&lt;W&gt;) -&gt; Complex64 {
 <a href=#340 id=340 data-nosnippet>340</a>        <span class="self">self</span>.parts
 <a href=#341 id=341 data-nosnippet>341</a>            .iter()
-<a href=#342 id=342 data-nosnippet>342</a>            .map(|part| part.sum.expectation_product_state(state))
+<a href=#342 id=342 data-nosnippet>342</a>            .map(|part| part.sum.expectation_product(basis))
 <a href=#343 id=343 data-nosnippet>343</a>            .sum()
 <a href=#344 id=344 data-nosnippet>344</a>    }
 <a href=#345 id=345 data-nosnippet>345</a>

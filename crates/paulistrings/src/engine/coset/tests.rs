@@ -21,14 +21,14 @@ fn span_input() -> impl Strategy<Value = (u8, Vec<u32>)> {
 #[test]
 fn span_of_zero_is_trivial() {
     let span = Gf2Span::new(&[0], 4);
-    assert_eq!(span.r(), 0);
+    assert_eq!(span.dimension(), 0);
     assert_eq!(span.coset_size(), 1);
     assert_eq!(span.num_cosets(), 16);
     for beta in 0u32..16 {
         assert!(span.is_representative(beta));
         assert_eq!(span.representative_of(beta), beta);
         assert_eq!(span.member(beta, 0), beta);
-        assert_eq!(span.coord_of(0), 0);
+        assert_eq!(span.coordinate_of(0), 0);
         assert_eq!(span.rank_of_representative(beta), beta);
         assert_eq!(span.permuted_index(beta), beta);
     }
@@ -38,7 +38,7 @@ fn span_of_zero_is_trivial() {
 fn echelon_basis_is_reduced() {
     // 0b01010 = 0b00110 ^ 0b01100, so the rank is 3, not 4.
     let span = Gf2Span::new(&[0, 0b00110, 0b01010, 0b01100, 0b10001], 5);
-    assert_eq!(span.r(), 3);
+    assert_eq!(span.dimension(), 3);
 
     let basis = span.basis();
     let pivots: Vec<u32> = basis.iter().map(|&b| highest_bit(b)).collect();
@@ -61,7 +61,7 @@ fn rep_of_reduces_rather_than_masks() {
     // basis = {0b110}: pivot bit 2, but bit 1 rides along below it.
     let span = Gf2Span::new(&[0, 0b110], 3);
     assert_eq!(span.basis(), &[0b110]);
-    assert_eq!(span.r(), 1);
+    assert_eq!(span.dimension(), 1);
 
     // The coset of 0b100 is {0b100, 0b010}; the mask `beta & !0b100` would give 0b000, in a different coset.
     assert_eq!(span.representative_of(0b100), 0b010);
@@ -78,7 +78,7 @@ fn non_subspace_input_is_covered() {
     // {0, a, b} with a ^ b absent: the coset partition needs a ^ b in the span.
     let (a, b) = (0b0011u32, 0b0101u32);
     let span = Gf2Span::new(&[0, a, b], 4);
-    assert_eq!(span.r(), 2);
+    assert_eq!(span.dimension(), 2);
     assert_eq!(span.coset_size(), 4);
 
     let ab = a ^ b;
@@ -87,7 +87,7 @@ fn non_subspace_input_is_covered() {
         0,
         "a ^ b = {ab:#b} must be in the span"
     );
-    assert_eq!(span.member(0, span.coord_of(ab)), ab);
+    assert_eq!(span.member(0, span.coordinate_of(ab)), ab);
 
     // The partition is still a partition: 4 cosets of 4, covering 0..16.
     let mut seen: HashSet<u32> = HashSet::new();
@@ -109,14 +109,14 @@ proptest! {
         let n = 1u32 << bits;
 
         let reps: Vec<u32> = (0..n).filter(|&x| span.is_representative(x)).collect();
-        prop_assert_eq!(reps.len(), (n as usize) >> span.r());
+        prop_assert_eq!(reps.len(), (n as usize) >> span.dimension());
         prop_assert_eq!(reps.len(), span.num_cosets());
 
         for beta in 0..n {
             let rep = span.representative_of(beta);
             prop_assert!(span.is_representative(rep));
             prop_assert!(rep < n);
-            let i = span.coord_of(beta ^ rep);
+            let i = span.coordinate_of(beta ^ rep);
             prop_assert!((i as usize) < span.coset_size());
             prop_assert_eq!(span.member(rep, i), beta);
         }
@@ -151,7 +151,7 @@ proptest! {
         let span = Gf2Span::new(&deltas, bits);
         let size = span.coset_size() as u32;
         for &delta in &deltas {
-            let c = span.coord_of(delta);
+            let c = span.coordinate_of(delta);
             for rep in (0..1u32 << bits).filter(|&x| span.is_representative(x)) {
                 for i in 0..size {
                     prop_assert_eq!(
@@ -176,7 +176,7 @@ proptest! {
             hit[p as usize] = true;
             // The run a bucket lands in is its coset's rank.
             prop_assert_eq!(
-                p >> span.r(),
+                p >> span.dimension(),
                 span.rank_of_representative(span.representative_of(beta))
             );
         }
@@ -201,7 +201,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
         let want2 = support_delta_rank(&h2, &[0, 1]).min(bits as usize);
         let prep2 = Prepare::<2>::prepare(&channel, &h2, false).expect("prepare W=2");
         assert_eq!(
-            Gf2Span::new(&prep2.bucket_deltas(), bits).r(),
+            Gf2Span::new(&prep2.bucket_deltas(), bits).dimension(),
             want2,
             "W=2 at {bits} bits"
         );
@@ -211,7 +211,7 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
         let want1 = support_delta_rank(&h1, &[0, 1]).min(bits as usize);
         let prep1 = Prepare::<1>::prepare(&channel, &h1, false).expect("prepare W=1");
         assert_eq!(
-            Gf2Span::new(&prep1.bucket_deltas(), bits).r(),
+            Gf2Span::new(&prep1.bucket_deltas(), bits).dimension(),
             want1,
             "W=1 at {bits} bits"
         );

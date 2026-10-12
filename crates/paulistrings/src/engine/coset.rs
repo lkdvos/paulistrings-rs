@@ -34,9 +34,7 @@ pub(crate) struct Gf2Span {
     pivot_mask: u32,
     /// Bucket-index width: indices live in `0..2^bits`.
     bits: u8,
-    /// `(1 << bits) - 1`.
-    space_mask: u32,
-    /// `space_mask & !pivot_mask`: the free bits a representative ranges over.
+    /// The bucket-space bits outside `pivot_mask`: the free bits a representative ranges over.
     nonpivot_mask: u32,
 }
 
@@ -83,13 +81,12 @@ impl Gf2Span {
             basis,
             pivot_mask,
             bits,
-            space_mask,
             nonpivot_mask: space_mask & !pivot_mask,
         }
     }
 
     /// Dimension `r` of the span.
-    pub(crate) fn r(&self) -> usize {
+    pub(crate) fn dimension(&self) -> usize {
         self.basis.len()
     }
 
@@ -104,7 +101,7 @@ impl Gf2Span {
     }
 
     /// Whether `beta` is its coset's representative: the unique member with every pivot bit clear, which is also the coset's minimum.
-    pub(crate) fn is_representative(&self, beta: u32) -> bool {
+    fn is_representative(&self, beta: u32) -> bool {
         beta & self.pivot_mask == 0
     }
 
@@ -112,7 +109,7 @@ impl Gf2Span {
     // Not `beta & !pivot_mask`: basis vectors carry non-pivot bits too, so masking can leave the coset.
     pub(crate) fn representative_of(&self, beta: u32) -> u32 {
         debug_assert!(
-            beta & !self.space_mask == 0,
+            beta >> self.bits == 0,
             "Gf2Span::representative_of: beta outside the bucket space"
         );
         let mut reduced = beta;
@@ -125,16 +122,16 @@ impl Gf2Span {
     }
 
     /// The member index of `delta` in the span, read off its pivot bits since the basis is reduced.
-    pub(crate) fn coord_of(&self, delta: u32) -> u32 {
+    pub(crate) fn coordinate_of(&self, delta: u32) -> u32 {
         debug_assert!(
             self.representative_of(delta) == 0,
-            "Gf2Span::coord_of: delta {delta} is not in the span"
+            "Gf2Span::coordinate_of: delta {delta} is not in the span"
         );
         pext(delta, self.pivot_mask)
     }
 
     /// The position of `representative` among all representatives in ascending order.
-    pub(crate) fn rank_of_representative(&self, representative: u32) -> u32 {
+    fn rank_of_representative(&self, representative: u32) -> u32 {
         debug_assert!(
             self.is_representative(representative),
             "Gf2Span::rank_of_representative: {representative} is not a representative"
@@ -146,7 +143,7 @@ impl Gf2Span {
     pub(crate) fn permuted_index(&self, beta: u32) -> u32 {
         let representative = self.representative_of(beta);
         (self.rank_of_representative(representative) << self.basis.len())
-            | self.coord_of(beta ^ representative)
+            | self.coordinate_of(beta ^ representative)
     }
 }
 

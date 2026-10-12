@@ -38,7 +38,7 @@ impl ChunkMap {
         );
         assert!(chunks > 0, "ChunkMap: a layer needs at least one chunk");
         let positions = num_buckets as u32;
-        let r = span.r() as u32;
+        let r = span.dimension() as u32;
         debug_assert!(
             (1u32 << r) <= positions,
             "ChunkMap: a coset of {} buckets does not fit in {positions}",

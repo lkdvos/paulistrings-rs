@@ -391,14 +391,14 @@ fn local_gather_orders_agree_to_fp_tolerance() {
     };
     let span = Gf2Span::new(&prepared.bucket_deltas(), sum.hash().bits());
     assert!(
-        span.r() >= 2,
+        span.dimension() >= 2,
         "want a multi-member coset so the two visit orders actually differ; got r={}",
-        span.r()
+        span.dimension()
     );
     let coords: Vec<u32> = ptm
         .deltas()
         .iter()
-        .map(|d| span.coord_of(d.bucket_delta))
+        .map(|d| span.coordinate_of(d.bucket_delta))
         .collect();
     let m = span.coset_size();
 
@@ -1246,7 +1246,7 @@ mod extra_rows_tests {
                 .find(|&s| {
                     let hash = Gf2Hash::<1>::new(8, bits, s);
                     let prepared = channel.prepare(&hash, false).unwrap();
-                    Gf2Span::new(&prepared.bucket_deltas(), bits).r() == want_r
+                    Gf2Span::new(&prepared.bucket_deltas(), bits).dimension() == want_r
                 })
                 .unwrap_or_else(|| panic!("{label}: no seed of rank {want_r} in 4096 tries"));
             let hash = Gf2Hash::<1>::new(8, bits, seed);

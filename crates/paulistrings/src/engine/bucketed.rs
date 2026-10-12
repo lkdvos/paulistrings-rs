@@ -179,7 +179,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 let coords: Vec<u32> = ptm
                     .deltas()
                     .iter()
-                    .map(|d| span.coord_of(d.bucket_delta))
+                    .map(|d| span.coordinate_of(d.bucket_delta))
                     .collect();
                 let has_identity = ptm.deltas().first().is_some_and(|d| d.local_delta == 0);
                 debug_assert!(!has_identity || coords[0] == 0);
@@ -203,10 +203,10 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
             }
             Prepared::Rotation(rotation) => DeltaPlan::Rotation {
                 rotation,
-                coord_identity: span.coord_of(rotation.bucket_delta_identity),
-                // `coord_of` demands its argument be in the span, and a remote generator's bucket delta is not.
+                coord_identity: span.coordinate_of(rotation.bucket_delta_identity),
+                // `coordinate_of` demands its argument be in the span, and a remote generator's bucket delta is not.
                 generator_coordinate: if knobs.generator_local {
-                    span.coord_of(rotation.bucket_delta_generator)
+                    span.coordinate_of(rotation.bucket_delta_generator)
                 } else {
                     0
                 },
@@ -305,7 +305,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     stamp.lap(&mut scratch.stats.span_plan_ns);
 
     // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the permutation is the identity and the handle passes are skipped.
-    let identity_perm = span.r() == 0;
+    let identity_perm = span.dimension() == 0;
     if !identity_perm {
         let buckets = sum.buckets_mut();
         scratch.permutation.clear();

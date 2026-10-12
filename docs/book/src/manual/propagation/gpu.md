@@ -132,6 +132,7 @@ let config = PartitionConfig {
     placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
     bind_memory: false,
     partition_row_seed: None,
+    threads_per_partition: None,
 };
 let mut split = GpuPartitionedSum::scatter_to_devices(&observable, &config)?;
 split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;

@@ -65,10 +65,7 @@ fn numa_nodes_are_disjoint_subsets_of_the_affinity_mask() {
 #[test]
 fn unpinned_placement_requires_a_power_of_two() {
     let cfg = PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions: 3,
-            threads_per_partition: None,
-        },
+        placement: Placement::Unpinned { partitions: 3 },
         ..PartitionConfig::default()
     };
     assert!(matches!(
@@ -80,10 +77,8 @@ fn unpinned_placement_requires_a_power_of_two() {
 #[test]
 fn unpinned_placement_resolves_to_unpinned_slots() {
     let cfg = PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions: 4,
-            threads_per_partition: Some(2),
-        },
+        placement: Placement::Unpinned { partitions: 4 },
+        threads_per_partition: Some(2),
         ..PartitionConfig::default()
     };
     let slots = cfg.resolve().unwrap();
@@ -92,6 +87,29 @@ fn unpinned_placement_resolves_to_unpinned_slots() {
         assert_eq!(slot.threads, 2);
         assert!(slot.cpus.is_none());
         assert!(slot.node.is_none());
+    }
+}
+
+/// `threads_per_partition` overrides a device partition's host pool too; `None` keeps it.
+#[cfg(feature = "cuda")]
+#[test]
+fn threads_per_partition_overrides_a_device_pool() {
+    let cfg = PartitionConfig {
+        placement: Placement::Devices {
+            devices: vec![0],
+            per_device: 2,
+        },
+        ..PartitionConfig::default()
+    };
+    for slot in cfg.resolve().unwrap() {
+        assert_eq!(slot.threads, DEVICE_PARTITION_THREADS);
+    }
+    let cfg = PartitionConfig {
+        threads_per_partition: Some(7),
+        ..cfg
+    };
+    for slot in cfg.resolve().unwrap() {
+        assert_eq!((slot.threads, slot.device), (7, Some(0)));
     }
 }
 

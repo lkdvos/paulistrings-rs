@@ -415,16 +415,13 @@ impl PartitionCpus {
         Ok(PartitionCpus::Explicit(lists))
     }
 
-    /// The [`Placement`] for one cell: `partitions` partitions sharing `threads` workers in total.
-    fn placement(&self, partitions: usize, threads: usize) -> Placement {
+    /// The [`Placement`] for one cell of `partitions` partitions.
+    fn placement(&self, partitions: usize) -> Placement {
         match self {
             PartitionCpus::Auto => Placement::Auto {
                 max_partitions: Some(partitions),
             },
-            PartitionCpus::Unpinned => Placement::Unpinned {
-                partitions,
-                threads_per_partition: Some((threads / partitions).max(1)),
-            },
+            PartitionCpus::Unpinned => Placement::Unpinned { partitions },
             PartitionCpus::Explicit(lists) => Placement::Explicit(
                 lists
                     .iter()
@@ -1485,6 +1482,7 @@ fn run_cell_gpu<const W: usize>(
         },
         bind_memory: false,
         partition_row_seed: cfg.partition_seed,
+        threads_per_partition: None,
     };
     let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
         eprintln!("phase_breakdown: cannot resolve the device placement: {err}");
@@ -1913,17 +1911,17 @@ where
 {
     let base = build_base_sum::<W>(layer, cfg);
 
+    // `--threads` is the TOTAL, so P pools of threads/P compare against one pool of threads.
     let config = PartitionConfig {
-        placement: cfg.partition_cpus.placement(partitions, threads),
+        placement: cfg.partition_cpus.placement(partitions),
         bind_memory: cfg.bind_memory,
         partition_row_seed: cfg.partition_seed,
+        threads_per_partition: Some(threads / partitions),
     };
-    // `--threads` is the TOTAL, so P pools of threads/P compare against one pool of threads.
-    let runtime = PartitionRuntime::with_threads_per_partition(&config, Some(threads / partitions))
-        .unwrap_or_else(|err| {
-            eprintln!("phase_breakdown: cannot resolve the partition placement: {err}");
-            std::process::exit(2);
-        });
+    let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
+        eprintln!("phase_breakdown: cannot resolve the partition placement: {err}");
+        std::process::exit(2);
+    });
     // `Auto` can silently resolve to fewer partitions than the host has NUMA nodes; refuse rather than mislabel every row.
     if runtime.num_partitions() != partitions {
         eprintln!(
@@ -2064,15 +2062,15 @@ where
 
     // D = 1: one partition over whatever CPUs the launcher left us.
     let config = PartitionConfig {
-        placement: cfg.partition_cpus.placement(1, threads),
+        placement: cfg.partition_cpus.placement(1),
         bind_memory: cfg.bind_memory,
         partition_row_seed: cfg.partition_seed,
+        threads_per_partition: Some(threads),
     };
-    let runtime = PartitionRuntime::with_threads_per_partition(&config, Some(threads))
-        .unwrap_or_else(|err| {
-            eprintln!("phase_breakdown: rank {rank} cannot resolve its placement: {err}");
-            std::process::exit(2);
-        });
+    let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
+        eprintln!("phase_breakdown: rank {rank} cannot resolve its placement: {err}");
+        std::process::exit(2);
+    });
 
     // Same inputs on every rank, so every rank derives the same rows with nothing agreed at run time.
     let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, ranks as usize);

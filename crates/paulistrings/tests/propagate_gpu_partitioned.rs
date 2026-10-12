@@ -59,6 +59,7 @@ fn config(partitions: usize) -> PartitionConfig {
         placement,
         bind_memory: false,
         partition_row_seed: Some(ROW_SEED),
+        threads_per_partition: None,
     }
 }
 

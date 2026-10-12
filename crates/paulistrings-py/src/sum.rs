@@ -608,6 +608,7 @@ fn parse_partitions(
         placement,
         bind_memory: pin_memory,
         partition_row_seed,
+        threads_per_partition: None,
     };
     let slots = config.resolve().map_err(topology_error)?;
     if slots.len() == 1 && matches!(config.placement, Placement::Auto { .. }) {
@@ -1296,6 +1297,7 @@ fn parse_device_mode(
             },
             bind_memory: false,
             partition_row_seed,
+            threads_per_partition: None,
         };
         Ok(RunMode::Devices(config, devices, rows))
     }

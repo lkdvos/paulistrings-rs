@@ -311,6 +311,7 @@ fn auto_placement_agrees() {
         },
         bind_memory: false,
         partition_row_seed: None,
+        threads_per_partition: None,
     };
     let (want, discarded) =
         propagate_discarding(&circuit, sum.clone(), &ApproxTopN(400), Direction::Forward);

@@ -99,6 +99,7 @@ pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuEr
         },
         bind_memory: false,
         partition_row_seed: None,
+        threads_per_partition: None,
     };
     let runtime = PartitionRuntime::new(&config).map_err(GpuError::Topology)?;
     cache.push((device, runtime.clone()));

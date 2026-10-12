@@ -1404,12 +1404,10 @@ pub fn unpinned_partitions(
     row_seed: u64,
 ) -> crate::engine::partitioned::PartitionConfig {
     crate::engine::partitioned::PartitionConfig {
-        placement: crate::engine::partitioned::Placement::Unpinned {
-            partitions,
-            threads_per_partition: Some(threads),
-        },
+        placement: crate::engine::partitioned::Placement::Unpinned { partitions },
         bind_memory: false,
         partition_row_seed: Some(row_seed),
+        threads_per_partition: Some(threads),
     }
 }
 

@@ -4,12 +4,10 @@ use crate::engine::partitioned::topology::{allowed_cpus, Placement};
 
 fn config(partitions: usize) -> PartitionConfig {
     PartitionConfig {
-        placement: Placement::Unpinned {
-            partitions,
-            threads_per_partition: Some(2),
-        },
+        placement: Placement::Unpinned { partitions },
         bind_memory: false,
         partition_row_seed: None,
+        threads_per_partition: Some(2),
     }
 }
 
@@ -24,13 +22,14 @@ fn partition_bits_is_log2_of_the_count() {
 
 /// The pool-width override replaces the resolved worker count on every slot and leaves the CPU sets alone.
 #[test]
-fn with_threads_per_partition_overrides_the_resolved_width() {
+fn threads_per_partition_overrides_the_resolved_width() {
     let cpus = allowed_cpus();
     let placement = Placement::Explicit(vec![cpus.clone(), cpus.clone()]);
     let config = PartitionConfig {
         placement,
         bind_memory: false,
         partition_row_seed: None,
+        threads_per_partition: None,
     };
 
     let resolved = PartitionRuntime::new(&config).expect("resolve");
@@ -38,8 +37,11 @@ fn with_threads_per_partition_overrides_the_resolved_width() {
         assert_eq!(slot.threads, cpus.len());
     }
 
-    let narrowed = PartitionRuntime::with_threads_per_partition(&config, Some(1))
-        .expect("resolve with an explicit width");
+    let narrowed = PartitionRuntime::new(&PartitionConfig {
+        threads_per_partition: Some(1),
+        ..config
+    })
+    .expect("resolve with an explicit width");
     for slot in narrowed.slots() {
         assert_eq!(slot.threads, 1);
         assert_eq!(slot.cpus.as_ref(), Some(&cpus), "the CPU set is untouched");

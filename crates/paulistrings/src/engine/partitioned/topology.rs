@@ -338,12 +338,10 @@ pub enum Placement {
         /// The CPU sets, one per partition; the count must be a power of two.
         Vec<CpuSet>,
     ),
-    /// Partitions with no pinning at all, for tests and CI.
+    /// Partitions with no pinning at all, for tests and CI, each taking an even share of `available_parallelism` (at least one thread).
     Unpinned {
         /// Number of partitions; must be a power of two.
         partitions: usize,
-        /// Threads per partition, or `None` to split `available_parallelism` evenly (at least one each).
-        threads_per_partition: Option<usize>,
     },
     /// `per_device` partitions on each listed CUDA device, in rank order, for the `cuda` backend's [`GpuPartitionedSum`](crate::gpu::GpuPartitionedSum).
     ///
@@ -370,6 +368,10 @@ pub struct PartitionConfig {
     pub bind_memory: bool,
     /// Seed of the partition rows, or `None` for the sum's own hash seed.
     pub partition_row_seed: Option<u64>,
+    /// Workers in every partition's pool (at least one) on the CPU set the placement resolved, or `None` for the placement's own count.
+    ///
+    /// A measurement knob for holding the total thread count fixed across partition counts; it overrides a device partition's small host pool too.
+    pub threads_per_partition: Option<usize>,
 }
 
 impl Default for PartitionConfig {
@@ -381,6 +383,7 @@ impl Default for PartitionConfig {
             },
             bind_memory: true,
             partition_row_seed: None,
+            threads_per_partition: None,
         }
     }
 }
@@ -392,19 +395,22 @@ impl PartitionConfig {
     ///
     /// [`TopologyError::NotPowerOfTwo`] if an explicit or unpinned partition count is not a power of two, [`TopologyError::EmptySet`] if an explicit set is empty, and [`TopologyError::CpuNotAllowed`] if an explicit set names a CPU outside the affinity mask.
     pub fn resolve(&self) -> Result<Vec<PartitionSlot>, TopologyError> {
-        match &self.placement {
-            Placement::Auto { max_partitions } => Ok(resolve_auto(*max_partitions)),
-            Placement::Explicit(sets) => resolve_explicit(sets),
-            Placement::Unpinned {
-                partitions,
-                threads_per_partition,
-            } => resolve_unpinned(*partitions, *threads_per_partition),
+        let mut slots = match &self.placement {
+            Placement::Auto { max_partitions } => resolve_auto(*max_partitions),
+            Placement::Explicit(sets) => resolve_explicit(sets)?,
+            Placement::Unpinned { partitions } => resolve_unpinned(*partitions)?,
             #[cfg(feature = "cuda")]
             Placement::Devices {
                 devices,
                 per_device,
-            } => resolve_devices(devices, *per_device),
+            } => resolve_devices(devices, *per_device)?,
+        };
+        if let Some(threads) = self.threads_per_partition {
+            for slot in &mut slots {
+                slot.threads = threads.max(1);
+            }
         }
+        Ok(slots)
     }
 }
 
@@ -513,16 +519,11 @@ fn resolve_explicit(sets: &[CpuSet]) -> Result<Vec<PartitionSlot>, TopologyError
     Ok(slots)
 }
 
-fn resolve_unpinned(
-    partitions: usize,
-    threads_per_partition: Option<usize>,
-) -> Result<Vec<PartitionSlot>, TopologyError> {
+fn resolve_unpinned(partitions: usize) -> Result<Vec<PartitionSlot>, TopologyError> {
     if !partitions.is_power_of_two() {
         return Err(TopologyError::NotPowerOfTwo(partitions));
     }
-    let threads = threads_per_partition
-        .unwrap_or(available_parallelism() / partitions)
-        .max(1);
+    let threads = (available_parallelism() / partitions).max(1);
     Ok(vec![
         PartitionSlot {
             cpus: None,

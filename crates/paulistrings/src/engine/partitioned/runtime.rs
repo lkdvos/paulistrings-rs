@@ -34,26 +34,7 @@ impl PartitionRuntime {
     ///
     /// Whatever [`PartitionConfig::resolve`] reports (a partition count that is not a power of two, an empty or out-of-mask explicit CPU set), or [`TopologyError::Io`] if a pool cannot be built.
     pub fn new(config: &PartitionConfig) -> Result<Arc<Self>, TopologyError> {
-        Self::with_threads_per_partition(config, None)
-    }
-
-    /// [`new`](Self::new), with `Some(t)` giving every partition a `t`-worker pool (at least one) on the CPU set the placement resolved.
-    ///
-    /// A measurement knob for holding the total thread count fixed across partition counts; in production prefer [`new`](Self::new).
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`PartitionConfig::resolve`] reports (a partition count that is not a power of two, an empty or out-of-mask explicit CPU set), or [`TopologyError::Io`] if a pool cannot be built.
-    pub fn with_threads_per_partition(
-        config: &PartitionConfig,
-        threads_per_partition: Option<usize>,
-    ) -> Result<Arc<Self>, TopologyError> {
-        let mut slots = config.resolve()?;
-        if let Some(threads) = threads_per_partition {
-            for slot in &mut slots {
-                slot.threads = threads.max(1);
-            }
-        }
+        let slots = config.resolve()?;
         let mut pools = Vec::with_capacity(slots.len());
         for (rank, slot) in slots.iter().enumerate() {
             pools.push(build_pool(

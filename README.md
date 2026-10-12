@@ -81,15 +81,11 @@ let evolved = propagate(&circuit, acc.finalize(), &TopN(10), Direction::Heisenbe
 
 ## Showcase
 
-A 2D transverse-field Ising quench, evolved by Heisenberg-propagating the
-average-X-magnetization observable through a Trotter circuit on 4×4 and
-6×6 lattices — a regime where exact diagonalization is already infeasible
-(`2^36` amplitudes for the 6×6 case) but Pauli propagation with modest
-truncation finishes in seconds to minutes.
+A 2D transverse-field Ising quench, evolved by Heisenberg-propagating the average-X-magnetization observable through a Trotter circuit on a 6×6 lattice — a regime where exact diagonalization is already infeasible (`2^36` amplitudes) but Pauli propagation with modest truncation finishes in seconds to minutes.
 
-![Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices](https://raw.githubusercontent.com/lkdvos/paulistrings-rs/main/crates/paulistrings/docs/examples/img/ising_quench.svg)
+![Average X magnetization vs time for a 6x6 periodic Ising quench, two field strengths h (color) and five TopN term caps each (opacity)](https://raw.githubusercontent.com/lkdvos/paulistrings-rs/main/docs/book/src/assets/ising-quench-convergence/quench_convergence.svg)
 
-Full walkthrough: [`crates/paulistrings/docs/examples/ising_2d_quench.md`](crates/paulistrings/docs/examples/ising_2d_quench.md).
+Walkthrough: [Quenched time-evolution](https://lkdvos.github.io/paulistrings-rs/#quenched-time-evolution) on the documentation site.
 
 A larger Python examples & benchmarks suite lives under [`examples/`](examples/): a 127-qubit heavy-hex kicked-Ising cross-check against `PauliPropagation.jl` and `stim`, operator-scrambling/OTOC diagnostics, noisy utility verification, operator-backpropagation depth reduction, and stabilizer-state preparation.
 Start at [`examples/README.md`](examples/README.md).
@@ -98,7 +94,7 @@ Start at [`examples/README.md`](examples/README.md).
 
 - Documentation site — showcases, benchmarks and cross-engine comparisons, rebuilt on every push to `main`: [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/).
   Source and local build instructions: [`docs/`](docs/README.md).
-- API reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the rustdoc rendered alongside the site at [lkdvos.github.io/paulistrings-rs/api/](https://lkdvos.github.io/paulistrings-rs/api/).
+- Rust developer reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the rustdoc rendered alongside the site at [lkdvos.github.io/paulistrings-rs/api/](https://lkdvos.github.io/paulistrings-rs/api/).
 - System design and the propagation engine: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Repository layout
@@ -107,8 +103,7 @@ Start at [`examples/README.md`](examples/README.md).
 crates/
   paulistrings/         # core Rust library
     benches/            # criterion microbenchmarks
-    examples/           # runnable end-to-end simulations
-    docs/examples/      # narrative walkthroughs embedded into rustdoc
+    examples/           # phase_breakdown measurement probe
     tests/              # cross-module and differential test nets
   paulistrings-py/      # PyO3 bindings (cdylib `_paulistrings`)
   membench/             # memory-bandwidth roofline probe

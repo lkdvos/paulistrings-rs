@@ -31,7 +31,6 @@ UP_TO_ROOT="../../../../.."
 # One record per asset group: <group>|<source directory, relative to the repo
 # root>|<the figures the pages embed from it>.
 ASSET_GROUPS=(
-    "ising-quench|crates/paulistrings/docs/examples/img|ising_quench.svg"
     "ising-quench-convergence|docs/figures/ising-quench-convergence|quench_convergence.svg"
     "quickstart|docs/figures/quickstart|circuit.svg"
     "design|docs/figures/design|bucket-cosets.svg roofline-threads.svg phase-shares.svg"

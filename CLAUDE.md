@@ -21,7 +21,7 @@ These rules are binding on every file, including markdown.
 3. **No history in comments.** No dates, no "we tried X", no "previously", no A/B tables, no "re-measured on <host>". That is what `research/FINDINGS.md` and git are for.
 4. **Cite, don't paraphrase.** `ARCHITECTURE.md §Engine` is one line and outranks the paragraph restating it.
 5. **Comment the surprise** — a safety invariant, a non-obvious algorithm choice, a contract an implementor must honour. Never the mechanics the code already states.
-6. **Docs on private items are terse.** Multi-paragraph `///` belongs only on the `pub` surface that rustdoc and Python users see.
+6. **Rust docs are a developer guide.** Python docstrings and the book are the user guide, so rustdoc carries no usage examples or doctests, and multi-paragraph `///` belongs only on the `pub` surface.
 
 ## Code organisation
 
@@ -178,8 +178,8 @@ crates/paulistrings/      pure Rust core, no Python deps
                           engine/partitioned/{backend,distributed,driver,export,layer,mpi,plan,
                           rows,runtime,sum,topology,trace,transport,truncation},
                           engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),
-                          readout/{product_state,stabilizer,echo}, examples, test_support
-  tests/ benches/ examples/ docs/examples/
+                          readout/{product_state,stabilizer,echo}, test_support
+  tests/ benches/ examples/ (the phase_breakdown probe)
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh
 python/paulistrings/      the shipped package: extension re-export, interop.py, io.py, tests/

@@ -10,21 +10,6 @@ use num_complex::Complex64;
 use rustc_hash::FxBuildHasher;
 
 /// Incremental builder for a [`crate::PauliSum`] from unsorted terms; repeated keys sum.
-///
-/// ```
-/// use paulistrings::{BuildAccumulator, PauliString, Phase};
-/// use num_complex::Complex64;
-///
-/// let mut accumulator = BuildAccumulator::<1>::new(2);
-/// // The key (x=1, z=1) is Y; a product's phase folds into the coefficient before it is added.
-/// let y = PauliString::<1> { x: [1], z: [1] };
-/// accumulator.add_term(y, Phase::I.apply(Complex64::new(1.0, 0.0)));
-/// accumulator.add_term(PauliString::<1>::z(1), Complex64::new(0.5, 0.0));
-/// accumulator.add_term(PauliString::<1>::z(1), Complex64::new(0.5, 0.0));
-/// let sum = accumulator.finalize();
-/// assert_eq!(sum.get(&[1], &[1]), Some(Complex64::new(0.0, 1.0)));
-/// assert_eq!(sum.get(&[0], &[0b10]), Some(Complex64::new(1.0, 0.0)));
-/// ```
 pub struct BuildAccumulator<const W: usize> {
     map: HashMap<PauliString<W>, Complex64, FxBuildHasher>,
     num_qubits: usize,

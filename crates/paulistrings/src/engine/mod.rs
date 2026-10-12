@@ -98,31 +98,6 @@ impl Default for PropagateOptions {
 /// # Progress logging
 ///
 /// Through the [`log`] facade under the target `paulistrings::propagate`: `INFO` on entry and exit, `DEBUG` once per layer, named by [`Channel::debug_name`](crate::Channel::debug_name).
-///
-/// # Examples
-///
-/// ```
-/// use paulistrings::{
-///     BuildAccumulator, Circuit, Direction, PauliString, Phase, TruncationPolicy,
-///     PtmChannel, propagate,
-/// };
-/// use num_complex::Complex64;
-///
-/// let mut accumulator = BuildAccumulator::<1>::new(1);
-/// accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
-/// let observable = accumulator.finalize();
-///
-/// let mut circuit = Circuit::<1>::new(1);
-/// circuit.push(PtmChannel::hadamard(0));
-///
-/// struct KeepAll;
-/// impl<const W: usize> TruncationPolicy<W> for KeepAll {}
-///
-/// // H conjugates Z to X, so propagating Z₀ through H gives X₀.
-/// let evolved = propagate(&circuit, observable, &KeepAll, Direction::Heisenberg);
-/// assert_eq!(evolved.len(), 1);
-/// assert_eq!(evolved.get(&[1], &[0]), Some(Complex64::new(1.0, 0.0)));
-/// ```
 pub fn propagate<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: PauliSum<W>,

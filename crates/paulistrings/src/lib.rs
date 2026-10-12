@@ -1,34 +1,7 @@
-//! Classical simulation of quantum circuits by Pauli propagation: operators evolve in the Pauli basis under gates and noise channels, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
+//! The Rust core of `paulistrings-rs`: operators evolved in the Pauli basis under gates and noise channels, stored as a GF(2)-bucketed `PauliSum` and optionally partitioned over NUMA domains, MPI ranks or CUDA devices.
 //!
-//! The guide, showcases and benchmarks live at <https://lkdvos.github.io/paulistrings-rs/>.
-//!
-//! # Quick example
-//!
-//! Heisenberg-evolve the observable `Z₀ + 0.5·X₁` through an `H` gate on qubit 0:
-//!
-//! ```
-//! use paulistrings::{
-//!     BuildAccumulator, Circuit, Direction, PauliString, PtmChannel, TruncationPolicy,
-//!     propagate,
-//! };
-//! use num_complex::Complex64;
-//!
-//! let mut accumulator = BuildAccumulator::<1>::new(2);
-//! accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
-//! accumulator.add_term(PauliString::<1>::x(1), Complex64::new(0.5, 0.0));
-//! let observable = accumulator.finalize();
-//!
-//! let mut circuit = Circuit::<1>::new(2);
-//! circuit.push(PtmChannel::hadamard(0));
-//!
-//! struct KeepAll;
-//! impl<const W: usize> TruncationPolicy<W> for KeepAll {}
-//!
-//! let evolved = propagate(&circuit, observable, &KeepAll, Direction::Heisenberg);
-//!
-//! // H conjugates Z → X, so the Z₀ term becomes X₀; the X₁ term is untouched.
-//! assert_eq!(evolved.len(), 2);
-//! ```
+//! These docs are a developer guide; the user-facing API is the Python package, documented at <https://lkdvos.github.io/paulistrings-rs/>.
+//! [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) is the design source of truth.
 
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]
@@ -37,7 +10,6 @@ mod channel;
 mod circuit;
 mod collectives;
 mod engine;
-pub mod examples;
 mod pauli_string;
 mod pauli_sum;
 mod phase;

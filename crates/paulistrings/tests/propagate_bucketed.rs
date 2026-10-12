@@ -283,7 +283,6 @@ fn output_is_byte_identical_across_thread_counts() {
 
 /// One first-order Trotter step of the 2D transverse-field Ising model on an
 /// `lx × ly` periodic lattice: ZZ bond rotations, then single-site X rotations.
-/// Mirrors `examples/ising_2d_quench.rs`.
 fn ising_step_channels(lx: usize, ly: usize, dt: f64) -> Vec<Box<dyn Channel<1>>> {
     let idx = |x: usize, y: usize| y * lx + x;
     let mut chans: Vec<Box<dyn Channel<1>>> = Vec::new();
@@ -372,9 +371,8 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
     }
 }
 
-/// A 3x3 periodic lattice with a hard-binding `TopN`, which is the closest
-/// in-test analogue of what `examples/ising_2d_quench.rs` actually runs: real 2D
-/// topology, 27 channels per step, and truncation active from the second step.
+/// A 3x3 periodic lattice with a hard-binding `TopN`: real 2D topology, 27
+/// channels per step, and truncation active from the second step.
 ///
 /// The lattice symmetry makes ties, and `TopN` keeps boundary terms in bucket
 /// order, which the oracle's storage does not share (`assert_runs_agree`).

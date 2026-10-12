@@ -185,25 +185,6 @@ pub(super) fn keys_are_disjoint(_: Complex64, _: Complex64) -> Option<Complex64>
 ///
 /// Terms come in canonical order: bucket index ascending, then lexicographic `(x, z)` within a bucket, with no repeated key.
 /// A sum of at most 1024 terms built by [`crate::BuildAccumulator`] has one bucket and so is plain lex-sorted; a larger one interleaves buckets, so compare sums by key ([`Self::get`]), not by position.
-///
-/// ```
-/// use paulistrings::{BuildAccumulator, PauliString, Phase};
-/// use num_complex::Complex64;
-///
-/// let mut accumulator = BuildAccumulator::<1>::new(2);
-/// accumulator.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
-/// accumulator.add_term(PauliString::<1>::x(1), Complex64::new(0.5, 0.0));
-/// let a = accumulator.finalize();
-///
-/// let mut accumulator = BuildAccumulator::<1>::new(2);
-/// accumulator.add_term(PauliString::<1>::x(1), Complex64::new(-0.25, 0.0));
-/// let b = accumulator.finalize();
-///
-/// let merged = a.add(&b);
-/// assert_eq!(merged.len(), 2);
-/// assert_eq!(merged.get(&[0], &[1]), Some(Complex64::new(1.0, 0.0)));
-/// assert_eq!(merged.get(&[0b10], &[0]), Some(Complex64::new(0.25, 0.0)));
-/// ```
 #[derive(Clone, Debug)]
 pub struct PauliSum<const W: usize> {
     pub(super) buckets: Vec<BucketColumns<W>>,

@@ -81,7 +81,7 @@ The last point is identical to propagating the whole six-step circuit in one cal
 The series is therefore free: it is the same single pass, read out at every step boundary.
 
 Each `expectation` call is one masked pass over the surviving terms and does not consume the sum, so recording several observables per time point costs only those passes.
-The [2D Ising quench](../../examples/index.md#the-2d-ising-quench) on the Examples landing page is the same pattern at 36 qubits and 40 steps, run against the crate's Rust walkthrough rather than shown again in Python here.
+The [quenched time-evolution](../../index.md#quenched-time-evolution) on the landing page is the same pattern at 36 qubits.
 
 ## The Heisenberg-ordering trap {#the-heisenberg-ordering-trap}
 

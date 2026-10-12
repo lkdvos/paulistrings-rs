@@ -86,14 +86,6 @@ Items (parsed on the first ':'):
       An unrecognized host only has `default` -- add an entry to
       scripts/host-topology.sh to calibrate placements for it.
 
-  macro
-      Times `cargo run --offline --release -p paulistrings --example
-      ising_2d_quench`, then runs `git diff --exit-code` against the two
-      committed CSV outputs it writes
-      (crates/paulistrings/examples/output/ising_{4x4,6x6}.csv, per
-      output_dir()/write_csv() in crates/paulistrings/examples/ising_2d_quench.rs)
-      and logs "determinism gate: PASS" or "FAIL".
-
   bandwidth
       scripts/bandwidth.sh, if present; otherwise a skip message.
 
@@ -229,23 +221,6 @@ for item in "${items[@]}"; do
         echo "  (criterion-report.py snapshot failed — continuing campaign)" \
           | tee -a "$out_file"
       fi
-      ;;
-
-    macro)
-      if ! { time cargo run --offline --release -p paulistrings --example ising_2d_quench; } \
-        2>&1 | tee -a "$out_file"; then
-        echo "  (ising_2d_quench run exited nonzero — continuing campaign)" \
-          | tee -a "$out_file"
-      fi
-      csv_4x4="crates/paulistrings/examples/output/ising_4x4.csv"
-      csv_6x6="crates/paulistrings/examples/output/ising_6x6.csv"
-      {
-        if git diff --exit-code -- "$csv_4x4" "$csv_6x6"; then
-          echo "determinism gate: PASS"
-        else
-          echo "determinism gate: FAIL"
-        fi
-      } 2>&1 | tee -a "$out_file"
       ;;
 
     bandwidth)

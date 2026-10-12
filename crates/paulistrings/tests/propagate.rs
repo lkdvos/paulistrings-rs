@@ -21,7 +21,7 @@ use paulistrings::test_support::{approx_eq, bucket};
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy,
 };
-use paulistrings::{Channel, PauliRotation, PtmChannel};
+use paulistrings::{Channel, OutputBuffer, PauliRotation, PtmChannel};
 use paulistrings::{CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-12;
@@ -527,4 +527,40 @@ fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
         finals.len() > 1,
         "different seeds give different trajectories"
     );
+}
+
+/// Multiplies every coefficient by `factor`: a channel implemented outside the crate.
+struct GlobalPhase {
+    factor: Complex64,
+}
+
+impl<const W: usize> Channel<W> for GlobalPhase {
+    fn support(&self) -> [u64; W] {
+        [0; W]
+    }
+    fn apply(&self, x: &[u64; W], z: &[u64; W], coeff: Complex64, out: &mut OutputBuffer<W>) {
+        out.push(*x, *z, coeff * self.factor);
+    }
+    fn apply_adjoint(
+        &self,
+        x: &[u64; W],
+        z: &[u64; W],
+        coeff: Complex64,
+        out: &mut OutputBuffer<W>,
+    ) {
+        out.push(*x, *z, coeff * self.factor.conj());
+    }
+}
+
+#[test]
+fn a_channel_implemented_downstream_propagates_both_ways() {
+    let i = Complex64::new(0.0, 1.0);
+    let input = sum1(2, &[(PauliString::<1>::z(0), Complex64::new(1.0, 0.0))]);
+    let circuit = single(2, GlobalPhase { factor: i });
+    for (direction, want) in [(Direction::Forward, i), (Direction::Heisenberg, -i)] {
+        let out = propagate(&circuit, input.clone(), &NoTruncation, direction);
+        assert_eq!(out.len(), 1);
+        let got = out.get(&[0], &[1]).expect("Z0 survives");
+        assert!(approx_eq(got, want, TOL), "{direction:?}: {got}");
+    }
 }

@@ -16,19 +16,6 @@ use num_complex::Complex64;
 ///
 /// Above one partition every partition sees a disjoint slice of the layer, so a layer pass must be collective: a policy whose `finalizes_layer()` is `true` runs partitioned only if it overrides [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) and [`supports_partitioned`](Self::supports_partitioned).
 /// Every built-in does except exact [`TopN`], which is not yet supported partitioned; [`ApproxTopN`] is the partitioned alternative.
-///
-/// ```
-/// use paulistrings::TruncationPolicy;
-/// use num_complex::Complex64;
-///
-/// /// Drop the imaginary half: keep only terms whose coefficient is real.
-/// struct RealOnly;
-/// impl<const W: usize> TruncationPolicy<W> for RealOnly {
-///     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
-///         c.im == 0.0
-///     }
-/// }
-/// ```
 pub trait TruncationPolicy<const W: usize>: Send + Sync {
     /// Per-term filter, run inside the merge on every output, so it must be cheap.
     ///

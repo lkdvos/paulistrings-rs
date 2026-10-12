@@ -1142,7 +1142,7 @@ fn expectation_across_a_word_boundary_w2() {
     assert!((s.expectation_product_state(ProductState::ZPlus).re - 9.0).abs() < 1e-12);
 }
 
-/// Reproduces the observable `examples/ising_2d_quench.rs` computed by hand.
+/// The `|+…+⟩` expectation against a hand-rolled sum over Z-free terms.
 #[test]
 fn expectation_xplus_matches_the_hand_rolled_reference() {
     let mut rng = 0x2468u64 | 1;

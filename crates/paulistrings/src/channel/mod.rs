@@ -99,43 +99,6 @@ fn write_pauli<const W: usize>(
 ///
 /// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel) and [`PauliRotation`].
 /// A custom channel implements `support`, `apply` and `apply_adjoint`; the engine derives its per-layer form by probing `apply` (ARCHITECTURE.md §Prepared-Channels).
-///
-/// ```
-/// use paulistrings::{Channel, OutputBuffer};
-/// use num_complex::Complex64;
-///
-/// /// Multiplies every coefficient by a complex factor.
-/// struct GlobalPhase {
-///     factor: Complex64,
-/// }
-///
-/// impl<const W: usize> Channel<W> for GlobalPhase {
-///     fn support(&self) -> [u64; W] { [0; W] }
-///     fn apply(
-///         &self,
-///         input_x: &[u64; W],
-///         input_z: &[u64; W],
-///         coeff: Complex64,
-///         out: &mut OutputBuffer<W>,
-///     ) {
-///         out.push(*input_x, *input_z, coeff * self.factor);
-///     }
-///     fn apply_adjoint(
-///         &self,
-///         input_x: &[u64; W],
-///         input_z: &[u64; W],
-///         coeff: Complex64,
-///         out: &mut OutputBuffer<W>,
-///     ) {
-///         out.push(*input_x, *input_z, coeff * self.factor.conj());
-///     }
-/// }
-///
-/// let channel = GlobalPhase {
-///     factor: Complex64::new(0.0, 1.0),
-/// };
-/// let _: Box<dyn Channel<1>> = Box::new(channel);
-/// ```
 pub trait Channel<const W: usize>: Send + Sync {
     /// Qubits this channel acts on, as a bitmask built with [`support_mask`].
     ///

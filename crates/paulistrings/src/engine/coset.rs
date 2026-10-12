@@ -1,4 +1,4 @@
-//! `Gf2Span`, the GF(2) span of a channel's bucket deltas and the coset index algebra over it (ARCHITECTURE.md §Engine).
+//! `Gf2Span`, the GF(2) span of a channel's bucket deltas and the coset index algebra over it, and `CosetOrder`, the coset-contiguous bucket order a layer runs in (ARCHITECTURE.md §Engine).
 
 use crate::pauli_sum::hash::B_MAX_BITS;
 
@@ -144,6 +144,83 @@ impl Gf2Span {
         let representative = self.representative_of(beta);
         (self.rank_of_representative(representative) << self.basis.len())
             | self.coordinate_of(beta ^ representative)
+    }
+}
+
+/// A layer's coset-contiguous bucket order: coset `c` owns positions `c << r .. (c + 1) << r` ([`Gf2Span::permuted_index`]).
+///
+/// Built once per layer and shared by the coset loop, the export pass and the exchange's chunking; empty, i.e. the identity, when `r = 0`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CosetOrder {
+    /// `permutation[β]` is bucket `β`'s position.
+    permutation: Vec<u32>,
+    /// `inverse[p]` is the bucket at position `p`; built only on request.
+    inverse: Vec<u32>,
+    positions: u32,
+    dimension: u32,
+}
+
+impl CosetOrder {
+    /// Re-aim the order at `span`, keeping the allocations; the inverse is built only when `with_inverse`.
+    pub(crate) fn rebuild(&mut self, span: &Gf2Span, with_inverse: bool) {
+        self.positions = 1u32 << span.bits;
+        self.dimension = span.dimension() as u32;
+        self.permutation.clear();
+        self.inverse.clear();
+        if self.dimension == 0 {
+            return;
+        }
+        self.permutation
+            .extend((0..self.positions).map(|beta| span.permuted_index(beta)));
+        if with_inverse {
+            self.inverse.resize(self.permutation.len(), 0);
+            for (beta, &position) in self.permutation.iter().enumerate() {
+                self.inverse[position as usize] = beta as u32;
+            }
+        }
+    }
+
+    /// Whether every bucket is its own position (`r = 0`).
+    pub(crate) fn is_identity(&self) -> bool {
+        self.dimension == 0
+    }
+
+    /// Bucket `beta`'s position.
+    pub(crate) fn position_of(&self, beta: u32) -> u32 {
+        if self.permutation.is_empty() {
+            beta
+        } else {
+            self.permutation[beta as usize]
+        }
+    }
+
+    /// The bucket at position `position`, the inverse of [`Self::position_of`]; the order must have been built `with_inverse`.
+    pub(crate) fn bucket_at(&self, position: u32) -> u32 {
+        debug_assert!(
+            self.inverse.len() == self.permutation.len(),
+            "CosetOrder::bucket_at: the inverse was not built",
+        );
+        if self.inverse.is_empty() {
+            position
+        } else {
+            self.inverse[position as usize]
+        }
+    }
+
+    /// Positions, i.e. buckets.
+    pub(crate) fn positions(&self) -> usize {
+        self.positions as usize
+    }
+
+    /// `r`, the `log2` of the coset size.
+    pub(crate) fn dimension(&self) -> usize {
+        self.dimension as usize
+    }
+
+    /// Capacity of the permutation, for the footprint tests.
+    #[cfg(test)]
+    pub(crate) fn capacity(&self) -> usize {
+        self.permutation.capacity() + self.inverse.capacity()
     }
 }
 

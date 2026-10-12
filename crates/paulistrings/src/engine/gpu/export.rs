@@ -187,7 +187,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
             .and_then(|log2| wire_ready(export).map(|()| log2));
         match vote(transport, ready.as_ref().ok().copied()) {
             Some(log2) => {
-                let map = position_chunks(sum.hash.bits(), b, log2);
+                let map = position_chunks(b, log2);
                 let own = own_at(plan);
                 let partners: Vec<u32> = plan.remote.iter().map(|r| r.partner).collect();
                 let own_off: Vec<&[u32]> = own

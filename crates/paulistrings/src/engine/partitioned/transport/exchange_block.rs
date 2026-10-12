@@ -20,7 +20,7 @@ pub(crate) struct BlockHeader {
     pub entry: u32,
 }
 
-/// The rows one remote delta moves to one partner, CSR-indexed by the receiver's destination position ([`ChunkMap`]).
+/// The rows one remote delta moves to one partner, CSR-indexed by the receiver's destination position ([`CosetOrder`](crate::engine::coset::CosetOrder)).
 ///
 /// The columns are grow-only and may be longer than `header.rows`, which alone says how much is live: read through `columns` or `segment`, never `x.len()`.
 #[derive(Clone, Debug, Default)]
@@ -92,7 +92,7 @@ impl<const W: usize> ExchangeBlock<W> {
         (&self.x[..rows], &self.z[..rows], &self.coeff[..rows])
     }
 
-    /// The rows destined for position `p`; output bucket `β′` reads `segment(map.position_of(β′))`.
+    /// The rows destined for position `p`; output bucket `β′` reads `segment(order.position_of(β′))`.
     pub(crate) fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let lo = self.offsets[p as usize] as usize;
         let hi = self.offsets[p as usize + 1] as usize;

@@ -1,6 +1,5 @@
 //! The receive side of a device exchange: staging, sizing and moving the received rows chunk by chunk.
 
-use crate::engine::coset::Gf2Span;
 use crate::engine::gpu::columns::grow;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::layer::{timed_transfer, LayerScratch, Transfer, TransferNs};
@@ -137,9 +136,8 @@ pub(super) fn recv_chunks(offsets: &[u32], b: usize, cap_rows: usize) -> (u8, us
 }
 
 /// `2^log2` equal chunks of `b` positions in the fused layer's position order.
-pub(super) fn position_chunks(bits: u8, b: usize, log2: u8) -> ChunkMap {
-    let mut map = ChunkMap::default();
-    map.rebuild(&Gf2Span::new(&[0], bits), b, 1 << log2);
+pub(super) fn position_chunks(b: usize, log2: u8) -> ChunkMap {
+    let map = ChunkMap::new(b, 0, 1 << log2);
     debug_assert_eq!(map.chunks(), 1 << log2);
     map
 }

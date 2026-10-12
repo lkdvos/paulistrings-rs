@@ -190,8 +190,7 @@ proptest::proptest! {
                     .collect()
             })
             .collect();
-        let mut map = ChunkMap::default();
-        map.rebuild(&crate::engine::coset::Gf2Span::new(&[], bits), b, chunks);
+        let map = ChunkMap::new(b, 0, chunks);
         let ops = group_schedules(size, &pds, &counts, &map);
         for a in 0..size {
             for bb in 0..size {

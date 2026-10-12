@@ -1,15 +1,20 @@
 use super::exchange_block::{check_stride, BlockHeader, PARTS_PER_BLOCK};
 use super::in_process::WAIT_TIMEOUT;
 use super::*;
+use crate::engine::coset::Gf2Span;
 use num_complex::Complex64;
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 
+fn order_of(bits: u8, deltas: &[u32]) -> CosetOrder {
+    let mut order = CosetOrder::default();
+    order.rebuild(&Gf2Span::new(deltas, bits), true);
+    order
+}
+
 fn map_of(bits: u8, deltas: &[u32], chunks: usize) -> ChunkMap {
-    let mut map = ChunkMap::default();
-    map.rebuild(&Gf2Span::new(deltas, bits), 1usize << bits, chunks);
-    map
+    ChunkMap::of_order(&order_of(bits, deltas), chunks)
 }
 
 /// A payload of `blocks` blocks over `2^bits` positions, filled deterministically.
@@ -100,16 +105,16 @@ fn the_destination_order_is_a_bijection() {
         (6, vec![0, 1, 2, 3]),
         (6, vec![0, 9, 18, 27]),
     ] {
-        let map = map_of(bits, &deltas, 1);
+        let order = order_of(bits, &deltas);
         let n = 1u32 << bits;
-        assert_eq!(map.positions(), n as usize);
+        assert_eq!(order.positions(), n as usize);
         let mut seen = vec![false; n as usize];
         for beta in 0..n {
-            let p = map.position_of(beta);
+            let p = order.position_of(beta);
             assert!(p < n, "position {p} outside {n} for bits={bits}");
             assert!(!seen[p as usize], "position {p} claimed twice");
             seen[p as usize] = true;
-            assert_eq!(map.bucket_at(p), beta, "bucket_at is not the inverse");
+            assert_eq!(order.bucket_at(p), beta, "bucket_at is not the inverse");
         }
         assert!(
             seen.iter().all(|&s| s),
@@ -152,9 +157,10 @@ fn the_chunks_tile_the_position_range() {
 fn a_chunk_never_splits_a_coset() {
     for (bits, deltas) in [(6u8, vec![0u32, 3]), (6, vec![0, 1, 2, 3]), (5, vec![0, 7])] {
         let span = Gf2Span::new(&deltas, bits);
+        let mut order = CosetOrder::default();
+        order.rebuild(&span, true);
         for chunks in [1usize, 2, 4, 8, 64] {
-            let mut map = ChunkMap::default();
-            map.rebuild(&span, 1usize << bits, chunks);
+            let map = ChunkMap::of_order(&order, chunks);
             let coset = span.coset_size() as u32;
             for k in 0..=map.chunks() {
                 assert_eq!(
@@ -165,9 +171,9 @@ fn a_chunk_never_splits_a_coset() {
                 );
             }
             for beta in 0..(1u32 << bits) {
-                let want = map.chunk_of_position(map.position_of(span.representative_of(beta)));
+                let want = map.chunk_of_position(order.position_of(span.representative_of(beta)));
                 assert_eq!(
-                    map.chunk_of_position(map.position_of(beta)),
+                    map.chunk_of_position(order.position_of(beta)),
                     want,
                     "bucket {beta} is in another chunk than its coset representative",
                 );
@@ -198,14 +204,15 @@ proptest! {
         let mut deltas: Vec<u32> = deltas.into_iter().map(|d| d % hi).chain([0]).collect();
         deltas.sort_unstable();
         deltas.dedup();
-        let map = map_of(bits, &deltas, chunks);
+        let order = order_of(bits, &deltas);
+        let map = ChunkMap::of_order(&order, chunks);
         let mut seen = vec![false; hi as usize];
         for beta in 0..hi {
-            let p = map.position_of(beta);
+            let p = order.position_of(beta);
             prop_assert!(p < hi);
             prop_assert!(!seen[p as usize]);
             seen[p as usize] = true;
-            prop_assert_eq!(map.bucket_at(p), beta);
+            prop_assert_eq!(order.bucket_at(p), beta);
             let c = map.chunk_of_position(p);
             prop_assert!(map.bound(c) <= p && p < map.bound(c + 1));
         }

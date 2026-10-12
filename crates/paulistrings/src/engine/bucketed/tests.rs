@@ -1009,7 +1009,7 @@ fn capacity_stabilizes_across_repeated_layers() {
             + old_cap
             + run_cap
             + sort_cap
-            + scratch.permutation.capacity()
+            + scratch.order.capacity()
             + scratch.staging.capacity()
     };
 

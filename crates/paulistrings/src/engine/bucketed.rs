@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use super::coset::Gf2Span;
+use super::coset::{CosetOrder, Gf2Span};
 use super::merge::{rest_rows_per_key, SortKernel};
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
@@ -30,10 +30,8 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 pub struct LayerScratch<const W: usize> {
     /// The serial path's coset working set.
     pub(super) task: CosetScratch<W>,
-    /// The layer's handle permutation, `permutation[β] = span.permuted_index(β)`.
-    pub(super) permutation: Vec<u32>,
-    /// The inverse of [`Self::permutation`], filled only under [`ExtraRows::NEEDS_BETA`]; empty means the identity.
-    pub(super) inverse_permutation: Vec<u32>,
+    /// The layer's coset order, with its inverse only under [`ExtraRows::NEEDS_BETA`]; a partitioned layer builds it before the export and passes it back in [`LayerKnobs::order`].
+    pub(super) order: CosetOrder,
     /// Bucket handles in coset-contiguous order while a layer runs.
     pub(super) staging: Vec<BucketColumns<W>>,
     /// One coset working set per Rayon worker, indexed by `rayon::current_thread_index()`, so each mutex is uncontended.
@@ -139,6 +137,8 @@ pub(crate) struct LayerKnobs<'k> {
     pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
     pub generator_local: bool,
+    /// The layer's coset order, already built `with_inverse` over the span of `bucket_deltas`; built here when `None`.
+    pub order: Option<&'k CosetOrder>,
 }
 
 impl Default for LayerKnobs<'_> {
@@ -148,6 +148,7 @@ impl Default for LayerKnobs<'_> {
             rest_streams: None,
             rows_per_key: None,
             generator_local: true,
+            order: None,
         }
     }
 }
@@ -273,30 +274,24 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     let num_cosets = span.num_cosets();
     lap!(stamp, scratch.stats.span_plan_ns);
 
-    // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the permutation is the identity and the handle passes are skipped.
-    let identity_perm = span.dimension() == 0;
-    if !identity_perm {
+    // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the order is the identity and the handle passes are skipped.
+    let order: &CosetOrder = match knobs.order {
+        Some(order) => order,
+        None => {
+            scratch.order.rebuild(&span, X::NEEDS_BETA);
+            &scratch.order
+        }
+    };
+    debug_assert_eq!(order.positions(), sum.num_buckets());
+    debug_assert_eq!(order.dimension(), span.dimension());
+    let identity_order = order.is_identity();
+    if !identity_order {
         let buckets = sum.buckets_mut();
-        scratch.permutation.clear();
-        scratch
-            .permutation
-            .extend((0..buckets.len() as u32).map(|beta| span.permuted_index(beta)));
         scratch
             .staging
             .resize_with(buckets.len(), BucketColumns::default);
         for (beta, columns) in buckets.iter_mut().enumerate() {
-            scratch.staging[scratch.permutation[beta] as usize] = std::mem::take(columns);
-        }
-    }
-    if X::NEEDS_BETA {
-        scratch.inverse_permutation.clear();
-        if !identity_perm {
-            scratch
-                .inverse_permutation
-                .resize(scratch.permutation.len(), 0);
-            for (beta, &position) in scratch.permutation.iter().enumerate() {
-                scratch.inverse_permutation[position as usize] = beta as u32;
-            }
+            scratch.staging[order.position_of(beta as u32) as usize] = std::mem::take(columns);
         }
     }
     lap!(stamp, scratch.stats.permute_ns);
@@ -310,8 +305,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             }
         }
         let workers = &scratch.workers;
-        let inverse_permutation: &[u32] = &scratch.inverse_permutation;
-        let chunks: &mut [BucketColumns<W>] = if identity_perm {
+        let chunks: &mut [BucketColumns<W>] = if identity_order {
             sum.buckets_mut()
         } else {
             scratch.staging.as_mut_slice()
@@ -319,15 +313,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         if num_cosets < MIN_COSETS_FOR_PARALLEL {
             for (coset_index, chunk) in chunks.chunks_mut(coset_size).enumerate() {
                 let base = coset_index * coset_size;
-                fill_coset::<W, T, X>(
-                    chunk,
-                    &plan,
-                    policy,
-                    &mut scratch.task,
-                    extra,
-                    base,
-                    inverse_permutation,
-                );
+                fill_coset::<W, T, X>(chunk, &plan, policy, &mut scratch.task, extra, base, order);
             }
         } else {
             chunks
@@ -346,17 +332,18 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                         &mut worker_scratch,
                         extra,
                         base,
-                        inverse_permutation,
+                        order,
                     );
                 });
         }
     }
     lap!(stamp, scratch.stats.coset_loop_ns);
 
-    if !identity_perm {
+    if !identity_order {
         let buckets = sum.buckets_mut();
         for (beta, columns) in buckets.iter_mut().enumerate() {
-            *columns = std::mem::take(&mut scratch.staging[scratch.permutation[beta] as usize]);
+            *columns =
+                std::mem::take(&mut scratch.staging[order.position_of(beta as u32) as usize]);
         }
     }
     lap!(stamp, scratch.stats.unpermute_ns);

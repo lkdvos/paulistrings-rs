@@ -8,7 +8,7 @@ use crate::channel::prepared::Prepared;
 use crate::engine::bucketed::{
     apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
 };
-use crate::engine::coset::Gf2Span;
+use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::merge::rest_rows_per_key;
 use crate::engine::timing::{lap, stamp, tally, timed};
 use crate::pauli_sum::hash::PartitionRows;
@@ -33,6 +33,7 @@ fn exchange_chunks() -> usize {
 /// The rows this partition received, one block per remote delta, as an [`ExtraRows`] source for the coset loop.
 struct RecvRows<'a, const W: usize> {
     blocks: Vec<Option<&'a ExchangeBlock<W>>>,
+    order: &'a CosetOrder,
     map: &'a ChunkMap,
     wait: &'a dyn ChunkWait,
     /// Summed across coset tasks.
@@ -48,6 +49,7 @@ impl<'a, const W: usize> RecvRows<'a, W> {
     fn new(
         plan: &PartitionPlan,
         recv: &'a [Option<PartnerPayload<W>>],
+        order: &'a CosetOrder,
         map: &'a ChunkMap,
         wait: &'a dyn ChunkWait,
     ) -> Self {
@@ -79,6 +81,7 @@ impl<'a, const W: usize> RecvRows<'a, W> {
         }
         Self {
             blocks,
+            order,
             map,
             wait,
             #[cfg(feature = "phase-timing")]
@@ -93,7 +96,7 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
     const NEEDS_BETA: bool = true;
 
     fn count(&self, beta: u32) -> usize {
-        let p = self.map.position_of(beta);
+        let p = self.order.position_of(beta);
         let mut n = 0usize;
         for block in self.blocks.iter().flatten() {
             n += block.segment(p).2.len();
@@ -103,7 +106,7 @@ impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
 
     fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
         timed!(let start = std::time::Instant::now());
-        let p = self.map.position_of(beta);
+        let p = self.order.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
         self.wait.wait_chunk(self.map.chunk_of_position(p));
         timed!(self.chunk_wait_ns.fetch_add(
@@ -179,19 +182,12 @@ where
     }
 
     stamp!(stamp);
-    // The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count.
+    // The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count; the coset loop reuses it.
     let span = Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits());
-    state
-        .chunks
-        .rebuild(&span, local.num_buckets(), exchange_chunks());
-    let (send, export) = export_layer(
-        local,
-        prepared,
-        plan,
-        size,
-        &state.chunks,
-        &mut state.export,
-    );
+    let mut order = std::mem::take(&mut state.layer.order);
+    order.rebuild(&span, true);
+    state.chunks = ChunkMap::of_order(&order, exchange_chunks());
+    let (send, export) = export_layer(local, prepared, plan, size, &order, &mut state.export);
     lap!(stamp, state.layer.stats.export_ns);
     tally!(
         state.layer.stats.rows_exported,
@@ -229,6 +225,7 @@ where
             Prepared::Rotation(_) => plan.local_entries[1],
             Prepared::Local(_) => true,
         },
+        order: Some(&order),
     };
 
     let PartitionState {
@@ -260,7 +257,7 @@ where
                 .flat_map(|payload| &payload.blocks)
                 .map(|block| block.rows() as u64)
                 .sum();
-            let recv_rows = RecvRows::new(plan, recv, map, wait);
+            let recv_rows = RecvRows::new(plan, recv, &order, map, wait);
             apply_layer_bucketed_with(
                 local,
                 local_prepared,
@@ -288,6 +285,7 @@ where
         stamp.rearm();
     }
     export_scratch.pool.extend(recv.into_iter().flatten());
+    layer_scratch.order = order;
 
     LayerExchangeCounts {
         remote_deltas: plan.remote.len(),

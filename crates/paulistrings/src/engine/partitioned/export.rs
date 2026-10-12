@@ -4,8 +4,9 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::plan::PartitionPlan;
-use super::transport::{ChunkMap, ExchangeBlock, PartnerPayload};
+use super::transport::{ExchangeBlock, PartnerPayload};
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
+use crate::engine::coset::CosetOrder;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::PauliSum;
 
@@ -21,7 +22,7 @@ pub(crate) struct ExportScratch<const W: usize> {
     counts: Vec<u32>,
     /// One block's counts by destination position.
     block_counts: Vec<u32>,
-    /// `source_of[p] = map.bucket_at(p) ^ bd`.
+    /// `source_of[p] = order.bucket_at(p) ^ bd`.
     source_of: Vec<u32>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W>>,
@@ -78,7 +79,7 @@ pub(crate) fn export_layer<const W: usize>(
     prepared: &Prepared<W>,
     plan: &PartitionPlan,
     size: u32,
-    map: &ChunkMap,
+    order: &CosetOrder,
     scratch: &mut ExportScratch<W>,
 ) -> (Vec<Option<PartnerPayload<W>>>, ExportCounts) {
     let k = plan.remote.len();
@@ -122,9 +123,9 @@ pub(crate) fn export_layer<const W: usize>(
 
     // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
-        map.positions(),
+        order.positions(),
         num_buckets,
-        "the chunk map is built for a different bucket count than the sum has",
+        "the coset order is built for a different bucket count than the sum has",
     );
     scratch.block_counts.clear();
     scratch.block_counts.resize(num_buckets, 0);
@@ -133,7 +134,7 @@ pub(crate) fn export_layer<const W: usize>(
     let mut blocks_used = vec![0usize; size as usize];
     for (i, r) in plan.remote.iter().enumerate() {
         for p in 0..num_buckets {
-            let source = map.bucket_at(p as u32) ^ r.bucket_delta;
+            let source = order.bucket_at(p as u32) ^ r.bucket_delta;
             scratch.source_of[p] = source;
             scratch.block_counts[p] = scratch.counts[source as usize * k + i];
         }

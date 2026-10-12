@@ -12,18 +12,17 @@ use std::collections::HashMap;
 
 const TOL: f64 = 1e-12;
 
-/// The destination-coset order for `plan` over `num_buckets` buckets, in one chunk.
-fn map_for(plan: &PartitionPlan, num_buckets: usize) -> ChunkMap {
-    let mut map = ChunkMap::default();
-    map.rebuild(
+/// The receiver's coset order for `plan` over `num_buckets` buckets.
+fn order_for(plan: &PartitionPlan, num_buckets: usize) -> CosetOrder {
+    let mut order = CosetOrder::default();
+    order.rebuild(
         &crate::engine::coset::Gf2Span::new(
             &plan.local_bucket_deltas,
             num_buckets.trailing_zeros() as u8,
         ),
-        num_buckets,
-        1,
+        true,
     );
-    map
+    order
 }
 
 /// One partition's export of one layer.
@@ -53,8 +52,8 @@ fn export_all<const W: usize>(
             let local = whole.filter_partition(rows, rank);
             let plan = PartitionPlan::new(&prepared, rows, rank);
             let mut scratch = ExportScratch::default();
-            let map = map_for(&plan, local.num_buckets());
-            let (send, counts) = export_layer(&local, &prepared, &plan, size, &map, &mut scratch);
+            let order = order_for(&plan, local.num_buckets());
+            let (send, counts) = export_layer(&local, &prepared, &plan, size, &order, &mut scratch);
             assert!(
                 send[rank as usize].is_none(),
                 "a partition exports to itself"
@@ -189,7 +188,7 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
     }
 }
 
-/// The CSR is in the receiver's order: every row of segment `p` lands in the receiver's bucket `map.bucket_at(p)`.
+/// The CSR is in the receiver's order: every row of segment `p` lands in the receiver's bucket `order.bucket_at(p)`.
 #[test]
 fn every_segment_holds_the_rows_of_its_destination_bucket() {
     let input = rand_sum::<1>(700, 8, 0x9C7);
@@ -205,14 +204,14 @@ fn every_segment_holds_the_rows_of_its_destination_bucket() {
                     for rank in 0..size {
                         let local = whole.filter_partition(&rows, rank);
                         let plan = PartitionPlan::new(&prepared, &rows, rank);
-                        let map = map_for(&plan, local.num_buckets());
+                        let order = order_for(&plan, local.num_buckets());
                         let mut scratch = ExportScratch::default();
                         let (send, _) =
-                            export_layer(&local, &prepared, &plan, size, &map, &mut scratch);
+                            export_layer(&local, &prepared, &plan, size, &order, &mut scratch);
                         for payload in send.iter().flatten() {
                             for block in &payload.blocks {
                                 for p in 0..block.num_buckets() {
-                                    let want = map.bucket_at(p);
+                                    let want = order.bucket_at(p);
                                     let (sx, sz, _) = block.segment(p);
                                     for (x, z) in sx.iter().zip(sz) {
                                         assert_eq!(
@@ -387,21 +386,21 @@ fn a_reused_scratch_gives_the_same_export() {
     let prepared = wide.prepare(whole.hash(), false).unwrap();
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let wide_local = whole.filter_partition(&rows, 0);
-    let map = map_for(&plan, wide_local.num_buckets());
-    let _ = export_layer(&wide_local, &prepared, &plan, 4, &map, &mut scratch);
+    let order = order_for(&plan, wide_local.num_buckets());
+    let _ = export_layer(&wide_local, &prepared, &plan, 4, &order, &mut scratch);
 
     let h = PtmChannel::hadamard(3);
     let prepared = Prepare::<1>::prepare(&h, whole.hash(), false).unwrap();
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let local = whole.filter_partition(&rows, 0);
-    let map = map_for(&plan, local.num_buckets());
-    let (reused, counts_reused) = export_layer(&local, &prepared, &plan, 4, &map, &mut scratch);
+    let order = order_for(&plan, local.num_buckets());
+    let (reused, counts_reused) = export_layer(&local, &prepared, &plan, 4, &order, &mut scratch);
     let (fresh, counts_fresh) = export_layer(
         &local,
         &prepared,
         &plan,
         4,
-        &map,
+        &order,
         &mut ExportScratch::default(),
     );
     assert_eq!(counts_reused, counts_fresh);

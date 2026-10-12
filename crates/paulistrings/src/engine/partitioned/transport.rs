@@ -1,8 +1,8 @@
-//! The [`Transport`] trait, the [`Payload`] wire seam, the destination-coset [`ChunkMap`], and the in-process transport (ARCHITECTURE.md §Partitioning).
+//! The [`Transport`] trait, the [`Payload`] wire seam, the exchange's [`ChunkMap`], and the in-process transport (ARCHITECTURE.md §Partitioning).
 
 use crate::collectives::sealed::Sealed;
 use crate::collectives::Collectives;
-use crate::engine::coset::Gf2Span;
+use crate::engine::coset::CosetOrder;
 
 mod exchange_block;
 mod in_process;
@@ -12,15 +12,11 @@ pub(crate) use exchange_block::{chunk_rows_of, BlockHeader};
 pub(crate) use exchange_block::{ExchangeBlock, PartnerPayload};
 pub use in_process::InProcessTransport;
 
-/// The destination-coset order a layer's exchange blocks are laid out in, and the chunks the bulk transfer is cut into (ARCHITECTURE.md §Partitioning).
+/// The chunks a layer's bulk transfer is cut into, over the positions of the receiver's [`CosetOrder`](crate::engine::coset::CosetOrder) (ARCHITECTURE.md §Partitioning).
 ///
 /// Chunk edges always fall on coset boundaries, so a coset task waits on exactly one chunk.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChunkMap {
-    /// `perm[β]` is bucket `β`'s destination position; empty when the permutation is the identity (`r == 0`).
-    perm: Vec<u32>,
-    /// `inv[p]` is the bucket at position `p`; empty with `perm`.
-    inv: Vec<u32>,
     positions: u32,
     /// `log2` of the coset size: coset `c` owns positions `c << r .. (c + 1) << r`.
     r: u32,
@@ -30,54 +26,32 @@ pub struct ChunkMap {
 }
 
 impl ChunkMap {
-    /// Re-aim the map at `span` over `num_buckets` buckets in at most `chunks` pieces, keeping the allocations; panics unless `num_buckets` is a power of two and `chunks > 0`.
-    pub(crate) fn rebuild(&mut self, span: &Gf2Span, num_buckets: usize, chunks: usize) {
+    /// `positions` positions in cosets of `2^coset_dimension`, cut into at most `chunks` pieces; panics unless `positions` is a power of two and `chunks > 0`.
+    pub(crate) fn new(positions: usize, coset_dimension: usize, chunks: usize) -> Self {
         assert!(
-            num_buckets.is_power_of_two(),
-            "ChunkMap: {num_buckets} buckets is not a power of two",
+            positions.is_power_of_two(),
+            "ChunkMap: {positions} positions is not a power of two",
         );
         assert!(chunks > 0, "ChunkMap: a layer needs at least one chunk");
-        let positions = num_buckets as u32;
-        let r = span.dimension() as u32;
+        let r = coset_dimension as u32;
+        let positions = positions as u32;
         debug_assert!(
             (1u32 << r) <= positions,
             "ChunkMap: a coset of {} buckets does not fit in {positions}",
             1u32 << r,
         );
-        self.positions = positions;
-        self.r = r;
-        self.cosets = positions >> r;
-        self.chunks = (chunks as u32).min(self.cosets).max(1);
-        self.perm.clear();
-        self.inv.clear();
-        if r == 0 {
-            return;
-        }
-        self.perm.reserve(num_buckets);
-        self.inv.resize(num_buckets, 0);
-        for beta in 0..positions {
-            let p = span.permuted_index(beta);
-            self.perm.push(p);
-            self.inv[p as usize] = beta;
+        let cosets = positions >> r;
+        Self {
+            positions,
+            r,
+            cosets,
+            chunks: (chunks as u32).min(cosets).max(1),
         }
     }
 
-    /// Bucket `beta`'s destination position.
-    pub(crate) fn position_of(&self, beta: u32) -> u32 {
-        if self.perm.is_empty() {
-            beta
-        } else {
-            self.perm[beta as usize]
-        }
-    }
-
-    /// The bucket at destination position `p`, the inverse of `position_of`.
-    pub(crate) fn bucket_at(&self, p: u32) -> u32 {
-        if self.inv.is_empty() {
-            p
-        } else {
-            self.inv[p as usize]
-        }
+    /// The chunking of `order`'s positions.
+    pub(crate) fn of_order(order: &CosetOrder, chunks: usize) -> Self {
+        Self::new(order.positions(), order.dimension(), chunks)
     }
 
     /// Positions, i.e. buckets.

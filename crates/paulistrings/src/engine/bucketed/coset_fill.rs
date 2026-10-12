@@ -4,6 +4,7 @@ use num_complex::Complex64;
 
 use super::{DeltaPlan, ExtraRows, ZERO};
 use crate::channel::prepared::LocalPtm;
+use crate::engine::coset::CosetOrder;
 use crate::engine::merge::{merge_identity_and_rest, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
@@ -127,7 +128,7 @@ impl<const W: usize> GatherRun<W> {
 /// Below this many cosets the layer runs serially.
 pub(in crate::engine) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
-/// Gather, sort and merge one coset's `2^r` bucket columns in place; `chunk_base` and `inverse_permutation` name each member's original bucket for `extra`.
+/// Gather, sort and merge one coset's `2^r` bucket columns in place; `chunk_base` and `order` name each member's original bucket for `extra`.
 pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     chunk: &mut [BucketColumns<W>],
     plan: &DeltaPlan<'_, W>,
@@ -135,19 +136,13 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     scratch: &mut CosetScratch<W>,
     extra: &X,
     chunk_base: usize,
-    inverse_permutation: &[u32],
+    order: &CosetOrder,
 ) where
     T: TruncationPolicy<W> + ?Sized,
     X: ExtraRows<W>,
 {
     let members = chunk.len();
-    let beta_of = |j: usize| -> u32 {
-        if inverse_permutation.is_empty() {
-            (chunk_base + j) as u32
-        } else {
-            inverse_permutation[chunk_base + j]
-        }
-    };
+    let beta_of = |j: usize| -> u32 { order.bucket_at((chunk_base + j) as u32) };
     let CosetScratch {
         old, runs, sort, ..
     } = scratch;

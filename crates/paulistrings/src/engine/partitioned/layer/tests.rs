@@ -37,8 +37,9 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
     for deltas in [vec![0u32], vec![0, 4], vec![0, 1, 2, 3]] {
         let span = crate::engine::coset::Gf2Span::new(&deltas, BITS);
         for chunks in [1usize, 2, 4, 8, 64] {
-            let mut map = ChunkMap::default();
-            map.rebuild(&span, n as usize, chunks);
+            let mut order = CosetOrder::default();
+            order.rebuild(&span, true);
+            let map = ChunkMap::of_order(&order, chunks);
 
             // One row per position, coefficient = the position index.
             let counts: Vec<u32> = vec![1; n as usize];
@@ -65,9 +66,9 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             };
 
             let spy = WaitSpy(std::sync::Mutex::new(Vec::new()));
-            let rows = RecvRows::new(&plan, &recv, &map, &spy);
+            let rows = RecvRows::new(&plan, &recv, &order, &map, &spy);
             for beta in 0..n {
-                let p = map.position_of(beta);
+                let p = order.position_of(beta);
                 assert_eq!(rows.count(beta), 1, "one row per bucket");
                 let mut rest = BucketColumns::default();
                 rows.append_into(beta, &mut rest);
@@ -84,7 +85,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             for (beta, &k) in waited.iter().enumerate() {
                 assert_eq!(
                     k,
-                    map.chunk_of_position(map.position_of(beta as u32)),
+                    map.chunk_of_position(order.position_of(beta as u32)),
                     "bucket {beta} waited for the wrong chunk at {chunks} chunks",
                 );
                 assert!(k < map.chunks(), "chunk {k} is outside the map");

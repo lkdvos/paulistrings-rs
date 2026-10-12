@@ -258,3 +258,25 @@ impl Gf2Span {
         v
     }
 }
+
+/// The order is `permuted_index`, empty at `r = 0`, and its inverse exists only on request.
+#[test]
+fn coset_order_follows_the_permuted_index() {
+    let mut order = CosetOrder::default();
+    order.rebuild(&Gf2Span::new(&[0], 4), true);
+    assert!(order.is_identity());
+    assert_eq!(order.positions(), 16);
+    assert_eq!(order.capacity(), 0, "the identity allocates nothing");
+    assert!((0..16).all(|beta| order.position_of(beta) == beta && order.bucket_at(beta) == beta));
+
+    let span = Gf2Span::new(&[0, 0b0110, 0b1001], 4);
+    order.rebuild(&span, false);
+    assert!(!order.is_identity());
+    assert_eq!(order.dimension(), 2);
+    assert!((0..16).all(|beta| order.position_of(beta) == span.permuted_index(beta)));
+
+    order.rebuild(&span, true);
+    for beta in 0..16 {
+        assert_eq!(order.bucket_at(order.position_of(beta)), beta);
+    }
+}

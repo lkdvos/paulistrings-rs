@@ -245,7 +245,8 @@ The identity delta has mask `0`, so a partition never ships to itself, and remot
 
 **The wire unit is one CSR block per remote delta, indexed by the receiver's destination position.**
 `Gf2Span::permuted_index` renumbers the bucket index so a receiver's coset occupies a contiguous run of *positions* (§Engine); both sides can compute that renumbering, so the **sender** lays the block out in it: segment `p` holds the rows for the receiver's position `p`, generated from the sender's own bucket `bucket_at(p) ⊕ bd`, and the receiver filling output bucket `β′` reads `segment(position_of(β′))` through a table.
-A coset's rows are then **contiguous**, so a prefix of the transfer is a whole unit of the receiver's work — what the pipelined receive waits on (`ChunkMap` carries both the order and the chunk edges).
+A coset's rows are then **contiguous**, so a prefix of the transfer is a whole unit of the receiver's work — what the pipelined receive waits on (`ChunkMap` carries the chunk edges).
+The layer builds that order once, as a `CosetOrder` owned by its `LayerScratch`, and the export, the received-row lookup and the coset loop all read it.
 A `PartnerPayload` is that partner's blocks in ascending remote-delta index, walked in lockstep with the receiver's own plan, so a delta with no rows still ships its empty block.
 
 A layer is **export → exchange → local coset loop**, a push model, and the last two overlap:

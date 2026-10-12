@@ -103,6 +103,14 @@ impl<const W: usize> LocalPtm<W> {
         &self.deltas
     }
 
+    /// Whether entry `index` has a nonzero amplitude on every support pattern; `amplitude` is sized `LOCAL_DIM` but only `4^k` entries are populated.
+    pub(crate) fn entry_is_dense(&self, index: usize) -> bool {
+        let dim = 1usize << (2 * self.k());
+        self.deltas[index].amplitude[..dim]
+            .iter()
+            .all(|a| *a != ZERO)
+    }
+
     /// Whether the first entry is the identity delta.
     pub(crate) fn has_identity(&self) -> bool {
         self.deltas.first().is_some_and(|d| d.local_delta == 0)

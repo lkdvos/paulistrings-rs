@@ -47,17 +47,6 @@ enum RowEmitter<'p, const W: usize> {
 }
 
 impl<const W: usize> RowEmitter<'_, W> {
-    /// Whether every term emits a row; `amplitude` is sized `LOCAL_DIM` but only `4^k` entries are populated.
-    fn is_dense(&self) -> bool {
-        match self {
-            RowEmitter::Tabulated { ptm, entry } => {
-                let dim = 1usize << (2 * ptm.k());
-                entry.amplitude[..dim].iter().all(|a| *a != ZERO)
-            }
-            RowEmitter::Generator { .. } => false,
-        }
-    }
-
     fn emit(
         &self,
         x: &[u64; W],
@@ -110,7 +99,15 @@ pub(crate) fn export_layer<const W: usize>(
             }
         })
         .collect();
-    let dense: Vec<bool> = emitters.iter().map(RowEmitter::is_dense).collect();
+    // Whether every term emits a row, which the generator pass never guarantees.
+    let dense: Vec<bool> = plan
+        .remote
+        .iter()
+        .map(|r| match prepared {
+            Prepared::Local(ptm) => ptm.entry_is_dense(r.entry),
+            Prepared::Rotation(_) => false,
+        })
+        .collect();
 
     // Pass 1: bucket-major counts, `counts[β * k + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();

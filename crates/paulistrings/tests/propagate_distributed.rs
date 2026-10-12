@@ -402,7 +402,7 @@ fn len_is_collective_and_the_shares_add_up() {
     let seen = on_ranks(4, |transport| {
         let split =
             DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED));
-        (split.len(), split.len_local())
+        (split.len(), split.local().len())
     });
 
     for (rank, &(total, _)) in seen.iter().enumerate() {
@@ -472,7 +472,7 @@ fn scatter_splits_by_the_sums_own_seed() {
                     let got =
                         scatter_by_policy(sum.clone(), b, PartitionRowPolicy::Seeded(Some(seed)));
                     assert_eq!(want.rows(), got.rows());
-                    (want.len_local(), got.len_local())
+                    (want.local().len(), got.local().len())
                 })
             })
             .collect();
@@ -488,7 +488,7 @@ fn scatter_splits_by_the_sums_own_seed() {
     assert_eq!(seen.iter().map(|&(_, got)| got).sum::<usize>(), sum.len());
 }
 
-/// `local_expectation_product` is per rank, and the ranks' answers sum to
+/// `local().expectation_product` is per rank, and the ranks' answers sum to
 /// the whole sum's.
 #[test]
 fn local_expectations_sum_to_the_whole_sums() {
@@ -500,7 +500,8 @@ fn local_expectations_sum_to_the_whole_sums() {
 
     let parts: Vec<Complex64> = on_ranks(4, |transport| {
         DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED))
-            .local_expectation_product(&ProductBasis::uniform(state))
+            .local()
+            .expectation_product(&ProductBasis::uniform(state))
     });
 
     let got: Complex64 = parts.iter().sum();
@@ -586,7 +587,7 @@ fn collapse_sample_distributed_picks_by_weight() {
                 };
                 let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
                 split.propagate(&circuit, &policy, Direction::Forward);
-                assert!(split.len_local() <= 1);
+                assert!(split.local().len() <= 1);
                 split.gather()
             });
             let got = gathered.into_iter().next().unwrap().unwrap();

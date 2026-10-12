@@ -914,7 +914,9 @@ fn run_host_cases(r: &mut Runner) {
             DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, SEED));
         split.propagate(&circuit, &KeepAll, Direction::Forward);
 
-        let mine = split.local_expectation_product(&ProductBasis::uniform(PauliAxis::Z));
+        let mine = split
+            .local()
+            .expectation_product(&ProductBasis::uniform(PauliAxis::Z));
         // The scalar goes through the communicator directly — the pattern a
         // caller uses for its own observables.
         let send = [mine.re, mine.im];
@@ -932,9 +934,9 @@ fn run_host_cases(r: &mut Runner) {
         );
 
         // And the collective term count agrees with the oracle's, on every
-        // rank — `len` is the whole sum's, `len_local` this rank's share.
+        // rank — `len` is the whole sum's, `local().len()` this rank's share.
         assert_eq!(split.len(), oracle.len(), "rank {}: collective len", r.rank);
-        assert!(split.len_local() <= split.len());
+        assert!(split.local().len() <= split.len());
     });
 }
 

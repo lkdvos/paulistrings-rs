@@ -2102,7 +2102,7 @@ where
     let _ = split.take_stats();
     split.transport().barrier();
 
-    let steady_n = split.len_local();
+    let steady_n = split.local().len();
     let started = Instant::now();
     split.propagate_with(&circuit, policy, Direction::Forward, options);
     let wall_ns = started.elapsed().as_nanos() as u64;
@@ -2250,13 +2250,14 @@ fn run_cell_mpi_gpu<const W: usize>(
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     split.transport().barrier();
-    let n = split.len_local();
     let started = Instant::now();
     split
         .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
+    // The share stays on the device; the trace's first row holds the timed call's input count.
+    let n = trace.layers.first().map_or(0, |layer| layer.terms_in[0]);
     let per_partition = split.take_stats();
     let started = Instant::now();
     std::hint::black_box(split.gather().unwrap_or_else(|e| fail("gather", e)));

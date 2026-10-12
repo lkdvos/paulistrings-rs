@@ -17,7 +17,6 @@ use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
-use crate::readout::product_state::ProductBasis;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 #[cfg(feature = "phase-timing")]
@@ -285,11 +284,6 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
 }
 
 impl<const W: usize, X: Transport, B: PartitionStorage<W>> DistributedSum<W, X, B> {
-    /// Terms this rank holds.
-    pub fn len_local(&self) -> usize {
-        self.local.len()
-    }
-
     /// Terms in the whole sum. **Collective.**
     pub fn len(&self) -> usize {
         let mut total = [self.local.len() as u64];
@@ -430,11 +424,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// This rank's share, a valid [`PauliSum`] under the group's shared hash.
     pub fn local(&self) -> &PauliSum<W> {
         &self.local.sum
-    }
-
-    /// This rank's contribution to `⟨ψ|O|ψ⟩` in the product state `basis`; not collective, so sum the ranks' answers.
-    pub fn local_expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
-        self.local.sum.expectation_product(basis)
     }
 
     /// Drain this rank's phase counters since the last drain, zeroing them; `per_partition` has one entry.

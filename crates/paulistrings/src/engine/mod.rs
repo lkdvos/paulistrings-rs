@@ -86,14 +86,14 @@ impl Default for PropagateOptions {
     }
 }
 
-/// Propagate `initial` through `circuit` under `policy`.
+/// Propagate `sum` through `circuit` under `policy`.
 ///
 /// Under [`Direction::Heisenberg`] the channels run in reverse through [`Channel::apply_adjoint`](crate::Channel::apply_adjoint).
 /// The sum stays bucketed throughout, so stepping one sum through repeated calls costs only the layers.
 ///
 /// # Panics
 ///
-/// If a channel's preparation declines, as for a custom channel with support above two qubits; no built-in channel does.
+/// If a channel's support exceeds `MAX_LOCAL_SUPPORT` (two qubits), which no built-in channel does; [`PauliRotation`](crate::PauliRotation) is exempt at any support.
 ///
 /// # Progress logging
 ///

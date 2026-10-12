@@ -51,7 +51,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             let payload = PartnerPayload::<1> {
                 blocks: vec![block],
             };
-            let recv = vec![None, Some(payload)];
+            let received = vec![None, Some(payload)];
             let mut plan_deltas = deltas.clone();
             plan_deltas.sort_unstable();
             let plan = PartitionPlan {
@@ -66,7 +66,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             };
 
             let spy = WaitSpy(std::sync::Mutex::new(Vec::new()));
-            let rows = RecvRows::new(&plan, &recv, &order, &map, &spy);
+            let rows = ReceivedRows::new(&plan, &received, &order, &map, &spy);
             for beta in 0..n {
                 let p = order.position_of(beta);
                 assert_eq!(rows.count(beta), 1, "one row per bucket");

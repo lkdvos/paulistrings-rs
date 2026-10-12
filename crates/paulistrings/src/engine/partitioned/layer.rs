@@ -31,7 +31,7 @@ fn exchange_chunks() -> usize {
 }
 
 /// The rows this partition received, one block per remote delta, as an [`ExtraRows`] source for the coset loop.
-struct RecvRows<'a, const W: usize> {
+struct ReceivedRows<'a, const W: usize> {
     blocks: Vec<Option<&'a ExchangeBlock<W>>>,
     order: &'a CosetOrder,
     map: &'a ChunkMap,
@@ -44,38 +44,38 @@ struct RecvRows<'a, const W: usize> {
     chunk_wait_ns: std::sync::atomic::AtomicU64,
 }
 
-impl<'a, const W: usize> RecvRows<'a, W> {
-    /// Pair each remote delta with its block: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`, since remoteness is symmetric.
+impl<'a, const W: usize> ReceivedRows<'a, W> {
+    /// Pair each remote delta with its block: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `received[q]`, since remoteness is symmetric.
     fn new(
         plan: &PartitionPlan,
-        recv: &'a [Option<PartnerPayload<W>>],
+        received: &'a [Option<PartnerPayload<W>>],
         order: &'a CosetOrder,
         map: &'a ChunkMap,
         wait: &'a dyn ChunkWait,
     ) -> Self {
         let mut blocks = Vec::with_capacity(plan.remote.len());
-        for r in &plan.remote {
-            let j = plan
-                .remote_for_partner(r.partner)
-                .position(|other| other.entry == r.entry)
+        for remote in &plan.remote {
+            let block_index = plan
+                .remote_for_partner(remote.partner)
+                .position(|other| other.entry == remote.entry)
                 .expect("a remote delta is in its own partner's list");
-            let block = recv[r.partner as usize]
+            let block = received[remote.partner as usize]
                 .as_ref()
-                .and_then(|payload| payload.blocks.get(j));
+                .and_then(|payload| payload.blocks.get(block_index));
             debug_assert!(
                 block.is_some(),
                 "partition {} sent no block for remote delta {} (entry {}) — the partitions \
                  disagree about the layer's delta set",
-                r.partner,
-                j,
-                r.entry,
+                remote.partner,
+                block_index,
+                remote.entry,
             );
             debug_assert!(
-                block.is_none_or(|b| b.header.entry == r.entry as u32),
+                block.is_none_or(|block| block.header.entry == remote.entry as u32),
                 "partition {} sent entry {:?} where entry {} was expected",
-                r.partner,
-                block.map(|b| b.header.entry),
-                r.entry,
+                remote.partner,
+                block.map(|block| block.header.entry),
+                remote.entry,
             );
             blocks.push(block);
         }
@@ -92,33 +92,33 @@ impl<'a, const W: usize> RecvRows<'a, W> {
     }
 }
 
-impl<const W: usize> ExtraRows<W> for RecvRows<'_, W> {
+impl<const W: usize> ExtraRows<W> for ReceivedRows<'_, W> {
     const NEEDS_BETA: bool = true;
 
     fn count(&self, beta: u32) -> usize {
-        let p = self.order.position_of(beta);
-        let mut n = 0usize;
+        let position = self.order.position_of(beta);
+        let mut rows = 0usize;
         for block in self.blocks.iter().flatten() {
-            n += block.segment(p).2.len();
+            rows += block.segment(position).2.len();
         }
-        n
+        rows
     }
 
     fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
         timed!(let start = std::time::Instant::now());
-        let p = self.order.position_of(beta);
+        let position = self.order.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
-        self.wait.wait_chunk(self.map.chunk_of_position(p));
+        self.wait.wait_chunk(self.map.chunk_of_position(position));
         timed!(self.chunk_wait_ns.fetch_add(
             start.elapsed().as_nanos() as u64,
             std::sync::atomic::Ordering::Relaxed,
         ));
         for block in &self.blocks {
             let Some(block) = block else { continue };
-            let (sx, sz, sc) = block.segment(p);
-            rest.x.extend_from_slice(sx);
-            rest.z.extend_from_slice(sz);
-            rest.coeff.extend_from_slice(sc);
+            let (segment_x, segment_z, segment_coeff) = block.segment(position);
+            rest.x.extend_from_slice(segment_x);
+            rest.z.extend_from_slice(segment_z);
+            rest.coeff.extend_from_slice(segment_coeff);
         }
         timed!(self.append_ns.fetch_add(
             start.elapsed().as_nanos() as u64,
@@ -196,11 +196,11 @@ where
     #[cfg(debug_assertions)]
     {
         super::export::debug_assert_exported_partitions(&send, rows);
-        for r in &plan.remote {
+        for remote in &plan.remote {
             debug_assert!(
-                send[r.partner as usize].is_some(),
+                send[remote.partner as usize].is_some(),
                 "no payload for partner {}, which the plan names",
-                r.partner,
+                remote.partner,
             );
         }
     }
@@ -237,11 +237,15 @@ where
     timed!(let exchange_start = std::time::Instant::now());
 
     // The rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
-    let (recv, rows_received) =
-        transport.exchange_layer(send, &mut export_scratch.pool, map, |recv, wait| {
+    let (received, rows_received) =
+        transport.exchange_layer(send, &mut export_scratch.pool, map, |received, wait| {
             timed!(let body_start = std::time::Instant::now());
             #[cfg(debug_assertions)]
-            for block in recv.iter().flatten().flat_map(|payload| &payload.blocks) {
+            for block in received
+                .iter()
+                .flatten()
+                .flat_map(|payload| &payload.blocks)
+            {
                 debug_assert_eq!(
                     block.num_buckets() as usize,
                     local.num_buckets(),
@@ -251,27 +255,27 @@ where
                     local.num_buckets(),
                 );
             }
-            let rows_received: u64 = recv
+            let rows_received: u64 = received
                 .iter()
                 .flatten()
                 .flat_map(|payload| &payload.blocks)
                 .map(|block| block.rows() as u64)
                 .sum();
-            let recv_rows = RecvRows::new(plan, recv, &order, map, wait);
+            let received_rows = ReceivedRows::new(plan, received, &order, map, wait);
             apply_layer_bucketed_with(
                 local,
                 local_prepared,
                 policy,
                 layer_scratch,
-                &recv_rows,
+                &received_rows,
                 knobs,
             );
             timed! {
                 layer_scratch.stats.recv_rows += rows_received;
-                layer_scratch.stats.append_ns += recv_rows
+                layer_scratch.stats.append_ns += received_rows
                     .append_ns
                     .load(std::sync::atomic::Ordering::Relaxed);
-                layer_scratch.stats.chunk_wait_ns += recv_rows
+                layer_scratch.stats.chunk_wait_ns += received_rows
                     .chunk_wait_ns
                     .load(std::sync::atomic::Ordering::Relaxed);
                 body_ns.set(body_start.elapsed().as_nanos() as u64);
@@ -284,7 +288,7 @@ where
             exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
         stamp.rearm();
     }
-    export_scratch.pool.extend(recv.into_iter().flatten());
+    export_scratch.pool.extend(received.into_iter().flatten());
     layer_scratch.order = order;
 
     counts.remote_deltas = plan.remote.len();

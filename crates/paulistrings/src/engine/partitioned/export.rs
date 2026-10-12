@@ -19,11 +19,11 @@ const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 /// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
 #[derive(Debug, Default)]
 pub(crate) struct ExportScratch<const W: usize> {
-    /// Pass-1 counts, bucket-major: `counts[β * K + k]`.
+    /// Pass-1 counts, bucket-major: `counts[β * num_remote + i]`.
     counts: Vec<u32>,
     /// One block's counts by destination position.
     block_counts: Vec<u32>,
-    /// `source_of[p] = order.bucket_at(p) ^ bd`.
+    /// `source_of[position] = order.bucket_at(position) ^ bucket_delta`.
     source_of: Vec<u32>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W>>,
@@ -44,11 +44,11 @@ impl<const W: usize> RowEmitter<'_, W> {
         &self,
         x: &[u64; W],
         z: &[u64; W],
-        c: Complex64,
+        coeff: Complex64,
     ) -> Option<([u64; W], [u64; W], Complex64)> {
         match self {
-            RowEmitter::Tabulated { ptm, entry } => entry.emit(ptm.support_bits(x, z), x, z, c),
-            RowEmitter::Generator { rotation } => rotation.emit_generator(x, z, c),
+            RowEmitter::Tabulated { ptm, entry } => entry.emit(ptm.support_bits(x, z), x, z, coeff),
+            RowEmitter::Generator { rotation } => rotation.emit_generator(x, z, coeff),
         }
     }
 }
@@ -64,25 +64,25 @@ pub(crate) fn export_layer<const W: usize>(
     order: &CosetOrder,
     scratch: &mut ExportScratch<W>,
 ) -> (Vec<Option<PartnerPayload<W>>>, LayerExchangeCounts) {
-    let k = plan.remote.len();
+    let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
     let mut send: Vec<Option<PartnerPayload<W>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
-    if k == 0 {
+    if num_remote == 0 {
         return (send, counts);
     }
 
     let emitters: Vec<RowEmitter<'_, W>> = plan
         .remote
         .iter()
-        .map(|r| match prepared {
+        .map(|remote| match prepared {
             Prepared::Local(ptm) => RowEmitter::Tabulated {
                 ptm,
-                entry: &ptm.deltas()[r.entry],
+                entry: &ptm.deltas()[remote.entry],
             },
             Prepared::Rotation(rotation) => {
                 debug_assert_eq!(
-                    r.entry, 1,
+                    remote.entry, 1,
                     "a rotation's only remote entry is the generator pass",
                 );
                 RowEmitter::Generator { rotation }
@@ -93,20 +93,20 @@ pub(crate) fn export_layer<const W: usize>(
     let dense: Vec<bool> = plan
         .remote
         .iter()
-        .map(|r| match prepared {
-            Prepared::Local(ptm) => ptm.entry_is_dense(r.entry),
+        .map(|remote| match prepared {
+            Prepared::Local(ptm) => ptm.entry_is_dense(remote.entry),
             Prepared::Rotation(_) => false,
         })
         .collect();
 
-    // Pass 1: bucket-major counts, `counts[β * k + i]`, so each bucket owns one disjoint chunk.
+    // Pass 1: bucket-major counts, `counts[β * num_remote + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
-    scratch.counts.resize(num_buckets * k, 0);
+    scratch.counts.resize(num_buckets * num_remote, 0);
     scratch
         .counts
-        .par_chunks_mut(k)
+        .par_chunks_mut(num_remote)
         .enumerate()
-        .for_each(|(b, slot)| count_bucket(local, prepared, plan, &dense, b, slot));
+        .for_each(|(bucket, slot)| count_bucket(local, prepared, plan, &dense, bucket, slot));
 
     // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
@@ -119,23 +119,23 @@ pub(crate) fn export_layer<const W: usize>(
     scratch.source_of.clear();
     scratch.source_of.resize(num_buckets, 0);
     let mut blocks_used = vec![0usize; size as usize];
-    for (i, r) in plan.remote.iter().enumerate() {
-        for p in 0..num_buckets {
-            let source = order.bucket_at(p as u32) ^ r.bucket_delta;
-            scratch.source_of[p] = source;
-            scratch.block_counts[p] = scratch.counts[source as usize * k + i];
+    for (i, remote) in plan.remote.iter().enumerate() {
+        for position in 0..num_buckets {
+            let source = order.bucket_at(position as u32) ^ remote.bucket_delta;
+            scratch.source_of[position] = source;
+            scratch.block_counts[position] = scratch.counts[source as usize * num_remote + i];
         }
-        let q = r.partner as usize;
-        let payload = send[q].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
-        let j = blocks_used[q];
-        blocks_used[q] += 1;
-        if payload.blocks.len() <= j {
+        let partner = remote.partner as usize;
+        let payload = send[partner].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
+        let block_index = blocks_used[partner];
+        blocks_used[partner] += 1;
+        if payload.blocks.len() <= block_index {
             payload
                 .blocks
-                .resize_with(j + 1, ExchangeBlock::<W>::default);
+                .resize_with(block_index + 1, ExchangeBlock::<W>::default);
         }
-        let block = &mut payload.blocks[j];
-        block.set_counts(r.entry as u32, &scratch.block_counts);
+        let block = &mut payload.blocks[block_index];
+        block.set_counts(remote.entry as u32, &scratch.block_counts);
         let rows = block.rows();
         {
             let ExchangeBlock {
@@ -160,13 +160,13 @@ pub(crate) fn export_layer<const W: usize>(
                 columns,
             );
         }
-        counts.rows_sent[q] += rows as u64;
-        counts.bytes_sent[q] += block.bytes() as u64;
+        counts.rows_sent[partner] += rows as u64;
+        counts.bytes_sent[partner] += block.bytes() as u64;
     }
     // A pooled payload may carry more blocks than this layer fills; the extras must not travel.
-    for (q, payload) in send.iter_mut().enumerate() {
+    for (partner, payload) in send.iter_mut().enumerate() {
         if let Some(payload) = payload {
-            payload.blocks.truncate(blocks_used[q]);
+            payload.blocks.truncate(blocks_used[partner]);
         }
     }
 
@@ -179,30 +179,30 @@ fn count_bucket<const W: usize>(
     prepared: &Prepared<W>,
     plan: &PartitionPlan,
     dense: &[bool],
-    b: usize,
+    bucket: usize,
     out: &mut [u32],
 ) {
-    let (bx, bz, bc) = local.bucket(b);
-    let n = bc.len();
+    let (bucket_x, bucket_z, bucket_coeff) = local.bucket(bucket);
+    let len = bucket_coeff.len();
     match prepared {
         Prepared::Local(ptm) => {
             let mut all_dense = true;
-            for (k, &d) in dense.iter().enumerate() {
-                if d {
-                    out[k] = n as u32;
+            for (i, &is_dense) in dense.iter().enumerate() {
+                if is_dense {
+                    out[i] = len as u32;
                 } else {
-                    out[k] = 0;
+                    out[i] = 0;
                     all_dense = false;
                 }
             }
             if all_dense {
                 return;
             }
-            for t in 0..n {
-                let s = ptm.support_bits(&bx[t], &bz[t]);
-                for (k, r) in plan.remote.iter().enumerate() {
-                    if !dense[k] && ptm.deltas()[r.entry].amplitude[s] != ZERO {
-                        out[k] += 1;
+            for term in 0..len {
+                let support = ptm.support_bits(&bucket_x[term], &bucket_z[term]);
+                for (i, remote) in plan.remote.iter().enumerate() {
+                    if !dense[i] && ptm.deltas()[remote.entry].amplitude[support] != ZERO {
+                        out[i] += 1;
                     }
                 }
             }
@@ -210,9 +210,12 @@ fn count_bucket<const W: usize>(
         Prepared::Rotation(rotation) => {
             debug_assert_eq!(out.len(), 1, "a rotation has at most one remote delta");
             let mut anticommuting = 0u32;
-            for t in 0..n {
-                let v = PauliString::<W> { x: bx[t], z: bz[t] };
-                if !v.commutes_with(&rotation.generator) {
+            for term in 0..len {
+                let string = PauliString::<W> {
+                    x: bucket_x[term],
+                    z: bucket_z[term],
+                };
+                if !string.commutes_with(&rotation.generator) {
                     anticommuting += 1;
                 }
             }
@@ -221,43 +224,45 @@ fn count_bucket<const W: usize>(
     }
 }
 
-/// Fill destination positions `lo..hi` of one block; the halves of a split are disjoint, so the contents are independent of the thread count.
+/// Fill destination positions `start..end` of one block; the halves of a split are disjoint, so the contents are independent of the thread count.
 fn fill_range<const W: usize>(
     local: &PauliSum<W>,
     emitter: &RowEmitter<'_, W>,
     offsets: &[u32],
     source_of: &[u32],
-    lo: usize,
-    hi: usize,
+    start: usize,
+    end: usize,
     columns: ColumnsMut<'_, W>,
 ) {
-    debug_assert_eq!(columns.len(), (offsets[hi] - offsets[lo]) as usize);
-    if hi - lo > 1 && columns.len() > FILL_PARALLEL_MIN_ROWS {
-        let mid = lo + (hi - lo) / 2;
-        let (head, tail) = columns.split_at((offsets[mid] - offsets[lo]) as usize);
+    debug_assert_eq!(columns.len(), (offsets[end] - offsets[start]) as usize);
+    if end - start > 1 && columns.len() > FILL_PARALLEL_MIN_ROWS {
+        let middle = start + (end - start) / 2;
+        let (head, tail) = columns.split_at((offsets[middle] - offsets[start]) as usize);
         rayon::join(
-            || fill_range(local, emitter, offsets, source_of, lo, mid, head),
-            || fill_range(local, emitter, offsets, source_of, mid, hi, tail),
+            || fill_range(local, emitter, offsets, source_of, start, middle, head),
+            || fill_range(local, emitter, offsets, source_of, middle, end, tail),
         );
         return;
     }
     let ColumnsMut { x, z, coeff } = columns;
-    let mut w = 0usize;
-    for &source in &source_of[lo..hi] {
-        let (bx, bz, bc) = local.bucket(source as usize);
-        for t in 0..bc.len() {
-            if let Some((kx, kz, kc)) = emitter.emit(&bx[t], &bz[t], bc[t]) {
-                x[w] = kx;
-                z[w] = kz;
-                coeff[w] = kc;
-                w += 1;
+    let mut written = 0usize;
+    for &source in &source_of[start..end] {
+        let (bucket_x, bucket_z, bucket_coeff) = local.bucket(source as usize);
+        for term in 0..bucket_coeff.len() {
+            if let Some((out_x, out_z, out_coeff)) =
+                emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term])
+            {
+                x[written] = out_x;
+                z[written] = out_z;
+                coeff[written] = out_coeff;
+                written += 1;
             }
         }
     }
     debug_assert_eq!(
-        w,
+        written,
         x.len(),
-        "export: pass 2 filled {w} rows where pass 1 counted {}",
+        "export: pass 2 filled {written} rows where pass 1 counted {}",
         x.len(),
     );
 }
@@ -268,15 +273,15 @@ pub(super) fn debug_assert_exported_partitions<const W: usize>(
     send: &[Option<PartnerPayload<W>>],
     rows: &crate::pauli_sum::hash::PartitionRows<W>,
 ) {
-    for (q, payload) in send.iter().enumerate() {
+    for (partner, payload) in send.iter().enumerate() {
         let Some(payload) = payload else { continue };
         for block in &payload.blocks {
             for i in 0..block.rows() {
-                let part = rows.partition_of(&block.x[i], &block.z[i]);
+                let owner = rows.partition_of(&block.x[i], &block.z[i]);
                 debug_assert_eq!(
-                    part, q as u32,
-                    "export: row {i} of the block for entry {} is addressed to partition {q} but \
-                     belongs to partition {part}",
+                    owner, partner as u32,
+                    "export: row {i} of the block for entry {} is addressed to partition {partner} \
+                     but belongs to partition {owner}",
                     block.header.entry,
                 );
             }

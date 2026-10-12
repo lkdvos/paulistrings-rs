@@ -231,7 +231,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     Ok(counts)
 }
 
-/// Remote delta `k`'s `(partner, index)` among the partner's received blocks, in plan order: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `recv[q]`, as `RecvRows::new`.
+/// Remote delta `k`'s `(partner, index)` among the partner's received blocks, in plan order: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `received[q]`, as `ReceivedRows::new`.
 fn paired_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
     plan.remote
         .iter()

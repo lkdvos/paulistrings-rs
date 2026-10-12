@@ -7,7 +7,14 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, truncation
 
-from ._runs_agree import _terms, assert_runs_agree, discarded_norm, spread
+from ._runs_agree import (
+    _terms,
+    assert_runs_agree,
+    assert_runs_agree_count_only,
+    discarded_norm,
+    heavy_cut,
+    spread,
+)
 
 # Ten distinct magnitudes from 8 down, ten tied at 0.6, ten from 0.1 down.
 MAGNITUDES = [8.0 - 0.5 * k for k in range(10)] + [0.6] * 10 + [0.1 - 0.005 * k for k in range(10)]
@@ -96,3 +103,37 @@ def test_different_tie_choices_over_many_layers_pass(direction):
     got = s.propagate(c, policy, direction=direction, target_bucket_len=16, min_buckets=256)
     assert set(_terms(got)) != set(_terms(want)), "the bucket counts should choose different ties"
     assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), 1e-12)
+
+
+def _heavy_runs(policy):
+    """``heavy_cut`` at two bucket counts, and the reference's ``Δ``."""
+    c, s = heavy_cut(12)
+    want = s.propagate(c, policy)
+    got = s.propagate(c, policy, target_bucket_len=16, min_buckets=256)
+    return got, want, discarded_norm(s, c, policy)
+
+
+@pytest.mark.parametrize("policy", [truncation.topn(400), truncation.approx_topn(400)], ids=["topn", "approx_topn"])
+def test_a_heavy_cut_compares_counts_only(policy):
+    got, want, discarded = _heavy_runs(policy)
+    assert_runs_agree_count_only(got, want, policy, discarded)
+    with pytest.raises(AssertionError, match="too heavy"):
+        assert_runs_agree(got, want, policy, discarded, 1e-12)
+
+
+def test_a_light_cut_is_refused_by_the_count_only_check():
+    got = _kept(list(range(10)) + list(range(15, 20)))
+    with pytest.raises(AssertionError, match="light enough"):
+        assert_runs_agree_count_only(got, _kept(WANT), TOP, DISCARDED)
+
+
+def test_a_count_below_n_fails():
+    got, want, discarded = _heavy_runs(truncation.topn(400))
+    with pytest.raises(AssertionError, match="the last layer must cut"):
+        assert_runs_agree_count_only(got, want, truncation.topn(401), discarded)
+
+
+def test_a_count_only_check_needs_a_bare_cut():
+    got, want, discarded = _heavy_runs(truncation.topn(400))
+    with pytest.raises(AssertionError, match="bare topn or approx_topn"):
+        assert_runs_agree_count_only(got, want, APPROX, discarded)

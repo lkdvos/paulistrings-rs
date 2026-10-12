@@ -38,7 +38,14 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, numa_nodes, truncation
 
-from ._runs_agree import assert_runs_agree, discarded_norm, single_cuts, spread
+from ._runs_agree import (
+    assert_runs_agree,
+    assert_runs_agree_count_only,
+    discarded_norm,
+    heavy_cut,
+    single_cuts,
+    spread,
+)
 
 
 pytestmark = pytest.mark.skipif(
@@ -231,6 +238,16 @@ def test_two_partitions_match_unpartitioned_after_a_single_cut(num_qubits, direc
         want = s.propagate(c, policy, direction=direction)
         got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
         assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL, name)
+
+
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_two_partitions_keep_the_count_through_heavy_cuts(direction):
+    """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the partitions keep the unpartitioned count."""
+    c, s = heavy_cut(12)
+    policy = truncation.approx_topn(400)
+    want = s.propagate(c, policy, direction=direction)
+    got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
+    assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
 
 
 def test_pin_memory_false_matches():

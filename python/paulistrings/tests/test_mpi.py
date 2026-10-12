@@ -38,7 +38,14 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
-from ._runs_agree import assert_runs_agree, discarded_norm, single_cuts, spread
+from ._runs_agree import (
+    assert_runs_agree,
+    assert_runs_agree_count_only,
+    discarded_norm,
+    heavy_cut,
+    single_cuts,
+    spread,
+)
 
 pytest.importorskip("mpi4py")
 
@@ -274,6 +281,19 @@ def test_gather_agrees_after_a_single_cut():
             assert_runs_agree(got, want, policy, discarded_norm(s, c, policy), TOL, name)
         else:
             assert len(got) == 0
+
+
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_gather_keeps_the_serial_count_through_heavy_cuts(direction):
+    """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the group keeps the serial count."""
+    c, s = heavy_cut(12)
+    policy = truncation.approx_topn(400)
+    want = s.propagate(c, policy, direction=direction)
+    got = s.propagate(c, policy, direction=direction, comm=COMM)
+    if RANK == 0:
+        assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
+    else:
+        assert len(got) == 0
 
 
 def test_gather_respects_the_direction(observable, circuit, reference):

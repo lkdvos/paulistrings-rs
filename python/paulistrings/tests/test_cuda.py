@@ -9,7 +9,14 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
-from ._runs_agree import assert_runs_agree, discarded_norm, single_cuts, spread
+from ._runs_agree import (
+    assert_runs_agree,
+    assert_runs_agree_count_only,
+    discarded_norm,
+    heavy_cut,
+    single_cuts,
+    spread,
+)
 
 needs_cuda = pytest.mark.skipif(
     not paulistrings.cuda_available(),
@@ -377,6 +384,17 @@ def test_auto_on_several_devices_takes_a_power_of_two():
     assert stats.partition.partitions == k
 
 
+@needs_cuda
+@pytest.mark.parametrize("policy", [truncation.topn, truncation.approx_topn], ids=["topn", "approx_topn"])
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_device_keeps_the_host_count_through_heavy_cuts(policy, direction):
+    """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the device keeps the host's count."""
+    c, s = heavy_cut(12)
+    want = s.propagate(c, policy(400), direction=direction)
+    got = s.propagate(c, policy(400), direction=direction, device=0)
+    assert_runs_agree_count_only(got, want, policy(400), discarded_norm(s, c, policy(400), direction))
+
+
 # --------------------------------------------------------------------------
 # Several device partitions: one per list entry, repeats sharing a device
 
@@ -430,6 +448,18 @@ def test_device_list_matches_host_on_a_truncated_trotter_circuit(devices, direct
     got = s.propagate(c, policy, direction=direction, device=devices)
     assert len(want) < len(looser), "approx_topn must actually truncate"
     assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL)
+
+
+@needs_cuda
+@pytest.mark.parametrize("devices", MULTI, ids=["2", "4"])
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_device_list_keeps_the_host_count_through_heavy_cuts(devices, direction):
+    """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the device partitions keep the host's count."""
+    c, s = heavy_cut(12)
+    policy = truncation.approx_topn(400)
+    want = s.propagate(c, policy, direction=direction)
+    got = s.propagate(c, policy, direction=direction, device=devices)
+    assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
 
 
 @needs_cuda

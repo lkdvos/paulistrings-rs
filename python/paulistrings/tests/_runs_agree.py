@@ -59,6 +59,13 @@ def assert_runs_agree(got, want, policy, discarded, tol, what=""):
     if not _has_layer_pass(policy) or discarded == 0.0 or not b:
         _assert_terms_close(a, b, tol, what)
         return
+    distance, bound, sees_a_sign_flip = _overlap(a, b, discarded, tol)
+    assert sees_a_sign_flip, f"{what}: Δ = {discarded:e} of ‖want‖ = {_norm(b):e} is too heavy a cut to compare"
+    assert distance <= bound, f"{what}: 1 − cos = {distance:e} exceeds 2Δ²/(‖got‖‖want‖) = {bound:e}"
+
+
+def _overlap(a, b, discarded, tol):
+    """``1 − cos`` between the runs, its bound from ``Δ``, and whether that bound could see a sign flip on the reference's largest term."""
     got_norm, want_norm = _norm(a), _norm(b)
     distance = sum(
         abs(a.get(k, 0.0) / got_norm - b.get(k, 0.0) / want_norm) ** 2 for k in a.keys() | b.keys()
@@ -66,8 +73,18 @@ def assert_runs_agree(got, want, policy, discarded, tol, what=""):
     slack = discarded + math.sqrt(len(b)) * tol
     bound = 2 * slack * slack / (got_norm * want_norm)
     teeth = 2 * max(abs(c) ** 2 for c in b.values()) / want_norm**2
-    assert bound < teeth, f"{what}: Δ = {discarded:e} of ‖want‖ = {want_norm:e} is too heavy a cut to compare"
-    assert distance <= bound, f"{what}: 1 − cos = {distance:e} exceeds 2Δ²/(‖got‖‖want‖) = {bound:e}"
+    return distance, bound, bound < teeth
+
+
+def assert_runs_agree_count_only(got, want, policy, discarded, what=""):
+    """Two runs of ``policy``, a bare ``topn(n)`` or ``approx_topn(n)``, through a cut too heavy for ``assert_runs_agree``, as ``test_support::assert_runs_agree_count_only`` compares them: both keep exactly ``n`` terms, all finite; a cut light enough for ``assert_runs_agree`` fails."""
+    match = re.fullmatch(r"Truncation\((?:Approx)?TopN\((\d+)\)\)", repr(policy))
+    assert match, f"{what}: a count-only comparison needs a bare topn or approx_topn, got {policy!r}"
+    assert len(got) == len(want), f"{what}: term count"
+    assert len(want) == int(match[1]), f"{what}: the last layer must cut"
+    a, b = _terms(got), _terms(want)
+    assert all(np.isfinite(c) for c in [*a.values(), *b.values()]), f"{what}: a non-finite coefficient"
+    assert not _overlap(a, b, discarded, 0.0)[2], f"{what}: Δ = {discarded:e} is light enough for assert_runs_agree"
 
 
 def spread(coeffs, rng, octaves=40):
@@ -110,3 +127,16 @@ def single_cuts(num_qubits, seed=20261011):
         ("dense cut", dense, dense_sum, 2_000),
         ("tied cut", hadamard, tied_sum, 1_300),
     ]
+
+
+def heavy_cut(num_qubits, terms=800, seed=20261012):
+    """``(circuit, sum)``: a TFIM Trotter step at angle 0.8 over four tied magnitudes; under a ``topn``/``approx_topn`` well below ``terms`` every layer cuts through a tie group or an octave, too heavily for ``assert_runs_agree``."""
+    rng = np.random.default_rng(seed + num_qubits)
+    x, z = _random_keys(num_qubits, terms, rng)
+    magnitudes = np.array([1.0, 0.5, 0.25, 0.125])[np.arange(terms) % 4]
+    circuit = Circuit(num_qubits)
+    for q in range(num_qubits):
+        circuit.pauli_rotation("ZZ", [q, (q + 1) % num_qubits], 0.8)
+    for q in range(num_qubits):
+        circuit.rx(0.8, q)
+    return circuit, PauliSum.from_arrays(x, z, magnitudes, num_qubits=num_qubits)

@@ -45,16 +45,18 @@ pub(super) fn nonzero(value: Complex64) -> bool {
 impl<const W: usize> GatherRun<W> {
     pub(super) fn reset(
         &mut self,
-        id_key_capacity: usize,
-        id_coeff_capacity: usize,
+        identity_key_capacity: usize,
+        identity_coefficient_capacity: usize,
         rest_capacity: usize,
     ) {
         self.identity.clear();
         self.rest.clear();
         // One slot past the exact capacity: `append_if` writes a discarded row at `len` before deciding not to publish it.
-        self.identity.x.reserve(id_key_capacity + 1);
-        self.identity.z.reserve(id_key_capacity + 1);
-        self.identity.coeff.reserve(id_coeff_capacity + 1);
+        self.identity.x.reserve(identity_key_capacity + 1);
+        self.identity.z.reserve(identity_key_capacity + 1);
+        self.identity
+            .coeff
+            .reserve(identity_coefficient_capacity + 1);
         self.rest.x.reserve(rest_capacity + 1);
         self.rest.z.reserve(rest_capacity + 1);
         self.rest.coeff.reserve(rest_capacity + 1);
@@ -98,23 +100,18 @@ impl<const W: usize> GatherRun<W> {
         unsafe { Self::append_if(&mut self.rest, keep, x, z, c) }
     }
 
-    /// Unconditional append to the rest stream.
-    pub(super) fn push_row(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
-        self.push_if(true, x, z, c);
-    }
-
     /// Branchless filtered append to the identity stream.
-    pub(super) fn push_id_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
-        // SAFETY: as `push_if`, with `id_key_capacity` / `id_coeff_capacity` bounding the identity stream's rows.
+    pub(super) fn push_identity_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+        // SAFETY: as `push_if`, with `identity_key_capacity` / `identity_coefficient_capacity` bounding the identity stream's rows.
         unsafe { Self::append_if(&mut self.identity, keep, x, z, c) }
     }
 
     /// Unchecked append to the identity coefficient column, the only one a dense identity materializes.
-    pub(super) fn push_id_coeff(&mut self, c: Complex64) {
+    pub(super) fn push_identity_coefficient(&mut self, c: Complex64) {
         let coeff = &mut self.identity.coeff;
         let len = coeff.len();
         debug_assert!(len < coeff.capacity());
-        // SAFETY: `reset` reserved `id_coeff_capacity + 1`, and `id_coeff_capacity` is the source bucket's length, exactly the number of calls made.
+        // SAFETY: `reset` reserved `identity_coefficient_capacity + 1`, and `identity_coefficient_capacity` is the source bucket's length, exactly the number of calls made.
         unsafe {
             coeff.as_mut_ptr().add(len).write(c);
             coeff.set_len(len + 1);
@@ -166,45 +163,48 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
 
     // Exact per-run capacity per stream; it is also the bound `append_if`'s safety relies on.
     for (j, run) in runs.iter_mut().enumerate() {
-        let (id_key_capacity, id_coeff_capacity, mut rest_capacity): (usize, usize, usize) =
-            match plan {
-                DeltaPlan::Local {
-                    coordinates,
-                    has_identity,
-                    dense_identity,
-                    ..
-                } => {
-                    let mut id = 0usize;
-                    let mut rest = 0usize;
-                    for (entry, &coordinate) in coordinates.iter().enumerate() {
-                        let len = old[j ^ coordinate as usize].len();
-                        if *has_identity && entry == 0 {
-                            id += len;
-                        } else {
-                            rest += len;
-                        }
-                    }
-                    (if *dense_identity { 0 } else { id }, id, rest)
-                }
-                DeltaPlan::Rotation {
-                    coordinate_identity,
-                    generator_coordinate,
-                    generator_local,
-                    ..
-                } => (
-                    0,
-                    old[j ^ *coordinate_identity as usize].len(),
-                    if *generator_local {
-                        old[j ^ *generator_coordinate as usize].len()
+        let (identity_key_capacity, identity_coefficient_capacity, mut rest_capacity) = match plan {
+            DeltaPlan::Local {
+                coordinates,
+                has_identity,
+                dense_identity,
+                ..
+            } => {
+                let mut identity = 0usize;
+                let mut rest = 0usize;
+                for (entry, &coordinate) in coordinates.iter().enumerate() {
+                    let len = old[j ^ coordinate as usize].len();
+                    if *has_identity && entry == 0 {
+                        identity += len;
                     } else {
-                        0
-                    },
-                ),
-            };
+                        rest += len;
+                    }
+                }
+                (if *dense_identity { 0 } else { identity }, identity, rest)
+            }
+            DeltaPlan::Rotation {
+                coordinate_identity,
+                generator_coordinate,
+                generator_local,
+                ..
+            } => (
+                0,
+                old[j ^ *coordinate_identity as usize].len(),
+                if *generator_local {
+                    old[j ^ *generator_coordinate as usize].len()
+                } else {
+                    0
+                },
+            ),
+        };
         if X::NEEDS_BETA {
             rest_capacity += extra.count(beta_of(j));
         }
-        run.reset(id_key_capacity, id_coeff_capacity, rest_capacity);
+        run.reset(
+            identity_key_capacity,
+            identity_coefficient_capacity,
+            rest_capacity,
+        );
     }
     lap!(stamp, scratch.stats.size_ns);
 
@@ -242,7 +242,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             generator_coordinate,
             generator_local,
         } => {
-            // Every term emits one id row, kept even when `cos == 0` (the signed-zero contract on `merge_identity_and_rest`), so the merge borrows the source keys.
+            // Every term emits one identity row, kept even when `cos == 0` (the signed-zero contract on `merge_identity_and_rest`), so the merge borrows the source keys.
             for (i, source) in old.iter().enumerate() {
                 for row in 0..source.len() {
                     let key = PauliString::<W> {
@@ -250,15 +250,17 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                         z: source.z[row],
                     };
                     if key.commutes_with(&rotation.generator) {
-                        runs[i ^ *coordinate_identity as usize].push_id_coeff(source.coeff[row]);
+                        runs[i ^ *coordinate_identity as usize]
+                            .push_identity_coefficient(source.coeff[row]);
                     } else {
                         runs[i ^ *coordinate_identity as usize]
-                            .push_id_coeff(source.coeff[row] * rotation.cos);
+                            .push_identity_coefficient(source.coeff[row] * rotation.cos);
                         if *generator_local {
                             let mut product = key;
                             let phase = product.mul_assign(&rotation.generator);
                             let total = Phase::I + phase;
-                            runs[i ^ *generator_coordinate as usize].push_row(
+                            runs[i ^ *generator_coordinate as usize].push_if(
+                                true,
                                 product.x,
                                 product.z,
                                 total.apply(source.coeff[row]) * rotation.sin,
@@ -345,9 +347,9 @@ pub(super) fn gather_local_input_major<const W: usize>(
                 let amplitude = ptm.deltas()[0].amplitude[pattern];
                 if dense_identity {
                     debug_assert!(amplitude != ZERO);
-                    runs[i].push_id_coeff(source.coeff[row] * amplitude);
+                    runs[i].push_identity_coefficient(source.coeff[row] * amplitude);
                 } else {
-                    runs[i].push_id_if(
+                    runs[i].push_identity_if(
                         nonzero(amplitude),
                         source.x[row],
                         source.z[row],
@@ -393,9 +395,9 @@ pub(super) fn gather_local_output_major<const W: usize>(
                 let amplitude = delta.amplitude[pattern];
                 if dense_identity {
                     debug_assert!(amplitude != ZERO);
-                    run.push_id_coeff(source.coeff[row] * amplitude);
+                    run.push_identity_coefficient(source.coeff[row] * amplitude);
                 } else {
-                    run.push_id_if(
+                    run.push_identity_if(
                         nonzero(amplitude),
                         source.x[row],
                         source.z[row],

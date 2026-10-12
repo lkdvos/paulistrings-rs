@@ -35,9 +35,9 @@ fn push_if_publishes_only_kept_rows_and_never_overruns() {
     assert_eq!(run.rest.coeff.as_slice(), &[c(1.0), c(2.0)]);
     // The identity stream answers the same contract.
     run.reset(1, 1, 0);
-    run.push_id_if(false, [5], [6], c(3.0));
+    run.push_identity_if(false, [5], [6], c(3.0));
     assert_eq!(run.identity.x.len(), 0);
-    run.push_id_if(true, [5], [6], c(3.0));
+    run.push_identity_if(true, [5], [6], c(3.0));
     assert_eq!(run.identity.x.as_slice(), &[[5]]);
     assert_eq!(run.identity.coeff.as_slice(), &[c(3.0)]);
 }

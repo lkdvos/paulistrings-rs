@@ -11,7 +11,7 @@ use paulistrings::BuiltinTruncation;
 use paulistrings::PauliString;
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
-    propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, LayerTrace, PartitionConfig,
+    propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, PartitionConfig,
     PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
     PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
     ScatterRows, StabilizerState, TopologyError,
@@ -882,18 +882,30 @@ enum RunMode {
     DistributedDevice(crate::mpi::MpiGpuRun),
 }
 
-/// The per-layer records a run produced, tagged by which engine produced them.
-enum RunTrace {
-    /// The unpartitioned engine's per-layer trace: term counts, gate identity and elapsed time.
-    Layer(LayerTrace),
-    /// An in-process partitioned run's records, plus the partition count.
-    Partition(PartitionTrace, usize),
-    /// A distributed run's records — **this rank's only** — plus `(rank, size)` and this rank's device, if it ran on one.
-    #[cfg(feature = "mpi")]
-    Distributed(PartitionTrace, u32, u32, Option<u32>),
-    /// A device run's records, plus each partition's device ordinal.
-    #[cfg(feature = "cuda")]
-    Device(PartitionTrace, Vec<u32>),
+/// The per-layer records a run produced, and where its partitions ran.
+struct RunTrace {
+    trace: PartitionTrace,
+    /// `None` for an unpartitioned run, whose stats carry no `partition` record.
+    placement: Option<TracePlacement>,
+}
+
+/// Where a traced run's partitions ran, for `PropagationStats.partition`.
+struct TracePlacement {
+    partitions: usize,
+    /// `(rank, size)` of a `comm=` run, whose trace holds this rank's records only.
+    ranks: Option<(u32, u32)>,
+    /// Each partition's device ordinal, for a device run.
+    devices: Option<Vec<u32>>,
+}
+
+impl TracePlacement {
+    fn partitions(partitions: usize) -> Self {
+        Self {
+            partitions,
+            ranks: None,
+            devices: None,
+        }
+    }
 }
 
 /// What one run hands back besides the sum.
@@ -911,9 +923,14 @@ impl<const W: usize> RunOutput<W> {
         let (rank, size) = (out.rank, out.size);
         Self {
             sum: out.sum,
-            trace: out
-                .trace
-                .map(|trace| RunTrace::Distributed(trace, rank, size, out.device)),
+            trace: out.trace.map(|trace| RunTrace {
+                trace,
+                placement: Some(TracePlacement {
+                    partitions: size as usize,
+                    ranks: Some((rank, size)),
+                    devices: out.device.map(|device| vec![device]),
+                }),
+            }),
             collapses: out.collapses,
         }
     }
@@ -947,7 +964,10 @@ impl RunMode {
                 );
                 Ok(RunOutput {
                     sum: out,
-                    trace: scratch.take_trace().map(RunTrace::Layer),
+                    trace: scratch.take_trace().map(|trace| RunTrace {
+                        trace,
+                        placement: None,
+                    }),
                     collapses: collapses_since(policy, before),
                 })
             }
@@ -968,8 +988,9 @@ impl RunMode {
                 split.propagate_with(circuit, policy, direction, options);
                 // The partition count from the runtime, not the trace: a zero-layer circuit records no layer, but the placement is still worth reporting.
                 let partitions = split.num_partitions();
-                let trace = traced.then(|| {
-                    RunTrace::Partition(split.take_trace().unwrap_or_default(), partitions)
+                let trace = traced.then(|| RunTrace {
+                    trace: split.take_trace().unwrap_or_default(),
+                    placement: Some(TracePlacement::partitions(partitions)),
                 });
                 Ok(RunOutput {
                     sum: split.into_gathered(),
@@ -989,7 +1010,14 @@ impl RunMode {
                 )?;
                 Ok(RunOutput {
                     sum: out,
-                    trace: trace.map(|trace| RunTrace::Device(trace, devices)),
+                    trace: trace.map(|trace| RunTrace {
+                        trace,
+                        placement: Some(TracePlacement {
+                            partitions: devices.len(),
+                            ranks: None,
+                            devices: Some(devices),
+                        }),
+                    }),
                     collapses: collapses_since(policy, before),
                 })
             }
@@ -1475,90 +1503,55 @@ impl PropagationStats {
 }
 
 impl PropagationStats {
-    /// Derive the Python-facing record from a core [`LayerTrace`] plus the
-    /// length of the propagated sum (which is what "peak" falls back to when
-    /// no layer ran).
-    fn from_trace(trace: LayerTrace, final_terms: usize) -> Self {
-        debug_assert_eq!(trace.terms_in.len(), trace.terms_out.len());
-        let peak_terms = trace.peak_terms().unwrap_or(final_terms);
-        Self {
-            layers: trace.terms_out.len(),
-            peak_terms,
-            final_terms,
-            terms_in: trace.terms_in,
-            terms_out: trace.terms_out,
-            partition: None,
-            circuit_index: trace.circuit_index,
-            application_index: trace.application_index,
-            gate_name: trace.gate_name,
-            nanos: trace.nanos,
-            collapses: None,
-        }
-    }
-
-    /// The same record from a partitioned run's [`PartitionTrace`], plus the per-partition detail in `partition`.
-    /// The layer-level term counts are the per-partition ones summed, matching what the unpartitioned engine would record for the same layer — so a partitioned run is comparable to an unpartitioned one field by field.
-    /// `nanos` is the **maximum** over partitions per layer (a critical-rank proxy, documented on the getter); `circuit_index`/`application_index`/`gate_name` are single values, identical across partitions by construction (lock-step application).
+    /// The Python-facing record from a run's [`PartitionTrace`], plus the length of the propagated sum (what "peak" falls back to when no layer ran) and the per-partition detail in `partition` for a partitioned run.
+    /// The layer-level term counts are the per-partition ones summed, so a partitioned run is comparable to an unpartitioned one field by field.
+    /// `nanos` is the **maximum** over partitions per layer (a critical-rank proxy, documented on the getter); `circuit_index`/`application_index`/`gate_name` are identical across partitions by construction (lock-step application).
     /// A distributed run's records are this rank's only, so the term-count sum is a sum of one (documented on `PartitionStats.size`) and `nanos` is that one rank's own timing.
-    fn from_partition_trace(
-        trace: &PartitionTrace,
-        partitions: usize,
-        final_terms: usize,
-        ranks: Option<(u32, u32)>,
-        devices: Option<Vec<u32>>,
-    ) -> Self {
+    fn from_run_trace(run: RunTrace, final_terms: usize, collapses: Option<u64>) -> Self {
+        let RunTrace { trace, placement } = run;
         let sum_of = |counts: &[usize]| counts.iter().sum::<usize>();
-        let layer_trace = LayerTrace {
-            circuit_index: trace.layers.iter().map(|l| l.circuit_index).collect(),
-            application_index: trace.layers.iter().map(|l| l.application_index).collect(),
-            gate_name: trace.layers.iter().map(|l| l.gate_name).collect(),
-            terms_in: trace.layers.iter().map(|l| sum_of(&l.terms_in)).collect(),
-            terms_out: trace.layers.iter().map(|l| sum_of(&l.terms_out)).collect(),
-            nanos: trace
-                .layers
+        let layers = &trace.layers;
+        Self {
+            layers: layers.len(),
+            terms_in: layers.iter().map(|l| sum_of(&l.terms_in)).collect(),
+            terms_out: layers.iter().map(|l| sum_of(&l.terms_out)).collect(),
+            peak_terms: trace.peak_terms().unwrap_or(final_terms),
+            final_terms,
+            circuit_index: layers.iter().map(|l| l.circuit_index).collect(),
+            application_index: layers.iter().map(|l| l.application_index).collect(),
+            gate_name: layers.iter().map(|l| l.gate_name).collect(),
+            nanos: layers
                 .iter()
                 .map(|l| l.nanos.iter().copied().max().unwrap_or(0))
                 .collect(),
-        };
-        Self {
-            partition: Some(PartitionStats::from_trace(
-                trace, partitions, ranks, devices,
-            )),
-            ..Self::from_trace(layer_trace, final_terms)
+            partition: placement.map(|placement| {
+                PartitionStats::from_trace(
+                    &trace,
+                    placement.partitions,
+                    placement.ranks,
+                    placement.devices,
+                )
+            }),
+            collapses,
         }
-    }
-
-    /// Whichever of the three traces the run recorded, as one record.
-    fn from_run_trace(trace: RunTrace, final_terms: usize, collapses: Option<u64>) -> Self {
-        let stats = match trace {
-            RunTrace::Layer(trace) => Self::from_trace(trace, final_terms),
-            RunTrace::Partition(trace, partitions) => {
-                Self::from_partition_trace(&trace, partitions, final_terms, None, None)
-            }
-            #[cfg(feature = "mpi")]
-            RunTrace::Distributed(trace, rank, size, device) => Self::from_partition_trace(
-                &trace,
-                size as usize,
-                final_terms,
-                Some((rank, size)),
-                device.map(|d| vec![d]),
-            ),
-            #[cfg(feature = "cuda")]
-            RunTrace::Device(trace, devices) => {
-                Self::from_partition_trace(&trace, devices.len(), final_terms, None, Some(devices))
-            }
-        };
-        Self { collapses, ..stats }
     }
 
     /// A one-device run's record: one partition, `partition.devices == [device]`.
     #[cfg(feature = "cuda")]
     pub(crate) fn from_device_trace(
-        trace: &PartitionTrace,
+        trace: PartitionTrace,
         device: u32,
         final_terms: usize,
     ) -> Self {
-        Self::from_partition_trace(trace, 1, final_terms, None, Some(vec![device]))
+        let run = RunTrace {
+            trace,
+            placement: Some(TracePlacement {
+                partitions: 1,
+                ranks: None,
+                devices: Some(vec![device]),
+            }),
+        };
+        Self::from_run_trace(run, final_terms, None)
     }
 }
 

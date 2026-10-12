@@ -19,10 +19,10 @@ use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
-use bucketed::{LayerScratch, LayerTrace};
+use bucketed::LayerScratch;
 use partitioned::backend::HostPartition;
 use partitioned::driver::{run_layers, PartitionContext, PartitionWork};
-use partitioned::trace::PartitionLayerRow;
+use partitioned::trace::assemble;
 use partitioned::transport::SoloTransport;
 
 /// `log` target for the engine's progress events, partitioned or not, and the truncation policies' own.
@@ -120,7 +120,7 @@ where
 
 /// [`propagate`] with a caller-held [`LayerScratch`] and [`PropagateOptions`].
 ///
-/// The scratch keeps its buffer capacity across calls and carries the opt-in [`LayerTrace`](crate::LayerTrace) (and, under `phase-timing`, the phase counters).
+/// The scratch keeps its buffer capacity across calls and carries the opt-in one-partition [`PartitionTrace`](crate::PartitionTrace) (and, under `phase-timing`, the phase counters).
 /// Log events are emitted on the calling thread, never inside a parallel layer.
 ///
 /// # Panics
@@ -171,7 +171,7 @@ where
     let (sum, layer_scratch) = work.local.into_parts();
     *scratch = layer_scratch;
     if let Some(trace) = scratch.trace.as_mut() {
-        record_trace(trace, &work.rows);
+        assemble(trace, vec![work.rows], 1);
     }
 
     log::info!(
@@ -184,18 +184,6 @@ where
     );
 
     sum
-}
-
-/// Append a solo run's per-layer rows to the scratch's trace.
-fn record_trace(trace: &mut LayerTrace, rows: &[PartitionLayerRow]) {
-    for row in rows {
-        trace.circuit_index.push(row.circuit_index);
-        trace.application_index.push(row.application_index);
-        trace.gate_name.push(row.gate_name);
-        trace.terms_in.push(row.terms_in);
-        trace.terms_out.push(row.terms_out);
-        trace.nanos.push(row.nanos);
-    }
 }
 
 #[cfg(test)]

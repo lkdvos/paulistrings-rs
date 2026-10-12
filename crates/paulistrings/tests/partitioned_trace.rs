@@ -268,7 +268,7 @@ fn gate_identity_and_timing_are_recorded_per_layer() {
 
 /// Under `Direction::Heisenberg`, `application_index` still runs `0..n` in
 /// application order, but `circuit_index` is reversed — the same contract the
-/// unpartitioned engine's `LayerTrace` gives, since a distributed consumer
+/// unpartitioned engine's one-partition trace gives, since a distributed consumer
 /// needs it to avoid mislabeling a Heisenberg trace against the circuit as
 /// written.
 #[test]

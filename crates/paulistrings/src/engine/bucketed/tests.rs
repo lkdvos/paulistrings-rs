@@ -73,45 +73,25 @@ pub(super) fn haar_su4(q0: usize, q1: usize) -> PtmChannel {
 /// The trace's state machine, independent of any propagation: `None` means off, `enable` is idempotent and non-destructive, `take` drains but stays on.
 #[test]
 fn trace_is_opt_in_and_drains_on_take() {
+    use crate::engine::partitioned::{PartitionLayerRecord, PartitionTrace};
+
     let mut scratch = LayerScratch::<1>::new();
     assert!(scratch.take_trace().is_none(), "off by default");
 
+    let record = PartitionLayerRecord {
+        circuit_index: 3,
+        ..PartitionLayerRecord::default()
+    };
     scratch.enable_trace();
-    scratch.trace.as_mut().unwrap().circuit_index.push(3);
-    scratch.enable_trace(); // idempotent: must not clear the 3
+    scratch.trace.as_mut().unwrap().layers.push(record.clone());
+    scratch.enable_trace(); // idempotent: must not clear the record
     assert_eq!(
         scratch.take_trace(),
-        Some(LayerTrace {
-            circuit_index: vec![3],
-            ..LayerTrace::default()
+        Some(PartitionTrace {
+            layers: vec![record]
         })
     );
-    assert_eq!(scratch.take_trace(), Some(LayerTrace::default()));
-}
-
-/// `peak_terms` is the between-layer maximum, which includes the first `terms_in`.
-#[test]
-fn peak_terms_spans_the_first_input_and_every_output() {
-    assert_eq!(LayerTrace::default().peak_terms(), None);
-    assert_eq!(
-        LayerTrace {
-            terms_in: vec![9, 4],
-            terms_out: vec![4, 6],
-            ..LayerTrace::default()
-        }
-        .peak_terms(),
-        Some(9),
-        "a shrinking first layer keeps the input as the peak"
-    );
-    assert_eq!(
-        LayerTrace {
-            terms_in: vec![1, 5],
-            terms_out: vec![5, 3],
-            ..LayerTrace::default()
-        }
-        .peak_terms(),
-        Some(5)
-    );
+    assert_eq!(scratch.take_trace(), Some(PartitionTrace::default()));
 }
 
 /// Run one layer through the bucketed engine, converting in and out.

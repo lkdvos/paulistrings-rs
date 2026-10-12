@@ -1,4 +1,4 @@
-//! [`PartitionTrace`], the opt-in per-layer record of a partitioned run, and the per-partition rows it is transposed from.
+//! [`PartitionTrace`], the opt-in per-layer record of a run, partitioned or not, and the per-partition rows it is transposed from.
 
 /// What one layer did across the whole group; the per-partition vectors are indexed by rank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -29,7 +29,9 @@ pub struct PartitionLayerRecord {
     pub nanos: Vec<u64>,
 }
 
-/// Per-layer records of partitioned propagations in application order, accumulated until drained by [`take_trace`](crate::PartitionedSum::take_trace).
+/// Per-layer records of propagations in application order, accumulated until drained by a driver's `take_trace`.
+///
+/// A plain [`propagate_with`](crate::propagate_with) run records one partition; term counts are post-truncation, so the transient expansion inside a layer is not captured.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionTrace {
     /// One record per layer applied.
@@ -37,6 +39,18 @@ pub struct PartitionTrace {
 }
 
 impl PartitionTrace {
+    /// Peak resident term count between layers, summed over partitions, or `None` for a zero-layer trace.
+    pub fn peak_terms(&self) -> Option<usize> {
+        let first = self.layers.first()?;
+        let total = |counts: &[usize]| counts.iter().sum::<usize>();
+        let peak_out = self
+            .layers
+            .iter()
+            .map(|layer| total(&layer.terms_out))
+            .max();
+        Some(total(&first.terms_in).max(peak_out.unwrap_or(0)))
+    }
+
     /// Rows moved across partitions over the whole trace.
     pub fn total_rows_exchanged(&self) -> u64 {
         self.layers
@@ -112,7 +126,7 @@ pub(super) fn record_layer_row(rows: &mut Vec<PartitionLayerRow>, row: Partition
 }
 
 /// Transposes the partitions' rows into per-layer records appended to `trace`, the per-partner vectors padded to `partners`; panics if the partitions disagree on a collective decision.
-pub(super) fn assemble(
+pub(crate) fn assemble(
     trace: &mut PartitionTrace,
     per_partition: Vec<Vec<PartitionLayerRow>>,
     partners: usize,

@@ -332,7 +332,7 @@ mod cuda {
                 )?
                 .unwrap_or_default();
             Ok(PropagationStats::from_device_trace(
-                &trace,
+                trace,
                 self.inner.device(),
                 self.inner.len(),
             ))

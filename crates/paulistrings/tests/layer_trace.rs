@@ -1,11 +1,11 @@
-//! The opt-in per-layer trace (`LayerScratch::enable_trace`), written by `propagate_with`'s layer loop.
+//! The opt-in per-layer trace (`LayerScratch::enable_trace`), a one-partition `PartitionTrace` written by `propagate_with`'s layer loop.
 
 use num_complex::Complex64;
 use paulistrings::test_support::assert_terms_close;
 use paulistrings::CoefficientThreshold;
 use paulistrings::{
-    propagate, propagate_with, BuildAccumulator, Circuit, Direction, LayerScratch, PauliString,
-    PauliSum, PropagateOptions, TruncationPolicy,
+    propagate, propagate_with, BuildAccumulator, Circuit, Direction, LayerScratch, PartitionTrace,
+    PauliString, PauliSum, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{PauliRotation, PtmChannel};
 
@@ -13,6 +13,29 @@ struct AlwaysKeep;
 impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
 
 const NUM_QUBITS: usize = 4;
+
+/// Each layer's input count; a plain run's records hold one partition.
+fn terms_in(trace: &PartitionTrace) -> Vec<usize> {
+    trace
+        .layers
+        .iter()
+        .map(|layer| one(&layer.terms_in))
+        .collect()
+}
+
+/// Each layer's output count.
+fn terms_out(trace: &PartitionTrace) -> Vec<usize> {
+    trace
+        .layers
+        .iter()
+        .map(|layer| one(&layer.terms_out))
+        .collect()
+}
+
+fn one<T: Copy>(per_partition: &[T]) -> T {
+    assert_eq!(per_partition.len(), 1, "a plain run records one partition");
+    per_partition[0]
+}
 /// cos 0.3 = 0.955336…, sin 0.3 = 0.295520… — far enough from each other and
 /// from zero that no count below depends on a cancellation.
 const THETA: f64 = 0.3;
@@ -82,8 +105,8 @@ fn check_hand_computed_counts<const W: usize>() {
     );
 
     let trace = scratch.take_trace().expect("trace was enabled");
-    assert_eq!(trace.terms_in, vec![1, 2, 2]);
-    assert_eq!(trace.terms_out, vec![2, 2, 3]);
+    assert_eq!(terms_in(&trace), vec![1, 2, 2]);
+    assert_eq!(terms_out(&trace), vec![2, 2, 3]);
     assert_eq!(trace.peak_terms(), Some(3));
     assert_eq!(out.len(), 3);
 }
@@ -117,8 +140,8 @@ fn check_counts_are_post_truncation<const W: usize>() {
     );
 
     let trace = scratch.take_trace().expect("trace was enabled");
-    assert_eq!(trace.terms_in, vec![1, 2, 2]);
-    assert_eq!(trace.terms_out, vec![2, 2, 2]);
+    assert_eq!(terms_in(&trace), vec![1, 2, 2]);
+    assert_eq!(terms_out(&trace), vec![2, 2, 2]);
     assert_eq!(trace.peak_terms(), Some(2));
     assert_eq!(out.len(), 2);
 }
@@ -150,8 +173,7 @@ fn trace_of_an_empty_circuit_is_empty() {
     assert_eq!(out.len(), 1);
 
     let trace = scratch.take_trace().expect("trace was enabled");
-    assert!(trace.terms_in.is_empty());
-    assert!(trace.terms_out.is_empty());
+    assert!(trace.layers.is_empty());
     assert_eq!(trace.peak_terms(), None);
 }
 
@@ -174,12 +196,12 @@ fn taking_the_trace_drains_but_stays_enabled() {
             PropagateOptions::default(),
         );
         let trace = scratch.take_trace().expect("still enabled");
-        assert_eq!(trace.terms_out, vec![2, 2, 3]);
+        assert_eq!(terms_out(&trace), vec![2, 2, 3]);
     }
     // Nothing ran in between, so the third take sees an empty — but present —
     // trace.
     let trace = scratch.take_trace().expect("still enabled");
-    assert!(trace.terms_out.is_empty());
+    assert!(trace.layers.is_empty());
 }
 
 /// Tracing is bookkeeping on the calling thread: the propagated sum is the
@@ -244,12 +266,19 @@ fn trace_forward_indices_match_circuit_order() {
     );
     let trace = scratch.take_trace().unwrap();
 
-    assert_eq!(trace.application_index, vec![0, 1]);
-    assert_eq!(trace.circuit_index, vec![0, 1]);
-    assert_eq!(trace.gate_name.len(), 2);
-    assert_eq!(trace.terms_in, vec![1, 1]);
-    assert_eq!(trace.terms_out, vec![1, 1]);
-    assert_eq!(trace.nanos.len(), 2);
+    let field = |f: fn(&paulistrings::PartitionLayerRecord) -> u32| -> Vec<u32> {
+        trace.layers.iter().map(f).collect()
+    };
+    assert_eq!(field(|layer| layer.application_index), vec![0, 1]);
+    assert_eq!(field(|layer| layer.circuit_index), vec![0, 1]);
+    assert_eq!(field(|layer| layer.remote_deltas), vec![0, 0]);
+    assert_eq!(terms_in(&trace), vec![1, 1]);
+    assert_eq!(terms_out(&trace), vec![1, 1]);
+    for layer in &trace.layers {
+        assert_eq!(layer.nanos.len(), 1);
+        assert_eq!(layer.rows_sent, vec![vec![0]]);
+        assert_eq!(layer.rows_received, vec![0]);
+    }
 }
 
 #[test]
@@ -267,6 +296,8 @@ fn trace_heisenberg_reverses_circuit_index_not_application_index() {
     let trace = scratch.take_trace().unwrap();
 
     // Applied in loop order 0, 1, but the circuit ran channel 1 (`s`) first.
-    assert_eq!(trace.application_index, vec![0, 1]);
-    assert_eq!(trace.circuit_index, vec![1, 0]);
+    let application: Vec<u32> = trace.layers.iter().map(|l| l.application_index).collect();
+    let circuit: Vec<u32> = trace.layers.iter().map(|l| l.circuit_index).collect();
+    assert_eq!(application, vec![0, 1]);
+    assert_eq!(circuit, vec![1, 0]);
 }

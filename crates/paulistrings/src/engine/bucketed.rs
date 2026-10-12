@@ -9,6 +9,7 @@ use rayon::prelude::*;
 
 use super::coset::{CosetOrder, Gf2Span};
 use super::merge::{rest_rows_per_key, SortKernel};
+use super::partitioned::trace::PartitionTrace;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
@@ -40,7 +41,7 @@ pub struct LayerScratch<const W: usize> {
     #[cfg(feature = "phase-timing")]
     pub(crate) stats: PhaseStats,
     /// `None` unless [`Self::enable_trace`] was called.
-    pub(crate) trace: Option<LayerTrace>,
+    pub(crate) trace: Option<PartitionTrace>,
 }
 
 impl<const W: usize> LayerScratch<W> {
@@ -61,45 +62,14 @@ impl<const W: usize> LayerScratch<W> {
         total
     }
 
-    /// Record a [`LayerTrace`] on every later call driven by this scratch; idempotent.
+    /// Start recording a one-partition [`PartitionTrace`] on every later call driven by this scratch; idempotent.
     pub fn enable_trace(&mut self) {
-        self.trace.get_or_insert_with(LayerTrace::default);
+        self.trace.get_or_insert_with(PartitionTrace::default);
     }
 
-    /// Drain the trace, or `None` if it was never enabled; tracing stays enabled.
-    pub fn take_trace(&mut self) -> Option<LayerTrace> {
+    /// Drain the per-layer records, or `None` if tracing was never enabled; tracing stays enabled.
+    pub fn take_trace(&mut self) -> Option<PartitionTrace> {
         self.trace.as_mut().map(std::mem::take)
-    }
-}
-
-/// Per-layer records, one entry per layer in application order (reverse circuit order under [`Direction::Heisenberg`](crate::Direction::Heisenberg)).
-///
-/// Term counts are post-truncation; the transient expansion inside a layer is not captured.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct LayerTrace {
-    /// This layer's position in [`Circuit::channels`](crate::Circuit), independent of propagation direction.
-    pub circuit_index: Vec<u32>,
-    /// This layer's position in application order.
-    pub application_index: Vec<u32>,
-    /// [`Channel::debug_name`](crate::Channel::debug_name) of the applied channel.
-    pub gate_name: Vec<&'static str>,
-    /// Resident term count before the layer.
-    pub terms_in: Vec<usize>,
-    /// Resident term count after the layer, i.e. after `finalize_layer`.
-    pub terms_out: Vec<usize>,
-    /// Wall-clock nanoseconds for the whole layer, from `rebucket` through `finalize_layer`.
-    pub nanos: Vec<u64>,
-}
-
-impl LayerTrace {
-    /// Peak resident term count between layers, or `None` for a zero-layer trace.
-    pub fn peak_terms(&self) -> Option<usize> {
-        self.terms_in
-            .first()
-            .copied()
-            .into_iter()
-            .chain(self.terms_out.iter().copied())
-            .max()
     }
 }
 

@@ -117,3 +117,36 @@ fn assemble_pads_a_local_layers_per_partner_vectors() {
     assert_eq!(trace.layers[0].rows_sent, vec![vec![0, 0], vec![0, 0]]);
     assert_eq!(trace.layers[0].bytes_sent, vec![vec![0, 0], vec![0, 0]]);
 }
+
+fn counts(terms_in: Vec<usize>, terms_out: Vec<usize>) -> PartitionLayerRecord {
+    PartitionLayerRecord {
+        terms_in,
+        terms_out,
+        ..PartitionLayerRecord::default()
+    }
+}
+
+/// `peak_terms` is the between-layer maximum of the summed counts, which includes the first layer's input.
+#[test]
+fn peak_terms_spans_the_first_input_and_every_output() {
+    assert_eq!(PartitionTrace::default().peak_terms(), None);
+    let shrinking = PartitionTrace {
+        layers: vec![counts(vec![9], vec![4]), counts(vec![4], vec![6])],
+    };
+    assert_eq!(
+        shrinking.peak_terms(),
+        Some(9),
+        "a shrinking first layer keeps the input as the peak"
+    );
+    let growing = PartitionTrace {
+        layers: vec![counts(vec![1], vec![5]), counts(vec![5], vec![3])],
+    };
+    assert_eq!(growing.peak_terms(), Some(5));
+    let split = PartitionTrace {
+        layers: vec![
+            counts(vec![3, 4], vec![5, 1]),
+            counts(vec![5, 1], vec![2, 2]),
+        ],
+    };
+    assert_eq!(split.peak_terms(), Some(7), "summed over partitions");
+}

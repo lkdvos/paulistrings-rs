@@ -225,6 +225,7 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - **D55** Python `PropagationStats.partition` reports the one-partition record for a plain host run too (as for `device=0`); `PartitionTrace` (with its record and row types) moves to `engine/trace.rs` in a move commit.
   As applied: `38642af` (pure move to `engine/trace.rs`), `5048b2f` (`PropagationStats.partition` is never `None`; a plain run gives `PartitionStats(partitions=1, rank=None, size=None, devices=None, …)`).
 - **D56** Chunk 15: `DistributedSum::len_local` and `local_expectation_product` removed (use `local()`); `MpiTransport::with_chunk_bytes` and `build_library_version` crate-private (`test_support` for the knob); one shared driver prologue/epilogue in `driver.rs` for `PartitionedSum` and `DistributedSum` (options and policy checks, INFO lines, `PartitionWork`, trace assembly, laps); `ChunkPipeline` waiters block on a condvar notified per completed chunk instead of spin/yield/sleep (user: do it now, not gated on the D51 result).
+  As applied: `4617bb1`, `db31f3f` (`test_support::mpi_with_chunk_bytes`), `3327140` (`DriverFrame`/`LayerRun` in `driver.rs`; log output identical), `88d6422` (pipeline: role flag under a small mutex plus condvar; one thread in MPI; new `mpi/pipeline/tests.rs`, 10/10; `mpi-test.sh` 44/44 debug, 12/12 release). Equivalence 675 cases incl. distributed D = 1/2/4, bitwise. Local MPI A/B (noisy, indicative): −2% to −9%, none direction-consistent; no paired MPI mode in `ab-campaign.sbatch` yet.
 
 ## Possible improvements
 
@@ -256,4 +257,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–14 done, D55 done, D56 (chunk 15) implementing. Pending user A/Bs: D42 (job 7216669, `KNOB_B="--truncation-dispatch builtin"`), D16, D51 collectives (A `9deb5ad`, B `244175a`, P = 2 and P = 4 unpinned). GPU inventory for chunks 16–20 in `scratchpad/d54-gpu-inventory.md`. Next: chunk 16 (GPU), then 17–20, 21 (organisation revisit), 22 (tests), 23 (benches/examples).
+Chunks 0–15 done. Pending user A/Bs: D42 (job 7216669, `KNOB_B="--truncation-dispatch builtin"`), D16, D51 collectives (A `9deb5ad`, B `244175a`, P = 2 and P = 4 unpinned). GPU inventory for chunks 16–20 in `scratchpad/d54-gpu-inventory.md`. Next: chunk 16 (GPU), then 17–20, 21 (organisation revisit), 22 (tests), 23 (benches/examples).

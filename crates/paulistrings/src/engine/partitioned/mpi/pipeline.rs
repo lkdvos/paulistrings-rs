@@ -1,6 +1,7 @@
 //! [`ChunkPipeline`], the in-flight half of a two-phase MPI exchange that the coset loop waits on chunk by chunk.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 use ::mpi::request::RequestCollection;
 
@@ -20,23 +21,18 @@ pub(super) fn note_slot(slot_of: &mut Vec<usize>, i: usize, slot: usize) {
     slot_of[i] = slot;
 }
 
-/// Spin tier of a worker waiting on another's MPI drive, before it yields.
-const PIPELINE_SPINS: u32 = 256;
-
-/// Yield tier, before it sleeps.
-const PIPELINE_YIELDS: u32 = 64;
-
-/// Sleep tier step, which keeps waiters off the cores the driving worker copies on.
-const PIPELINE_SLEEP: std::time::Duration = std::time::Duration::from_micros(20);
-
 /// The posted bulk receives and sends of a two-phase exchange, waited on chunk by chunk as a [`ChunkWait`].
 ///
-/// Whichever worker takes the mutex drives `MPI_Waitsome` over every request and credits completions to per-chunk counters the others watch; why that is `MPI_THREAD_SERIALIZED`-safe and deadlock-free: ARCHITECTURE.md §Partitioning.
+/// One waiter at a time holds the driver role and drives `MPI_Waitsome` over every request until its own chunk completes; the others sleep on a condvar; why that is `MPI_THREAD_SERIALIZED`-safe and deadlock-free: ARCHITECTURE.md §Partitioning.
 pub(super) struct ChunkPipeline<'a, 'c> {
-    /// Only `try_lock`ed: a waiter must not queue behind a driver blocked inside MPI.
+    /// Locked only by the driver-role holder, so never contended.
     inner: Mutex<PipelineInner<'a, 'c>>,
     /// Outstanding receives per chunk.
-    remaining: Vec<std::sync::atomic::AtomicUsize>,
+    remaining: Vec<AtomicUsize>,
+    /// Whether a thread holds the driver role; never held across an MPI call.
+    driving: Mutex<bool>,
+    /// Notified when a chunk completes and when the driver role is released.
+    wake: Condvar,
 }
 
 struct PipelineInner<'a, 'c> {
@@ -47,9 +43,19 @@ struct PipelineInner<'a, 'c> {
 }
 
 // SAFETY: `MPI_Request` is a raw handle, so `RequestCollection` is neither `Send` nor `Sync`.
-// Every worker reaches it only through `inner`'s mutex, so at most one thread is inside MPI, as `MPI_THREAD_SERIALIZED` allows.
+// Every worker reaches it only through `inner`'s mutex, taken only by the one driver-role holder, so at most one thread is inside MPI, as `MPI_THREAD_SERIALIZED` allows.
 unsafe impl Send for ChunkPipeline<'_, '_> {}
 unsafe impl Sync for ChunkPipeline<'_, '_> {}
+
+/// The driver role, released and announced on drop, unwinding included.
+struct DriverRole<'p, 'a, 'c>(&'p ChunkPipeline<'a, 'c>);
+
+impl Drop for DriverRole<'_, '_, '_> {
+    fn drop(&mut self) {
+        *self.0.lock_driving() = false;
+        self.0.wake.notify_all();
+    }
+}
 
 impl<'a, 'c> ChunkPipeline<'a, 'c> {
     /// Wrap `requests`, whose request `i` belongs to chunk `slot_of[i]`, with `chunks` chunk counters.
@@ -58,12 +64,10 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
         slot_of: Vec<usize>,
         chunks: usize,
     ) -> Self {
-        let remaining: Vec<_> = (0..chunks)
-            .map(|_| std::sync::atomic::AtomicUsize::new(0))
-            .collect();
+        let remaining: Vec<_> = (0..chunks).map(|_| AtomicUsize::new(0)).collect();
         for &slot in &slot_of {
             if slot < chunks {
-                remaining[slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                remaining[slot].fetch_add(1, Ordering::Relaxed);
             }
         }
         Self {
@@ -73,63 +77,72 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
                 done: Vec::new(),
             }),
             remaining,
+            driving: Mutex::new(false),
+            wake: Condvar::new(),
         }
     }
 
-    /// Drive MPI once if nobody else is: `None` when another thread holds it, `Some(false)` when nothing is outstanding.
-    fn try_drive(&self) -> Option<bool> {
-        let mut inner = match self.inner.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => return None,
-        };
+    fn lock_driving(&self) -> MutexGuard<'_, bool> {
+        self.driving.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn complete(&self, k: usize) -> bool {
+        self.remaining[k].load(Ordering::Acquire) == 0
+    }
+
+    /// As the driver, `MPI_Waitsome` until chunk `k` completes or nothing is outstanding, announcing every chunk that completes.
+    fn drive_until(&self, k: usize) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let PipelineInner {
             requests,
             slot_of,
             done,
         } = &mut *inner;
-        if requests.incomplete() == 0 {
-            return Some(false);
-        }
-        requests.wait_some(done);
-        for &(index, _, _) in done.iter() {
-            let slot = slot_of[index];
-            if slot < self.remaining.len() {
-                self.remaining[slot].fetch_sub(1, std::sync::atomic::Ordering::Release);
+        while !self.complete(k) && requests.incomplete() > 0 {
+            requests.wait_some(done);
+            let mut completed = false;
+            for &(index, _, _) in done.iter() {
+                let slot = slot_of[index];
+                if slot < self.remaining.len() {
+                    completed |= self.remaining[slot].fetch_sub(1, Ordering::Release) == 1;
+                }
+            }
+            if completed {
+                // Taking the lock orders the decrement before a waiter's check-then-sleep.
+                drop(self.lock_driving());
+                self.wake.notify_all();
             }
         }
-        Some(true)
     }
 
     fn wait_slot(&self, k: usize) {
-        let mut spins: u32 = 0;
-        loop {
-            if self.remaining[k].load(std::sync::atomic::Ordering::Acquire) == 0 {
-                return;
+        if self.complete(k) {
+            return;
+        }
+        let mut driving = self.lock_driving();
+        while !self.complete(k) {
+            if *driving {
+                driving = self
+                    .wake
+                    .wait(driving)
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
             }
-            match self.try_drive() {
-                Some(false) => return,
-                Some(true) => spins = 0,
-                None => {
-                    spins = spins.saturating_add(1);
-                    if spins <= PIPELINE_SPINS {
-                        std::hint::spin_loop();
-                    } else if spins <= PIPELINE_SPINS + PIPELINE_YIELDS {
-                        std::thread::yield_now();
-                    } else {
-                        std::thread::sleep(PIPELINE_SLEEP);
-                    }
-                }
-            }
+            *driving = true;
+            drop(driving);
+            let role = DriverRole(self);
+            self.drive_until(k);
+            drop(role);
+            return;
         }
     }
 
     /// Wait out every outstanding request, sends included.
     pub(super) fn finish(&mut self) {
-        let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
+        let inner = self.inner.get_mut().unwrap_or_else(PoisonError::into_inner);
         inner.requests.wait_all(&mut inner.done);
         for slot in &self.remaining {
-            slot.store(0, std::sync::atomic::Ordering::Release);
+            slot.store(0, Ordering::Release);
         }
     }
 }
@@ -139,3 +152,6 @@ impl ChunkWait for ChunkPipeline<'_, '_> {
         self.wait_slot(k);
     }
 }
+
+#[cfg(test)]
+mod tests;

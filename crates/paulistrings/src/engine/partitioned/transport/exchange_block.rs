@@ -134,23 +134,27 @@ pub(crate) fn chunk_rows_of(offsets: &[u32], map: &ChunkMap) -> Vec<usize> {
         .collect()
 }
 
-/// Cut `col` at `bounds` (row indices) and view each piece as bytes.
-fn chunk_slices<'s, T, F>(col: &'s [T], bounds: &[usize], as_bytes: F) -> Vec<&'s [u8]>
+/// Cut `column` at `bounds` (row indices) and view each piece as bytes.
+fn chunk_slices<'s, T, F>(column: &'s [T], bounds: &[usize], as_bytes: F) -> Vec<&'s [u8]>
 where
     F: Fn(&'s [T]) -> &'s [u8],
 {
     bounds
         .windows(2)
-        .map(|w| as_bytes(&col[w[0]..w[1]]))
+        .map(|window| as_bytes(&column[window[0]..window[1]]))
         .collect()
 }
 
 /// [`chunk_slices`] for the receive side: disjoint mutable pieces, in order.
-fn chunk_slices_mut<'s, T, F>(col: &'s mut [T], bounds: &[usize], as_bytes: F) -> Vec<&'s mut [u8]>
+fn chunk_slices_mut<'s, T, F>(
+    column: &'s mut [T],
+    bounds: &[usize],
+    as_bytes: F,
+) -> Vec<&'s mut [u8]>
 where
     F: Fn(&'s mut [T]) -> &'s mut [u8],
 {
-    let mut rest = col;
+    let mut rest = column;
     let mut out = Vec::with_capacity(bounds.len().saturating_sub(1));
     let mut at = bounds[0];
     for &edge in &bounds[1..] {

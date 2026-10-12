@@ -18,8 +18,8 @@ pub use in_process::InProcessTransport;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChunkMap {
     positions: u32,
-    /// `log2` of the coset size: coset `c` owns positions `c << r .. (c + 1) << r`.
-    r: u32,
+    /// `log2` of the coset size: coset `c` owns positions `c << coset_dimension .. (c + 1) << coset_dimension`.
+    coset_dimension: u32,
     cosets: u32,
     /// Clamped to `1..=cosets`.
     chunks: u32,
@@ -33,17 +33,17 @@ impl ChunkMap {
             "ChunkMap: {positions} positions is not a power of two",
         );
         assert!(chunks > 0, "ChunkMap: a layer needs at least one chunk");
-        let r = coset_dimension as u32;
+        let coset_dimension = coset_dimension as u32;
         let positions = positions as u32;
         debug_assert!(
-            (1u32 << r) <= positions,
+            (1u32 << coset_dimension) <= positions,
             "ChunkMap: a coset of {} buckets does not fit in {positions}",
-            1u32 << r,
+            1u32 << coset_dimension,
         );
-        let cosets = positions >> r;
+        let cosets = positions >> coset_dimension;
         Self {
             positions,
-            r,
+            coset_dimension,
             cosets,
             chunks: (chunks as u32).min(cosets).max(1),
         }
@@ -67,12 +67,12 @@ impl ChunkMap {
     pub(crate) fn bound(&self, k: usize) -> u32 {
         assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
         let coset = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
-        coset << self.r
+        coset << self.coset_dimension
     }
 
-    /// The `k` with `bound(k) <= p < bound(k + 1)`.
-    pub(crate) fn chunk_of_position(&self, p: u32) -> usize {
-        let coset = u64::from(p >> self.r);
+    /// The `k` with `bound(k) <= position < bound(k + 1)`.
+    pub(crate) fn chunk_of_position(&self, position: u32) -> usize {
+        let coset = u64::from(position >> self.coset_dimension);
         ((coset * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
     }
 }
@@ -162,29 +162,29 @@ pub trait Transport: Collectives {
     ///
     /// A transport that infers its partner set from the `Some` positions, as the MPI one does, must override this asymmetric call.
     fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
-        let n = self.size() as usize;
+        let size = self.size() as usize;
         let this_rank = self.rank() as usize;
         let mine = ByteParts(parts.iter().map(|p| p.to_vec()).collect());
 
         if this_rank != ROOT {
-            let mut send: Vec<Option<ByteParts>> = (0..n).map(|_| None).collect();
+            let mut send: Vec<Option<ByteParts>> = (0..size).map(|_| None).collect();
             send[ROOT] = Some(mine);
             self.exchange(send, &mut Vec::new());
             return None;
         }
 
-        let mut recv = self.exchange(
-            (0..n).map(|_| None).collect::<Vec<Option<ByteParts>>>(),
+        let mut received = self.exchange(
+            (0..size).map(|_| None).collect::<Vec<Option<ByteParts>>>(),
             &mut Vec::new(),
         );
         let mut mine = Some(mine);
         Some(
-            (0..n)
+            (0..size)
                 .map(|q| {
                     let got = if q == ROOT {
                         mine.take()
                     } else {
-                        recv[q].take()
+                        received[q].take()
                     };
                     got.unwrap_or_else(|| {
                         panic!(

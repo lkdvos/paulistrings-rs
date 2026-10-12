@@ -235,16 +235,16 @@ impl GroupState {
 /// One exchange message: the `Option<P>` payload, plus the sender's generation in debug builds.
 struct Message {
     #[cfg(debug_assertions)]
-    seq: u64,
+    generation: u64,
     body: Box<dyn std::any::Any + Send>,
 }
 
 impl Message {
-    fn new(seq: u64, body: Box<dyn std::any::Any + Send>) -> Self {
-        let _ = seq;
+    fn new(generation: u64, body: Box<dyn std::any::Any + Send>) -> Self {
+        let _ = generation;
         Self {
             #[cfg(debug_assertions)]
-            seq,
+            generation,
             body,
         }
     }
@@ -301,12 +301,12 @@ impl InProcessTransport {
             (0..n).map(|_| (0..n).map(|_| None).collect()).collect();
         let mut receivers: Vec<Vec<Option<std::sync::mpsc::Receiver<Message>>>> =
             (0..n).map(|_| (0..n).map(|_| None).collect()).collect();
-        for src in 0..n {
-            for dst in 0..n {
-                if src != dst {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    senders[src][dst] = Some(tx);
-                    receivers[src][dst] = Some(rx);
+        for source in 0..n {
+            for destination in 0..n {
+                if source != destination {
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    senders[source][destination] = Some(sender);
+                    receivers[source][destination] = Some(receiver);
                 }
             }
         }
@@ -320,7 +320,7 @@ impl InProcessTransport {
                 generation: AtomicU64::new(0),
                 outbox: std::mem::take(&mut senders[rank]),
                 inbox: (0..n)
-                    .map(|src| receivers[src][rank].take().map(std::sync::Mutex::new))
+                    .map(|source| receivers[source][rank].take().map(std::sync::Mutex::new))
                     .collect(),
             })
             .collect()
@@ -337,37 +337,48 @@ impl InProcessTransport {
         self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn send_to(&self, dst: usize, seq: u64, body: Box<dyn std::any::Any + Send>, op: &str) {
-        let tx = self.outbox[dst]
+    fn send_to(
+        &self,
+        destination: usize,
+        generation: u64,
+        body: Box<dyn std::any::Any + Send>,
+        op: &str,
+    ) {
+        let sender = self.outbox[destination]
             .as_ref()
             .expect("a partition has no channel to itself");
-        if tx.send(Message::new(seq, body)).is_err() {
-            panic!("partition {dst} terminated before completing the {op} (it panicked)");
+        if sender.send(Message::new(generation, body)).is_err() {
+            panic!("partition {destination} terminated before completing the {op} (it panicked)");
         }
     }
 
-    /// Receive this call's message from `src`, checking the generation stamp in debug builds.
-    fn recv_from(&self, src: usize, seq: u64, op: &str) -> Box<dyn std::any::Any + Send> {
-        let rx = self.inbox[src]
+    /// Receive this call's message from `source`, checking the generation stamp in debug builds.
+    fn receive_from(
+        &self,
+        source: usize,
+        generation: u64,
+        op: &str,
+    ) -> Box<dyn std::any::Any + Send> {
+        let receiver = self.inbox[source]
             .as_ref()
             .expect("a partition has no channel to itself")
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match rx.recv() {
+        match receiver.recv() {
             Ok(message) => {
                 #[cfg(debug_assertions)]
                 assert_eq!(
-                    message.seq, seq,
-                    "collective order mismatch: partition {} is at transport call {seq} but \
-                     partition {src} sent its call {} — every partition must issue the identical \
+                    message.generation, generation,
+                    "collective order mismatch: partition {} is at transport call {generation} but \
+                     partition {source} sent its call {} — every partition must issue the identical \
                      sequence of transport calls per layer",
-                    self.rank, message.seq,
+                    self.rank, message.generation,
                 );
-                let _ = seq;
+                let _ = generation;
                 message.body
             }
             Err(_) => {
-                panic!("partition {src} terminated before completing the {op} (it panicked)")
+                panic!("partition {source} terminated before completing the {op} (it panicked)")
             }
         }
     }
@@ -454,29 +465,36 @@ impl Transport for InProcessTransport {
             "exchange: send[{}] is this partition's own slot and must be None",
             self.rank,
         );
-        let recv: Vec<Option<P>> = if n == 1 {
+        let received: Vec<Option<P>> = if n == 1 {
             vec![None]
         } else {
-            let seq = self.next_generation();
+            let generation = self.next_generation();
             // Recorded although it waits on the channels, so a partner in a collective at this generation sees the kind mismatch.
-            drop(self.state.arrive(self.rank, seq, CallKind::Exchange, &[]));
-            for (dst, payload) in send.into_iter().enumerate() {
-                if dst != self.rank as usize {
-                    self.send_to(dst, seq, Box::new(payload), "exchange");
+            drop(
+                self.state
+                    .arrive(self.rank, generation, CallKind::Exchange, &[]),
+            );
+            for (destination, payload) in send.into_iter().enumerate() {
+                if destination != self.rank as usize {
+                    self.send_to(destination, generation, Box::new(payload), "exchange");
                 }
             }
             (0..n)
-                .map(|src| {
-                    if src == self.rank as usize {
+                .map(|source| {
+                    if source == self.rank as usize {
                         None
                     } else {
-                        downcast::<Option<P>>(self.recv_from(src, seq, "exchange"), src, "exchange")
+                        downcast::<Option<P>>(
+                            self.receive_from(source, generation, "exchange"),
+                            source,
+                            "exchange",
+                        )
                     }
                 })
                 .collect()
         };
 
-        let out = body(&recv, &AlreadyHere);
-        (recv, out)
+        let out = body(&received, &AlreadyHere);
+        (received, out)
     }
 }

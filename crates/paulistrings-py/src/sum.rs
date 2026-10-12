@@ -2474,15 +2474,6 @@ impl PauliSum {
 mod partition_row_knob_tests {
     use super::*;
 
-    #[test]
-    fn literal_defaults_are_the_engines() {
-        let literal = PropagateOptions {
-            target_bucket_len: 1024,
-            min_buckets: 128,
-        };
-        assert_eq!(literal, PropagateOptions::default());
-    }
-
     /// Explicit "cut" blocks round-trip through `validate_partition_row_blocks` +
     /// `PartitionRows::cut` into a `PartitionRows` that actually assigns qubits to the
     /// blocks named, and two different cuts assign at least one term to different partitions.
@@ -2571,5 +2562,19 @@ mod partition_row_knob_tests {
         let err = validate_partition_row_blocks_impl(&overlapping, 3, 2, "partitions=2")
             .expect_err("qubit 1 in two blocks must be rejected");
         assert!(err.contains("more than one block"));
+    }
+}
+
+#[cfg(test)]
+mod propagate_options_tests {
+    use super::*;
+
+    #[test]
+    fn literal_defaults_are_the_engines() {
+        let literal = PropagateOptions {
+            target_bucket_len: 1024,
+            min_buckets: 128,
+        };
+        assert_eq!(literal, PropagateOptions::default());
     }
 }

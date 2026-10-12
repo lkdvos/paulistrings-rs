@@ -1,4 +1,4 @@
-//! The partitioned layer loop `run_layers`, shared by every partitioned driver, and the [`propagate_partitioned`] front door (ARCHITECTURE.md §Partitioning).
+//! The partitioned layer loop `run_layers` and the call frame around it, shared by every partitioned driver, and the [`propagate_partitioned`] front door (ARCHITECTURE.md §Partitioning).
 
 use crate::channel::Prepare;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use super::backend::{PartitionBackend, PartitionStorage};
 use super::plan::PartitionPlan;
+use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::transport::Transport;
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
@@ -13,12 +14,12 @@ use crate::channel::Channel;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
 use crate::engine::timing::{lap, stamp, tally, timed};
-use crate::engine::trace::{record_layer_row, PartitionLayerRow};
-use crate::engine::{Direction, PropagateOptions};
+use crate::engine::trace::{assemble, record_layer_row, PartitionLayerRow, PartitionTrace};
+use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
-use crate::truncation::TruncationPolicy;
+use crate::truncation::{assert_supports_partitions, TruncationPolicy};
 
 use super::sum::PartitionedSum;
 
@@ -266,6 +267,160 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                 rows_received,
             );
         }
+    }
+}
+
+/// A driver's own laps since they were last drained.
+#[cfg(feature = "phase-timing")]
+pub(super) struct DriverLaps {
+    scatter_ns: u64,
+    /// Atomic because `gather` takes `&self`.
+    gather_ns: std::sync::atomic::AtomicU64,
+    layers: u64,
+}
+
+#[cfg(feature = "phase-timing")]
+impl DriverLaps {
+    pub(super) fn new(scatter_ns: u64) -> Self {
+        Self {
+            scatter_ns,
+            gather_ns: std::sync::atomic::AtomicU64::new(0),
+            layers: 0,
+        }
+    }
+
+    pub(super) fn lap_gather(&self, ns: u64) {
+        self.gather_ns.fetch_add(ns, Ordering::Relaxed);
+    }
+
+    /// Drain scatter time, gather time and layers driven.
+    pub(super) fn take(&mut self) -> (u64, u64, u64) {
+        (
+            std::mem::take(&mut self.scatter_ns),
+            self.gather_ns.swap(0, Ordering::Relaxed),
+            std::mem::take(&mut self.layers),
+        )
+    }
+}
+
+/// What one `propagate_on_backend` call reads besides a partition's own work, rank and endpoint.
+pub(super) struct LayerRun<'a, const W: usize, T: ?Sized> {
+    circuit: &'a Circuit<W>,
+    policy: &'a T,
+    direction: Direction,
+    options: PropagateOptions,
+    rows: &'a PartitionRows<W>,
+    size: usize,
+    tracing: bool,
+}
+
+impl<const W: usize, T: TruncationPolicy<W> + ?Sized> LayerRun<'_, W, T> {
+    /// Partition `rank`'s [`run_layers`].
+    pub(super) fn run<X: Transport, B: PartitionBackend<W, T>>(
+        &self,
+        rank: usize,
+        work: &mut PartitionWork<B>,
+        transport: &X,
+    ) {
+        let context = PartitionContext {
+            rows: self.rows,
+            rank,
+            size: self.size,
+            tracing: self.tracing,
+        };
+        run_layers(
+            self.circuit,
+            self.policy,
+            self.direction,
+            self.options,
+            context,
+            work,
+            transport,
+        );
+    }
+}
+
+/// The partitions a driver holds and its records, lent to [`propagate`](Self::propagate) for one call.
+pub(super) struct DriverFrame<'a, const W: usize, B> {
+    /// In rank order: every partition in process, or this rank's one.
+    pub(super) parts: &'a mut [B],
+    pub(super) rows: &'a PartitionRows<W>,
+    pub(super) runtime: &'a PartitionRuntime,
+    pub(super) trace: &'a mut Option<PartitionTrace>,
+    #[cfg(feature = "phase-timing")]
+    pub(super) laps: &'a mut DriverLaps,
+    /// This process's rank in a distributed group, `None` when it holds every partition.
+    pub(super) rank: Option<usize>,
+    /// Partitions in the group.
+    pub(super) size: usize,
+}
+
+impl<const W: usize, B: PartitionStorage<W>> DriverFrame<'_, W, B> {
+    /// The prologue and epilogue every partitioned driver shares around `run`, which drives the partitions' layers and returns their work in rank order; `agree` runs after the entry line, before any layer.
+    pub(super) fn propagate<T>(
+        self,
+        circuit: &Circuit<W>,
+        policy: &T,
+        direction: Direction,
+        options: PropagateOptions,
+        agree: impl FnOnce(),
+        run: impl FnOnce(Vec<PartitionWork<B>>, &LayerRun<'_, W, T>) -> Vec<PartitionWork<B>>,
+    ) where
+        T: TruncationPolicy<W> + ?Sized,
+        B: PartitionBackend<W, T>,
+    {
+        options.assert_valid();
+        let num_layers = circuit.channels.len();
+        let size = self.size;
+        assert_supports_partitions(policy, size);
+        let terms_in: usize = self.parts.iter().map(PartitionStorage::len).sum();
+        let started = Instant::now();
+        log::info!(
+            target: LOG_TARGET,
+            "propagate: {terms_in} terms through {num_layers} channels ({direction:?}), {}",
+            progress_scope(self.rank, size, Some(&self.runtime.placement_summary())),
+        );
+
+        agree();
+
+        if num_layers > 0 {
+            let tracing = self.trace.is_some();
+            let items: Vec<PartitionWork<B>> = self
+                .parts
+                .iter_mut()
+                .map(|part| PartitionWork::take(part, num_layers, tracing))
+                .collect();
+            let layers = LayerRun {
+                circuit,
+                policy,
+                direction,
+                options,
+                rows: self.rows,
+                size,
+                tracing,
+            };
+            let done = run(items, &layers);
+            assert_eq!(done.len(), self.parts.len(), "one work item per partition");
+            let mut traced = Vec::with_capacity(if tracing { done.len() } else { 0 });
+            for (part, work) in self.parts.iter_mut().zip(done) {
+                *part = work.local;
+                if tracing {
+                    traced.push(work.rows);
+                }
+            }
+            if let Some(trace) = self.trace.as_mut() {
+                assemble(trace, traced, size);
+            }
+            tally!(self.laps.layers, num_layers);
+        }
+
+        log::info!(
+            target: LOG_TARGET,
+            "propagate: {num_layers} layers applied, {terms_in} -> {} terms, {:.3} s, {}",
+            self.parts.iter().map(PartitionStorage::len).sum::<usize>(),
+            started.elapsed().as_secs_f64(),
+            progress_scope(self.rank, size, Some(&self.runtime.placement_summary())),
+        );
     }
 }
 

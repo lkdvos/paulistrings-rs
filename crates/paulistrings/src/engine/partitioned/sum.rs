@@ -7,19 +7,21 @@ use num_complex::Complex64;
 
 use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
 use super::distributed::{PartitionRowPolicy, ScatterOptions, ScatterRows};
-use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, LOG_TARGET};
+#[cfg(feature = "phase-timing")]
+use super::driver::DriverLaps;
+use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use crate::circuit::Circuit;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
-use crate::engine::timing::{tally, timed};
-use crate::engine::trace::{assemble, PartitionTrace};
+use crate::engine::timing::timed;
+use crate::engine::trace::PartitionTrace;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
 use crate::readout::product_state::ProductBasis;
-use crate::truncation::{assert_supports_partitions, TruncationPolicy};
+use crate::truncation::TruncationPolicy;
 
 /// A [`PauliSum`] split across the partitions of a [`PartitionRuntime`], held across calls so a driver scatters and gathers once.
 ///
@@ -34,40 +36,6 @@ pub struct PartitionedSum<const W: usize, B = HostPartition<W>> {
     trace: Option<PartitionTrace>,
     #[cfg(feature = "phase-timing")]
     laps: DriverLaps,
-}
-
-/// A driver's own laps since they were last drained.
-#[cfg(feature = "phase-timing")]
-pub(super) struct DriverLaps {
-    scatter_ns: u64,
-    /// Atomic because `gather` takes `&self`.
-    gather_ns: std::sync::atomic::AtomicU64,
-    pub(super) layers: u64,
-}
-
-#[cfg(feature = "phase-timing")]
-impl DriverLaps {
-    pub(super) fn new(scatter_ns: u64) -> Self {
-        Self {
-            scatter_ns,
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            layers: 0,
-        }
-    }
-
-    pub(super) fn lap_gather(&self, ns: u64) {
-        self.gather_ns
-            .fetch_add(ns, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Drain scatter time, gather time and layers driven.
-    pub(super) fn take(&mut self) -> (u64, u64, u64) {
-        (
-            std::mem::take(&mut self.scatter_ns),
-            self.gather_ns.swap(0, std::sync::atomic::Ordering::Relaxed),
-            std::mem::take(&mut self.layers),
-        )
-    }
 }
 
 impl<const W: usize, B> PartitionedSum<W, B> {
@@ -148,59 +116,30 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         T: TruncationPolicy<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
-        options.assert_valid();
-        let num_layers = circuit.channels.len();
-        let size = self.num_partitions();
-        assert_supports_partitions(policy, size);
-        let terms_in = self.len();
-        let started = Instant::now();
-        log::info!(
-            target: LOG_TARGET,
-            "propagate: {terms_in} terms through {num_layers} channels ({direction:?}), {}",
-            progress_scope(None, size, Some(&self.runtime.placement_summary())),
-        );
-
-        if num_layers > 0 {
-            let tracing = self.trace.is_some();
-            let items: Vec<PartitionWork<B>> = self
-                .parts
-                .iter_mut()
-                .map(|part| PartitionWork::take(part, num_layers, tracing))
-                .collect();
-
-            let runtime = Arc::clone(&self.runtime);
-            let rows = &self.rows;
-            let done = runtime.map_partitions(items, |rank, mut work, transport| {
-                let context = PartitionContext {
-                    rows,
-                    rank,
-                    size,
-                    tracing,
-                };
-                run_layers(
-                    circuit, policy, direction, options, context, &mut work, transport,
-                );
-                work
-            });
-            let mut traced = Vec::with_capacity(if tracing { size } else { 0 });
-            for (rank, work) in done.into_iter().enumerate() {
-                self.parts[rank] = work.local;
-                if tracing {
-                    traced.push(work.rows);
-                }
-            }
-            if let Some(trace) = self.trace.as_mut() {
-                assemble(trace, traced, size);
-            }
-            tally!(self.laps.layers, num_layers);
-        }
-
-        log::info!(
-            target: LOG_TARGET,
-            "propagate: {num_layers} layers applied, {terms_in} -> {} terms, {:.3} s, {}",
-            self.len(),
-            started.elapsed().as_secs_f64(),
-            progress_scope(None, size, Some(&self.runtime.placement_summary())),
+        let runtime = &*self.runtime;
+        let size = self.parts.len();
+        let frame = DriverFrame {
+            parts: &mut self.parts,
+            rows: &self.rows,
+            runtime,
+            trace: &mut self.trace,
+            #[cfg(feature = "phase-timing")]
+            laps: &mut self.laps,
+            rank: None,
+            size,
+        };
+        frame.propagate(
+            circuit,
+            policy,
+            direction,
+            options,
+            || {},
+            |items, layers| {
+                runtime.map_partitions(items, |rank, mut work, transport| {
+                    layers.run(rank, &mut work, transport);
+                    work
+                })
+            },
         );
     }
 }

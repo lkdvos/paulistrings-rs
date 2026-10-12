@@ -6,21 +6,21 @@ use std::time::Instant;
 use num_complex::Complex64;
 
 use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
-use super::driver::{run_layers, scatter_local, PartitionContext, PartitionWork, LOG_TARGET};
+#[cfg(feature = "phase-timing")]
+use super::driver::DriverLaps;
+use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::transport::Transport;
 use crate::circuit::Circuit;
-use crate::engine::timing::{tally, timed};
-use crate::engine::trace::{assemble, PartitionTrace};
+use crate::engine::timing::timed;
+use crate::engine::trace::PartitionTrace;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
-use crate::truncation::{assert_supports_partitions, TruncationPolicy};
+use crate::truncation::TruncationPolicy;
 
-#[cfg(feature = "phase-timing")]
-use super::sum::DriverLaps;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
 
@@ -223,62 +223,37 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         T: TruncationPolicy<W> + ?Sized,
         B: PartitionBackend<W, T>,
     {
-        options.assert_valid();
-        let num_layers = circuit.channels.len();
-        let rank = self.transport.rank() as usize;
-        let size = self.transport.size() as usize;
-        assert_supports_partitions(policy, size);
-        let terms_in = self.local.len();
-        let started = Instant::now();
-        log::info!(
-            target: LOG_TARGET,
-            "propagate: {terms_in} terms through {num_layers} channels ({direction:?}), {}",
-            progress_scope(Some(rank), size, Some(&self.runtime.placement_summary())),
-        );
-
-        self.transport.check_consistency(run_fingerprint(
-            num_layers,
+        let runtime = &*self.runtime;
+        let transport = &self.transport;
+        let rank = transport.rank() as usize;
+        let fingerprint = run_fingerprint(
+            circuit.channels.len(),
             direction,
             options,
             self.rows.num_qubits(),
             W,
-        ));
-
-        if num_layers > 0 {
-            let tracing = self.trace.is_some();
-            let mut work = PartitionWork::take(&mut self.local, num_layers, tracing);
-
-            {
-                let runtime = Arc::clone(&self.runtime);
-                let rows = &self.rows;
-                let transport = &self.transport;
-                let work = &mut work;
-                let context = PartitionContext {
-                    rows,
-                    rank,
-                    size,
-                    tracing,
-                };
-                runtime.install(move || {
-                    run_layers(
-                        circuit, policy, direction, options, context, work, transport,
-                    );
-                });
-            }
-
-            self.local = work.local;
-            if let Some(trace) = self.trace.as_mut() {
-                assemble(trace, vec![work.rows], size);
-            }
-            tally!(self.laps.layers, num_layers);
-        }
-
-        log::info!(
-            target: LOG_TARGET,
-            "propagate: {num_layers} layers applied, {terms_in} -> {} terms, {:.3} s, {}",
-            self.local.len(),
-            started.elapsed().as_secs_f64(),
-            progress_scope(Some(rank), size, Some(&self.runtime.placement_summary())),
+        );
+        let frame = DriverFrame {
+            parts: std::slice::from_mut(&mut self.local),
+            rows: &self.rows,
+            runtime,
+            trace: &mut self.trace,
+            #[cfg(feature = "phase-timing")]
+            laps: &mut self.laps,
+            rank: Some(rank),
+            size: transport.size() as usize,
+        };
+        frame.propagate(
+            circuit,
+            policy,
+            direction,
+            options,
+            || transport.check_consistency(fingerprint),
+            |mut items, layers| {
+                let work = &mut items[0];
+                runtime.install(move || layers.run(rank, work, transport));
+                items
+            },
         );
     }
 }

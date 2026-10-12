@@ -255,4 +255,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–6 done (chunk 6 at `601b391`); D42 waits on job 7216669 (`ab-campaign.sbatch`, `KNOB_B="--truncation-dispatch builtin"`, PS_REV `b4df80d`), D16 on its own A/B. Chunk 7 (D45) and D44 implementing; chunk 8 (D46) implementing on top of `chunk7`; chunk 9 (D47) implementing; chunk 12 (D51) implementing; chunks 0–14 done; D51 collectives gated on the user's A/B; next chunk 14 (driver, trace, partitioned truncation).
+Chunks 0–14 done, D55 committed (`38642af`, `5048b2f`, report pending), D56 (chunk 15) queued after D55's verification. Pending user A/Bs: D42 (job 7216669, `KNOB_B="--truncation-dispatch builtin"`), D16, D51 collectives (A `9deb5ad`, B `244175a`, P = 2 and P = 4 unpinned). GPU inventory for chunks 16–20 in `scratchpad/d54-gpu-inventory.md`. Next: chunk 16 (GPU), then 17–20, 21 (organisation revisit), 22 (tests), 23 (benches/examples).

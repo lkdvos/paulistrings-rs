@@ -6,32 +6,32 @@ use std::time::Instant;
 ///
 /// One partition's entry of the [`PartitionPhaseStats`] every driver's `take_stats` drains.
 /// Two clock domains are mixed: the wall-clock phases (`rebucket_ns` through `exchange_ns`) are measured once per layer on the driving thread, while the busy-time phases (`swap_ns` through `clear_ns`) are summed over every Rayon worker and so exceed `coset_loop_ns` under parallelism.
-/// The sub-phases `append_ns` and `chunk_wait_ns` are contained in `gather_ns` and `append_ns` respectively, never additional to them.
+/// The sub-phases `append_ns` and `chunk_wait_ns` are contained in `gather_ns` and `append_ns` respectively, and the device's `truncate_ns` and `export_kernel_ns` in `finalize_ns` and `export_ns`, never additional to them.
 /// Fields marked partitioned- or device-only are zero elsewhere.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhaseStats {
     // -- wall-clock, once per layer, on the calling thread --
-    /// The grow-only rebucket before each layer.
+    /// The grow-only rebucket before each layer; on a device, the refine kernels' time.
     pub rebucket_ns: u64,
     /// Channel preparation.
     pub prepare_ns: u64,
-    /// The key-preserving rescale path, taken instead of the coset loop.
+    /// The key-preserving rescale path, taken instead of the coset loop; on a device, `k_rescale`'s time.
     pub rescale_ns: u64,
     /// Per-layer coset planning.
     pub span_plan_ns: u64,
     /// Serial bucket-handle permutation into coset-contiguous order.
     pub permute_ns: u64,
-    /// Wall time of the whole coset loop (serial or parallel branch).
+    /// Wall time of the whole coset loop (serial or parallel branch); on a device, the driving thread's wall over the layer less the refine, rescale, export and exchange times.
     pub coset_loop_ns: u64,
     /// Serial bucket-handle un-permutation.
     pub unpermute_ns: u64,
     /// The length recount at the end of the layer.
     pub recount_ns: u64,
-    /// `finalize_layer` after each layer, including any collectives it issues.
+    /// `finalize_layer` after each layer, including any collectives it issues; on a device, the wall around `truncate_ns`.
     pub finalize_ns: u64,
     /// Partitioned only: the driver's per-layer bucket-count all-reduce.
     pub collective_ns: u64,
-    /// Partitioned only: the export pass building the per-partner exchange blocks.
+    /// Partitioned only: the export pass building the per-partner exchange blocks; on a device, its wall, the sender-side merge included.
     pub export_ns: u64,
     /// Partitioned only: the exchange minus the coset loop it wraps, including the wait for a partner.
     pub exchange_ns: u64,
@@ -40,22 +40,22 @@ pub struct PhaseStats {
     pub swap_ns: u64,
     /// Exact per-run capacity sizing.
     pub size_ns: u64,
-    /// Gather, every variant.
+    /// Gather, every variant; on a device, the count and segment-size kernels with their scans.
     pub gather_ns: u64,
-    /// Sorting each run's rest stream.
+    /// Sorting each run's rest stream; zero on a device, whose sort is inside `merge_ns`.
     pub sort_ns: u64,
-    /// The fused two-stream merge and reduction.
+    /// The fused two-stream merge and reduction; on a device, the fused layer's and the permutation scatter's time.
     pub merge_ns: u64,
     /// Clearing the swapped-out columns at the end of each coset task.
     pub clear_ns: u64,
     // -- counters --
     /// Layers driven.
     pub layers: u64,
-    /// Coset tasks executed.
+    /// Coset tasks executed; on a device, the fused layer's arena batches, or one for a permutation layer.
     pub cosets: u64,
-    /// Sort/merge runs executed.
+    /// Sort/merge runs executed; on a device, the positions (buckets) of each fused or permutation layer.
     pub runs: u64,
-    /// Rows pushed into gather runs.
+    /// Rows pushed into gather runs; on a device, the pre-dedup records.
     pub rows_gathered: u64,
     /// The subset of `rows_gathered` that went through the sort, the rest streams only.
     pub rows_sorted: u64,
@@ -81,6 +81,10 @@ pub struct PhaseStats {
     pub h2d_ns: u64,
     /// Device only: device-to-host copies inside a layer, part of `coset_loop_ns` or `rescale_ns`.
     pub d2h_ns: u64,
+    /// Device only, kernel time: the `ApproxTopN` histogram, the boundary counts, the retain and exact `TopN`'s radix-select, part of `finalize_ns`.
+    pub truncate_ns: u64,
+    /// Device only, kernel time: the export kernels and the sender-side merge, part of `export_ns`.
+    pub export_kernel_ns: u64,
 }
 
 impl PhaseStats {
@@ -119,6 +123,8 @@ impl PhaseStats {
         self.compact_ns += other.compact_ns;
         self.h2d_ns += other.h2d_ns;
         self.d2h_ns += other.d2h_ns;
+        self.truncate_ns += other.truncate_ns;
+        self.export_kernel_ns += other.export_kernel_ns;
     }
 
     /// Fold one coset task's busy-time counters into the totals.

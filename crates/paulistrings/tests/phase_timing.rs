@@ -317,3 +317,62 @@ fn the_unpartitioned_engine_reports_no_exchange() {
     assert_eq!(stats.rows_exported, 0, "{stats:?}");
     assert_eq!(stats.recv_rows, 0, "{stats:?}");
 }
+
+/// A device run lands its kernel times on the fields `PhaseStats` documents: the fused path's on `gather_ns`, `merge_ns` and `compact_ns`, the truncation's on `truncate_ns` and, with a remote layer, the export kernels' on `export_kernel_ns`.
+#[cfg(feature = "cuda")]
+#[test]
+fn device_stats_land_on_their_fields() {
+    use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
+    use paulistrings::{ApproxTopN, PartitionConfig, Placement};
+    paulistrings::require_cuda!();
+    let gen = PauliString::<1> {
+        x: [0b0101],
+        z: [0b1010],
+    };
+    let mut circuit = Circuit::<1>::new(16);
+    for _ in 0..3 {
+        circuit.push(PauliRotation::new(gen, 0.3));
+    }
+    let sum = rand_sum_real::<1>(20_000, 16, 0x9A18);
+
+    let mut one = GpuPartitionedSum::from_host(&sum, 0).expect("upload");
+    one.propagate(&circuit, ApproxTopN(15_000), Direction::Forward)
+        .expect("propagate");
+    let stats = one.take_stats();
+    let p = &stats.per_partition[0];
+    assert_eq!(p.layers, 3, "{p:?}");
+    assert!(
+        p.gather_ns > 0 && p.merge_ns > 0 && p.compact_ns > 0,
+        "{p:?}"
+    );
+    assert!(p.truncate_ns > 0 && p.finalize_ns > 0, "{p:?}");
+    assert_eq!((p.export_ns, p.export_kernel_ns), (0, 0), "{p:?}");
+
+    let config = PartitionConfig {
+        placement: Placement::Devices {
+            devices: vec![0],
+            per_device: 2,
+        },
+        bind_memory: false,
+        threads_per_partition: None,
+    };
+    let options = GpuScatterOptions {
+        devices: PartitionRuntime::new(&config).expect("placement"),
+        rows: ScatterRows::Explicit(partition_rows::<1>(16, vec![[1u64]], vec![[0u64]])),
+        layer: GpuLayerOptions::default(),
+    };
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(&sum, options).expect("scatter");
+    split
+        .propagate(&circuit, KeepAll, Direction::Forward)
+        .expect("propagate");
+    for (rank, p) in split.take_stats().per_partition.iter().enumerate() {
+        assert!(
+            p.export_ns > 0 && p.export_kernel_ns > 0,
+            "partition {rank}: {p:?}"
+        );
+        assert!(
+            p.rows_exported > 0 && p.recv_rows > 0,
+            "partition {rank}: {p:?}"
+        );
+    }
+}

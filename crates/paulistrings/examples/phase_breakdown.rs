@@ -2302,6 +2302,9 @@ fn fold_partition_stats(stats: &PartitionPhaseStats) -> PhaseStats {
         out.collective_ns = out.collective_ns.max(s.collective_ns);
         out.export_ns = out.export_ns.max(s.export_ns);
         out.exchange_ns = out.exchange_ns.max(s.exchange_ns);
+        // Device sub-phases of the two wall phases above, aggregated like them.
+        out.truncate_ns = out.truncate_ns.max(s.truncate_ns);
+        out.export_kernel_ns = out.export_kernel_ns.max(s.export_kernel_ns);
         // Worker busy time and counters: sums over the group.
         out.swap_ns += s.swap_ns;
         out.size_ns += s.size_ns;
@@ -2519,6 +2522,11 @@ fn print_table(cell: &CellResult) {
             s.h2d_ns as f64 / 1e6,
             s.d2h_ns as f64 / 1e6,
         );
+        println!(
+            "    kernels: truncate = {:.3} ms [inside finalize]   export = {:.3} ms [inside export]",
+            s.truncate_ns as f64 / 1e6,
+            s.export_kernel_ns as f64 / 1e6,
+        );
     }
     println!();
 }
@@ -2690,7 +2698,7 @@ fn json_line(cell: &CellResult) -> String {
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
          \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{},\
-         \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{}",
+         \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{},\"truncate_ns\":{},\"export_kernel_ns\":{}",
         cell.layer,
         cell.truncation,
         cell.truncation_dispatch,
@@ -2732,6 +2740,8 @@ fn json_line(cell: &CellResult) -> String {
         s.compact_ns,
         s.h2d_ns,
         s.d2h_ns,
+        s.truncate_ns,
+        s.export_kernel_ns,
     );
     let mpi_fields = match cell.mpi {
         Some((rank, ranks)) => format!(",\"rank\":{rank},\"ranks\":{ranks}"),

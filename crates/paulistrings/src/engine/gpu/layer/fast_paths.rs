@@ -10,6 +10,7 @@ use crate::engine::gpu::prepared::DevicePrepared;
 use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
+use crate::engine::timing::timed;
 
 /// `k_rescale`: the key-preserving fast path, into the spare columns at the input's offsets.
 pub(super) fn rescale_device<const W: usize>(
@@ -32,12 +33,12 @@ pub(super) fn rescale_device<const W: usize>(
     out.reserve(extent, b)?;
     grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
     let amplitude = &mut scratch.table.amplitude;
-    timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
+    timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
         stream.memcpy_htod(&table.amplitude, amplitude)?;
         Ok(())
     })?;
     let b32 = b as u32;
-    let t0 = scratch.event(sum)?;
+    timed!(let t0 = scratch.event(sum)?);
     // SAFETY: arguments match `k_rescale` in rescale.cu; `out` has room for the input's extent.
     unsafe {
         stream
@@ -71,9 +72,9 @@ pub(super) fn rescale_device<const W: usize>(
         &mut scratch.scan,
         &mut scratch.totals,
     )?;
-    scratch.lap(sum, t0, |m| &mut m.rescale)?;
+    timed!(scratch.lap(sum, t0, |stats| &mut stats.rescale_ns)?);
     let totals = &scratch.totals;
-    let total = timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
+    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
         let v = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
         Ok(v[0])
@@ -114,7 +115,7 @@ pub(super) fn permute_device<const W: usize>(
     out.buckets = 0;
     out.reserve(n_in, b)?;
     let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
-    timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
+    timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
         stream.memcpy_htod(&table.amplitude, &mut buffers.amplitude)?;
         stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
         stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
@@ -127,7 +128,7 @@ pub(super) fn permute_device<const W: usize>(
         block_dim: (permute_threads(n_in, b, W), 1, 1),
         shared_mem_bytes: 0,
     };
-    let t0 = scratch.event(sum)?;
+    timed!(let t0 = scratch.event(sum)?);
     // SAFETY: arguments match `k_permute_count` in permute.cu; `counts` holds `b * e` entries.
     unsafe {
         stream
@@ -152,8 +153,8 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&mut scratch.counts)
             .launch(block_per_bucket)?;
     }
-    scratch.lap(sum, t0, |m| &mut m.count)?;
-    let t1 = scratch.event(sum)?;
+    timed!(scratch.lap(sum, t0, |stats| &mut stats.gather_ns)?);
+    timed!(let t1 = scratch.event(sum)?);
     // SAFETY: arguments match `k_permute_lengths`; `out.lens` holds `b` entries.
     unsafe {
         stream
@@ -174,8 +175,8 @@ pub(super) fn permute_device<const W: usize>(
         &mut scratch.scan,
         &mut scratch.totals,
     )?;
-    scratch.lap(sum, t1, |m| &mut m.sizes)?;
-    let t2 = scratch.event(sum)?;
+    timed!(scratch.lap(sum, t1, |stats| &mut stats.gather_ns)?);
+    timed!(let t2 = scratch.event(sum)?);
     // SAFETY: arguments match `k_permute_scatter`; `out` has room for every input row, the scan's total at most.
     unsafe {
         stream
@@ -208,9 +209,9 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&mut out.fingerprint)
             .launch(block_per_bucket)?;
     }
-    scratch.lap(sum, t2, |m| &mut m.permute)?;
+    timed!(scratch.lap(sum, t2, |stats| &mut stats.merge_ns)?);
     let totals = &scratch.totals;
-    let total = timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
+    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
         let v = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
         Ok(v[0])

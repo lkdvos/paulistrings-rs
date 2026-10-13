@@ -160,15 +160,15 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
             return Err(error);
         }
     };
-    tally!(scratch.laps.export_ns, t_export.elapsed().as_nanos());
+    tally!(scratch.stats.export_ns, t_export.elapsed().as_nanos());
     tally!(
-        scratch.laps.rows_exported,
+        scratch.stats.rows_exported,
         counts.rows_sent.iter().sum::<u64>()
     );
     let buckets = sum.hash.num_buckets();
     let cap_rows = receive_cap_rows::<W>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
-    let transfer_ns = &mut scratch.transfer_ns;
+    let stats = &mut scratch.stats;
     timed!(let t_exchange = std::time::Instant::now());
     let skeletons: Vec<Option<BlockSkeletons<W>>> = send
         .iter()
@@ -183,7 +183,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let received = transport.exchange(skeletons, &mut export.skeletons);
     let (rows, ops) = {
         let blocks = paired_blocks(plan, &received);
-        let ready = stage_receive(sum, export, &blocks, cap_rows, transfer_ns)
+        let ready = stage_receive(sum, export, &blocks, cap_rows, stats)
             .and_then(|log2| wire_ready(export).map(|()| log2));
         match vote(transport, ready.as_ref().ok().copied()) {
             Some(log2) => {
@@ -225,9 +225,9 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
         }
         None => export.sends.extend(send.into_iter().flatten()),
     }
-    tally!(scratch.laps.exchange_ns, t_exchange.elapsed().as_nanos());
+    tally!(scratch.stats.exchange_ns, t_exchange.elapsed().as_nanos());
     let rows_received = rows?;
-    tally!(scratch.laps.recv_rows, rows_received);
+    tally!(scratch.stats.recv_rows, rows_received);
     counts.rows_received = rows_received;
     counts.remote_deltas = plan.remote.len();
     Ok(counts)
@@ -299,7 +299,7 @@ fn export_offsets<const W: usize>(
     offsets.clear();
     offsets.resize(buckets + 1, 0);
     let device_offsets = &scratch.export.offsets;
-    timed_transfer(stream, &mut scratch.transfer_ns, Transfer::D2h, || {
+    timed_transfer(stream, &mut scratch.stats, Transfer::D2h, || {
         stream.memcpy_dtoh(&device_offsets.slice(0..buckets + 1), &mut offsets[..])?;
         stream.synchronize()?;
         Ok(())
@@ -408,7 +408,7 @@ fn export_blocks_device<const W: usize>(
         }
         let block = payload.block_mut(j, &stream)?;
         let (bucket_delta, entry) = (r.bucket_delta, r.entry as u32);
-        let t0 = scratch.event(sum)?;
+        timed!(let t0 = scratch.event(sum)?);
         let rows = export_offsets(sum, table, scratch, bucket_delta, entry, &mut block.offsets)?;
         block.set_header(entry, buckets);
         if rows > 0 {
@@ -429,7 +429,7 @@ fn export_blocks_device<const W: usize>(
                 &mut block.coefficient,
             )?;
         }
-        scratch.lap(sum, t0, |m| &mut m.export)?;
+        timed!(scratch.lap(sum, t0, |stats| &mut stats.export_kernel_ns)?);
         counts.rows_sent[q] += rows as u64;
         counts.bytes_sent[q] += block.bytes() as u64;
     }

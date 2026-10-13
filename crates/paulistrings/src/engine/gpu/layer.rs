@@ -2,8 +2,11 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "phase-timing")]
 use cudarc::driver::sys::CUevent_flags;
-use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, PushKernelArg};
+#[cfg(feature = "phase-timing")]
+use cudarc::driver::CudaEvent;
+use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
@@ -20,6 +23,7 @@ use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;
+use crate::engine::timing::timed;
 use crate::engine::trace::DeviceLayerRecord;
 use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::truncation::builtin::APPROX_BINS;
@@ -35,38 +39,15 @@ pub(super) use fused::{
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 
-/// Kernel milliseconds per family, accumulated under `phase-timing` and folded into the partition's `PhaseStats`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct GpuKernelMs {
-    /// `k_count`, the count table.
-    pub count: f64,
-    /// `k_rows`, segment sizes and their scans.
-    pub sizes: f64,
-    /// The fused layer over every batch.
-    pub layer: f64,
-    /// `k_compact` and its scans.
-    pub compact: f64,
-    /// `k_rescale`, the key-preserving rescale.
-    pub rescale: f64,
-    /// `k_permute_scatter`; `k_permute_count` and `k_permute_lengths` land in `count` and `sizes`.
-    pub permute: f64,
-    /// The refines the layer issued.
-    pub refine: f64,
-    /// The `ApproxTopN` octave histogram and retain.
-    pub truncate: f64,
-    /// `k_export_counts` and `k_export_fill`.
-    pub export: f64,
-}
-
-/// The exchange's laps of one partition, drained into its `PhaseStats` per layer.
+/// The partition's phase counters under `phase-timing` (ARCHITECTURE.md §GPU-Readiness, `benchmarks/PROFILING.md` contract (a)), nothing otherwise.
 #[cfg(feature = "phase-timing")]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ExchangeLaps {
-    pub export_ns: u64,
-    pub exchange_ns: u64,
-    pub rows_exported: u64,
-    pub recv_rows: u64,
-}
+pub(crate) type DeviceStats = crate::engine::stats::PhaseStats;
+#[cfg(not(feature = "phase-timing"))]
+pub(crate) type DeviceStats = ();
+
+/// The `PhaseStats` field a kernel interval lands in.
+#[cfg(feature = "phase-timing")]
+type KernelSlot = fn(&mut DeviceStats) -> &mut u64;
 
 /// A [`DevicePrepared`]'s per-entry tables on the device.
 pub(super) struct TableBuffers {
@@ -147,24 +128,17 @@ pub(crate) struct LayerScratch<const W: usize> {
     pub(crate) refine_passes: u32,
     /// The current layer's receive chunks, planned before the first moves, so a failure mid-receive keeps it.
     pub(crate) receive_chunks: u32,
-    pub(crate) kernel_ms: GpuKernelMs,
+    /// Kernel intervals, copies and exchange laps land here directly.
+    pub(crate) stats: DeviceStats,
     /// Timing events, reused across layers.
+    #[cfg(feature = "phase-timing")]
     events: Vec<CudaEvent>,
+    #[cfg(feature = "phase-timing")]
     next_event: usize,
     /// Recorded event pairs not yet read; [`Self::resolve`] reads them behind one synchronization instead of one per kernel.
-    pending: Vec<(usize, usize, KernelSlot)>,
-    /// Host-to-device and device-to-host copy time inside the current layer.
-    pub(crate) transfer_ns: TransferNs,
     #[cfg(feature = "phase-timing")]
-    pub(crate) laps: ExchangeLaps,
+    pending: Vec<(usize, usize, KernelSlot)>,
 }
-
-type KernelSlot = fn(&mut GpuKernelMs) -> &mut f64;
-
-#[cfg(feature = "phase-timing")]
-pub(crate) type TransferNs = [u64; 2];
-#[cfg(not(feature = "phase-timing"))]
-pub(crate) type TransferNs = ();
 
 /// Which direction a timed copy in [`timed_transfer`] runs.
 #[derive(Clone, Copy)]
@@ -176,7 +150,7 @@ pub(super) enum Transfer {
 /// Run `f`, a synchronous host<->device copy on `stream`, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
 pub(super) fn timed_transfer<T>(
     stream: &CudaStream,
-    ns: &mut TransferNs,
+    stats: &mut DeviceStats,
     dir: Transfer,
     f: impl FnOnce() -> Result<T, GpuError>,
 ) -> Result<T, GpuError> {
@@ -186,12 +160,16 @@ pub(super) fn timed_transfer<T>(
         stream.synchronize()?;
         let t0 = std::time::Instant::now();
         let r = f();
-        ns[dir as usize] += t0.elapsed().as_nanos() as u64;
+        let ns = t0.elapsed().as_nanos() as u64;
+        match dir {
+            Transfer::H2d => stats.h2d_ns += ns,
+            Transfer::D2h => stats.d2h_ns += ns,
+        }
         r
     }
     #[cfg(not(feature = "phase-timing"))]
     {
-        let _ = (stream, ns, dir);
+        let _ = (stream, stats, dir);
         f()
     }
 }
@@ -227,20 +205,19 @@ impl<const W: usize> LayerScratch<W> {
             record: DeviceLayerRecord::default(),
             refine_passes: 0,
             receive_chunks: 0,
-            kernel_ms: GpuKernelMs::default(),
-            events: Vec::new(),
-            next_event: 0,
-            pending: Vec::new(),
-            transfer_ns: TransferNs::default(),
+            stats: DeviceStats::default(),
             #[cfg(feature = "phase-timing")]
-            laps: ExchangeLaps::default(),
+            events: Vec::new(),
+            #[cfg(feature = "phase-timing")]
+            next_event: 0,
+            #[cfg(feature = "phase-timing")]
+            pending: Vec::new(),
         })
     }
 
-    pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {
-        if !cfg!(feature = "phase-timing") {
-            return Ok(None);
-        }
+    /// Record a timing event on the sum's stream, opening an interval for [`Self::lap`].
+    #[cfg(feature = "phase-timing")]
+    pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<usize, GpuError> {
         if self.next_event == self.events.len() {
             self.events.push(
                 sum.context
@@ -250,36 +227,37 @@ impl<const W: usize> LayerScratch<W> {
         let i = self.next_event;
         self.events[i].record(&sum.stream)?;
         self.next_event += 1;
-        Ok(Some(i))
+        Ok(i)
     }
 
-    /// Close the interval opened by `from` with a new event; read at the next [`Self::resolve`].
+    /// Close the interval opened by `from` with a new event; read into `into` at the next [`Self::resolve`].
+    #[cfg(feature = "phase-timing")]
     pub(super) fn lap(
         &mut self,
         sum: &GpuSum<W>,
-        from: Option<usize>,
+        from: usize,
         into: KernelSlot,
     ) -> Result<(), GpuError> {
-        let Some(i) = from else { return Ok(()) };
-        let Some(j) = self.event(sum)? else {
-            return Ok(());
-        };
-        self.pending.push((i, j, into));
+        let to = self.event(sum)?;
+        self.pending.push((from, to, into));
         Ok(())
     }
 
-    /// Read every pending interval into `kernel_ms` behind one synchronization and free the events for reuse.
+    /// Read every pending interval into `stats`, in nanoseconds, behind one synchronization and free the events for reuse.
     pub(super) fn resolve(&mut self, sum: &GpuSum<W>) -> Result<(), GpuError> {
-        if self.pending.is_empty() {
+        #[cfg(feature = "phase-timing")]
+        {
+            if !self.pending.is_empty() {
+                sum.stream.synchronize()?;
+            }
+            for (from, to, into) in std::mem::take(&mut self.pending) {
+                let ms = f64::from(self.events[from].elapsed_ms(&self.events[to])?);
+                *into(&mut self.stats) += (ms.max(0.0) * 1e6) as u64;
+            }
             self.next_event = 0;
-            return Ok(());
         }
-        sum.stream.synchronize()?;
-        for (i, j, into) in std::mem::take(&mut self.pending) {
-            let ms = f64::from(self.events[i].elapsed_ms(&self.events[j])?);
-            *into(&mut self.kernel_ms) += ms;
-        }
-        self.next_event = 0;
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = sum;
         Ok(())
     }
 
@@ -309,7 +287,7 @@ impl<const W: usize> LayerScratch<W> {
         grow(stream, &mut self.destination_offsets, b + 1, ordinal)?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
         let buffers = &mut self.table;
-        timed_transfer(stream, &mut self.transfer_ns, Transfer::H2d, || {
+        timed_transfer(stream, &mut self.stats, Transfer::H2d, || {
             if map_stale {
                 stream.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
             }
@@ -330,7 +308,7 @@ impl<const W: usize> LayerScratch<W> {
         let stream = &sum.stream;
         let b = sum.hash.num_buckets();
         let (b32, e32) = (b as u32, table.entries as u32);
-        let t0 = self.event(sum)?;
+        timed!(let t0 = self.event(sum)?);
         // SAFETY: arguments match `k_count` in count.cu; `counts` holds `b * e` entries.
         unsafe {
             stream
@@ -353,7 +331,8 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&mut self.counts)
                 .launch(warp_per_bucket(b))?;
         }
-        self.lap(sum, t0, |m| &mut m.count)
+        timed!(self.lap(sum, t0, |stats| &mut stats.gather_ns)?);
+        Ok(())
     }
 
     /// The longest source bucket, read once per bucket count and layer.
@@ -363,7 +342,7 @@ impl<const W: usize> LayerScratch<W> {
         }
         self.scan_lens(sum)?;
         let (stream, length_totals) = (&sum.stream, &self.length_totals);
-        let l = timed_transfer(stream, &mut self.transfer_ns, Transfer::D2h, || {
+        let l = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
             let v = stream.clone_dtoh(length_totals)?;
             stream.synchronize()?;
             Ok(v[1])
@@ -396,7 +375,7 @@ impl<const W: usize> LayerScratch<W> {
         let kernels = &sum.kernels;
         let b = sum.hash.num_buckets();
         let (b32, e32) = (b as u32, table.entries as u32);
-        let t1 = self.event(sum)?;
+        timed!(let t1 = self.event(sum)?);
         // SAFETY: arguments match `k_rows` in count.cu; `received_offsets` holds `K × (b + 1)` entries for the `K` received entries `received_slot` names.
         unsafe {
             stream
@@ -424,12 +403,12 @@ impl<const W: usize> LayerScratch<W> {
         if known.is_none() {
             self.scan_lens(sum)?;
         }
-        self.lap(sum, t1, |m| &mut m.sizes)?;
+        timed!(self.lap(sum, t1, |stats| &mut stats.gather_ns)?);
         self.segment_start_host.resize(b + 1, 0);
         let (segment_start, segment_start_host) =
             (&self.segment_start, &mut self.segment_start_host);
         let (totals, length_totals) = (&self.totals, &self.length_totals);
-        let (tm, longest) = timed_transfer(stream, &mut self.transfer_ns, Transfer::D2h, || {
+        let (tm, longest) = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
             let tm = stream.clone_dtoh(totals)?;
             let longest = match known {
                 Some(l) => l,
@@ -481,7 +460,6 @@ fn apply_layer_body<const W: usize, X: Transport>(
         target_bits,
     } = layer;
     let size = transport.size();
-    scratch.next_event = 0;
     let mut table = DevicePrepared::new(prepared, &sum.hash, &sum.fingerprints, &plan.remote);
     let has_remote = plan.has_remote();
     debug_assert_eq!(table.received_entries, plan.remote.len());
@@ -497,10 +475,10 @@ fn apply_layer_body<const W: usize, X: Transport>(
     debug_assert!(scratch.export.pending.is_none());
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
-            let t = scratch.event(sum)?;
+            timed!(let t = scratch.event(sum)?);
             let before = sum.hash.bits();
             sum.refine_to(bits)?;
-            scratch.lap(sum, t, |m| &mut m.refine)?;
+            timed!(scratch.lap(sum, t, |stats| &mut stats.rebucket_ns)?);
             scratch.extent = sum.len();
             scratch.longest = None;
             scratch.refine_passes += u32::from(bits - before).div_ceil(u32::from(REFINE_MAX_DELTA));
@@ -648,7 +626,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         }
         let num_blocks = (p1 - p0) as u32;
         let p0u = p0 as u32;
-        let t0 = scratch.event(sum)?;
+        timed!(let t0 = scratch.event(sum)?);
         let fused = FusedTable {
             counts: &scratch.counts,
             segment_start: &scratch.segment_start,
@@ -678,9 +656,9 @@ fn apply_layer_body<const W: usize, X: Transport>(
             (p0u, num_blocks),
             written,
         )?;
-        scratch.lap(sum, t0, |m| &mut m.layer)?;
+        timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
         let n = p1 - p0;
-        let t1 = scratch.event(sum)?;
+        timed!(let t1 = scratch.event(sum)?);
         exclusive_scan(
             &stream,
             &kernels,
@@ -691,7 +669,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             &mut scratch.totals,
         )?;
         let totals = &scratch.totals;
-        let batch_out = timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
+        let batch_out = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
             let v = stream.clone_dtoh(totals)?;
             stream.synchronize()?;
             Ok(v[0])
@@ -726,7 +704,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
                 .arg(&mut out.lengths)
                 .launch(thread_per(num_blocks as usize * 256, 256))?;
         }
-        scratch.lap(sum, t1, |m| &mut m.compact)?;
+        timed!(scratch.lap(sum, t1, |stats| &mut stats.compact_ns)?);
         running += batch_out;
     }
     debug_assert_eq!(next_chunk, chunk_starts.len());

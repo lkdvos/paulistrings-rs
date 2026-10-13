@@ -360,7 +360,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 
     /// Drain the per-phase counters: one [`PhaseStats`](crate::PhaseStats) per partition plus the driver's scatter and gather laps (feature `phase-timing`).
     ///
-    /// Kernel families land on the host phases they replace: count and segment sizes in `gather_ns`, the fused layer in `merge_ns` (`sort_ns` stays zero, the sort being inside it), compaction in `compact_ns`, the rescale in `rescale_ns`, refines in `rebucket_ns`; `coset_loop_ns` is the driving thread's wall over the fused path.
+    /// Kernel times land, in nanoseconds, on the host phases they replace or on the device-only fields, as each [`PhaseStats`](crate::PhaseStats) field documents and `benchmarks/PROFILING.md` contract (a) tabulates.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let per_partition = self

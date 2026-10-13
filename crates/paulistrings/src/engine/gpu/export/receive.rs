@@ -2,7 +2,7 @@
 
 use crate::engine::gpu::columns::grow;
 use crate::engine::gpu::error::GpuError;
-use crate::engine::gpu::layer::{timed_transfer, LayerScratch, Transfer, TransferNs};
+use crate::engine::gpu::layer::{timed_transfer, DeviceStats, LayerScratch, Transfer};
 use crate::engine::gpu::sum::{launch_fingerprint, GpuSum};
 use crate::engine::gpu::wire::{ScheduledOp, Skeleton, WireColumn, WireGroup, WireOpKind};
 use crate::engine::partitioned::transport::ChunkMap;
@@ -16,7 +16,7 @@ pub(super) fn stage_receive<const W: usize>(
     export: &mut DeviceExport<W>,
     blocks: &[&Skeleton],
     cap_rows: usize,
-    transfer_ns: &mut TransferNs,
+    stats: &mut DeviceStats,
 ) -> Result<u8, GpuError> {
     let buckets = sum.hash.num_buckets();
     lay_out(
@@ -43,7 +43,7 @@ pub(super) fn stage_receive<const W: usize>(
         });
     }
     let (log2, most) = receive_chunking(&export.offsets_host, buckets, cap_rows);
-    size_receive(sum, export, most, transfer_ns)?;
+    size_receive(sum, export, most, stats)?;
     Ok(log2)
 }
 
@@ -149,7 +149,7 @@ fn size_receive<const W: usize>(
     sum: &GpuSum<W>,
     export: &mut DeviceExport<W>,
     rows: usize,
-    transfer_ns: &mut TransferNs,
+    stats: &mut DeviceStats,
 ) -> Result<(), GpuError> {
     let stream = &sum.stream;
     let ordinal = sum.device();
@@ -167,7 +167,7 @@ fn size_receive<const W: usize>(
     grow(stream, received_z, rows.max(1) * W, ordinal)?;
     grow(stream, received_coefficient, 2 * rows.max(1), ordinal)?;
     grow(stream, received_fingerprint, rows.max(1), ordinal)?;
-    timed_transfer(stream, transfer_ns, Transfer::H2d, || {
+    timed_transfer(stream, stats, Transfer::H2d, || {
         stream.memcpy_htod(
             &offsets_host[..],
             &mut received_offsets.slice_mut(0..offsets_host.len()),
@@ -204,16 +204,9 @@ pub(crate) fn receive_chunk<const W: usize>(
     let export = &mut scratch.export;
     let mut pending = export.pending.take().expect("a pending receive");
     debug_assert_eq!(pending.next, chunk);
-    let r = move_chunk(
-        sum,
-        export,
-        &mut pending,
-        chunk,
-        true,
-        &mut scratch.transfer_ns,
-    );
+    let r = move_chunk(sum, export, &mut pending, chunk, true, &mut scratch.stats);
     export.pending = Some(pending);
-    tally!(scratch.laps.exchange_ns, t.elapsed().as_nanos());
+    tally!(scratch.stats.exchange_ns, t.elapsed().as_nanos());
     #[cfg(any(test, feature = "test-utils"))]
     if r.is_ok() && scratch.export.fail_after_chunk == Some(chunk) {
         scratch.export.fail_after_chunk = None;
@@ -232,7 +225,7 @@ fn move_chunk<const W: usize>(
     pending: &mut PendingReceive<W>,
     chunk: usize,
     keep: bool,
-    transfer_ns: &mut TransferNs,
+    stats: &mut DeviceStats,
 ) -> Result<usize, GpuError> {
     let buckets = sum.hash.num_buckets();
     let stream = &sum.stream;
@@ -322,7 +315,7 @@ fn move_chunk<const W: usize>(
         received_fingerprint,
         n,
     )?;
-    timed_transfer(stream, transfer_ns, Transfer::H2d, || {
+    timed_transfer(stream, stats, Transfer::H2d, || {
         stream.memcpy_htod(&base_host[..], received_base)?;
         Ok(())
     })?;
@@ -343,14 +336,8 @@ pub(crate) fn finish_receive<const W: usize>(
         if pending.failed {
             break;
         }
-        if let Err(error) = move_chunk(
-            sum,
-            export,
-            &mut pending,
-            chunk,
-            false,
-            &mut scratch.transfer_ns,
-        ) {
+        if let Err(error) = move_chunk(sum, export, &mut pending, chunk, false, &mut scratch.stats)
+        {
             drained = Err(error);
             break;
         }

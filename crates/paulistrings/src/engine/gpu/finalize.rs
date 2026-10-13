@@ -9,6 +9,7 @@ use super::module::warp_per_bucket;
 use super::scan::exclusive_scan;
 use super::sum::GpuSum;
 use crate::collectives::Collectives;
+use crate::engine::timing::timed;
 use crate::truncation::builtin::{local_boundary_quota, octave_edge, EdgeDecision, APPROX_BINS};
 
 /// Blocks the histogram launches at most; each block folds its warps' buckets into one shared histogram.
@@ -32,7 +33,7 @@ fn octave_histogram_device<const W: usize>(
     let buckets = sum.hash.num_buckets();
     stream.memset_zeros(&mut scratch.histogram)?;
     let buckets_u32 = buckets as u32;
-    let started = scratch.event(sum)?;
+    timed!(let started = scratch.event(sum)?);
     // SAFETY: arguments match `k_octave_histogram` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries.
     unsafe {
         stream
@@ -44,7 +45,7 @@ fn octave_histogram_device<const W: usize>(
             .arg(&mut scratch.histogram)
             .launch(whole_sum_launch(buckets))?;
     }
-    scratch.lap(sum, started, |m| &mut m.truncate)?;
+    timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
     let packed = stream.clone_dtoh(&scratch.histogram)?;
     stream.synchronize()?;
     debug_assert_eq!(packed[0] as usize, sum.len(), "histogram term count");
@@ -220,7 +221,7 @@ fn retain_device<const W: usize>(
         ordinal,
     )?;
     let buckets_u32 = buckets as u32;
-    let started = scratch.event(sum)?;
+    timed!(let started = scratch.event(sum)?);
     // SAFETY: arguments match `k_boundary_counts` in truncate.cu; `counts` holds `buckets` entries.
     unsafe {
         stream
@@ -276,7 +277,7 @@ fn retain_device<const W: usize>(
         &mut scratch.scan,
         &mut scratch.totals,
     )?;
-    scratch.lap(sum, started, |m| &mut m.truncate)?;
+    timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
     let total = stream.clone_dtoh(&scratch.totals)?[0];
     stream.synchronize()?;
     out.len = total as usize;
@@ -298,7 +299,9 @@ pub(crate) fn top_n_device<const W: usize>(
     if n == 0 {
         return clear_device(sum);
     }
+    timed!(let started = scratch.event(sum)?);
     let (threshold, tied_kept) = radix_select_bits(sum, scratch, n)?;
+    timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
     retain_device(sum, scratch, threshold, 0, tied_kept)
 }
 

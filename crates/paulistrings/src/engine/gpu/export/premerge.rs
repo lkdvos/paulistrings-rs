@@ -17,6 +17,7 @@ use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 use crate::engine::partitioned::plan::PartitionPlan;
+use crate::engine::timing::timed;
 
 use super::DeviceExport;
 
@@ -109,7 +110,7 @@ pub(super) fn premerge_partner<const W: usize>(
     }
     let (buckets_u32, partner_entries_u32, entries_u32) =
         (buckets as u32, partner_entries as u32, table.entries as u32);
-    let t0 = scratch.event(sum)?;
+    timed!(let t0 = scratch.event(sum)?);
     {
         let premerge = &mut scratch.export.premerge;
         grow(
@@ -121,7 +122,7 @@ pub(super) fn premerge_partner<const W: usize>(
         grow(&stream, &mut premerge.rows, buckets, ordinal)?;
         grow(&stream, &mut premerge.start, buckets + 1, ordinal)?;
         grow(&stream, &mut premerge.rows_per_position, buckets, ordinal)?;
-        timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
+        timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
             premerge.table.upload(&stream, &sub)?;
             stream.memcpy_htod(&selected[..], &mut premerge.selected)?;
             Ok(())
@@ -167,7 +168,7 @@ pub(super) fn premerge_partner<const W: usize>(
         premerge.start_host.resize(buckets + 1, 0);
         let (start, start_host, totals) =
             (&premerge.start, &mut premerge.start_host, &premerge.totals);
-        timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::D2h, || {
+        timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
             let v = stream.clone_dtoh(totals)?;
             stream.memcpy_dtoh(&start.slice(0..buckets + 1), &mut start_host[..])?;
             stream.synchronize()?;
@@ -176,7 +177,7 @@ pub(super) fn premerge_partner<const W: usize>(
     };
     let record_cap = kernels.layer_cap();
     if most > record_cap {
-        scratch.lap(sum, t0, |m| &mut m.export)?;
+        timed!(scratch.lap(sum, t0, |stats| &mut stats.export_kernel_ns)?);
         return Ok(None);
     }
     let (func, _, smem) = fused_variant(&kernels, W, most, sub.dense);
@@ -222,7 +223,7 @@ pub(super) fn premerge_partner<const W: usize>(
     scratch.record.high_word_fallbacks += fallbacks[0];
     scratch.record.full_key_fallbacks += fallbacks[1];
     scratch.record.rows_premerged += total - merged;
-    scratch.lap(sum, t0, |m| &mut m.export)?;
+    timed!(scratch.lap(sum, t0, |stats| &mut stats.export_kernel_ns)?);
     Ok(Some(merged))
 }
 
@@ -247,7 +248,7 @@ fn premerge_batches<const W: usize>(
         bucket_at,
         scan,
         export,
-        transfer_ns,
+        stats,
         ..
     } = scratch;
     let DeviceExport {
@@ -329,7 +330,7 @@ fn premerge_batches<const W: usize>(
         {
             let (split_offsets, split_offsets_host) =
                 (&premerge.split_offsets, &mut premerge.split_offsets_host);
-            timed_transfer(stream, transfer_ns, Transfer::D2h, || {
+            timed_transfer(stream, stats, Transfer::D2h, || {
                 stream.memcpy_dtoh(
                     &split_offsets.slice(0..partner_entries * n + 1),
                     &mut split_offsets_host[..],

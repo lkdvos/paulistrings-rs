@@ -61,8 +61,6 @@ pub struct DevicePartition<const W: usize> {
     /// Test hook: fail before the exchange on this layer index.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_at_layer: Option<usize>,
-    #[cfg(feature = "phase-timing")]
-    stats: PhaseStats,
 }
 
 impl<const W: usize> DevicePartition<W> {
@@ -80,8 +78,6 @@ impl<const W: usize> DevicePartition<W> {
             failed_layer: None,
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: None,
-            #[cfg(feature = "phase-timing")]
-            stats: PhaseStats::default(),
         })
     }
 
@@ -219,14 +215,12 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
             failed_layer: self.failed_layer.take(),
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: self.fail_at_layer.take(),
-            #[cfg(feature = "phase-timing")]
-            stats: std::mem::take(&mut self.stats),
         }
     }
 
     #[cfg(feature = "phase-timing")]
     fn stats(&mut self) -> &mut PhaseStats {
-        &mut self.stats
+        &mut self.scratch_mut().stats
     }
 }
 
@@ -266,7 +260,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             }
             return failed_counts(plan, size);
         }
-        timed!(let (started, before) = (std::time::Instant::now(), scratch.kernel_ms));
+        timed!(let (started, before) = (std::time::Instant::now(), scratch.stats));
         let layer = DeviceLayer {
             prepared,
             plan,
@@ -275,9 +269,8 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
         };
         let result = apply_layer_device(sum, &layer, scratch, transport);
         timed!(fold_layer_stats(
-            &mut self.stats,
             scratch,
-            before,
+            &before,
             started.elapsed().as_nanos() as u64,
             sum.hash().bits(),
         ));
@@ -346,35 +339,21 @@ fn failed_counts(plan: &PartitionPlan, size: u32) -> LayerExchangeCounts {
     }
 }
 
-/// One device layer's counters into the partition's [`PhaseStats`], mapped as [`GpuPartitionedSum::take_stats`](super::GpuPartitionedSum::take_stats) documents.
+/// The rest of one device layer's [`PhaseStats`], its kernel times and laps having landed directly: the driving thread's wall over the fused path, and the host counters a device layer stands in for (`benchmarks/PROFILING.md` contract (a)).
 #[cfg(feature = "phase-timing")]
 fn fold_layer_stats<const W: usize>(
-    stats: &mut PhaseStats,
     scratch: &mut LayerScratch<W>,
-    before: super::layer::GpuKernelMs,
+    before: &PhaseStats,
     wall_ns: u64,
     bits: u8,
 ) {
-    let after = scratch.kernel_ms;
-    let ns = |ms: f64| (ms.max(0.0) * 1e6) as u64;
-    let refine = ns(after.refine - before.refine);
-    let rescale = ns(after.rescale - before.rescale);
-    let laps = std::mem::take(&mut scratch.laps);
-    stats.rebucket_ns += refine;
-    stats.rescale_ns += rescale;
-    stats.export_ns += laps.export_ns;
-    stats.exchange_ns += laps.exchange_ns;
-    stats.rows_exported += laps.rows_exported;
-    stats.recv_rows += laps.recv_rows;
-    stats.coset_loop_ns +=
-        wall_ns.saturating_sub(refine + rescale + laps.export_ns + laps.exchange_ns);
-    stats.gather_ns += ns(after.count - before.count) + ns(after.sizes - before.sizes);
-    stats.merge_ns += ns(after.layer - before.layer) + ns(after.permute - before.permute);
-    stats.compact_ns += ns(after.compact - before.compact);
-    let [h2d, d2h] = std::mem::take(&mut scratch.transfer_ns);
-    stats.h2d_ns += h2d;
-    stats.d2h_ns += d2h;
     let record = scratch.record;
+    let stats = &mut scratch.stats;
+    let outside = (stats.rebucket_ns - before.rebucket_ns)
+        + (stats.rescale_ns - before.rescale_ns)
+        + (stats.export_ns - before.export_ns)
+        + (stats.exchange_ns - before.exchange_ns);
+    stats.coset_loop_ns += wall_ns.saturating_sub(outside);
     if record.permuted {
         stats.cosets += 1;
         stats.runs += 1u64 << bits;

@@ -3,8 +3,8 @@
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
-    apply_layer_device, gpu_desired_bits, prepared_fanout, GpuBucketPolicy, GpuLayerCounters,
-    GpuLayerOptions, LayerScratch,
+    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuBucketPolicy,
+    GpuLayerCounters, GpuLayerOptions, LayerScratch,
 };
 use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, KeepProgram};
@@ -237,15 +237,13 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             return LayerExchangeCounts::none(size);
         }
         timed!(let (started, before) = (std::time::Instant::now(), scratch.kernel_ms));
-        let result = apply_layer_device(
-            sum,
+        let layer = DeviceLayer {
             prepared,
             plan,
-            &self.keep,
-            scratch,
-            self.hash.bits(),
-            transport,
-        );
+            keep: &self.keep,
+            target_bits: self.hash.bits(),
+        };
+        let result = apply_layer_device(sum, &layer, scratch, transport);
         timed!(fold_layer_stats(
             &mut self.stats,
             scratch,

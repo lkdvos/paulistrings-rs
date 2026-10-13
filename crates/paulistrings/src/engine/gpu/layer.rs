@@ -471,34 +471,42 @@ impl<const W: usize> LayerScratch<W> {
     }
 }
 
-/// Apply `prepared` to `sum` on its device under `keep` at the group's agreed `target_bits`, leaving the previous columns as `sum.spare`; remote deltas exchange over `transport`.
-#[allow(clippy::too_many_arguments)]
+/// One layer's inputs besides the sum, its scratch and the transport.
+pub(crate) struct DeviceLayer<'a, const W: usize> {
+    pub(crate) prepared: &'a Prepared<W>,
+    pub(crate) plan: &'a PartitionPlan,
+    /// The per-term half of the run's policy.
+    pub(crate) keep: &'a KeepProgram,
+    /// The group's agreed bucket bits.
+    pub(crate) target_bits: u8,
+}
+
+/// Apply `layer` to `sum` on its device, leaving the previous columns as `sum.spare`; remote deltas exchange over `transport`.
 pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
-    prepared: &Prepared<W>,
-    plan: &PartitionPlan,
-    keep: &KeepProgram,
+    layer: &DeviceLayer<'_, W>,
     scratch: &mut LayerScratch<W>,
-    target_bits: u8,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
-    let r = apply_layer_body(sum, prepared, plan, keep, scratch, target_bits, transport);
+    let r = apply_layer_body(sum, layer, scratch, transport);
     // A failed layer still completes its pending receive, so every peer's chunked receive completes too.
     let finished = finish_receive(sum, scratch);
     let resolved = scratch.resolve(sum);
     r.and_then(|c| finished.and(resolved).map(|()| c))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_layer_body<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
-    prepared: &Prepared<W>,
-    plan: &PartitionPlan,
-    keep: &KeepProgram,
+    layer: &DeviceLayer<'_, W>,
     scratch: &mut LayerScratch<W>,
-    target_bits: u8,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
+    let &DeviceLayer {
+        prepared,
+        plan,
+        keep,
+        target_bits,
+    } = layer;
     let size = transport.size();
     scratch.next_event = 0;
     let mut table = DevicePrepared::new(prepared, &sum.hash, &sum.fingerprints, &plan.remote);

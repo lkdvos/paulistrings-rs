@@ -50,15 +50,13 @@ fn single_bucket_layer(
     let rows = crate::pauli_sum::hash::PartitionRows::<2>::none(128);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let solo = InProcessTransport::group(1);
-    apply_layer_device(
-        &mut sum,
-        &prepared,
-        &plan,
-        &KeepProgram::KEEP,
-        &mut scratch,
-        0,
-        &solo[0],
-    )?;
+    let layer = DeviceLayer {
+        prepared: &prepared,
+        plan: &plan,
+        keep: &KeepProgram::KEEP,
+        target_bits: 0,
+    };
+    apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0])?;
     let want = naive_apply_layer(&input, channel, &KeepAll, false);
     assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
     Ok(scratch.counters)

@@ -18,6 +18,7 @@ pub(crate) mod plan;
 pub(crate) mod stats;
 pub(crate) mod timing;
 pub(crate) mod trace;
+pub(crate) mod transport;
 
 use crate::circuit::Circuit;
 use crate::pauli_sum::hash::PartitionRows;
@@ -27,8 +28,8 @@ use crate::truncation::TruncationPolicy;
 use backend::HostPartition;
 use bucketed::LayerScratch;
 use driver::{run_layers, PartitionContext, PartitionWork};
-use partitioned::transport::SoloTransport;
 use trace::assemble;
+use transport::SoloTransport;
 
 /// `log` target for the engine's progress events, partitioned or not, and the truncation policies' own.
 pub(crate) const LOG_TARGET: &str = "paulistrings::propagate";

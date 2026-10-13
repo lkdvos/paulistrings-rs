@@ -3,8 +3,8 @@
 use super::partitioned::layer::{
     apply_layer_partitioned_with_plan, LayerExchangeCounts, PartitionState,
 };
-use super::partitioned::transport::Transport;
 use super::plan::PartitionPlan;
+use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::collectives::Collectives;
 use crate::engine::bucketed::LayerScratch;

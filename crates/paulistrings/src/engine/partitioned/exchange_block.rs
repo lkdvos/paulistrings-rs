@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use num_complex::Complex64;
 
-use super::{ChunkMap, Payload};
+use crate::engine::transport::{ChunkMap, Payload};
 
 /// Fixed-size wire prefix of one [`ExchangeBlock`]: four `u32`s, no padding, so it casts to bytes.
 #[repr(C)]
@@ -344,3 +344,6 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         parts
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -3,8 +3,8 @@
 use num_complex::Complex64;
 use rayon::prelude::*;
 
+use super::exchange_block::{ExchangeBlock, PartnerPayload};
 use super::layer::LayerExchangeCounts;
-use super::transport::{ExchangeBlock, PartnerPayload};
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
 use crate::engine::coset::CosetOrder;
 use crate::engine::plan::PartitionPlan;

@@ -14,9 +14,9 @@ use super::scan::exclusive_scan;
 use super::sum::GpuSum;
 use super::wire::{schedule, BlockSkeletons, DeviceWire, ScheduledOp, Skeleton};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
-use crate::engine::partitioned::transport::{ChunkMap, Transport};
 use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::{tally, timed};
+use crate::engine::transport::{ChunkMap, Transport};
 
 mod premerge;
 mod receive;

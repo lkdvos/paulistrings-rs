@@ -21,10 +21,10 @@ use super::truncation::KeepProgram;
 use crate::channel::prepared::Prepared;
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
-use crate::engine::partitioned::transport::Transport;
 use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::timed;
 use crate::engine::trace::DeviceLayerRecord;
+use crate::engine::transport::Transport;
 use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::truncation::builtin::APPROX_BINS;
 

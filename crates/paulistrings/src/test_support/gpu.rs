@@ -2,7 +2,8 @@
 
 use crate::engine::gpu::partition::DevicePartition;
 use crate::engine::gpu::{GpuError, GpuPartitionedSum, GpuSum};
-use crate::engine::partitioned::{DistributedSum, PartitionedSum, Transport};
+use crate::engine::partitioned::{DistributedSum, PartitionedSum};
+use crate::engine::transport::Transport;
 use crate::pauli_sum::PauliSum;
 
 pub use crate::engine::gpu::{FaultPlan, WireFault};

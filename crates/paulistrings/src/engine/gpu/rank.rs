@@ -13,13 +13,13 @@ use crate::circuit::Circuit;
 use crate::collectives::Collectives;
 use crate::engine::backend::PartitionStorage;
 use crate::engine::partitioned::distributed::{gather_share, group_bits};
-use crate::engine::partitioned::transport::Transport;
 use crate::engine::partitioned::{
     DistributedSum, PartitionRowPolicy, PartitionRuntime, ScatterRows,
 };
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::timed;
+use crate::engine::transport::Transport;
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;

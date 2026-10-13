@@ -1,17 +1,8 @@
-//! The [`Transport`] trait, the [`Payload`] wire seam, the exchange's [`ChunkMap`], and the in-process transport (ARCHITECTURE.md §Partitioning).
+//! The [`Transport`] trait, the [`Payload`] wire seam, the exchange's [`ChunkMap`], and the one-partition [`SoloTransport`] (ARCHITECTURE.md §Partitioning).
 
 use crate::collectives::sealed::Sealed;
 use crate::collectives::Collectives;
 use crate::engine::coset::CosetOrder;
-
-mod exchange_block;
-mod in_process;
-
-#[cfg(feature = "cuda")]
-pub(crate) use exchange_block::{chunk_rows_of, BlockHeader};
-pub(crate) use exchange_block::{ExchangeBlock, PartnerPayload};
-pub use in_process::InProcessTransport;
-pub(crate) use in_process::DEFAULT_WAIT_TIMEOUT;
 
 /// The chunks a layer's bulk transfer is cut into, over the positions of the receiver's [`CosetOrder`](crate::engine::coset::CosetOrder) (ARCHITECTURE.md §Partitioning).
 ///

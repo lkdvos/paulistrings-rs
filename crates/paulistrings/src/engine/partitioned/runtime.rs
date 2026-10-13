@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
+use super::in_process::{InProcessTransport, DEFAULT_WAIT_TIMEOUT};
 use super::topology::{
     bind_current_thread_memory, build_pool, pin_current_thread, PartitionConfig, PartitionSlot,
     TopologyError,
 };
-use super::transport::{InProcessTransport, DEFAULT_WAIT_TIMEOUT};
 use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 
 /// The resolved placement and its pinned pools, built once and shared behind an [`Arc`] by every [`PartitionedSum`](crate::PartitionedSum) that runs on it.

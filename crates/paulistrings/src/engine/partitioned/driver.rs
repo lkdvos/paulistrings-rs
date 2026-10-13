@@ -6,13 +6,13 @@ use std::time::Instant;
 
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
-use super::transport::Transport;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::driver::{run_layers, PartitionContext, PartitionWork};
 use crate::engine::timing::tally;
 use crate::engine::trace::{assemble, PartitionTrace};
+use crate::engine::transport::Transport;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};

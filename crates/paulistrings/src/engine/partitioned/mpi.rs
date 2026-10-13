@@ -17,10 +17,10 @@ use pipeline::{note_slot, ChunkPipeline, SLOT_EARLY, SLOT_SEND};
 
 use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
-use super::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT};
 use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
+use crate::engine::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;

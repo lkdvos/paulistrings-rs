@@ -12,12 +12,12 @@ use crate::channel::prepared::Prepared;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
-use crate::engine::partitioned::transport::Transport;
 use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;
 use crate::engine::trace::{DeviceLayerRecord, PartitionLayerRow};
+use crate::engine::transport::Transport;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;

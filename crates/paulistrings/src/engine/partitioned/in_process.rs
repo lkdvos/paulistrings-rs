@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use super::{AlreadyHere, ChunkMap, ChunkWait, Collectives, Payload, Transport};
+use crate::collectives::Collectives;
+use crate::engine::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport};
 
 /// Which transport call an arrival belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -536,3 +537,6 @@ impl Transport for InProcessTransport {
         (received, out)
     }
 }
+
+#[cfg(test)]
+mod tests;

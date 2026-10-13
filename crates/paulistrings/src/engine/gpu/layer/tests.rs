@@ -3,7 +3,7 @@ use super::options::parse_bytes;
 use super::*;
 use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
-use crate::engine::partitioned::transport::InProcessTransport;
+use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::{
     assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, KeepAll,

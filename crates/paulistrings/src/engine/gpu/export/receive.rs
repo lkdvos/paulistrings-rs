@@ -5,8 +5,8 @@ use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::layer::{timed_transfer, DeviceStats, LayerScratch, Transfer};
 use crate::engine::gpu::sum::{launch_fingerprint, GpuSum};
 use crate::engine::gpu::wire::{ScheduledOp, Skeleton, WireColumn, WireGroup, WireOpKind};
-use crate::engine::partitioned::transport::ChunkMap;
 use crate::engine::timing::{tally, timed};
+use crate::engine::transport::ChunkMap;
 
 use super::{received_row_bytes, DeviceExport, PendingReceive, MAX_RECEIVED_SEGMENT};
 

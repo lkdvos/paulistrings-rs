@@ -11,7 +11,8 @@ use super::error::GpuError;
 use super::payload::DeviceBlock;
 use super::GPU_LOG_TARGET;
 use crate::engine::knob::Knob;
-use crate::engine::partitioned::transport::{chunk_rows_of, BlockHeader, ChunkMap, Payload};
+use crate::engine::partitioned::exchange_block::{chunk_rows_of, BlockHeader};
+use crate::engine::transport::{ChunkMap, Payload};
 
 #[cfg(test)]
 pub(crate) use peer::PeerTally;

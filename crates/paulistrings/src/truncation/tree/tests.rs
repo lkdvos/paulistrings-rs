@@ -1,6 +1,6 @@
 use super::BuiltinTruncation as T;
 use super::*;
-use crate::engine::partitioned::transport::InProcessTransport;
+use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::test_support::{and, assert_same_terms, or, rand_sum_real, KeepAll};
 use crate::truncation::{And, Or};
 

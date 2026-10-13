@@ -7,8 +7,8 @@ use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::gpu::layer::GpuLayerOptions;
 use crate::engine::gpu::payload::DeviceBlock;
 use crate::engine::gpu::DEFAULT_ARENA_BYTES;
+use crate::engine::partitioned::exchange_block::{ExchangeBlock, PartnerPayload};
 use crate::engine::partitioned::export::{export_layer, ExportScratch};
-use crate::engine::partitioned::transport::{ExchangeBlock, PartnerPayload};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
 use crate::pauli_sum::PauliSum;
 use crate::test_support::{haar_su4_matrix, rand_sum, zz_rotation};
@@ -220,7 +220,7 @@ fn the_receive_takes_the_fewest_power_of_two_chunks_under_its_cap() {
 #[test]
 fn the_vote_agrees_the_largest_chunk_count() {
     use crate::collectives::Collectives;
-    use crate::engine::partitioned::transport::InProcessTransport;
+    use crate::engine::partitioned::in_process::InProcessTransport;
     let run = |asks: [Option<u8>; 4]| -> Vec<Option<u8>> {
         let group = InProcessTransport::group(4);
         std::thread::scope(|s| {

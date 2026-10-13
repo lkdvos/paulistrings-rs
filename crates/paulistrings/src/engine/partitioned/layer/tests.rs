@@ -3,7 +3,7 @@ use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
 use crate::channel::Prepare;
 use crate::channel::PtmChannel;
-use crate::engine::partitioned::transport::InProcessTransport;
+use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;

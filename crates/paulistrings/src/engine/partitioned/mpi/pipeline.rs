@@ -5,7 +5,7 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 use ::mpi::request::RequestCollection;
 
-use super::super::transport::ChunkWait;
+use crate::engine::transport::ChunkWait;
 
 /// Slot of a send request, waited out by [`ChunkPipeline::finish`].
 pub(super) const SLOT_SEND: usize = usize::MAX;

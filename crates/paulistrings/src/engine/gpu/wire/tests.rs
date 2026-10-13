@@ -1,6 +1,6 @@
 use super::*;
 use crate::collectives::Collectives;
-use crate::engine::partitioned::transport::InProcessTransport;
+use crate::engine::partitioned::in_process::InProcessTransport;
 
 #[test]
 fn the_timeout_knob_parses_positive_seconds() {
@@ -62,7 +62,7 @@ fn skeletons_round_trip_through_their_byte_form() {
 
 #[test]
 fn skeletons_travel_over_the_in_process_transport() {
-    use crate::engine::partitioned::transport::Transport;
+    use crate::engine::transport::Transport;
     let got: Vec<Vec<Option<BlockSkeletons<1>>>> = std::thread::scope(|s| {
         let hs: Vec<_> = InProcessTransport::group(4)
             .into_iter()

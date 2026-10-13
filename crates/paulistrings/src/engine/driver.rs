@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 use super::backend::PartitionBackend;
-use super::partitioned::transport::Transport;
 use super::plan::PartitionPlan;
+use super::transport::Transport;
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;

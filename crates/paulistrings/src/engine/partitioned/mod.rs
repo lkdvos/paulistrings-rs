@@ -7,18 +7,18 @@ pub(crate) const PLACEMENT_LOG_TARGET: &str = "paulistrings::partitioned";
 
 pub(crate) mod distributed;
 pub(crate) mod driver;
+pub(crate) mod exchange_block;
 pub(crate) mod export;
+pub(crate) mod in_process;
 pub(crate) mod layer;
 #[cfg(feature = "mpi")]
 pub mod mpi;
 pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;
-pub(crate) mod transport;
 
 pub use distributed::{DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows};
 pub use driver::propagate_partitioned;
 pub use runtime::PartitionRuntime;
 pub use sum::PartitionedSum;
 pub use topology::{numa_nodes, CpuSet, PartitionConfig, Placement, TopologyError};
-pub use transport::Transport;

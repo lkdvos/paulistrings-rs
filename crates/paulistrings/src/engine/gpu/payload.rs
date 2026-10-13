@@ -6,7 +6,7 @@ use cudarc::driver::{CudaSlice, CudaStream};
 
 use super::columns::{grow, grow_keep};
 use super::error::GpuError;
-use crate::engine::partitioned::transport::BlockHeader;
+use crate::engine::partitioned::exchange_block::BlockHeader;
 
 /// One exchange block with its columns on a device: the header and CSR offsets on the host, `x`/`z`/`coeff` on the device the sender ran on.
 /// The columns are grow-only and `header.rows` says how much of them is live.

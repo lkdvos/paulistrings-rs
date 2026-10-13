@@ -25,7 +25,7 @@ pub use gpu::{
 pub use rows::{circuit_generators, count_remote_deltas, GeneratorWeight};
 
 pub use crate::engine::bucketed::apply_layer_bucketed;
-pub use crate::engine::partitioned::transport::InProcessTransport;
+pub use crate::engine::partitioned::in_process::InProcessTransport;
 
 /// Layers between two bucket-count agreements of the partitioned driver (ARCHITECTURE.md §Partitioning).
 pub const BITS_AGREE_EVERY: usize = crate::engine::driver::BITS_AGREE_EVERY;
@@ -109,9 +109,9 @@ impl CallLog {
     }
 }
 
-/// An [`InProcessTransport`](crate::engine::partitioned::transport::InProcessTransport) rank that logs every collective and exchange it is asked for.
+/// An [`InProcessTransport`](crate::engine::partitioned::in_process::InProcessTransport) rank that logs every collective and exchange it is asked for.
 pub struct LoggingTransport {
-    inner: crate::engine::partitioned::transport::InProcessTransport,
+    inner: crate::engine::partitioned::in_process::InProcessTransport,
     /// This rank's calls.
     pub log: CallLog,
 }
@@ -119,7 +119,7 @@ pub struct LoggingTransport {
 impl LoggingTransport {
     /// A group of `size` ranks, each waiting up to two minutes on its partners.
     pub fn group(size: u32) -> Vec<Self> {
-        crate::engine::partitioned::transport::InProcessTransport::group_with_timeout(
+        crate::engine::partitioned::in_process::InProcessTransport::group_with_timeout(
             size,
             std::time::Duration::from_secs(120),
         )
@@ -159,22 +159,22 @@ impl crate::collectives::Collectives for LoggingTransport {
     }
 }
 
-impl crate::engine::partitioned::Transport for LoggingTransport {
+impl crate::engine::transport::Transport for LoggingTransport {
     fn exchange_layer<P, F, R>(
         &self,
         send: Vec<Option<P>>,
         spare: &mut Vec<P>,
-        map: &crate::engine::partitioned::transport::ChunkMap,
+        map: &crate::engine::transport::ChunkMap,
         body: F,
     ) -> (Vec<Option<P>>, R)
     where
-        P: crate::engine::partitioned::transport::Payload,
-        F: FnOnce(&[Option<P>], &dyn crate::engine::partitioned::transport::ChunkWait) -> R,
+        P: crate::engine::transport::Payload,
+        F: FnOnce(&[Option<P>], &dyn crate::engine::transport::ChunkWait) -> R,
     {
         self.log.push("exchange_layer");
         self.inner.exchange_layer(send, spare, map, body)
     }
-    fn exchange<P: crate::engine::partitioned::transport::Payload>(
+    fn exchange<P: crate::engine::transport::Payload>(
         &self,
         send: Vec<Option<P>>,
         spare: &mut Vec<P>,

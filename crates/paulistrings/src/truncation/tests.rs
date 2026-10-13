@@ -1,5 +1,5 @@
 use super::*;
-use crate::engine::partitioned::transport::InProcessTransport;
+use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::PartitionRows;
 use crate::test_support::{
     assert_same_terms, canonical_triples, first_n_by_rank, octave_rank, rand_sum_real,

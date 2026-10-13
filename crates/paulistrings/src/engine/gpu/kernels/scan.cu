@@ -25,7 +25,7 @@ extern "C" __global__ void k_scan_block(const u32* __restrict__ in, u32* __restr
     for (u32 o = 16; o > 0; o >>= 1) mx = max(mx, __shfl_down_sync(~0u, mx, o));
     if (lane_id() == 0) smax[warp_id()] = mx;
     __syncthreads();
-    u32 total = block_exscan<SCAN_ITEMS, u32>(sv, SCAN_BLOCK, swarp);
+    u32 total = block_exclusive_scan<SCAN_ITEMS, u32>(sv, SCAN_BLOCK, swarp);
 #pragma unroll
     for (int c = 0; c < SCAN_ITEMS; ++c) {
         u32 i = tid * SCAN_ITEMS + c;
@@ -57,7 +57,7 @@ extern "C" __global__ void k_scan_single(u32* __restrict__ block_sum, const u32*
     for (u32 o = 16; o > 0; o >>= 1) mx = max(mx, __shfl_down_sync(~0u, mx, o));
     if (lane_id() == 0) smax[warp_id()] = mx;
     __syncthreads();
-    u32 total = block_exscan<SCAN_ITEMS, u32>(sv, SCAN_BLOCK, swarp);
+    u32 total = block_exclusive_scan<SCAN_ITEMS, u32>(sv, SCAN_BLOCK, swarp);
 #pragma unroll
     for (int c = 0; c < SCAN_ITEMS; ++c) {
         u32 i = tid * SCAN_ITEMS + c;

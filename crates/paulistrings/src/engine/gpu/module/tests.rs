@@ -13,10 +13,10 @@ fn kernels_compile_for_every_width() {
     compile_ptx(
         2,
         "compute_80",
-        &["-DFP_BITS=8".to_string()],
+        &["-DFINGERPRINT_BITS=8".to_string()],
         kernel_cache::directory(),
     )
-    .unwrap_or_else(|e| panic!("FP_BITS=8: {e}"));
+    .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
 }
 
 #[test]

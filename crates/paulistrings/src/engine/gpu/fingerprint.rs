@@ -8,7 +8,7 @@ use crate::rng::{mix64, SPLITMIX_GAMMA};
 const FINGERPRINT_SALT: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 
 /// Rows of `G`, one bit of `g` each.
-pub(crate) const FP_ROWS: usize = 64;
+pub(crate) const FINGERPRINT_ROWS: usize = 64;
 
 /// The 64 rows of `G` as `(x-mask, z-mask)` pairs.
 #[derive(Clone, Debug)]
@@ -26,19 +26,19 @@ impl<const W: usize> FingerprintRows<W> {
             state = state.wrapping_add(SPLITMIX_GAMMA);
             mix64(state)
         };
-        let mut rows_x = Vec::with_capacity(FP_ROWS);
-        let mut rows_z = Vec::with_capacity(FP_ROWS);
-        for _ in 0..FP_ROWS {
+        let mut rows_x = Vec::with_capacity(FINGERPRINT_ROWS);
+        let mut rows_z = Vec::with_capacity(FINGERPRINT_ROWS);
+        for _ in 0..FINGERPRINT_ROWS {
             rows_x.push(std::array::from_fn::<u64, W, _>(|_| next()));
             rows_z.push(std::array::from_fn::<u64, W, _>(|_| next()));
         }
         Self { rows_x, rows_z }
     }
 
-    /// The unmasked 64-bit `g(x, z)`; the device applies its compile-time `FP_BITS` mask on top.
+    /// The unmasked 64-bit `g(x, z)`; the device applies its compile-time `FINGERPRINT_BITS` mask on top.
     pub(crate) fn fingerprint(&self, x: &[u64; W], z: &[u64; W]) -> u64 {
         let mut out = 0u64;
-        for r in 0..FP_ROWS {
+        for r in 0..FINGERPRINT_ROWS {
             let mut parity = 0u64;
             for w in 0..W {
                 parity ^= (x[w] & self.rows_x[r][w]) ^ (z[w] & self.rows_z[r][w]);
@@ -50,8 +50,8 @@ impl<const W: usize> FingerprintRows<W> {
 
     /// The rows in the prelude's device layout.
     pub(crate) fn flat(&self) -> Vec<u64> {
-        let mut v = Vec::with_capacity(FP_ROWS * 2 * W);
-        for r in 0..FP_ROWS {
+        let mut v = Vec::with_capacity(FINGERPRINT_ROWS * 2 * W);
+        for r in 0..FINGERPRINT_ROWS {
             v.extend_from_slice(&self.rows_x[r]);
             v.extend_from_slice(&self.rows_z[r]);
         }

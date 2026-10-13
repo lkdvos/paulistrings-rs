@@ -361,7 +361,7 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&sum.columns.x)
                 .arg(&sum.columns.z)
                 .arg(&sum.columns.start)
-                .arg(&sum.columns.lens)
+                .arg(&sum.columns.lengths)
                 .arg(&b32)
                 .arg(&table.mode)
                 .arg(&e32)
@@ -401,7 +401,7 @@ impl<const W: usize> LayerScratch<W> {
         exclusive_scan(
             &sum.stream,
             &sum.kernels,
-            &sum.columns.lens.slice(0..b),
+            &sum.columns.lengths.slice(0..b),
             &mut self.destination_offsets.slice_mut(0..b + 1),
             b,
             &mut self.scan,
@@ -726,7 +726,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
                 .arg(&arena.x)
                 .arg(&arena.z)
                 .arg(&arena.coeff)
-                .arg(&arena.g)
+                .arg(&arena.fingerprint)
                 .arg(&scratch.segment_start)
                 .arg(&scratch.destination_offsets)
                 .arg(&scratch.out_len_pos)
@@ -736,9 +736,9 @@ fn apply_layer_body<const W: usize, X: Transport>(
                 .arg(&mut out.x)
                 .arg(&mut out.z)
                 .arg(&mut out.coeff)
-                .arg(&mut out.g)
+                .arg(&mut out.fingerprint)
                 .arg(&mut out.start)
-                .arg(&mut out.lens)
+                .arg(&mut out.lengths)
                 .launch(thread_per(num_blocks as usize * 256, 256))?;
         }
         scratch.lap(sum, t1, |m| &mut m.compact)?;

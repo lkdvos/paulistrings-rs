@@ -1,4 +1,4 @@
-use super::fast_paths::perm_threads;
+use super::fast_paths::permute_threads;
 use super::options::parse_bytes;
 use super::*;
 use crate::channel::Prepare;
@@ -111,12 +111,12 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
 
 #[test]
 fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
-    assert_eq!(perm_threads(1_000_000, 256, 2), 1024);
-    assert_eq!(perm_threads(1_000_000, 4096, 2), 256);
-    assert_eq!(perm_threads(10_000, 1024, 1), 64);
-    assert_eq!(perm_threads(0, 1, 1), 64);
-    assert_eq!(perm_threads(1_000_000, 256, 8), 256);
-    assert_eq!(perm_threads(1_000_000, 256, 4), 512);
+    assert_eq!(permute_threads(1_000_000, 256, 2), 1024);
+    assert_eq!(permute_threads(1_000_000, 4096, 2), 256);
+    assert_eq!(permute_threads(10_000, 1024, 1), 64);
+    assert_eq!(permute_threads(0, 1, 1), 64);
+    assert_eq!(permute_threads(1_000_000, 256, 8), 256);
+    assert_eq!(permute_threads(1_000_000, 256, 4), 512);
 }
 
 #[test]

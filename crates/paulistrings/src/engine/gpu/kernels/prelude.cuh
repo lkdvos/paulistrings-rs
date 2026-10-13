@@ -12,11 +12,11 @@ typedef unsigned char u8;
 #endif
 
 // The collision nets compile with a shorter fingerprint; 64 is the unmasked default.
-#ifndef FP_BITS
-#define FP_BITS 64
+#ifndef FINGERPRINT_BITS
+#define FINGERPRINT_BITS 64
 #endif
 
-#define FP_ROWS 64
+#define FINGERPRINT_ROWS 64
 #define WARP 32
 
 // Fused-layer block width per W, register-bound (ARCHITECTURE.md §GPU-Readiness); `layer_threads` in module.rs mirrors it.
@@ -118,14 +118,14 @@ __device__ __forceinline__ u32 row_parity(const Key& k, const u64* rows, u32 r) 
     return (u32)(__popcll(acc) & 1);
 }
 
-// FP_ZERO_LO is the test hook that clears the low word instead, so every block takes the g_hi32 fallback and resolves there.
-__device__ __forceinline__ u64 fp_mask() {
-#if defined(FP_ZERO_LO)
+// FINGERPRINT_ZERO_LOW is the test hook that clears the low word instead, so every block takes the g_hi32 fallback and resolves there.
+__device__ __forceinline__ u64 fingerprint_mask() {
+#if defined(FINGERPRINT_ZERO_LOW)
     return ~0xFFFFFFFFull;
-#elif FP_BITS >= 64
+#elif FINGERPRINT_BITS >= 64
     return ~0ull;
 #else
-    return (1ull << FP_BITS) - 1ull;
+    return (1ull << FINGERPRINT_BITS) - 1ull;
 #endif
 }
 
@@ -159,7 +159,7 @@ __device__ __forceinline__ u32 pauli_weight(const Key& k) {
 }
 
 // Whether k anticommutes with the generator, a rotation table's entry 1, read in place so no local array is spilled.
-__device__ __forceinline__ bool anticommutes_gen(const Table& T, const Key& k) {
+__device__ __forceinline__ bool anticommutes_generator(const Table& T, const Key& k) {
     u64 acc = 0;
 #pragma unroll
     for (int w = 0; w < W; ++w) acc ^= (k.x[w] & T.mask[3 * W + w]) ^ (k.z[w] & T.mask[2 * W + w]);
@@ -167,7 +167,7 @@ __device__ __forceinline__ bool anticommutes_gen(const Table& T, const Key& k) {
 }
 
 // `PauliString::mul_assign`'s i^delta for k · P over the generator, delta mod 4.
-__device__ __forceinline__ u32 product_phase_gen(const Table& T, const Key& k) {
+__device__ __forceinline__ u32 product_phase_generator(const Table& T, const Key& k) {
     u32 delta = 0;
 #pragma unroll
     for (int w = 0; w < W; ++w) {
@@ -183,7 +183,7 @@ __device__ __forceinline__ bool entry_emits(const Table& T, const Key& k, u32 e)
         const u32 s = support_bits(k, T.kq, T.q0, T.q1);
         return ((T.nz[e] >> s) & 1u) != 0;
     }
-    return e == 0 || anticommutes_gen(T, k);
+    return e == 0 || anticommutes_generator(T, k);
 }
 
 // The row entry e emits for (k, c): bitwise `DeltaEntry::emit` for a local table, `PreparedRotation::emit_generator` and the identity pass of the rotation arm otherwise.
@@ -196,7 +196,7 @@ __device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 
         return;
     }
     if (e == 0) {
-        if (anticommutes_gen(T, k)) {
+        if (anticommutes_generator(T, k)) {
             pr = cr * T.rot_cos;
             pi = ci * T.rot_cos;
         } else {
@@ -205,7 +205,7 @@ __device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 
         }
         return;
     }
-    const u32 ph = (1u + product_phase_gen(T, k)) & 3u;
+    const u32 ph = (1u + product_phase_generator(T, k)) & 3u;
     double tr, ti;
     switch (ph) {
         case 0: tr = cr; ti = ci; break;
@@ -254,7 +254,7 @@ __device__ __forceinline__ bool keep_eval(const KeepProg& P, KeyFn key, double c
 // Exclusive scan of v[0..n) in shared memory, ITEMS contiguous entries per thread; returns the total to every thread.
 // swarp holds 33 words of scratch and is free again on return.
 template <int ITEMS, typename T>
-__device__ __forceinline__ u32 block_exscan(T* v, u32 n, u32* swarp) {
+__device__ __forceinline__ u32 block_exclusive_scan(T* v, u32 n, u32* swarp) {
     const u32 tid = threadIdx.x, lane = lane_id(), warp = warp_id();
     const u32 base = tid * ITEMS;
     u32 loc[ITEMS];

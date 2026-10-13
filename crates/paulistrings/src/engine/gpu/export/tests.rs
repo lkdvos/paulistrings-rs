@@ -424,7 +424,10 @@ fn premerge_fixture<const W: usize>(num_qubits: usize, seed: u64, pbits: u8) {
         }
     }
     // Every merge block takes a fallback: the `g_hi32` passes with the low word cleared, the full-key sort with no fingerprint at all.
-    for (opt, full_key) in [("-DFP_ZERO_LO", false), ("-DFP_BITS=0", true)] {
+    for (opt, full_key) in [
+        ("-DFINGERPRINT_ZERO_LOW", false),
+        ("-DFINGERPRINT_BITS=0", true),
+    ] {
         let nvrtc = [opt.to_string()];
         for (name, sent, unmerged, fallbacks) in
             premerge_matches_host_by_key(&input, &rows, DEFAULT_ARENA_BYTES, &nvrtc)

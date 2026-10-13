@@ -5,7 +5,7 @@
 extern "C" __global__ void k_check_invariants(const u64* __restrict__ x, const u64* __restrict__ z,
                                               const u64* __restrict__ g, const u32* __restrict__ start,
                                               const u32* __restrict__ len, const u64* __restrict__ hash_rows,
-                                              u32 bits, u32 buckets, const u64* __restrict__ fp_rows,
+                                              u32 bits, u32 buckets, const u64* __restrict__ fingerprint_rows,
                                               u32 num_qubits, u32* __restrict__ bad) {
     const u32 beta = blockIdx.x * (blockDim.x / WARP) + warp_id();
     if (beta >= buckets) return;
@@ -19,7 +19,7 @@ extern "C" __global__ void k_check_invariants(const u64* __restrict__ x, const u
 #pragma unroll
         for (int w = 0; w < W; ++w) beyond |= (k.x[w] | k.z[w]) & ~word_mask(num_qubits, w);
         out_of_range += beyond != 0;
-        stale += fingerprint(k, fp_rows) != g[r];
+        stale += fingerprint(k, fingerprint_rows) != g[r];
         // Equal keys share a fingerprint, so only equal-g pairs read the second key.
         const u64 gi = g[r];
         for (u32 j = i + 1; j < n; ++j) {

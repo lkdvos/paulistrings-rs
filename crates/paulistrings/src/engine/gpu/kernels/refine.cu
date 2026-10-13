@@ -9,7 +9,7 @@ __device__ __forceinline__ void load_new_rows(u64* srows, const u64* hash_rows, 
     __syncthreads();
 }
 
-__device__ __forceinline__ u32 refine_sub(const Key& k, const u64* srows, u32 delta) {
+__device__ __forceinline__ u32 sub_bucket_of(const Key& k, const u64* srows, u32 delta) {
     u32 s = 0;
     for (u32 j = 0; j < delta; ++j) s |= row_parity(k, srows, j) << j;
     return s;
@@ -29,7 +29,7 @@ extern "C" __global__ void k_refine_count(const u64* __restrict__ x, const u64* 
 #pragma unroll
     for (int s = 0; s < REFINE_MAX_SUB; ++s) c[s] = 0;
     for (u32 r = start + lane; r < end; r += WARP) {
-        const u32 d = refine_sub(load_key(x, z, r), srows, delta);
+        const u32 d = sub_bucket_of(load_key(x, z, r), srows, delta);
 #pragma unroll
         for (int s = 0; s < REFINE_MAX_SUB; ++s) c[s] += (d == (u32)s);
     }
@@ -67,7 +67,7 @@ extern "C" __global__ void k_refine_scatter(const u64* __restrict__ x, const u64
         u32 d = 0;
         if (ok) {
             k = load_key(x, z, start + r);
-            d = refine_sub(k, srows, delta);
+            d = sub_bucket_of(k, srows, delta);
         }
         for (u32 s = 0; s < nsub; ++s) {
             const bool mine = ok && d == s;

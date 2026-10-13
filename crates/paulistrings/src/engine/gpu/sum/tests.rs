@@ -22,7 +22,7 @@ impl<const W: usize> GpuSum<W> {
         };
         let x = s.clone_dtoh(&self.columns.x.slice(0..n * W)).unwrap();
         let z = s.clone_dtoh(&self.columns.z.slice(0..n * W)).unwrap();
-        let g = s.clone_dtoh(&self.columns.g.slice(0..n)).unwrap();
+        let g = s.clone_dtoh(&self.columns.fingerprint.slice(0..n)).unwrap();
         s.synchronize().unwrap();
         Raw {
             x: words(x),
@@ -206,12 +206,16 @@ fn refine_to_beyond_b_max_bits_is_unsupported() {
 #[test]
 fn eight_bit_fingerprints_still_round_trip_and_refine() {
     crate::require_cuda!();
-    let options = ["-DFP_BITS=8".to_string()];
+    let options = ["-DFINGERPRINT_BITS=8".to_string()];
     let sum = rand_sum::<2>(50_000, 128, 0x88);
     let mut dev = GpuSum::from_host_with_options(&sum, 0, &options).expect("upload");
     check_fingerprints(&sum, 0xFF, &dev);
     dev.assert_invariants_device().expect("invariants");
-    assert_same_buckets(&dev.to_host().unwrap(), &sum, "FP_BITS=8 round trip");
+    assert_same_buckets(
+        &dev.to_host().unwrap(),
+        &sum,
+        "FINGERPRINT_BITS=8 round trip",
+    );
     let mut host = sum.clone();
     dev.refine_to(dev.bits() + 3).expect("refine_to");
     for _ in 0..3 {
@@ -219,7 +223,7 @@ fn eight_bit_fingerprints_still_round_trip_and_refine() {
     }
     dev.assert_invariants_device()
         .expect("invariants after refine");
-    assert_same_buckets(&dev.to_host().unwrap(), &host, "FP_BITS=8 refine");
+    assert_same_buckets(&dev.to_host().unwrap(), &host, "FINGERPRINT_BITS=8 refine");
 }
 
 /// Device order within a bucket is free, so a download must restore the host's lex order itself.
@@ -248,7 +252,7 @@ fn to_host_re_sorts_a_bucket_out_of_lex_order() {
         .rev()
         .map(|i| fingerprints.fingerprint(&bx[i], &bz[i]))
         .collect();
-    s.memcpy_htod(&g, &mut dev.columns.g.slice_mut(r0..r0 + l))
+    s.memcpy_htod(&g, &mut dev.columns.fingerprint.slice_mut(r0..r0 + l))
         .unwrap();
     dev.assert_invariants_device()
         .expect("order within a bucket is free on the device");
@@ -277,7 +281,7 @@ fn invariants_kernel_reports_corruption() {
     let fingerprints = FingerprintRows::<1>::new(sum.hash().seed());
     let g = [fingerprints.fingerprint(&bx[0], &bz[0])];
     dev.stream
-        .memcpy_htod(&g, &mut dev.columns.g.slice_mut(r0 + 1..r0 + 2))
+        .memcpy_htod(&g, &mut dev.columns.fingerprint.slice_mut(r0 + 1..r0 + 2))
         .unwrap();
     let msg = dev.assert_invariants_device().unwrap_err();
     assert!(msg.contains("0 misplaced, 1 duplicate keys"), "{msg}");

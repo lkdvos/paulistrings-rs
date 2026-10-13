@@ -134,7 +134,7 @@ thread_local! {
     pub(crate) static NVRTC_COMPILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook), through the PTX cache in `cache`; needs only NVRTC, no device.
+/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFINGERPRINT_BITS=<b>` hook), through the PTX cache in `cache`; needs only NVRTC, no device.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,
@@ -274,11 +274,11 @@ pub(crate) fn kernel_set_with_options(
         premerge_copy: load("k_premerge_copy")?,
         compact: load("k_compact")?,
         rescale: load("k_rescale")?,
-        permute_count: load("k_perm_count")?,
-        permute_lengths: load("k_perm_lens")?,
-        permute_scatter: load("k_perm_scatter")?,
-        octave_histogram: load("k_octave_hist")?,
-        radix_histogram: load("k_radix_hist")?,
+        permute_count: load("k_permute_count")?,
+        permute_lengths: load("k_permute_lengths")?,
+        permute_scatter: load("k_permute_scatter")?,
+        octave_histogram: load("k_octave_histogram")?,
+        radix_histogram: load("k_radix_histogram")?,
         radix_extract: load("k_radix_extract")?,
         boundary_counts: load("k_boundary_counts")?,
         retain: load("k_retain")?,

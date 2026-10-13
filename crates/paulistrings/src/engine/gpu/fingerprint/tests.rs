@@ -37,7 +37,7 @@ fn a_single_bit_key_reads_one_column_of_g() {
         let (w, b) = (q / 64, q % 64);
         let mut x = [0u64; 2];
         x[w] = 1 << b;
-        let want_x: u64 = (0..FP_ROWS)
+        let want_x: u64 = (0..FINGERPRINT_ROWS)
             .map(|r| ((fingerprints.rows_x[r][w] >> b) & 1) << r)
             .sum();
         assert_eq!(
@@ -45,7 +45,7 @@ fn a_single_bit_key_reads_one_column_of_g() {
             want_x,
             "x on qubit {q}"
         );
-        let want_z: u64 = (0..FP_ROWS)
+        let want_z: u64 = (0..FINGERPRINT_ROWS)
             .map(|r| ((fingerprints.rows_z[r][w] >> b) & 1) << r)
             .sum();
         assert_eq!(

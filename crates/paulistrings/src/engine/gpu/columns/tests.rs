@@ -48,9 +48,9 @@ fn reserve_keeps_the_live_terms_and_csr() {
     s.memcpy_htod(&x, &mut columns.x).unwrap();
     s.memcpy_htod(&z, &mut columns.z).unwrap();
     s.memcpy_htod(&c, &mut columns.coeff).unwrap();
-    s.memcpy_htod(&g, &mut columns.g).unwrap();
+    s.memcpy_htod(&g, &mut columns.fingerprint).unwrap();
     s.memcpy_htod(&[0u32, 1, 3], &mut columns.start).unwrap();
-    s.memcpy_htod(&[1u32, 2], &mut columns.lens).unwrap();
+    s.memcpy_htod(&[1u32, 2], &mut columns.lengths).unwrap();
     columns.len = 3;
     columns.buckets = 2;
     columns.reserve(1000, 64).expect("grow");
@@ -60,11 +60,14 @@ fn reserve_keeps_the_live_terms_and_csr() {
     assert_eq!(s.clone_dtoh(&columns.x.slice(0..6)).unwrap(), x);
     assert_eq!(s.clone_dtoh(&columns.z.slice(0..6)).unwrap(), z);
     assert_eq!(s.clone_dtoh(&columns.coeff.slice(0..6)).unwrap(), c);
-    assert_eq!(s.clone_dtoh(&columns.g.slice(0..3)).unwrap(), g);
+    assert_eq!(s.clone_dtoh(&columns.fingerprint.slice(0..3)).unwrap(), g);
     assert_eq!(
         s.clone_dtoh(&columns.start.slice(0..3)).unwrap(),
         vec![0, 1, 3]
     );
-    assert_eq!(s.clone_dtoh(&columns.lens.slice(0..2)).unwrap(), vec![1, 2]);
+    assert_eq!(
+        s.clone_dtoh(&columns.lengths.slice(0..2)).unwrap(),
+        vec![1, 2]
+    );
     assert_eq!((columns.len, columns.buckets), (3, 2));
 }

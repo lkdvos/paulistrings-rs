@@ -140,7 +140,7 @@ fn a_second_compile_with_the_same_inputs_hits_the_cache() {
     assert_eq!(compiles(), before + 1, "first call always compiles");
     compile_ptx(2, "compute_80", &own, cache).expect("second compile");
     assert_eq!(compiles(), before + 1, "second call hits the cache");
-    let other = [own[0].clone(), "-DFP_BITS=8".to_string()];
+    let other = [own[0].clone(), "-DFINGERPRINT_BITS=8".to_string()];
     compile_ptx(2, "compute_80", &other, cache).expect("different options");
     assert_eq!(compiles(), before + 2, "different options miss");
     compile_ptx(2, "compute_80", &own, None).expect("uncached compile");

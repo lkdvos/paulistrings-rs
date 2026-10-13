@@ -3,7 +3,7 @@
 // Output bucket beta' holds, entry by entry, the survivors of source bucket beta' ^ bd[e] in source order; nothing reads that order.
 
 // The row entry `e` emits for source row `src`, and whether it survives: `entry_of[s]` picks the entry, then the product and the keep program decide exactly as the fused layer's `survives`.
-__device__ __forceinline__ bool perm_row(const Table& T, const u32* __restrict__ entry_of,
+__device__ __forceinline__ bool permute_row(const Table& T, const u32* __restrict__ entry_of,
                                          const u64* __restrict__ x, const u64* __restrict__ z,
                                          const double* __restrict__ c, size_t src, const KeepProg& prog,
                                          Key& k, u32& e, double& pr, double& pi) {
@@ -25,7 +25,7 @@ __device__ __forceinline__ bool perm_row(const Table& T, const u32* __restrict__
 }
 
 // K12: cnt[beta * E + e] = surviving rows of bucket beta that entry e emits, one block per source bucket at K14's width.
-extern "C" __global__ void __launch_bounds__(THREADS) k_perm_count(
+extern "C" __global__ void __launch_bounds__(THREADS) k_permute_count(
     const u64* __restrict__ x, const u64* __restrict__ z, const double* __restrict__ c,
     const u32* __restrict__ in_start, const u32* __restrict__ in_len, TABLE_ARGS,
     const u32* __restrict__ entry_of, const __grid_constant__ KeepProg prog, u32* __restrict__ cnt) {
@@ -43,7 +43,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_perm_count(
         Key k;
         u32 e;
         double pr, pi;
-        const bool ok = perm_row(T, entry_of, x, z, c, r, prog, k, e, pr, pi);
+        const bool ok = permute_row(T, entry_of, x, z, c, r, prog, k, e, pr, pi);
         // Unrolled with a constant index so `cn` stays in registers rather than local memory.
 #pragma unroll
         for (int j = 0; j < MAX_ENTRIES; ++j) cn[j] += (ok && e == (u32)j) ? 1u : 0u;
@@ -60,7 +60,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_perm_count(
 }
 
 // K13: out_len[beta'] = sum over entries of cnt[(beta' ^ bd[e]) * E + e], one thread per output bucket.
-extern "C" __global__ void k_perm_lens(const u32* __restrict__ cnt, const u32* __restrict__ bd, u32 B, u32 E,
+extern "C" __global__ void k_permute_lengths(const u32* __restrict__ cnt, const u32* __restrict__ bd, u32 B, u32 E,
                                        u32* __restrict__ out_len) {
     const u32 beta = blockIdx.x * blockDim.x + threadIdx.x;
     if (beta >= B) return;
@@ -71,7 +71,7 @@ extern "C" __global__ void k_perm_lens(const u32* __restrict__ cnt, const u32* _
 
 // K14: one block per source bucket, any multiple of 32 threads up to THREADS wide.
 // Rows go in tiles of blockDim.x; within a tile a row's slot is its rank among the tile's rows of the same entry, from a warp match and a per-entry prefix over the warps, so the scatter is deterministic without atomics.
-extern "C" __global__ void __launch_bounds__(THREADS) k_perm_scatter(
+extern "C" __global__ void __launch_bounds__(THREADS) k_permute_scatter(
     const u64* __restrict__ x, const u64* __restrict__ z, const double* __restrict__ c, const u64* __restrict__ g,
     const u32* __restrict__ in_start, const u32* __restrict__ in_len, TABLE_ARGS,
     const u32* __restrict__ entry_of, const u32* __restrict__ bd, const u64* __restrict__ gm,
@@ -103,7 +103,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_perm_scatter(
         u32 e = NO_ENTRY;
         double pr = 0.0, pi = 0.0;
         bool ok = false;
-        if (r < len) ok = perm_row(T, entry_of, x, z, c, (size_t)start + r, prog, k, e, pr, pi);
+        if (r < len) ok = permute_row(T, entry_of, x, z, c, (size_t)start + r, prog, k, e, pr, pi);
         if (!ok) e = NO_ENTRY;
         // The previous tile's lanes read this warp's row of s_cnt before it is cleared.
         __syncwarp();
@@ -132,7 +132,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_perm_scatter(
             }
             oc[2 * dst] = pr;
             oc[2 * dst + 1] = pi;
-            og[dst] = g[(size_t)start + r] ^ (gm[e] & fp_mask());
+            og[dst] = g[(size_t)start + r] ^ (gm[e] & fingerprint_mask());
         }
     }
 }

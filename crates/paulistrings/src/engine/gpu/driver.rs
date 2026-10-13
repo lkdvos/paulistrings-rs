@@ -135,7 +135,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         Self::one_device(sum, ordinal, &[])
     }
 
-    /// As [`Self::from_host`] with extra NVRTC options, the `-DFP_BITS=<b>` collision hook.
+    /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn from_host_with_options(
         sum: &PauliSum<W>,

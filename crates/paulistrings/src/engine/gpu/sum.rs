@@ -92,7 +92,7 @@ impl<const W: usize> GpuSum<W> {
         Self::upload(sum, ordinal, module::kernel_set(ordinal, W)?)
     }
 
-    /// As [`Self::from_host`] with extra NVRTC options, the `-DFP_BITS=<b>` collision hook.
+    /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook.
     pub(crate) fn from_host_with_options(
         sum: &PauliSum<W>,
         ordinal: u32,
@@ -132,7 +132,7 @@ impl<const W: usize> GpuSum<W> {
             stream.memcpy_htod(&c, &mut columns.coeff)?;
         }
         stream.memcpy_htod(&start, &mut columns.start)?;
-        stream.memcpy_htod(&lens, &mut columns.lens)?;
+        stream.memcpy_htod(&lens, &mut columns.lengths)?;
         columns.len = n;
         columns.buckets = b;
 
@@ -146,7 +146,7 @@ impl<const W: usize> GpuSum<W> {
             &kernels,
             &fingerprint_rows,
             (&columns.x, &columns.z),
-            &mut columns.g,
+            &mut columns.fingerprint,
             n,
         )?;
         let scan = (ScanScratch::new(&stream)?, stream.alloc_zeros::<u32>(2)?);
@@ -175,7 +175,7 @@ impl<const W: usize> GpuSum<W> {
     pub fn to_host(&self) -> Result<PauliSum<W>, GpuError> {
         let b = self.hash.num_buckets();
         let start = self.stream.clone_dtoh(&self.columns.start.slice(0..b))?;
-        let lens = self.stream.clone_dtoh(&self.columns.lens.slice(0..b))?;
+        let lens = self.stream.clone_dtoh(&self.columns.lengths.slice(0..b))?;
         self.stream.synchronize()?;
         let extent = start
             .iter()
@@ -282,26 +282,26 @@ impl<const W: usize> GpuSum<W> {
         out.reserve(n, b_new)?;
         let (b_old32, bits32, delta32) = (b_old as u32, u32::from(bits_old), u32::from(delta));
         let (kernels, stream, columns) = (&self.kernels, &self.stream, &self.columns);
-        // SAFETY: arguments match `k_refine_count` in refine.cu; `out.lens` holds `b_new` entries.
+        // SAFETY: arguments match `k_refine_count` in refine.cu; `out.lengths` holds `b_new` entries.
         unsafe {
             stream
                 .launch_builder(&kernels.refine_count)
                 .arg(&columns.x)
                 .arg(&columns.z)
                 .arg(&columns.start)
-                .arg(&columns.lens)
+                .arg(&columns.lengths)
                 .arg(&self.hash_rows)
                 .arg(&b_old32)
                 .arg(&bits32)
                 .arg(&delta32)
-                .arg(&mut out.lens)
+                .arg(&mut out.lengths)
                 .launch(warp_per_bucket(b_old))?;
         }
         let (scan, totals) = &mut self.scan;
         exclusive_scan(
             stream,
             kernels,
-            &out.lens.slice(0..b_new),
+            &out.lengths.slice(0..b_new),
             &mut out.start.slice_mut(0..b_new + 1),
             b_new,
             scan,
@@ -314,9 +314,9 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&columns.x)
                 .arg(&columns.z)
                 .arg(&columns.coeff)
-                .arg(&columns.g)
+                .arg(&columns.fingerprint)
                 .arg(&columns.start)
-                .arg(&columns.lens)
+                .arg(&columns.lengths)
                 .arg(&self.hash_rows)
                 .arg(&b_old32)
                 .arg(&bits32)
@@ -325,7 +325,7 @@ impl<const W: usize> GpuSum<W> {
                 .arg(&mut out.x)
                 .arg(&mut out.z)
                 .arg(&mut out.coeff)
-                .arg(&mut out.g)
+                .arg(&mut out.fingerprint)
                 .launch(warp_per_bucket(b_old))?;
         }
         out.len = n;
@@ -365,9 +365,9 @@ impl<const W: usize> GpuSum<W> {
                 .launch_builder(&self.kernels.check_invariants)
                 .arg(&columns.x)
                 .arg(&columns.z)
-                .arg(&columns.g)
+                .arg(&columns.fingerprint)
                 .arg(&columns.start)
-                .arg(&columns.lens)
+                .arg(&columns.lengths)
                 .arg(&self.hash_rows)
                 .arg(&bits32)
                 .arg(&b32)
@@ -378,7 +378,7 @@ impl<const W: usize> GpuSum<W> {
         }
         let bad = stream.clone_dtoh(&bad)?;
         let start = stream.clone_dtoh(&columns.start.slice(0..b))?;
-        let lens = stream.clone_dtoh(&columns.lens.slice(0..b))?;
+        let lens = stream.clone_dtoh(&columns.lengths.slice(0..b))?;
         stream.synchronize()?;
         if bad[..4].iter().any(|&v| v != 0) {
             return Ok(Err(format!(

@@ -373,7 +373,7 @@ fn short_fingerprints_still_agree() {
     require_cuda!();
     let input = rand_sum::<2>(2000, 128, 0x66);
     let circuit = random_circuit::<2>(128, 8, 0x7777, true);
-    for fp in ["-DFP_BITS=8", "-DFP_BITS=0"] {
+    for fp in ["-DFINGERPRINT_BITS=8", "-DFINGERPRINT_BITS=0"] {
         check_with(
             &circuit,
             &input,
@@ -404,7 +404,7 @@ fn arrays_bits(sum: &PauliSum<2>) -> ArrayBits {
     )
 }
 
-/// Every block takes a fallback: with the low fingerprint word zeroed the `g_hi32` passes decide, with `FP_BITS=0` only the full-key sort does.
+/// Every block takes a fallback: with the low fingerprint word zeroed the `g_hi32` passes decide, with `FINGERPRINT_BITS=0` only the full-key sort does.
 #[test]
 fn fallback_paths_run_resolve_and_are_reproducible() {
     require_cuda!();
@@ -416,13 +416,13 @@ fn fallback_paths_run_resolve_and_are_reproducible() {
         assert_terms_close(&got, &want, TOL, &format!("{opts:?}"));
         (arrays_bits(&got), c)
     };
-    let (hi, c) = run(&["-DFP_ZERO_LO".to_string()]);
+    let (hi, c) = run(&["-DFINGERPRINT_ZERO_LOW".to_string()]);
     assert!(c.fallback_hi > 0, "{c:?}");
     assert_eq!(c.fallback_key, 0, "{c:?}");
-    assert_eq!(run(&["-DFP_ZERO_LO".to_string()]).0, hi);
-    let (key, c) = run(&["-DFP_BITS=0".to_string()]);
+    assert_eq!(run(&["-DFINGERPRINT_ZERO_LOW".to_string()]).0, hi);
+    let (key, c) = run(&["-DFINGERPRINT_BITS=0".to_string()]);
     assert!(c.fallback_hi > 0 && c.fallback_key > 0, "{c:?}");
-    assert_eq!(run(&["-DFP_BITS=0".to_string()]).0, key);
+    assert_eq!(run(&["-DFINGERPRINT_BITS=0".to_string()]).0, key);
     let (_, c) = run(&[]);
     assert_eq!((c.fallback_hi, c.fallback_key), (0, 0));
 }
@@ -752,7 +752,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
         fused.to_arrays(),
         "one product per key: the two paths agree bit for bit"
     );
-    for hook in ["-DFP_BITS=8", "-DFP_ZERO_LO"] {
+    for hook in ["-DFINGERPRINT_BITS=8", "-DFINGERPRINT_ZERO_LOW"] {
         let extra = [hook.to_string()];
         check_with(
             &circuit,

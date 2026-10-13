@@ -7,16 +7,16 @@ use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr};
 use super::error::GpuError;
 
 /// Term columns and bucket CSR on one device, grow-only.
-// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `Complex64`'s `repr(C)` bytes) and `g[i]`.
-// Bucket `β` owns terms `start[β]..start[β] + lens[β]`; buckets need not be contiguous or in index order.
+// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `Complex64`'s `repr(C)` bytes) and `fingerprint[i]`.
+// Bucket `β` owns terms `start[β]..start[β] + lengths[β]`; buckets need not be contiguous or in index order.
 pub(crate) struct DeviceColumns<const W: usize> {
     pub(crate) x: CudaSlice<u64>,
     pub(crate) z: CudaSlice<u64>,
     pub(crate) coeff: CudaSlice<f64>,
-    pub(crate) g: CudaSlice<u64>,
-    /// One entry per bucket plus one, so an exclusive scan of `lens` can land here directly.
+    pub(crate) fingerprint: CudaSlice<u64>,
+    /// One entry per bucket plus one, so an exclusive scan of `lengths` can land here directly.
     pub(crate) start: CudaSlice<u32>,
-    pub(crate) lens: CudaSlice<u32>,
+    pub(crate) lengths: CudaSlice<u32>,
     /// Live terms.
     pub(crate) len: usize,
     /// Live CSR entries.
@@ -76,7 +76,7 @@ pub(crate) fn grow<T: DeviceRepr>(
 }
 
 impl<const W: usize> DeviceColumns<W> {
-    /// Resident device bytes per term: `x`, `z`, `coeff` and `g`.
+    /// Resident device bytes per term: `x`, `z`, `coeff` and `fingerprint`.
     pub(crate) const BYTES_PER_TERM: usize = 16 * W + 24;
 
     /// Empty columns with room for `terms` terms and `buckets` buckets.
@@ -91,9 +91,9 @@ impl<const W: usize> DeviceColumns<W> {
             x: alloc(stream, terms * W, ordinal, bytes)?,
             z: alloc(stream, terms * W, ordinal, bytes)?,
             coeff: alloc(stream, 2 * terms, ordinal, bytes)?,
-            g: alloc(stream, terms, ordinal, bytes)?,
+            fingerprint: alloc(stream, terms, ordinal, bytes)?,
             start: alloc(stream, buckets + 1, ordinal, bytes)?,
-            lens: alloc(stream, buckets, ordinal, bytes)?,
+            lengths: alloc(stream, buckets, ordinal, bytes)?,
             len: 0,
             buckets: 0,
             term_capacity: terms,
@@ -139,13 +139,13 @@ impl<const W: usize> DeviceColumns<W> {
             grow_keep(stream, &mut self.x, terms * W, n * W, ordinal, bytes)?;
             grow_keep(stream, &mut self.z, terms * W, n * W, ordinal, bytes)?;
             grow_keep(stream, &mut self.coeff, 2 * terms, 2 * n, ordinal, bytes)?;
-            grow_keep(stream, &mut self.g, terms, n, ordinal, bytes)?;
+            grow_keep(stream, &mut self.fingerprint, terms, n, ordinal, bytes)?;
             self.term_capacity = terms;
         }
         if grow_buckets {
             let live = if b > 0 { b + 1 } else { 0 };
             grow_keep(stream, &mut self.start, buckets + 1, live, ordinal, bytes)?;
-            grow_keep(stream, &mut self.lens, buckets, b, ordinal, bytes)?;
+            grow_keep(stream, &mut self.lengths, buckets, b, ordinal, bytes)?;
             self.bucket_capacity = buckets;
         }
         Ok(())

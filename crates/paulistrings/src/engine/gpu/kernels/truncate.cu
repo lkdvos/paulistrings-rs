@@ -5,7 +5,7 @@
 #define APPROX_BINS 2048
 
 // out[0] += terms, out[1 + k] += population of octave k (`norm_sqr` bits >> 52); one warp per bucket, a shared histogram per block, integer atomics only.
-extern "C" __global__ void k_octave_hist(const double* __restrict__ c, const u32* __restrict__ start,
+extern "C" __global__ void k_octave_histogram(const double* __restrict__ c, const u32* __restrict__ start,
                                          const u32* __restrict__ lens, u32 B, u64* __restrict__ out) {
     __shared__ u32 h[APPROX_BINS];
     __shared__ u32 terms;
@@ -33,7 +33,7 @@ extern "C" __global__ void k_octave_hist(const double* __restrict__ c, const u32
 }
 
 // Histogram of one 8-bit digit of |c|^2's bit pattern at `shift`, over terms whose higher bits already match `prefix` under `fixed_mask` (empty for the first pass, `fixed_mask = 0`).
-extern "C" __global__ void k_radix_hist(const double* __restrict__ c, const u32* __restrict__ start,
+extern "C" __global__ void k_radix_histogram(const double* __restrict__ c, const u32* __restrict__ start,
                                         const u32* __restrict__ lens, u32 B, u64 fixed_mask, u64 prefix,
                                         u32 shift, u64* __restrict__ out) {
     __shared__ u32 h[256];

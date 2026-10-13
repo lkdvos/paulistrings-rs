@@ -79,7 +79,7 @@ __device__ __forceinline__ void radix_pass_n(u16* ia, u16* ib, u16* scnt, u32* s
         if (lt == 0) scnt[d * n_groups + it * WARPS + warp] = (u16)__popc(m);
     }
     __syncthreads();
-    block_exscan<(C >= 2 ? C / 2 : 1), u16>(scnt, 16 * n_groups, swarp);
+    block_exclusive_scan<(C >= 2 ? C / 2 : 1), u16>(scnt, 16 * n_groups, swarp);
 #pragma unroll
     for (int it = 0; it < C; ++it) {
         if (!FULL && (u32)it >= n_it) break;
@@ -126,7 +126,7 @@ __device__ __forceinline__ void layer_body(
     for (u32 i = tid; i < 32 * W; i += THREADS) S.s_mask[i] = mask[i];
     // A received entry's source is segment p of its block: rows already shifted and multiplied by the sender.
     if (tid < MAX_ENTRIES) {
-        S.s_gm[tid] = gm[tid] & fp_mask();
+        S.s_gm[tid] = gm[tid] & fingerprint_mask();
         S.s_bd[tid] = bd[tid];
         S.s_nz[tid] = nz[tid];
         const u32 k = rem[tid];
@@ -411,7 +411,7 @@ __device__ __forceinline__ void layer_body(
 #pragma unroll
         for (int it = 0; it < C; ++it) sg[base + it] = keep[it] ? 1u : 0u;
         __syncthreads();
-        const u32 total = block_exscan<C, u32>(sg, n_cap, S.swarp);
+        const u32 total = block_exclusive_scan<C, u32>(sg, n_cap, S.swarp);
         if (tid == 0) out_len_pos[p] = total;
 #pragma unroll
         for (int it = 0; it < C; ++it) {
@@ -449,7 +449,7 @@ __device__ __forceinline__ void layer_body(
 #pragma unroll
         for (int it = 0; it < C; ++it) sg[it * THREADS + tid] = keep[it] ? 1u : 0u;
         __syncthreads();
-        const u32 total = block_exscan<C, u32>(sg, n_cap, S.swarp);
+        const u32 total = block_exclusive_scan<C, u32>(sg, n_cap, S.swarp);
         if (tid == 0) out_len_pos[p] = total;
 #pragma unroll
         for (int it = 0; it < C; ++it) {

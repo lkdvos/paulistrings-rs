@@ -350,7 +350,7 @@ fn export_fill<const W: usize>(
             .arg(&sum.columns.z)
             .arg(&sum.columns.coeff)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(context.bucket_at)
             .arg(&table.mode)
             .arg(&e32)

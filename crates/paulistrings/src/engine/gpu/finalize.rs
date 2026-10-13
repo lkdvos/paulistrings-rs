@@ -33,13 +33,13 @@ fn octave_histogram_device<const W: usize>(
     stream.memset_zeros(&mut scratch.hist)?;
     let b32 = b as u32;
     let started = scratch.event(sum)?;
-    // SAFETY: arguments match `k_octave_hist` in truncate.cu; `hist` holds `1 + APPROX_BINS` entries.
+    // SAFETY: arguments match `k_octave_histogram` in truncate.cu; `hist` holds `1 + APPROX_BINS` entries.
     unsafe {
         stream
             .launch_builder(&sum.kernels.octave_histogram)
             .arg(&sum.columns.coeff)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(&b32)
             .arg(&mut scratch.hist)
             .launch(whole_sum_launch(b))?;
@@ -55,7 +55,7 @@ fn octave_histogram_device<const W: usize>(
 fn clear_device<const W: usize>(sum: &mut GpuSum<W>) -> Result<(), GpuError> {
     let b = sum.hash.num_buckets();
     sum.stream
-        .memset_zeros(&mut sum.columns.lens.slice_mut(0..b))?;
+        .memset_zeros(&mut sum.columns.lengths.slice_mut(0..b))?;
     sum.columns.len = 0;
     sum.debug_check();
     Ok(())
@@ -133,13 +133,13 @@ fn radix_select_bits<const W: usize>(
             u64::MAX << (64 - 8 * pass)
         };
         stream.memset_zeros(&mut scratch.radix_histogram)?;
-        // SAFETY: arguments match `k_radix_hist` in truncate.cu; `radix_histogram` holds 256 entries.
+        // SAFETY: arguments match `k_radix_histogram` in truncate.cu; `radix_histogram` holds 256 entries.
         unsafe {
             stream
                 .launch_builder(&sum.kernels.radix_histogram)
                 .arg(&sum.columns.coeff)
                 .arg(&sum.columns.start)
-                .arg(&sum.columns.lens)
+                .arg(&sum.columns.lengths)
                 .arg(&b)
                 .arg(&fixed_mask)
                 .arg(&prefix)
@@ -176,7 +176,7 @@ fn radix_select_bits<const W: usize>(
                     .launch_builder(&sum.kernels.radix_extract)
                     .arg(&sum.columns.coeff)
                     .arg(&sum.columns.start)
-                    .arg(&sum.columns.lens)
+                    .arg(&sum.columns.lengths)
                     .arg(&b)
                     .arg(&mask)
                     .arg(&prefix)
@@ -222,7 +222,7 @@ fn retain_device<const W: usize>(
             .launch_builder(&kernels.boundary_counts)
             .arg(&sum.columns.coeff)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(&b32)
             .arg(&boundary)
             .arg(&shift)
@@ -246,9 +246,9 @@ fn retain_device<const W: usize>(
             .arg(&sum.columns.x)
             .arg(&sum.columns.z)
             .arg(&sum.columns.coeff)
-            .arg(&sum.columns.g)
+            .arg(&sum.columns.fingerprint)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(&b32)
             .arg(&boundary)
             .arg(&shift)
@@ -257,15 +257,15 @@ fn retain_device<const W: usize>(
             .arg(&mut out.x)
             .arg(&mut out.z)
             .arg(&mut out.coeff)
-            .arg(&mut out.g)
+            .arg(&mut out.fingerprint)
             .arg(&mut out.start)
-            .arg(&mut out.lens)
+            .arg(&mut out.lengths)
             .launch(warp_per_bucket(b))?;
     }
     exclusive_scan(
         &stream,
         &kernels,
-        &out.lens.slice(0..b),
+        &out.lengths.slice(0..b),
         &mut scratch.destination_offsets.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,

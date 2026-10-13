@@ -45,9 +45,9 @@ pub(super) fn rescale_device<const W: usize>(
             .arg(&sum.columns.x)
             .arg(&sum.columns.z)
             .arg(&sum.columns.coeff)
-            .arg(&sum.columns.g)
+            .arg(&sum.columns.fingerprint)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(&b32)
             .arg(&table.kq)
             .arg(&table.q0)
@@ -57,15 +57,15 @@ pub(super) fn rescale_device<const W: usize>(
             .arg(&mut out.x)
             .arg(&mut out.z)
             .arg(&mut out.coeff)
-            .arg(&mut out.g)
+            .arg(&mut out.fingerprint)
             .arg(&mut out.start)
-            .arg(&mut out.lens)
+            .arg(&mut out.lengths)
             .launch(warp_per_bucket(b))?;
     }
     exclusive_scan(
         &stream,
         &kernels,
-        &out.lens.slice(0..b),
+        &out.lengths.slice(0..b),
         &mut scratch.destination_offsets.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
@@ -87,7 +87,7 @@ pub(super) fn rescale_device<const W: usize>(
 }
 
 /// K12's and K14's block width: the average source bucket rounded up to a power of two, between two warps and the fused layer's width for `w`.
-pub(in crate::engine::gpu) fn perm_threads(len: usize, buckets: usize, w: usize) -> u32 {
+pub(in crate::engine::gpu) fn permute_threads(len: usize, buckets: usize, w: usize) -> u32 {
     let avg = len.div_ceil(buckets.max(1));
     (avg.max(64).next_power_of_two() as u32).min(layer_threads(w))
 }
@@ -124,11 +124,11 @@ pub(super) fn permute_device<const W: usize>(
     })?;
     let block_per_bucket = LaunchConfig {
         grid_dim: (b32, 1, 1),
-        block_dim: (perm_threads(n_in, b, W), 1, 1),
+        block_dim: (permute_threads(n_in, b, W), 1, 1),
         shared_mem_bytes: 0,
     };
     let t0 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_count` in permute.cu; `counts` holds `b * e` entries.
+    // SAFETY: arguments match `k_permute_count` in permute.cu; `counts` holds `b * e` entries.
     unsafe {
         stream
             .launch_builder(&kernels.permute_count)
@@ -136,7 +136,7 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&sum.columns.z)
             .arg(&sum.columns.coeff)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(&table.mode)
             .arg(&e32)
             .arg(&table.kq)
@@ -154,7 +154,7 @@ pub(super) fn permute_device<const W: usize>(
     }
     scratch.lap(sum, t0, |m| &mut m.count)?;
     let t1 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_lens`; `out.lens` holds `b` entries.
+    // SAFETY: arguments match `k_permute_lengths`; `out.lens` holds `b` entries.
     unsafe {
         stream
             .launch_builder(&kernels.permute_lengths)
@@ -162,13 +162,13 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&scratch.table.bucket_delta)
             .arg(&b32)
             .arg(&e32)
-            .arg(&mut out.lens)
+            .arg(&mut out.lengths)
             .launch(thread_per(b, 256))?;
     }
     exclusive_scan(
         &stream,
         &kernels,
-        &out.lens.slice(0..b),
+        &out.lengths.slice(0..b),
         &mut out.start.slice_mut(0..b + 1),
         b,
         &mut scratch.scan,
@@ -176,16 +176,16 @@ pub(super) fn permute_device<const W: usize>(
     )?;
     scratch.lap(sum, t1, |m| &mut m.sizes)?;
     let t2 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_scatter`; `out` has room for every input row, the scan's total at most.
+    // SAFETY: arguments match `k_permute_scatter`; `out` has room for every input row, the scan's total at most.
     unsafe {
         stream
             .launch_builder(&kernels.permute_scatter)
             .arg(&sum.columns.x)
             .arg(&sum.columns.z)
             .arg(&sum.columns.coeff)
-            .arg(&sum.columns.g)
+            .arg(&sum.columns.fingerprint)
             .arg(&sum.columns.start)
-            .arg(&sum.columns.lens)
+            .arg(&sum.columns.lengths)
             .arg(&table.mode)
             .arg(&e32)
             .arg(&table.kq)
@@ -205,7 +205,7 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&mut out.x)
             .arg(&mut out.z)
             .arg(&mut out.coeff)
-            .arg(&mut out.g)
+            .arg(&mut out.fingerprint)
             .launch(block_per_bucket)?;
     }
     scratch.lap(sum, t2, |m| &mut m.permute)?;

@@ -200,10 +200,13 @@ mod cuda {
     }
 
     impl GpuPauliSumImpl {
+        /// Upload `sum` with its trace enabled once; every call drains it.
         pub(crate) fn upload(sum: &PauliSumImpl, device: u32) -> Result<Self, GpuError> {
             Ok(
                 for_each_width_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
-                    GpuPartitionedSum::from_host(s, device)?
+                    let mut resident = GpuPartitionedSum::from_host(s, device)?;
+                    resident.enable_trace();
+                    resident
                 }),
             )
         }
@@ -233,7 +236,7 @@ mod cuda {
         }
 
         /// Step the resident sum through `circuit`, returning this call's trace when `traced`.
-        /// The core trace is drained after every call, so a sum stepped many times never accumulates records.
+        /// The trace, enabled at upload, is drained after every call, so a sum stepped many times never accumulates records.
         pub(crate) fn propagate(
             &mut self,
             circuit: &CircuitImpl,
@@ -247,15 +250,11 @@ mod cuda {
                 self,
                 circuit,
                 |s, c, _W, _wrap| {
-                    if traced {
-                        s.enable_trace();
-                        let _ = s.take_trace();
-                    }
                     let result =
                         s.propagate_with(c, policy, direction, options);
                     let trace = s.take_trace();
                     result.map_err(PropagateFailure::Gpu)?;
-                    Ok(if traced { trace } else { None })
+                    Ok(trace.filter(|_| traced))
                 },
                 else Err(PropagateFailure::WidthMismatch)
             )

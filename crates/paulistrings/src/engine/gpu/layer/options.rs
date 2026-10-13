@@ -43,7 +43,7 @@ pub struct GpuLayerOptions {
     /// The receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Partitioning); a chunk exceeds the cap only when one position alone does.
     /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary).
     pub exchange_bytes: usize,
-    /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path, K12–K14, instead of the fused layer; on by default.
+    /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path (`k_permute_*`) instead of the fused layer; on by default.
     pub clifford: bool,
 }
 

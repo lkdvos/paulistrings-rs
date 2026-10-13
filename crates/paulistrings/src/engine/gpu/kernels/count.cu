@@ -1,5 +1,5 @@
-// K1: cnt[beta * E + e] = rows of bucket beta that entry e emits, one warp per bucket.
-// K2: rows[p] = sum over local entries of cnt[(bucket_at[p] ^ bd[e]) * E + e] plus, per received entry, the length of segment p of its block.
+// k_count: cnt[beta * E + e] = rows of bucket beta that entry e emits, one warp per bucket.
+// k_rows: rows[p] = sum over local entries of cnt[(bucket_at[p] ^ bd[e]) * E + e] plus, per received entry, the length of segment p of its block.
 
 #define TABLE_ARGS u32 mode, u32 E, u32 kq, u32 q0, u32 q1, double rcos, double rsin, const double* __restrict__ amp, const u64* __restrict__ mask, const u32* __restrict__ nz
 #define MAKE_TABLE(T) Table T; T.mode = mode; T.entries = E; T.kq = kq; T.q0 = q0; T.q1 = q1; T.rot_cos = rcos; T.rot_sin = rsin; T.amp = amp; T.mask = mask; T.nz = nz

@@ -1,4 +1,4 @@
-// K4: append one batch of output positions [p0, p0 + gridDim.x) from the batch-relative arena to the tight columns at running + dst_off, recording each bucket's start and length.
+// k_compact: append one batch of output positions [p0, p0 + gridDim.x) from the batch-relative arena to the tight columns at running + dst_off, recording each bucket's start and length.
 
 extern "C" __global__ void k_compact(const u64* __restrict__ ax, const u64* __restrict__ az,
                                      const double* __restrict__ ac, const u64* __restrict__ ag,

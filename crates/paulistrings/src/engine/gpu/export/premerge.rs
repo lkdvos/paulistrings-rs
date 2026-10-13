@@ -82,14 +82,14 @@ pub(super) fn premerge_groups<const W: usize>(
     if groups.iter().all(Vec::is_empty) {
         return Ok(groups);
     }
-    // K3's tag addresses 4096 rows of a source bucket; a longer one fails the layer after the exchange, and must not reach K3 before it.
+    // The fused layer's tag addresses 4096 rows of a source bucket; a longer one fails the layer after the exchange, and must not reach the fused layer before it.
     if scratch.longest_bucket(sum)? as usize > MAX_BUCKET_LEN {
         groups.iter_mut().for_each(Vec::clear);
     }
     Ok(groups)
 }
 
-/// K3 over one partner's sub-table, each position's rows split back over its `blocks` within their unmerged counts so every segment still fits the receiver's tag; `None`, having written nothing, when a position exceeds the fused kernel's cap.
+/// The fused layer over one partner's sub-table, each position's rows split back over its `blocks` within their unmerged counts so every segment still fits the receiver's tag; `None`, having written nothing, when a position exceeds the fused kernel's cap.
 pub(super) fn premerge_partner<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -220,7 +220,7 @@ pub(super) fn premerge_partner<const W: usize>(
     Ok(Some(merged))
 }
 
-/// The merge's batch loop: K3 into the arena, the split and its scan, the block offsets, and the copy of every block's share.
+/// The merge's batch loop: the fused layer into the arena, the split and its scan, the block offsets, and the copy of every block's share.
 #[allow(clippy::too_many_arguments)]
 fn premerge_batches<const W: usize>(
     sum: &GpuSum<W>,

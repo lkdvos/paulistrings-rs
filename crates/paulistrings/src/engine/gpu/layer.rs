@@ -55,7 +55,7 @@ pub struct GpuLayerCounters {
     pub fallback_key: u32,
     /// The layer took the rescale path.
     pub rescaled: bool,
-    /// The layer took the permutation path, K12–K14, with `records` its input rows.
+    /// The layer took the permutation path, `k_permute_*`, with `records` its input rows.
     pub permuted: bool,
     /// The layer reduced by the segmented scan rather than the head-serial walk.
     pub dense: bool,
@@ -70,23 +70,23 @@ pub struct GpuLayerCounters {
 /// Kernel milliseconds per family, accumulated under `phase-timing` and folded into the partition's `PhaseStats`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct GpuKernelMs {
-    /// K1, the count table.
+    /// `k_count`, the count table.
     pub count: f64,
-    /// K2, segment sizes and their scans.
+    /// `k_rows`, segment sizes and their scans.
     pub sizes: f64,
-    /// K3, the fused layer over every batch.
+    /// The fused layer over every batch.
     pub layer: f64,
-    /// K4, compaction and its scans.
+    /// `k_compact` and its scans.
     pub compact: f64,
-    /// K5, the key-preserving rescale.
+    /// `k_rescale`, the key-preserving rescale.
     pub rescale: f64,
-    /// K14, the permutation scatter; its K12 count and K13 sizes land in `count` and `sizes`.
+    /// `k_permute_scatter`; `k_permute_count` and `k_permute_lengths` land in `count` and `sizes`.
     pub permute: f64,
-    /// K6, refines the layer issued.
+    /// The refines the layer issued.
     pub refine: f64,
-    /// K7, the `ApproxTopN` histogram and retain.
+    /// The `ApproxTopN` octave histogram and retain.
     pub truncate: f64,
-    /// K10, the export blocks' counts and fill.
+    /// `k_export_counts` and `k_export_fill`.
     pub export: f64,
 }
 
@@ -146,11 +146,11 @@ pub(crate) struct LayerScratch<const W: usize> {
     segment_start: CudaSlice<u32>,
     out_len_pos: CudaSlice<u32>,
     pub(super) destination_offsets: CudaSlice<u32>,
-    /// K7's `[len, bins…]`.
+    /// The octave histogram's `[len, bins…]`.
     pub(super) hist: CudaSlice<u64>,
-    /// K8's 256-bin radix digit histogram, reused across passes.
+    /// The radix-select's 256-bin digit histogram, reused across passes.
     pub(super) radix_histogram: CudaSlice<u64>,
-    /// K8's extracted singleton bits.
+    /// The radix-select's extracted singleton bits.
     pub(super) radix_out: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
     pub(super) table: TableBuffers,
@@ -344,7 +344,7 @@ impl<const W: usize> LayerScratch<W> {
         Ok(())
     }
 
-    /// K1 over the local buckets.
+    /// `k_count` over the local buckets.
     pub(super) fn count_local(
         &mut self,
         sum: &GpuSum<W>,
@@ -409,7 +409,7 @@ impl<const W: usize> LayerScratch<W> {
         )
     }
 
-    /// K2 and its scans, over the local counts and the received offsets; returns `(records total, records max, longest local bucket)`.
+    /// `k_rows` and its scans, over the local counts and the received offsets; returns `(records total, records max, longest local bucket)`.
     fn sizes(
         &mut self,
         sum: &GpuSum<W>,

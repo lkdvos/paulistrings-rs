@@ -1,4 +1,4 @@
-// K5: the key-preserving fast path, `rescale_in_place` in engine/bucketed.rs: c' = c * amp[s], dropping exact zeros and rows `keep_term` rejects, order-preserving, one warp per bucket into the same start offsets.
+// k_rescale: the key-preserving fast path, `rescale_in_place` in engine/bucketed.rs: c' = c * amp[s], dropping exact zeros and rows `keep_term` rejects, order-preserving, one warp per bucket into the same start offsets.
 
 extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __restrict__ z,
                                      const double* __restrict__ c, const u64* __restrict__ g,

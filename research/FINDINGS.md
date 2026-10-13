@@ -152,7 +152,7 @@ Grow-only scan scratch and a position map cached on `(bits, bucket deltas)`: −
 
 ### Fused layer: table load and count-table registers
 
-Skipping the amplitude-table load for rotations and unrolling K1 over `MAX_ENTRIES`: `su4` −2.17%, `rotation_zz` −1.12% (5/5).
+Skipping the amplitude-table load for rotations and unrolling `k_count` over `MAX_ENTRIES`: `su4` −2.17%, `rotation_zz` −1.12% (5/5).
 
 ### Rule: a direction-consistent phase delta is not an effect if the total is flat
 
@@ -241,13 +241,13 @@ The send side stays whole, the default is unbounded, and the NCCL form is unmeas
 Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
 At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
 Shipped from this profile: the Clifford permutation path and the on-disk NVRTC cache.
-Open levers, by estimated gain: rotation dedup as a shared-memory hash join instead of eight radix passes (K3 −50–65%); fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; K3 bank conflicts.
+Open levers, by estimated gain: rotation dedup as a shared-memory hash join instead of eight radix passes (fused layer −50–65%); fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
 
 ### GPU Clifford permutation path
 
-A permutation table (one emitting entry per pattern, no colliding outputs, no received entries) scatters rows directly (K12–K14), with no sort, arena or K4.
+A permutation table (one emitting entry per pattern, no colliding outputs, no received entries) scatters rows directly (`k_permute_*`), with no sort, arena or compaction.
 **−62.7% to −66.9%** wall on `cnot` from 1e5 to 1.6e7 (5/5); `heavyhex_step` (rotations only) is flat as the control.
-Open: Clifford layers with received entries, and an emitter count replacing K12's survivor pass.
+Open: Clifford layers with received entries, and an emitter count replacing `k_permute_count`'s survivor pass.
 
 ### NCCL exchange between MPI ranks
 

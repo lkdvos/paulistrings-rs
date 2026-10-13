@@ -1,4 +1,4 @@
-// K6: refine by `delta` hash rows in one counting pass, one warp per source bucket.
+// k_refine_count and k_refine_scatter: refine by `delta` hash rows in one counting pass, one warp per source bucket.
 // Row r of bucket beta moves to beta | (s << bits_old), s the parities of rows bits_old.., keeping its order within the new bucket.
 
 #define REFINE_MAX_DELTA 4

@@ -1,4 +1,4 @@
-// K0: the GF(2)-linear fingerprint g = G·(x, z) of FINGERPRINT_ROWS rows, masked to FINGERPRINT_BITS.
+// k_fingerprint: the GF(2)-linear fingerprint g = G·(x, z) of FINGERPRINT_ROWS rows, masked to FINGERPRINT_BITS.
 
 __device__ __forceinline__ u64 fingerprint(const Key& k, const u64* fingerprint_rows) {
     u64 out = 0;

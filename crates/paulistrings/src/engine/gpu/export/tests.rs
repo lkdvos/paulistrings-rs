@@ -577,7 +577,7 @@ fn oversize_merge_position_falls_back_to_unmerged_export() {
     assert_unmerged_fallback(&input, &rows, &["-DTEST_SHARED_LIMIT=17000".to_string()]);
 }
 
-/// A partner group whose `entries × buckets` exceeds [`SCAN_LIMIT`] is cleared before K3: `B_MAX_BITS` buckets times the SU(4)'s eight-entry group already does.
+/// A partner group whose `entries × buckets` exceeds [`SCAN_LIMIT`] is cleared before the fused layer: `B_MAX_BITS` buckets times the SU(4)'s eight-entry group already does.
 #[test]
 fn oversize_partner_group_falls_back_to_unmerged_export() {
     crate::require_cuda!();

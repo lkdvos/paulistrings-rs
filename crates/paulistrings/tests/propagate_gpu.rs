@@ -674,7 +674,7 @@ fn propagate_gpu_front_door_and_options() {
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "traced");
 }
 
-/// Every Clifford runs on the permutation path (K12–K14) and agrees with the host under every policy shape, on an input holding exact-zero coefficients too; the knob returns it to the fused layer with the same result, and a rotation, a dense unitary and a key-preserving channel never take it.
+/// Every Clifford runs on the permutation path (`k_permute_*`) and agrees with the host under every policy shape, on an input holding exact-zero coefficients too; the knob returns it to the fused layer with the same result, and a rotation, a dense unitary and a key-preserving channel never take it.
 fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64) {
     use paulistrings::test_support::{random_clifford_circuit, with_zero_coefficients};
     let input = with_zero_coefficients(&rand_sum::<W>(3000, nq, 0xC11F), 7);

@@ -58,7 +58,7 @@ pub struct GpuSum<const W: usize> {
     staging: Mutex<HostStaging>,
 }
 
-/// K0: the fingerprint of rows `0..n` of `(x, z)` into `g`, enqueued on `stream`.
+/// `k_fingerprint`: the fingerprint of rows `0..n` of `(x, z)` into `g`, enqueued on `stream`.
 pub(super) fn launch_fingerprint(
     stream: &Arc<CudaStream>,
     kernels: &KernelSet,

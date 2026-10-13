@@ -1,4 +1,4 @@
-// K10: one exchange block per remote delta, CSR by the receiver's destination position (ARCHITECTURE.md §Partitioning).
+// k_export_counts and k_export_fill: one exchange block per remote delta, CSR by the receiver's destination position (ARCHITECTURE.md §Partitioning).
 // counts[p] is entry e's row count from source bucket bucket_at[p] ^ bd; the fill writes segment p warp-compacted in source order, rows bitwise the local emitters'.
 
 extern "C" __global__ void k_export_counts(const u32* __restrict__ cnt, const u32* __restrict__ bucket_at, u32 bd,
@@ -46,7 +46,7 @@ extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* _
     }
 }
 
-// The sender-side merge of one partner's blocks; K3 runs between the counts and the split over the partner's sub-table.
+// The sender-side merge of one partner's blocks; the fused layer runs between the counts and the split over the partner's sub-table.
 // sub[beta * K + j] = cnt[beta * E + sel[j]], the count table of the sub-table from the layer's.
 extern "C" __global__ void k_premerge_counts(const u32* __restrict__ cnt, u32 E, const u32* __restrict__ sel, u32 K,
                                              u32 B, u32* __restrict__ sub) {

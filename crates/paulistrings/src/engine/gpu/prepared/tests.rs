@@ -41,7 +41,7 @@ fn classification_and_fanout_per_table() {
     assert_eq!(rot.bucket_deltas().len(), 2);
 }
 
-/// An identity-only retained table with received entries must not take the K5 path, and its position map spans the local deltas only.
+/// An identity-only retained table with received entries must not take the rescale path, and its position map spans the local deltas only.
 #[test]
 fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
     use crate::engine::partitioned::plan::PartitionPlan;
@@ -121,7 +121,7 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
             }
         }
     }
-    // `X` is a Pauli gate: key-preserving, so K5 takes it before the permutation path.
+    // `X` is a Pauli gate: key-preserving, so the rescale takes it before the permutation path.
     let x = table::<1>(&PtmChannel::pauli_x(3), 8);
     assert!(x.key_preserving && x.permutation);
     let t = table::<1>(

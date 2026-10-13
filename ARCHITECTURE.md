@@ -326,7 +326,7 @@ Where a partition's terms live is a second axis, orthogonal to how its peers are
 Everything collective stays in the loop — the bucket-count schedule, the exchange decision from `PartitionPlan`, the counted policy finalization, the trace row — and a backend must issue exactly the transport calls the host layer issues, in the same order.
 The drivers check `supports_partitioned` before the loop, so a backend cannot widen what a partitioned run accepts.
 `HostPartition` (a `PauliSum` plus its layer and export scratch) is the host backend; `PartitionedSum<W, B = HostPartition<W>>` holds `P` of them and `DistributedSum<W, X, B = HostPartition<W>>` holds one.
-`DevicePartition` (the `cuda` feature) is the device backend, and the device drivers are the same two types over it (`GpuPartitionedSum`, whose one-partition form is `GpuPauliSum`, and `GpuDistributedSum`), adding only the upload at scatter, the fallible gather and the poisoning of a failed group: its K10 export lays out the same CSR blocks in the receiver's position order, and its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`.
+`DevicePartition` (the `cuda` feature) is the device backend, and the device drivers are the same two types over it (`GpuPartitionedSum`, whose one-partition form is `GpuPauliSum`, and `GpuDistributedSum`), adding only the upload at scatter, the fallible gather and the poisoning of a failed group: its export kernels lay out the same CSR blocks in the receiver's position order, and its fused layer reads a received entry's rows from segment `p` of the block exactly as a local entry's from bucket `bucket_at(p) ⊕ bd`.
 Exchange rows never leave device memory, so a group is all device partitions or all host ones.
 **Every device group exchanges over a device wire.**
 A remote layer sends only the block headers and CSR offsets through `Transport::exchange`, then one `allreduce_sum_u64` vote on going ahead and on the chunk count, then, on a unanimous yes, one wire group per chunk, chunk-major, that moves the chunk's `x`/`z`/`coeff` columns straight into the receiver's receive columns, where the receiver computes the fingerprints; this vote is the one call beyond the host layer's, legal only because every rank of the group runs the same protocol.
@@ -339,7 +339,7 @@ The send side is not chunked: its export volume stays resident until the last ch
 After a yes every rank posts every chunk's group even if its own layer fails mid-way, discarding what arrives, so a local failure never strands a peer's receive; only a failed group itself stops the posting, and its peers' bounded waits then fail too.
 A rank that cannot receive (a received segment past the tag, a failed allocation) or has already failed votes no, nobody posts, the ready ranks take every block as empty, and the after-loop agreement names the rank that voted no.
 **A device sender merges one partner's rows by key before the exchange.**
-Two remote deltas to one partner can emit one key only into one receiver position, so the merge is position-local: K3 runs over the partner's sub-table under the keep-everything program, which sums equal keys and drops an exact-zero sum but truncates nothing, since the receiver alone sees a key's complete sum.
+Two remote deltas to one partner can emit one key only into one receiver position, so the merge is position-local: the fused layer runs over the partner's sub-table under the keep-everything program, which sums equal keys and drops an exact-zero sum but truncates nothing, since the receiver alone sees a key's complete sum.
 The merged rows of a position are split over the partner's blocks greedily in entry order, never more than a block's unmerged count there, so the wire format, `ExtraRows` and the receive path are untouched and no received segment outgrows the tag.
 It runs for a partner whose remote entries share an output support pattern (a Clifford's never do, a rotation has one remote entry); `GpuLayerOptions::premerge` switches it off.
 The memory consequence is that a partition holds one export volume and one receive chunk on its device on top of its sum during a remote layer, where a host partition's equivalent volumes sit in system RAM.
@@ -495,11 +495,24 @@ A segmented sum over each equal-key run (a warp-shuffle block scan on dense tabl
 A device with less opt-in shared memory loads fewer block variants and runs under a lower cap.
 Rows land in a loose arena sized by the exact pre-dedup counts, batched over contiguous position ranges so the arena stays under `arena_bytes`, then compact into the output columns at running offsets; input and output columns ping-pong between layers.
 The block width is a per-`W` constant (`THREADS`): 1024 threads at `W ≤ 2`, 512 at `W = 4`, 256 above, register-bound.
-The kernels are named K1 count table `cnt[β][e]`, K2 segment sizes and scan, K3 the fused layer, K4 compaction, K5 the key-preserving rescale (an identity-only table, gated exactly like the host's `rescale_in_place`), K6 refine, K7 the octave histogram of `ApproxTopN`, K8 exact `TopN`'s radix-select over the bit pattern of `|c|²` (one device only; `DevicePartition::finalize_layer` reports `Unsupported` above one partition, since the `n`-th largest of a split sum has no collective form), K11 the device invariant check, and K12–K14 the permutation layer.
+The kernels, by `KernelSet` field (`k_<name>` in `kernels/*.cu`):
+
+- `fingerprint`: every row's fingerprint `g`, at upload and on each received chunk.
+- `count`: the count table `cnt[β][e]`; `rows`: segment sizes, then a scan.
+- `layer` (`k_layer_serial_<items>`, `k_layer_segscan_<items>`): the fused layer.
+- `compact`: the arena into the output columns.
+- `rescale`: the key-preserving rescale (an identity-only table, gated exactly like the host's `rescale_in_place`).
+- `refine_count`, `refine_scatter`: refine.
+- `export_counts`, `export_fill`: one exchange block per remote delta; `premerge_counts`, `premerge_split`, `premerge_copy`: the sender-side merge around the fused layer.
+- `octave_histogram`, `boundary_counts`, `retain`: `ApproxTopN`'s layer pass, and the retain of exact `TopN`.
+- `radix_histogram`, `radix_extract`: exact `TopN`'s radix-select over the bit pattern of `|c|²` (one device only; `DevicePartition::finalize_layer` reports `Unsupported` above one partition, since the `n`-th largest of a split sum has no collective form).
+- `check_invariants`: the device invariant check.
+- `permute_count`, `permute_lengths`, `permute_scatter`: the permutation layer.
+- `scan_block`, `scan_single`, `scan_add`: the exclusive scan every pass above uses.
 
 **The permutation layer.**
 A table under which no two input keys emit one output key needs no sort and no dedup: every support pattern has at most one emitting entry and no two entries reach one output pattern (`DevicePrepared::permutation`, which every Clifford satisfies and a fanout-2 `T` or a dense unitary does not).
-For such a table with no received entry, K12 counts the surviving rows per `(source bucket, entry)` under the same product and keep test as the fused layer, K13 sizes every output bucket from those counts, and K14 scatters each row to bucket `β ⊕ bd[e]` with key `v ⊕ d_e`, fingerprint `g ⊕ g(d_e)` and its product, one block per source bucket, deterministic without atomics.
+For such a table with no received entry, `permute_count` counts the surviving rows per `(source bucket, entry)` under the same product and keep test as the fused layer, `permute_lengths` sizes every output bucket from those counts, and `permute_scatter` scatters each row to bucket `β ⊕ bd[e]` with key `v ⊕ d_e`, fingerprint `g ⊕ g(d_e)` and its product, one block per source bucket, deterministic without atomics.
 It refines only to the agreed bucket count, has no record cap and no source-bucket length limit, and its output is a tight CSR in bucket order; `GpuLayerOptions::clifford` returns such a layer to the fused path.
 A layer with received entries keeps the fused path, whose receive already merges by position.
 

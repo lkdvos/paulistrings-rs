@@ -104,9 +104,9 @@ GB/s; read and write reach 92% of the 768 GB/s spec.
 
 `su4` at 2.3e8 steady terms does not fit the 48 GB device; the host `su4` row at 5.65e7 ran under load average 6–11 (quiet: 49–58 ns/term).
 
-Device phases per layer (`phase-timing`, CUDA events; K1+K2 = `gather_ns`, K3 = `merge_ns`, K4 = `compact_ns`, `coset_loop_ns` the driving thread's wall):
+Device phases per layer (`phase-timing`, CUDA events; count + rows = `gather_ns`, fused layer = `merge_ns`, compaction = `compact_ns`, `coset_loop_ns` the driving thread's wall):
 
-| cell | m | K1+K2 | K3 | K4 | coset loop | records/layer | ns per record (K3) |
+| cell | m | count + rows | fused layer | compact | coset loop | records/layer | ns per record (fused layer) |
 |---|---|---:|---:|---:|---:|---:|---:|
 | `rotation_zz` | 1.50e6 | 0.126 | 1.370 | 0.283 | 1.840 | 2.50e6 | 0.55 |
 | `cnot` | 1.00e6 | 0.085 | 0.760 | 0.200 | 1.103 | 1.00e6 | 0.76 |

@@ -1,4 +1,4 @@
-//! The two layer paths that bypass the fused kernel: the key-preserving rescale (K5) and the permutation scatter (K12–K14).
+//! The two layer paths that bypass the fused kernel: the key-preserving rescale and the permutation scatter.
 
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
@@ -11,7 +11,7 @@ use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 
-/// K5: the key-preserving fast path, into the spare columns at the input's offsets.
+/// `k_rescale`: the key-preserving fast path, into the spare columns at the input's offsets.
 pub(super) fn rescale_device<const W: usize>(
     sum: &mut GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -86,13 +86,13 @@ pub(super) fn rescale_device<const W: usize>(
     Ok(())
 }
 
-/// K12's and K14's block width: the average source bucket rounded up to a power of two, between two warps and the fused layer's width for `w`.
+/// `k_permute_count`'s and `k_permute_scatter`'s block width: the average source bucket rounded up to a power of two, between two warps and the fused layer's width for `w`.
 pub(in crate::engine::gpu) fn permute_threads(len: usize, buckets: usize, w: usize) -> u32 {
     let avg = len.div_ceil(buckets.max(1));
     (avg.max(64).next_power_of_two() as u32).min(layer_threads(w))
 }
 
-/// K12–K14: the permutation path, into the spare columns as a tight CSR in bucket order.
+/// `k_permute_*`: the permutation path, into the spare columns as a tight CSR in bucket order.
 pub(super) fn permute_device<const W: usize>(
     sum: &mut GpuSum<W>,
     table: &DevicePrepared<W>,

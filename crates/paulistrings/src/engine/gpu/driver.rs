@@ -34,7 +34,7 @@ use crate::engine::LOG_TARGET;
 /// Several partitions may share one device (`per_device > 1`), which is a testing shape; one partition per device is the production one.
 /// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
 ///
-/// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select (K8) at one partition only, since the `n`-th largest of a split sum has no collective form.
+/// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form.
 ///
 /// A device error mid-run leaves a one-partition sum holding the last completed layer's output, and a later call resumes from it; above one partition the split is **poisoned** instead (see [`propagate_with`](Self::propagate_with)).
 pub type GpuPartitionedSum<const W: usize> = PartitionedSum<W, DevicePartition<W>>;
@@ -350,7 +350,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 
     /// Drain the per-phase counters: one [`PhaseStats`](crate::PhaseStats) per partition plus the driver's scatter and gather laps (feature `phase-timing`).
     ///
-    /// Kernel families land on the host phases they replace: K1+K2 in `gather_ns`, the fused K3 in `merge_ns` (`sort_ns` stays zero, the sort being inside it), K4 in `compact_ns`, K5 in `rescale_ns`, refines in `rebucket_ns`; `coset_loop_ns` is the driving thread's wall over the fused path.
+    /// Kernel families land on the host phases they replace: count and segment sizes in `gather_ns`, the fused layer in `merge_ns` (`sort_ns` stays zero, the sort being inside it), compaction in `compact_ns`, the rescale in `rescale_ns`, refines in `rebucket_ns`; `coset_loop_ns` is the driving thread's wall over the fused path.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let per_partition = self

@@ -1,4 +1,4 @@
-// K11: the per-term half of `PauliSum::assert_invariants` on device, one warp per bucket.
+// k_check_invariants: the per-term half of `PauliSum::assert_invariants` on device, one warp per bucket.
 // bad[0..4) count misplaced, duplicate-key, out-of-range and stale-fingerprint rows; bad[4] is the lowest offending bucket.
 // Device order within a bucket is free, so the host's "strictly ascending" becomes "unique keys" here.
 

@@ -1,5 +1,5 @@
-// K12-K14: the permutation layer for a table under which no two input keys emit one output key (`DevicePrepared::permutation`, ARCHITECTURE.md §GPU-Readiness).
-// K12 counts the surviving rows per (source bucket, entry), K13 sizes every output bucket from those counts, and K14 scatters each row to bucket beta ^ bd[e] with no sort, no arena and no compaction.
+// The permutation layer for a table under which no two input keys emit one output key (`DevicePrepared::permutation`, ARCHITECTURE.md §GPU-Readiness).
+// k_permute_count counts the surviving rows per (source bucket, entry), k_permute_lengths sizes every output bucket from those counts, and k_permute_scatter scatters each row to bucket beta ^ bd[e] with no sort, no arena and no compaction.
 // Output bucket beta' holds, entry by entry, the survivors of source bucket beta' ^ bd[e] in source order; nothing reads that order.
 
 // The row entry `e` emits for source row `src`, and whether it survives: `entry_of[s]` picks the entry, then the product and the keep program decide exactly as the fused layer's `survives`.
@@ -24,7 +24,7 @@ __device__ __forceinline__ bool permute_row(const Table& T, const u32* __restric
     }, pr, pi);
 }
 
-// K12: cnt[beta * E + e] = surviving rows of bucket beta that entry e emits, one block per source bucket at K14's width.
+// k_permute_count: cnt[beta * E + e] = surviving rows of bucket beta that entry e emits, one block per source bucket at k_permute_scatter's width.
 extern "C" __global__ void __launch_bounds__(THREADS) k_permute_count(
     const u64* __restrict__ x, const u64* __restrict__ z, const double* __restrict__ c,
     const u32* __restrict__ in_start, const u32* __restrict__ in_len, TABLE_ARGS,
@@ -59,7 +59,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_permute_count(
     if (tid < E) cnt[(size_t)beta * E + tid] = s_cnt[tid];
 }
 
-// K13: out_len[beta'] = sum over entries of cnt[(beta' ^ bd[e]) * E + e], one thread per output bucket.
+// k_permute_lengths: out_len[beta'] = sum over entries of cnt[(beta' ^ bd[e]) * E + e], one thread per output bucket.
 extern "C" __global__ void k_permute_lengths(const u32* __restrict__ cnt, const u32* __restrict__ bd, u32 B, u32 E,
                                        u32* __restrict__ out_len) {
     const u32 beta = blockIdx.x * blockDim.x + threadIdx.x;
@@ -69,7 +69,7 @@ extern "C" __global__ void k_permute_lengths(const u32* __restrict__ cnt, const 
     out_len[beta] = n;
 }
 
-// K14: one block per source bucket, any multiple of 32 threads up to THREADS wide.
+// k_permute_scatter: one block per source bucket, any multiple of 32 threads up to THREADS wide.
 // Rows go in tiles of blockDim.x; within a tile a row's slot is its rank among the tile's rows of the same entry, from a warp match and a per-entry prefix over the warps, so the scatter is deterministic without atomics.
 extern "C" __global__ void __launch_bounds__(THREADS) k_permute_scatter(
     const u64* __restrict__ x, const u64* __restrict__ z, const double* __restrict__ c, const u64* __restrict__ g,

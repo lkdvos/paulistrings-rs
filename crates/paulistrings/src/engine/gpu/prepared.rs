@@ -45,9 +45,9 @@ pub(crate) struct DevicePrepared<const W: usize> {
     pub(crate) fanout: usize,
     /// The reduction choice.
     pub(crate) dense: bool,
-    /// One identity entry and no received entry: the K5 rescale path, which would drop every received row (ARCHITECTURE.md §Partitioning).
+    /// One identity entry and no received entry: the rescale path, which would drop every received row (ARCHITECTURE.md §Partitioning).
     pub(crate) key_preserving: bool,
-    /// At most one emitting entry per pattern, no two entries reaching one output pattern, no received entry: the scatter path (`kernels/permute.cu`), after K5.
+    /// At most one emitting entry per pattern, no two entries reaching one output pattern, no received entry: the scatter path (`kernels/permute.cu`), after the rescale.
     pub(crate) permutation: bool,
     /// Per support pattern, the one entry that emits for it or [`NO_ENTRY`]; meaningful only when `permutation`.
     pub(crate) entry_of: Vec<u32>,

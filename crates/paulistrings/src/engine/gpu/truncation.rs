@@ -14,7 +14,7 @@ const OP_WEIGHT: u32 = 2;
 const OP_AND: u32 = 3;
 const OP_OR: u32 = 4;
 
-/// The per-term half of a tree as a postfix program, passed to K3 and K5 by value as `KeepProg`.
+/// The per-term half of a tree as a postfix program, passed to the fused layer and the rescale by value as `KeepProg`.
 ///
 /// Node `i` is `op[i]` with operand `arg[i]`: `Coefficient` carries `eps.to_bits()`, `Weight` carries `k`, `Keep`/`And`/`Or` none.
 /// `TopN`/`ApproxTopN`/`CollapseSample` leaves are `Keep` here, and `Keep` operands of `And`/`Or` are folded away, so a tree with no per-term filter is the one-node `Keep`.

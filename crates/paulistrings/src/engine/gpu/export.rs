@@ -1,4 +1,4 @@
-//! K10 export, the exchange over a device wire, and the chunked receive of one device layer. See ARCHITECTURE.md §Partitioning.
+//! The export kernels, the exchange over a device wire, and the chunked receive of one device layer. See ARCHITECTURE.md §Partitioning.
 
 use std::sync::Arc;
 
@@ -143,7 +143,7 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
-/// One remote layer's exchange after K1 (ARCHITECTURE.md §Partitioning): K10's blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
+/// One remote layer's exchange after the count (ARCHITECTURE.md §Partitioning): the export blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
 pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -274,7 +274,7 @@ fn paired_blocks<'a, const W: usize>(
         .collect()
 }
 
-/// K10's count and scan for entry `e` at bucket delta `bd`, leaving the CSR offsets in `scratch.export.offsets` and their copy in `offsets`; returns the block's rows.
+/// `k_export_counts` and its scan for entry `e` at bucket delta `bd`, leaving the CSR offsets in `scratch.export.offsets` and their copy in `offsets`; returns the block's rows.
 fn export_offsets<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
@@ -320,14 +320,14 @@ fn export_offsets<const W: usize>(
     Ok(offsets[b] as usize)
 }
 
-/// The scratch buffers K10's fill reads, borrowed apart from the columns it writes.
+/// The scratch buffers `k_export_fill` reads, borrowed apart from the columns it writes.
 struct FillContext<'a> {
     bucket_at: &'a CudaSlice<u32>,
     table: &'a TableBuffers,
     offsets: &'a CudaSlice<u32>,
 }
 
-/// K10's fill of entry `e` at bucket delta `bd` into `(x, z, c)`, which hold the rows `context.offsets` names.
+/// `k_export_fill` of entry `e` at bucket delta `bd` into `(x, z, c)`, which hold the rows `context.offsets` names.
 #[allow(clippy::too_many_arguments)]
 fn export_fill<const W: usize>(
     sum: &GpuSum<W>,
@@ -374,7 +374,7 @@ fn export_fill<const W: usize>(
     Ok(())
 }
 
-/// K10 for every remote delta into device blocks: one block per delta into pooled [`DevicePayload`]s, in ascending remote-delta index per partner.
+/// The export kernels for every remote delta into device blocks: one block per delta into pooled [`DevicePayload`]s, in ascending remote-delta index per partner.
 fn export_blocks_device<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,

@@ -1,4 +1,4 @@
-//! Launching the fused layer kernel (K3): position batches that fit the arena, the kernel variant, and the launch itself.
+//! Launching the fused layer kernel: position batches that fit the arena, the kernel variant, and the launch itself.
 
 use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
 
@@ -87,7 +87,7 @@ pub(in crate::engine::gpu) struct FusedOut<'a, const W: usize> {
     pub(in crate::engine::gpu) fallback: &'a mut CudaSlice<u32>,
 }
 
-/// K3 over positions `p0..p0 + num_blocks` with `kernel = (function, shared bytes)` from [`fused_variant`].
+/// The fused layer over positions `p0..p0 + num_blocks` with `kernel = (function, shared bytes)` from [`fused_variant`].
 #[allow(clippy::too_many_arguments)]
 pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
     sum: &GpuSum<W>,

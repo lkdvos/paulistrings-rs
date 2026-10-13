@@ -1,4 +1,4 @@
-//! K7, [`ApproxTopN`](crate::truncation::ApproxTopN)'s layer pass on device, and K8, exact [`TopN`](crate::truncation::TopN)'s on one device.
+//! [`ApproxTopN`](crate::truncation::ApproxTopN)'s layer pass on device by octave histogram, and exact [`TopN`](crate::truncation::TopN)'s on one device by radix-select.
 
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
@@ -14,7 +14,7 @@ use crate::truncation::builtin::{local_boundary_quota, octave_edge, EdgeDecision
 /// Blocks the histogram launches at most; each block folds its warps' buckets into one shared histogram.
 const HIST_BLOCKS: usize = 1024;
 
-/// The launch shape K7 and K8's whole-sum passes share: warps spread over buckets, capped at `HIST_BLOCKS`.
+/// The launch shape the histogram and radix-select passes share: warps spread over buckets, capped at `HIST_BLOCKS`.
 fn whole_sum_launch(b: usize) -> LaunchConfig {
     LaunchConfig {
         grid_dim: (b.div_ceil(8).clamp(1, HIST_BLOCKS) as u32, 1, 1),
@@ -115,7 +115,7 @@ pub(crate) fn approx_top_n_device<const W: usize>(
     retain_at_edge_device(sum, scratch, edge, local_quota)
 }
 
-/// K8's radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down, and its rank among the terms tied at it, which is how many of them `TopN(n)` keeps.
+/// The radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down, and its rank among the terms tied at it, which is how many of them `TopN(n)` keeps.
 fn radix_select_bits<const W: usize>(
     sum: &GpuSum<W>,
     scratch: &mut LayerScratch<W>,

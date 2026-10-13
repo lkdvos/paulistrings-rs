@@ -5,14 +5,15 @@ use cudarc::driver::DeviceRepr;
 use super::error::GpuError;
 use crate::truncation::BuiltinTruncation;
 
-/// Nodes a [`KeepProgram`] holds; must match `KEEP_NODES` in `kernels/prelude.cuh`.
-const KEEP_NODES: usize = 15;
+/// Nodes a [`KeepProgram`] holds; `-DKEEP_NODES` to the kernels.
+pub(super) const KEEP_NODES: usize = 15;
 
-const OP_KEEP: u32 = 0;
-const OP_COEFF: u32 = 1;
-const OP_WEIGHT: u32 = 2;
-const OP_AND: u32 = 3;
-const OP_OR: u32 = 4;
+/// The node codes, `-DOP_<NAME>` to the kernels.
+pub(super) const OP_KEEP: u32 = 0;
+pub(super) const OP_COEFF: u32 = 1;
+pub(super) const OP_WEIGHT: u32 = 2;
+pub(super) const OP_AND: u32 = 3;
+pub(super) const OP_OR: u32 = 4;
 
 /// The per-term half of a tree as a postfix program, passed to the fused layer and the rescale by value as `KeepProg`.
 ///

@@ -42,13 +42,10 @@ constexpr u32 TAG_OFFSET_BITS = log2_exact(MAX_BUCKET_LEN);
 #define MODE_LOCAL 0
 #define MODE_ROTATION 1
 
-// The per-term truncation program, `KeepProgram` in truncation.rs: postfix over a one-bit-per-entry stack.
-#define KEEP_NODES 15
-#define OP_KEEP 0
-#define OP_COEFF 1
-#define OP_WEIGHT 2
-#define OP_AND 3
-#define OP_OR 4
+// The per-term truncation program, `KeepProgram` in truncation.rs: postfix over a one-bit-per-entry stack; KEEP_NODES and the OP_* codes come from module.rs as -D options.
+#if !defined(KEEP_NODES) || !defined(OP_KEEP) || !defined(OP_COEFF) || !defined(OP_WEIGHT) || !defined(OP_AND) || !defined(OP_OR)
+#error "KEEP_NODES and the OP_* codes must be defined"
+#endif
 
 struct KeepProg {
     u32 len;

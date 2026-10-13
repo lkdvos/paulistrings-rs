@@ -13,6 +13,7 @@ use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use super::device;
 use super::error::GpuError;
 use super::kernel_cache;
+use super::truncation::{KEEP_NODES, OP_AND, OP_COEFF, OP_KEEP, OP_OR, OP_WEIGHT};
 use super::GPU_LOG_TARGET;
 use crate::engine::cuda_context::libnvrtc_present;
 
@@ -151,6 +152,12 @@ pub(crate) fn compile_ptx(
         format!("-DTHREADS={}", layer_threads(w)),
         format!("-DLAYER_CAP={LAYER_CAP}"),
         format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
+        format!("-DKEEP_NODES={KEEP_NODES}"),
+        format!("-DOP_KEEP={OP_KEEP}"),
+        format!("-DOP_COEFF={OP_COEFF}"),
+        format!("-DOP_WEIGHT={OP_WEIGHT}"),
+        format!("-DOP_AND={OP_AND}"),
+        format!("-DOP_OR={OP_OR}"),
         "--std=c++17".to_string(),
     ];
     options.extend_from_slice(extra_options);

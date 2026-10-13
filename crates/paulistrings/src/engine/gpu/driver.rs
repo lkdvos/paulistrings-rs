@@ -13,8 +13,8 @@ use super::truncation::KeepProgram;
 use super::wire::PeerWire;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
+use crate::engine::backend::PartitionStorage;
 use crate::engine::driver::DECLINED_PREPARATION;
-use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::driver::scatter_local;
 use crate::engine::partitioned::{
     PartitionConfig, PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement, ScatterRows,

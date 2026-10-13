@@ -2,6 +2,7 @@
 //!
 //! See ARCHITECTURE.md §Engine.
 
+pub(crate) mod backend;
 pub(crate) mod bucketed;
 mod coset;
 #[cfg(feature = "cuda")]
@@ -22,9 +23,9 @@ use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
+use backend::HostPartition;
 use bucketed::LayerScratch;
 use driver::{run_layers, PartitionContext, PartitionWork};
-use partitioned::backend::HostPartition;
 use partitioned::transport::SoloTransport;
 use trace::assemble;
 

@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::backend::{HostPartition, PartitionBackend, PartitionStorage};
 use super::distributed::{PartitionRowPolicy, ScatterOptions, ScatterRows};
 #[cfg(feature = "phase-timing")]
 use super::driver::DriverLaps;
@@ -13,6 +12,7 @@ use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use crate::circuit::Circuit;
+use crate::engine::backend::{HostPartition, PartitionBackend, PartitionStorage};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::timed;

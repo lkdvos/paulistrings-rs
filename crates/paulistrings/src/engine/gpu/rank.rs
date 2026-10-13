@@ -11,7 +11,7 @@ use super::layer::GpuLayerOptions;
 use super::partition::DevicePartition;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
-use crate::engine::partitioned::backend::PartitionStorage;
+use crate::engine::backend::PartitionStorage;
 use crate::engine::partitioned::distributed::{gather_share, group_bits};
 use crate::engine::partitioned::transport::Transport;
 use crate::engine::partitioned::{

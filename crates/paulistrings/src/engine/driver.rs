@@ -4,7 +4,7 @@ use crate::channel::Prepare;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
-use super::partitioned::backend::PartitionBackend;
+use super::backend::PartitionBackend;
 use super::partitioned::plan::PartitionPlan;
 use super::partitioned::transport::Transport;
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;

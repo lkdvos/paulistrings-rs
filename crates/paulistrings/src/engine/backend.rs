@@ -1,8 +1,10 @@
 //! The storage seam under `run_layers`, [`PartitionStorage`] and [`PartitionBackend`], and its host-memory implementation [`HostPartition`] (ARCHITECTURE.md §Partitioning).
 
-use super::layer::{apply_layer_partitioned_with_plan, LayerExchangeCounts, PartitionState};
-use super::plan::PartitionPlan;
-use super::transport::Transport;
+use super::partitioned::layer::{
+    apply_layer_partitioned_with_plan, LayerExchangeCounts, PartitionState,
+};
+use super::partitioned::plan::PartitionPlan;
+use super::partitioned::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::collectives::Collectives;
 use crate::engine::bucketed::LayerScratch;

@@ -4,12 +4,12 @@
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
-use super::backend::{PartitionBackend, PartitionStorage};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use super::transport::Transport;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
+use crate::engine::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::driver::{run_layers, PartitionContext, PartitionWork};
 use crate::engine::timing::tally;
 use crate::engine::trace::{assemble, PartitionTrace};

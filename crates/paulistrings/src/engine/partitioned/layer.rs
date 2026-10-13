@@ -158,7 +158,7 @@ impl LayerExchangeCounts {
 }
 
 /// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`.
-pub(super) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
+pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
     local: &mut PauliSum<W>,
     prepared: &Prepared<W>,
     plan: &PartitionPlan,

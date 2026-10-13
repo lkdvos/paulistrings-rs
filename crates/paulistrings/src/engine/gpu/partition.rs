@@ -10,7 +10,7 @@ use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, KeepProgram};
 use crate::channel::prepared::Prepared;
 use crate::collectives::Collectives;
-use crate::engine::partitioned::backend::{PartitionBackend, PartitionStorage};
+use crate::engine::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;

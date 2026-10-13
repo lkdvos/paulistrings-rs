@@ -5,7 +5,6 @@
 /// `log` target of placement, pinning and transport setup, separate from the progress target so it filters on its own.
 pub(crate) const PLACEMENT_LOG_TARGET: &str = "paulistrings::partitioned";
 
-pub(crate) mod backend;
 pub(crate) mod distributed;
 pub(crate) mod driver;
 pub(crate) mod export;

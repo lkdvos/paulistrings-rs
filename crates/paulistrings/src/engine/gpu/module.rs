@@ -184,13 +184,27 @@ pub(crate) fn compile_ptx(
     Ok(ptx)
 }
 
-/// `CompileOptions::arch` wants `&'static str`; the arch set is small and fixed, so leaking an unlisted one is bounded.
+/// Virtual architectures from Volta to Blackwell, which [`arch_static`] hands out without allocating.
+const KNOWN_ARCHES: [&str; 10] = [
+    "compute_70",
+    "compute_72",
+    "compute_75",
+    "compute_80",
+    "compute_86",
+    "compute_87",
+    "compute_89",
+    "compute_90",
+    "compute_100",
+    "compute_120",
+];
+
+/// `CompileOptions::arch` wants `&'static str`; an unlisted arch is leaked, once per compile, which the per-device kernel cache bounds.
 fn arch_static(arch: &str) -> &'static str {
-    match arch {
-        "compute_80" => "compute_80",
-        "compute_86" => "compute_86",
-        other => Box::leak(other.to_string().into_boxed_str()),
-    }
+    KNOWN_ARCHES
+        .iter()
+        .find(|known| **known == arch)
+        .copied()
+        .unwrap_or_else(|| Box::leak(arch.to_string().into_boxed_str()))
 }
 
 type CacheKey = (u32, usize, Vec<String>);

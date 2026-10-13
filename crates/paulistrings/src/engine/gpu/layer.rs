@@ -7,7 +7,9 @@ use cudarc::driver::{CudaEvent, CudaSlice, CudaStream, PushKernelArg};
 
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
-use super::export::{exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECV_SEGMENT};
+use super::export::{
+    exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECEIVED_SEGMENT,
+};
 use super::module::{thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan, ScanScratch};
@@ -592,7 +594,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         let (total, max_segment, max_len) = scratch.sizes(sum, &table)?;
         if max_segment as usize <= record_cap
             && max_len as usize <= MAX_BUCKET_LEN
-            && scratch.export.received_max_segment <= MAX_RECV_SEGMENT
+            && scratch.export.received_max_segment <= MAX_RECEIVED_SEGMENT
         {
             break (total, max_segment);
         }

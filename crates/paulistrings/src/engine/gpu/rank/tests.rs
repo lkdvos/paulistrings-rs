@@ -233,7 +233,8 @@ mod protocol {
     fn capped(rows: usize) -> GpuLayerOptions {
         GpuLayerOptions {
             bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
-            exchange_bytes: rows.saturating_mul(super::super::super::export::recv_row_bytes::<1>()),
+            exchange_bytes: rows
+                .saturating_mul(super::super::super::export::received_row_bytes::<1>()),
             ..GpuLayerOptions::default()
         }
     }

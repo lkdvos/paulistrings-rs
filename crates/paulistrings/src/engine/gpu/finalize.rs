@@ -12,12 +12,12 @@ use crate::collectives::Collectives;
 use crate::truncation::builtin::{local_boundary_quota, octave_edge, EdgeDecision, APPROX_BINS};
 
 /// Blocks the histogram launches at most; each block folds its warps' buckets into one shared histogram.
-const HIST_BLOCKS: usize = 1024;
+const HISTOGRAM_BLOCKS: usize = 1024;
 
-/// The launch shape the histogram and radix-select passes share: warps spread over buckets, capped at `HIST_BLOCKS`.
-fn whole_sum_launch(b: usize) -> LaunchConfig {
+/// The launch shape the histogram and radix-select passes share: warps spread over buckets, capped at `HISTOGRAM_BLOCKS`.
+fn whole_sum_launch(buckets: usize) -> LaunchConfig {
     LaunchConfig {
-        grid_dim: (b.div_ceil(8).clamp(1, HIST_BLOCKS) as u32, 1, 1),
+        grid_dim: (buckets.div_ceil(8).clamp(1, HISTOGRAM_BLOCKS) as u32, 1, 1),
         block_dim: (256, 1, 1),
         shared_mem_bytes: 0,
     }
@@ -29,20 +29,20 @@ fn octave_histogram_device<const W: usize>(
     scratch: &mut LayerScratch<W>,
 ) -> Result<Vec<u64>, GpuError> {
     let stream = sum.stream.clone();
-    let b = sum.hash.num_buckets();
+    let buckets = sum.hash.num_buckets();
     stream.memset_zeros(&mut scratch.histogram)?;
-    let b32 = b as u32;
+    let buckets_u32 = buckets as u32;
     let started = scratch.event(sum)?;
-    // SAFETY: arguments match `k_octave_histogram` in truncate.cu; `hist` holds `1 + APPROX_BINS` entries.
+    // SAFETY: arguments match `k_octave_histogram` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries.
     unsafe {
         stream
             .launch_builder(&sum.kernels.octave_histogram)
             .arg(&sum.columns.coeff)
             .arg(&sum.columns.start)
             .arg(&sum.columns.lengths)
-            .arg(&b32)
+            .arg(&buckets_u32)
             .arg(&mut scratch.histogram)
-            .launch(whole_sum_launch(b))?;
+            .launch(whole_sum_launch(buckets))?;
     }
     scratch.lap(sum, started, |m| &mut m.truncate)?;
     let packed = stream.clone_dtoh(&scratch.histogram)?;
@@ -53,9 +53,9 @@ fn octave_histogram_device<const W: usize>(
 
 /// Clear `sum` on device.
 fn clear_device<const W: usize>(sum: &mut GpuSum<W>) -> Result<(), GpuError> {
-    let b = sum.hash.num_buckets();
+    let buckets = sum.hash.num_buckets();
     sum.stream
-        .memset_zeros(&mut sum.columns.lengths.slice_mut(0..b))?;
+        .memset_zeros(&mut sum.columns.lengths.slice_mut(0..buckets))?;
     sum.columns.len = 0;
     sum.debug_check();
     Ok(())
@@ -77,7 +77,7 @@ fn retain_at_edge_device<const W: usize>(
     }
 }
 
-/// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, hist…]`, the edge, at a boundary one more of the per-rank boundary counts, retain.
+/// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, histogram…]`, the edge, at a boundary one more of the per-rank boundary counts, retain.
 /// `sum` is `None` on a partition that already failed; it still enters both reductions, with zeros, so the group stays in lock-step.
 pub(crate) fn approx_top_n_device<const W: usize>(
     sum: Option<(&mut GpuSum<W>, &mut LayerScratch<W>)>,
@@ -122,7 +122,7 @@ fn radix_select_bits<const W: usize>(
     n: usize,
 ) -> Result<(u64, u64), GpuError> {
     let stream = sum.stream.clone();
-    let b = sum.hash.num_buckets() as u32;
+    let buckets = sum.hash.num_buckets() as u32;
     let mut prefix: u64 = 0;
     let mut remaining: u64 = n as u64;
     for pass in 0u32..8 {
@@ -140,19 +140,19 @@ fn radix_select_bits<const W: usize>(
                 .arg(&sum.columns.coeff)
                 .arg(&sum.columns.start)
                 .arg(&sum.columns.lengths)
-                .arg(&b)
+                .arg(&buckets)
                 .arg(&fixed_mask)
                 .arg(&prefix)
                 .arg(&shift)
                 .arg(&mut scratch.radix_histogram)
-                .launch(whole_sum_launch(b as usize))?;
+                .launch(whole_sum_launch(buckets as usize))?;
         }
-        let hist = stream.clone_dtoh(&scratch.radix_histogram)?;
+        let histogram = stream.clone_dtoh(&scratch.radix_histogram)?;
         stream.synchronize()?;
         let mut cumulative = 0u64;
         let mut chosen: Option<u32> = None;
         for digit in (0..256u32).rev() {
-            let count = hist[digit as usize];
+            let count = histogram[digit as usize];
             if cumulative + count >= remaining {
                 chosen = Some(digit);
                 break;
@@ -160,7 +160,7 @@ fn radix_select_bits<const W: usize>(
             cumulative += count;
         }
         let chosen = chosen.expect("radix select: remaining exceeds the population");
-        let group = hist[chosen as usize];
+        let group = histogram[chosen as usize];
         prefix |= (u64::from(chosen)) << shift;
         remaining -= cumulative;
         if pass == 7 {
@@ -177,11 +177,11 @@ fn radix_select_bits<const W: usize>(
                     .arg(&sum.columns.coeff)
                     .arg(&sum.columns.start)
                     .arg(&sum.columns.lengths)
-                    .arg(&b)
+                    .arg(&buckets)
                     .arg(&mask)
                     .arg(&prefix)
                     .arg(&mut scratch.radix_out)
-                    .launch(whole_sum_launch(b as usize))?;
+                    .launch(whole_sum_launch(buckets as usize))?;
             }
             let out = stream.clone_dtoh(&scratch.radix_out.slice(0..1))?;
             stream.synchronize()?;
@@ -203,43 +203,48 @@ fn retain_device<const W: usize>(
     let stream = sum.stream.clone();
     let kernels = sum.kernels.clone();
     let ordinal = sum.device();
-    let b = sum.hash.num_buckets();
+    let buckets = sum.hash.num_buckets();
     let extent = scratch.extent.max(sum.len());
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, extent, b)?,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, extent, buckets)?,
     };
     out.len = 0;
     out.buckets = 0;
-    out.reserve(extent, b)?;
-    grow(&stream, &mut scratch.counts, b, ordinal)?;
-    grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
-    let b32 = b as u32;
+    out.reserve(extent, buckets)?;
+    grow(&stream, &mut scratch.counts, buckets, ordinal)?;
+    grow(
+        &stream,
+        &mut scratch.destination_offsets,
+        buckets + 1,
+        ordinal,
+    )?;
+    let buckets_u32 = buckets as u32;
     let started = scratch.event(sum)?;
-    // SAFETY: arguments match `k_boundary_counts` in truncate.cu; `counts` holds `b` entries.
+    // SAFETY: arguments match `k_boundary_counts` in truncate.cu; `counts` holds `buckets` entries.
     unsafe {
         stream
             .launch_builder(&kernels.boundary_counts)
             .arg(&sum.columns.coeff)
             .arg(&sum.columns.start)
             .arg(&sum.columns.lengths)
-            .arg(&b32)
+            .arg(&buckets_u32)
             .arg(&boundary)
             .arg(&shift)
             .arg(&mut scratch.counts)
-            .launch(warp_per_bucket(b))?;
+            .launch(warp_per_bucket(buckets))?;
     }
     // `destination_offsets` holds the boundary terms before each bucket until `k_retain` has read it, then the output offsets.
     exclusive_scan(
         &stream,
         &kernels,
-        &scratch.counts.slice(0..b),
-        &mut scratch.destination_offsets.slice_mut(0..b + 1),
-        b,
+        &scratch.counts.slice(0..buckets),
+        &mut scratch.destination_offsets.slice_mut(0..buckets + 1),
+        buckets,
         &mut scratch.scan,
         &mut scratch.totals,
     )?;
-    // SAFETY: arguments match `k_retain` in truncate.cu; `out` has room for the input's extent and `destination_offsets` holds `b + 1` entries.
+    // SAFETY: arguments match `k_retain` in truncate.cu; `out` has room for the input's extent and `destination_offsets` holds `buckets + 1` entries.
     unsafe {
         stream
             .launch_builder(&kernels.retain)
@@ -249,7 +254,7 @@ fn retain_device<const W: usize>(
             .arg(&sum.columns.fingerprint)
             .arg(&sum.columns.start)
             .arg(&sum.columns.lengths)
-            .arg(&b32)
+            .arg(&buckets_u32)
             .arg(&boundary)
             .arg(&shift)
             .arg(&scratch.destination_offsets)
@@ -260,14 +265,14 @@ fn retain_device<const W: usize>(
             .arg(&mut out.fingerprint)
             .arg(&mut out.start)
             .arg(&mut out.lengths)
-            .launch(warp_per_bucket(b))?;
+            .launch(warp_per_bucket(buckets))?;
     }
     exclusive_scan(
         &stream,
         &kernels,
-        &out.lengths.slice(0..b),
-        &mut scratch.destination_offsets.slice_mut(0..b + 1),
-        b,
+        &out.lengths.slice(0..buckets),
+        &mut scratch.destination_offsets.slice_mut(0..buckets + 1),
+        buckets,
         &mut scratch.scan,
         &mut scratch.totals,
     )?;
@@ -275,7 +280,7 @@ fn retain_device<const W: usize>(
     let total = stream.clone_dtoh(&scratch.totals)?[0];
     stream.synchronize()?;
     out.len = total as usize;
-    out.buckets = b;
+    out.buckets = buckets;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     sum.debug_check();
     Ok(())

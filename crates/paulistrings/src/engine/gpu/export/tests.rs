@@ -1,5 +1,5 @@
 use super::premerge::SCAN_LIMIT;
-use super::receive::{chunk_layout, chunk_max, recv_chunks, rows_between};
+use super::receive::{chunk_layout, chunk_max, receive_chunking, rows_between};
 use super::*;
 use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
@@ -199,13 +199,13 @@ fn the_receive_takes_the_fewest_power_of_two_chunks_under_its_cap() {
         vec![12, 7, 6, 4],
         "a finer power-of-two cut never grows the largest chunk"
     );
-    assert_eq!(recv_chunks(&off, b, usize::MAX), (0, 12));
-    assert_eq!(recv_chunks(&off, b, 12), (0, 12));
-    assert_eq!(recv_chunks(&off, b, 7), (1, 7));
-    assert_eq!(recv_chunks(&off, b, 6), (2, 6));
-    assert_eq!(recv_chunks(&off, b, 3), (3, 4));
+    assert_eq!(receive_chunking(&off, b, usize::MAX), (0, 12));
+    assert_eq!(receive_chunking(&off, b, 12), (0, 12));
+    assert_eq!(receive_chunking(&off, b, 7), (1, 7));
+    assert_eq!(receive_chunking(&off, b, 6), (2, 6));
+    assert_eq!(receive_chunking(&off, b, 3), (3, 4));
     assert_eq!(
-        recv_chunks(&[0, 5], 1, 1),
+        receive_chunking(&[0, 5], 1, 1),
         (0, 5),
         "one position is one chunk"
     );

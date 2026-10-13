@@ -34,12 +34,12 @@ impl<const W: usize> DeviceBlock<W> {
         })
     }
 
-    /// The block's header and offsets for `rows` rows over `b` positions; `offsets` must already hold the `b + 1` CSR offsets.
-    pub(crate) fn set_header(&mut self, entry: u32, b: usize) {
-        debug_assert_eq!(self.offsets.len(), b + 1);
+    /// The block's header and offsets for `rows` rows over `buckets` positions; `offsets` must already hold the `buckets + 1` CSR offsets.
+    pub(crate) fn set_header(&mut self, entry: u32, buckets: usize) {
+        debug_assert_eq!(self.offsets.len(), buckets + 1);
         self.header = BlockHeader {
-            num_buckets: b as u32,
-            rows: self.offsets[b],
+            num_buckets: buckets as u32,
+            rows: self.offsets[buckets],
             width: W as u32,
             entry,
         };

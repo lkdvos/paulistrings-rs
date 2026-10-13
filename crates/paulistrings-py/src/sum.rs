@@ -1041,14 +1041,15 @@ fn run_devices<const W: usize>(
     options: PropagateOptions,
     traced: bool,
 ) -> Result<(CorePauliSum<W>, Option<PartitionTrace>), PropagateFailure> {
-    use paulistrings::gpu::GpuPartitionedSum;
+    use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
     // Cached like a host runtime: each slot's pool binds its device context once, not per call.
     let runtime = runtime_for(config).map_err(PropagateFailure::Topology)?;
     let split = GpuPartitionedSum::scatter_to_devices_with(
         sum,
-        ScatterOptions {
-            runtime,
+        GpuScatterOptions {
+            devices: runtime,
             rows: ScatterRows::Policy(rows.clone()),
+            layer: GpuLayerOptions::default(),
         },
     );
     let mut split = split.map_err(PropagateFailure::Gpu)?;

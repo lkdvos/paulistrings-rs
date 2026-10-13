@@ -31,7 +31,7 @@ pub enum WireFault {
 /// The bound on every wire wait when `PAULISTRINGS_WIRE_TIMEOUT_S` is unset.
 const DEFAULT_WIRE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// `PAULISTRINGS_WIRE_TIMEOUT_S`, the bound on every wait of an NCCL or peer wire, in seconds.
+/// `PAULISTRINGS_WIRE_TIMEOUT_S`, the bound on every wait of an NCCL or peer wire and on every in-process collective of a device group, in seconds.
 static WIRE_TIMEOUT: Knob<Duration> = Knob::new(
     "PAULISTRINGS_WIRE_TIMEOUT_S",
     GPU_LOG_TARGET,

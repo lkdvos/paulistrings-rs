@@ -21,9 +21,6 @@ pub struct PartitionRuntime {
     wait_timeout: std::time::Duration,
 }
 
-/// Longer, since device partitions may share a device and its queue.
-const DEVICE_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
 impl PartitionRuntime {
     /// Resolves `config` against the machine and builds one pinned pool per partition.
     ///
@@ -40,11 +37,15 @@ impl PartitionRuntime {
                 &format!("ps-part{rank}"),
             )?);
         }
+        // A device group waits for a partner's collective as long as for its wire, `PAULISTRINGS_WIRE_TIMEOUT_S`.
+        #[cfg(feature = "cuda")]
         let wait_timeout = if slots.iter().any(|s| s.device.is_some()) {
-            DEVICE_WAIT_TIMEOUT
+            crate::engine::gpu::wire_timeout()
         } else {
             DEFAULT_WAIT_TIMEOUT
         };
+        #[cfg(not(feature = "cuda"))]
+        let wait_timeout = DEFAULT_WAIT_TIMEOUT;
         Ok(Arc::new(Self {
             slots,
             pools,

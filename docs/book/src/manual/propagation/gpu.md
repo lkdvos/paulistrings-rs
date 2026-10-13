@@ -143,7 +143,7 @@ With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-p
 
 Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver's device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (`gpu::MpiGpuSum`).
 The NCCL communicator starts **once, collectively, at scatter**: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
-`PAULISTRINGS_WIRE_TIMEOUT_S` (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as `GpuError::Timeout`, `GpuError::Wire` or `GpuError::Nccl` (`RuntimeError` from Python).
+`PAULISTRINGS_WIRE_TIMEOUT_S` (default 300) bounds every wait on the exchange, and every collective of an in-process device group (a host group waits 10 s); a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as `GpuError::Timeout`, `GpuError::Wire` or `GpuError::Nccl` (`RuntimeError` from Python).
 Running it needs the `nccl/2.23.4-1` module alongside `cuda,mpi` — see [Installation](../../installation.md#gpu-and-mpi-features) and [MPI ranks](mpi.md#gpu-per-rank).
 
 **A device sender merges one partner's rows by key before the exchange** (`GpuLayerOptions::premerge`), so two remote deltas that land on the same receiver key ship as one row.

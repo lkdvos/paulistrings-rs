@@ -470,7 +470,8 @@ The accumulator is an ingestion path only — it never appears in the propagatio
 The Python package is a thin layer over enums (`PauliSumImpl`, `CircuitImpl`) holding the monomorphized widths (§Width); every method dispatches once and calls the same core code Rust users call.
 Construction accepts dictionaries and `(string, coefficient)` pairs; bulk export returns NumPy arrays (`to_arrays`).
 Expectation values against product states, overlaps, and the identity coefficient are computed in Rust.
-Truncation factories return an opaque handle over a core `BuiltinTruncation`, composed with `&` / `|`, which every engine takes as it is.
+Truncation factories return an opaque handle over a core `BuiltinTruncation`, composed with `&` / `|`.
+The device engines take the tree as it is; a host engine runs a tree whose `And`-reachable filters are at most one `coeff` and one `weight` with that filter as a generic `CoefficientThreshold` or `And<CoefficientThreshold, WeightCutoff>`, so the merge's `keep_term` is monomorphized, and the layer passes still through the tree (`truncation_dispatch.rs`).
 The extension module is `paulistrings._paulistrings` (abi3), and `python/paulistrings/` re-exports it.
 
 The Python `Circuit` additionally keeps the width-erased `ChannelSpec` of every channel pushed, alongside the materialized `Circuit<W>`: the core stores prepared channels and cannot hand a gate description back out, so that list is what serves gate-list introspection (`Circuit.gates`, emitted in the frozen task-JSON gate vocabulary), slicing, concatenation, and `adjoint()`.

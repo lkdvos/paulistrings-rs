@@ -22,6 +22,7 @@ mod noise;
 mod pauli_string;
 mod sum;
 mod truncation;
+mod truncation_dispatch;
 mod truncation_spec;
 
 use pyo3::prelude::*;
@@ -109,6 +110,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(p, m)?)?;
+    m.add_function(wrap_pyfunction!(truncation_dispatch::_last_host_policy, m)?)?;
 
     m.add_class::<pauli_string::PauliString>()?;
     m.add_class::<sum::PauliSum>()?;

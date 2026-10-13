@@ -170,7 +170,8 @@ impl MpiRun {
             split.enable_trace();
         }
         let before = collapse_count(policy);
-        split.propagate_with(circuit, policy, direction, options);
+        with_lowered_policy!(policy, |lowered| split
+            .propagate_with(circuit, lowered, direction, options));
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
         // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.

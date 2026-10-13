@@ -953,14 +953,14 @@ impl RunMode {
                 if traced {
                     scratch.enable_trace();
                 }
-                let out = propagate_with(
+                let out = with_lowered_policy!(policy, |lowered| propagate_with(
                     circuit,
                     sum.clone(),
-                    policy,
+                    lowered,
                     direction,
                     &mut scratch,
                     options,
-                );
+                ));
                 Ok(RunOutput {
                     sum: out,
                     trace: scratch.take_trace().map(|trace| RunTrace {
@@ -984,7 +984,8 @@ impl RunMode {
                 if traced {
                     split.enable_trace();
                 }
-                split.propagate_with(circuit, policy, direction, options);
+                with_lowered_policy!(policy, |lowered| split
+                    .propagate_with(circuit, lowered, direction, options));
                 // The partition count from the runtime, not the trace: a zero-layer circuit records no layer, but the placement is still worth reporting.
                 let partitions = split.num_partitions();
                 let trace = traced.then(|| RunTrace {

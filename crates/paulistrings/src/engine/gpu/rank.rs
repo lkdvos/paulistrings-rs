@@ -23,7 +23,7 @@ use crate::truncation::BuiltinTruncation;
 #[cfg(feature = "mpi")]
 use crate::engine::partitioned::mpi::{rsmpi::topology::Communicator, MpiTransport};
 
-const LOG_TARGET: &str = "paulistrings::propagate";
+use crate::engine::LOG_TARGET;
 
 #[cfg(feature = "mpi")]
 mod affinity;

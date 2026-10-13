@@ -12,6 +12,7 @@ use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use super::device;
 use super::error::GpuError;
 use super::kernel_cache;
+use super::GPU_LOG_TARGET;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
 const HASH: &str = include_str!("kernels/hash.cu");
@@ -151,16 +152,23 @@ pub(crate) fn compile_ptx(
         ..Default::default()
     };
     if let Some(ptx) = kernel_cache::lookup(&source, &compile_options) {
+        log::debug!(target: GPU_LOG_TARGET, "kernels W={w} {arch}: kernel cache hit");
         return Ok(ptx);
     }
     #[cfg(any(test, feature = "test-utils"))]
     NVRTC_COMPILES.with(|count| count.set(count.get() + 1));
+    let start = std::time::Instant::now();
     let ptx = compile_ptx_with_opts(source.clone(), compile_options.clone()).map_err(|e| {
         GpuError::Compile {
             width: w,
             log: e.to_string(),
         }
     })?;
+    log::debug!(
+        target: GPU_LOG_TARGET,
+        "kernels W={w} {arch}: NVRTC compile in {:.2} s",
+        start.elapsed().as_secs_f64()
+    );
     kernel_cache::store(&source, &compile_options, &ptx.to_src());
     Ok(ptx)
 }

@@ -101,6 +101,7 @@ crates.io publishing is a separate manual `workflow_dispatch` of `.github/workfl
 
 The library logs through `log` under target `paulistrings::propagate`: INFO per `propagate` call, DEBUG per layer (`RUST_LOG=paulistrings=debug` with `env_logger`).
 Placement, pinning and transport setup log under `paulistrings::partitioned` (`PLACEMENT_LOG_TARGET`), so they filter separately from progress.
+Device setup (kernel compiles and the kernel cache, device choice, the NCCL and peer wires) logs under `paulistrings::gpu` (`GPU_LOG_TARGET` in `engine/gpu/mod.rs`).
 From Python it reaches `logging` via `pyo3-log`; call `paulistrings.reset_log_cache()` after changing levels mid-process.
 
 ## Testing & TDD policy

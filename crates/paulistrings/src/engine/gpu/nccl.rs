@@ -12,6 +12,7 @@ use cudarc::nccl::sys;
 
 use super::error::GpuError;
 use super::wire::{wire_timeout, DeviceWire, WireGroup, WireOp, WireOpKind};
+use super::GPU_LOG_TARGET;
 use crate::collectives::Collectives;
 
 /// The oldest runtime `libnccl` the `nccl-02022` bindings are sound against, as `ncclGetVersion` codes it.
@@ -129,7 +130,7 @@ impl NcclComm {
             return Err(nccl_error(e, "ncclCommInitRankConfig"));
         }
         this.settle("ncclCommInitRankConfig", "NCCL communicator init")?;
-        log::info!("gpu: NCCL communicator up, rank {rank} of {size}");
+        log::info!(target: GPU_LOG_TARGET, "NCCL communicator up, rank {rank} of {size}");
         Ok(this)
     }
 
@@ -192,7 +193,8 @@ impl NcclComm {
                 .push(handle),
             Err(e) => {
                 log::warn!(
-                    "gpu: no thread for the NCCL abort on rank {rank} ({e}); aborting inline"
+                    target: GPU_LOG_TARGET,
+                    "no thread for the NCCL abort on rank {rank} ({e}); aborting inline"
                 );
                 abort_now(comm, rank, context);
             }
@@ -388,7 +390,7 @@ impl NcclComm {
             })
             .unwrap_or(false);
         if !settled {
-            log::warn!("gpu: NCCL finalize failed or timed out on rank {rank}; aborting");
+            log::warn!(target: GPU_LOG_TARGET, "NCCL finalize failed or timed out on rank {rank}; aborting");
             Self::abort_locked(raw, rank, &self.context);
             return;
         }
@@ -396,7 +398,7 @@ impl NcclComm {
         raw.comm = std::ptr::null_mut();
         // SAFETY: finalized, and never touched again.
         if let Err(e) = unsafe { nccl::comm_destroy(comm) } {
-            log::warn!("gpu: ncclCommDestroy on rank {rank} returned {:?}", e.0);
+            log::warn!(target: GPU_LOG_TARGET, "ncclCommDestroy on rank {rank} returned {:?}", e.0);
         }
     }
 }
@@ -415,7 +417,7 @@ fn reap_aborts(bound: Duration) {
         let (done, rest): (Vec<_>, Vec<_>) = pending.into_iter().partition(|h| h.is_finished());
         for h in done {
             if h.join().is_err() {
-                log::warn!("gpu: an NCCL abort thread panicked");
+                log::warn!(target: GPU_LOG_TARGET, "an NCCL abort thread panicked");
             }
         }
         pending = rest;
@@ -426,7 +428,8 @@ fn reap_aborts(bound: Duration) {
     }
     if !pending.is_empty() {
         log::warn!(
-            "gpu: {} NCCL abort(s) still running after {bound:?}",
+            target: GPU_LOG_TARGET,
+            "{} NCCL abort(s) still running after {bound:?}",
             pending.len()
         );
         ABORTS
@@ -447,17 +450,21 @@ fn abort_now(comm: CommPtr, rank: u32, context: &Arc<CudaContext>) {
     let start = Instant::now();
     if let Err(e) = context.bind_to_thread() {
         log::warn!(
-            "gpu: binding device {} for the NCCL abort on rank {rank}: {e:?}",
+            target: GPU_LOG_TARGET,
+            "binding device {} for the NCCL abort on rank {rank}: {e:?}",
             context.ordinal()
         );
     }
     // SAFETY: `comm` is a live communicator no other thread touches again.
     match unsafe { nccl::comm_abort(comm.0) } {
         Ok(_) => log::info!(
-            "gpu: NCCL communicator on rank {rank} aborted in {:?}",
+            target: GPU_LOG_TARGET,
+            "NCCL communicator on rank {rank} aborted in {:?}",
             start.elapsed()
         ),
-        Err(e) => log::warn!("gpu: ncclCommAbort on rank {rank} returned {:?}", e.0),
+        Err(e) => {
+            log::warn!(target: GPU_LOG_TARGET, "ncclCommAbort on rank {rank} returned {:?}", e.0)
+        }
     }
 }
 
@@ -467,7 +474,7 @@ fn local_readiness() -> Result<(), GpuError> {
         return Err(GpuError::LibraryMissing("libnccl"));
     }
     let version = nccl::get_nccl_version().map_err(|e| nccl_error(e, "ncclGetVersion"))?;
-    log::info!("gpu: libnccl version code {version}");
+    log::info!(target: GPU_LOG_TARGET, "libnccl version code {version}");
     if version < MIN_NCCL_VERSION {
         return Err(GpuError::Unsupported("libnccl older than 2.22"));
     }

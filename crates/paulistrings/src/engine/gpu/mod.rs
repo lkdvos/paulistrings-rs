@@ -24,6 +24,9 @@ mod sum;
 mod truncation;
 mod wire;
 
+/// `log` target of device setup: kernel compiles and the kernel cache, device choice, and the device wires (NCCL, peer access).
+pub(crate) const GPU_LOG_TARGET: &str = "paulistrings::gpu";
+
 #[cfg(feature = "mpi")]
 pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};

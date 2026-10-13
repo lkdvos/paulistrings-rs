@@ -11,6 +11,7 @@ use cudarc::driver::{sys, CudaContext, CudaEvent, CudaStream};
 
 use super::{wire_timeout, DeviceWire, WireOp, WireOpKind};
 use crate::engine::gpu::error::GpuError;
+use crate::engine::gpu::GPU_LOG_TARGET;
 
 /// Groups a [`PeerWire`] group's ranks have posted, summed over the ranks.
 #[cfg(test)]
@@ -188,7 +189,8 @@ impl PeerWire {
                     .filter(|&r| round.posted[r].is_none())
                     .collect();
                 log::warn!(
-                    "gpu: peer wire rank {}: group {generation} timed out waiting for {what} (ranks not posted: {missing:?})",
+                    target: GPU_LOG_TARGET,
+                    "peer wire rank {}: group {generation} timed out waiting for {what} (ranks not posted: {missing:?})",
                     self.rank
                 );
                 self.dead.store(true, Ordering::Relaxed);
@@ -490,9 +492,12 @@ fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAcc
     }
     let access = try_enable_peer_access(dst, src, pair);
     match &access {
-        PeerAccess::Enabled => log::info!("gpu: peer access {} -> {} enabled", pair.1, pair.0),
+        PeerAccess::Enabled => {
+            log::info!(target: GPU_LOG_TARGET, "peer access {} -> {} enabled", pair.1, pair.0)
+        }
         other => log::warn!(
-            "gpu: peer access {} -> {} is {other:?}; copies between them stage through the host",
+            target: GPU_LOG_TARGET,
+            "peer access {} -> {} is {other:?}; copies between them stage through the host",
             pair.1,
             pair.0
         ),

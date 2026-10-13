@@ -26,7 +26,7 @@ use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::BuiltinTruncation;
 
-const LOG_TARGET: &str = "paulistrings::propagate";
+use crate::engine::LOG_TARGET;
 
 /// A [`PauliSum`] split across the device partitions of a [`PartitionRuntime`] resolved from [`Placement::Devices`] (ARCHITECTURE.md §Partitioning): [`PartitionedSum`] over the device backend.
 ///

@@ -4,7 +4,7 @@ use cudarc::driver::{result, sys};
 
 use super::super::device::device_count;
 use super::super::error::GpuError;
-use super::LOG_TARGET;
+use crate::engine::gpu::GPU_LOG_TARGET as LOG_TARGET;
 use crate::engine::partitioned::mpi::rsmpi::collective::CommunicatorCollectives;
 use crate::engine::partitioned::mpi::rsmpi::topology::Communicator;
 use crate::engine::partitioned::topology::{allowed_cpus, sysfs_numa_nodes};
@@ -44,7 +44,7 @@ pub fn local_device_for_comm(comm: &impl Communicator) -> Result<u32, GpuError> 
         |numa: Option<u32>| numa.map_or_else(|| "unknown".to_string(), |n| n.to_string());
     log::info!(
         target: LOG_TARGET,
-        "gpu device pick: rank {} (node-local {local} of {}, CPU NUMA {}) drives device {pick} (NUMA {})",
+        "device pick: rank {} (node-local {local} of {}, CPU NUMA {}) drives device {pick} (NUMA {})",
         comm.rank(),
         node.size(),
         mask_list(me.cpu_numa),
@@ -53,7 +53,7 @@ pub fn local_device_for_comm(comm: &impl Communicator) -> Result<u32, GpuError> 
     if device_numa.is_some_and(|n| me.cpu_numa != 0 && !on_node(me.cpu_numa, n)) {
         log::warn!(
             target: LOG_TARGET,
-            "gpu device pick: rank {} drives device {pick} on NUMA node {}, but its CPUs are on NUMA {}, so its host staging crosses sockets",
+            "device pick: rank {} drives device {pick} on NUMA node {}, but its CPUs are on NUMA {}, so its host staging crosses sockets",
             comm.rank(),
             numa_name(device_numa),
             mask_list(me.cpu_numa),

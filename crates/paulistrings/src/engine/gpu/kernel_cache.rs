@@ -67,7 +67,7 @@ pub(crate) fn store(source: &str, options: &CompileOptions, ptx_text: &str) {
     let Some(dir) = cache_dir() else { return };
     if let Err(e) = fs::create_dir_all(&dir) {
         log::debug!(
-            target: "paulistrings::propagate",
+            target: super::GPU_LOG_TARGET,
             "kernel cache directory {} unwritable, compiling without a cache: {e}",
             dir.display()
         );

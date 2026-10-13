@@ -930,6 +930,21 @@ fn a_partner_that_departs_during_the_wait_fails_the_waiter_promptly() {
     );
 }
 
+/// A partner arriving long after the waiter's spin is waited for on the condvar.
+#[test]
+fn a_partner_arriving_after_the_spin_completes_the_sum() {
+    let results = on_every_rank(2, |transport| {
+        if transport.rank() == 1 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let mut buffer = [u64::from(transport.rank()) + 1];
+        transport.allreduce_sum_u64(&mut buffer);
+        transport.barrier();
+        buffer[0]
+    });
+    assert_eq!(results, vec![3, 3]);
+}
+
 /// A partner that neither arrives nor leaves trips the backstop.
 #[test]
 fn a_silent_partner_trips_the_timeout() {

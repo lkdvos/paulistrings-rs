@@ -1,6 +1,6 @@
 //! [`InProcessTransport`], the shared-memory transport between the partitions of one process.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -27,6 +27,15 @@ impl CallKind {
         }
     }
 }
+
+/// `spin_loop` iterations a waiter spends on [`GroupState::completed`] before it yields; blocking at once costs a wake-up per collective, which small layers feel.
+const SPINS_BEFORE_YIELD: u32 = 4_096;
+
+/// `yield_now` calls after the spin, before the waiter blocks on the condvar.
+const YIELDS_BEFORE_BLOCKING: u32 = 16;
+
+/// Spin iterations between checks of [`GroupState::departed`].
+const SPINS_PER_DEPARTURE_CHECK: u32 = 64;
 
 /// Backstop for a partner that is neither arriving nor departed; a panicking partner is reported through its departure instead.
 pub(crate) const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -125,6 +134,10 @@ impl Rendezvous {
 struct GroupState {
     timeout: Duration,
     rendezvous: Mutex<Rendezvous>,
+    /// [`Rendezvous::completed`], stored with `Release` once the result is combined, for waiters to spin on without the lock.
+    completed: AtomicU64,
+    /// Set when any rank departs, so a spinning waiter falls through to the locked checks.
+    departed: AtomicBool,
     /// Signalled when a generation completes, a rank departs, or an arrival leaves a waiting partner out of step.
     changed: Condvar,
 }
@@ -138,6 +151,8 @@ impl GroupState {
                 completed: 0,
                 result: Vec::new(),
             }),
+            completed: AtomicU64::new(0),
+            departed: AtomicBool::new(false),
             changed: Condvar::new(),
         }
     }
@@ -176,6 +191,7 @@ impl GroupState {
         if state.arrivals.iter().all(|a| a.generation == generation) {
             state.combine(kind);
             state.completed = generation;
+            self.completed.store(generation, Ordering::Release);
             self.changed.notify_all();
         } else if state.partner_waits_elsewhere(rank, generation, kind) {
             self.changed.notify_all();
@@ -183,9 +199,31 @@ impl GroupState {
         state
     }
 
+    /// Wait a bounded while for `generation` to complete or a rank to depart, without the lock; the caller then takes the lock and checks.
+    fn spin_until_completed(&self, generation: u64) {
+        for spin in 0..SPINS_BEFORE_YIELD + YIELDS_BEFORE_BLOCKING {
+            if self.completed.load(Ordering::Acquire) >= generation {
+                return;
+            }
+            if spin % SPINS_PER_DEPARTURE_CHECK == 0 && self.departed.load(Ordering::Relaxed) {
+                return;
+            }
+            if spin < SPINS_BEFORE_YIELD {
+                std::hint::spin_loop();
+            } else {
+                std::thread::yield_now();
+            }
+        }
+    }
+
     /// Contribute `buffer` to `generation` of `kind`, wait for every partner, and overwrite `buffer` with the combined result; panics on a mismatched call, a departed partner, or the timeout.
     fn collective(&self, rank: u32, generation: u64, kind: CallKind, buffer: &mut [u64]) {
         let mut state = self.arrive(rank, generation, kind, buffer);
+        if state.completed < generation {
+            drop(state);
+            self.spin_until_completed(generation);
+            state = self.lock();
+        }
         let mut deadline: Option<Instant> = None;
         loop {
             if state.completed >= generation {
@@ -261,7 +299,7 @@ fn downcast<T: 'static>(body: Box<dyn std::any::Any + Send>, from: usize, op: &s
     }
 }
 
-/// The transport between the partitions of one process: a mutex-and-condvar rendezvous for the collectives and a `P × P` matrix of unbounded `mpsc` channels for the exchange (ARCHITECTURE.md §Transport composition).
+/// The transport between the partitions of one process: a mutex-and-condvar rendezvous, spun on briefly before blocking, for the collectives and a `P × P` matrix of unbounded `mpsc` channels for the exchange (ARCHITECTURE.md §Transport composition).
 ///
 /// Built as a group by [`group`](Self::group), one endpoint per partition thread, and called by one thread per rank, since the generation counter is that thread's call index.
 pub struct InProcessTransport {
@@ -281,6 +319,7 @@ pub struct InProcessTransport {
 impl Drop for InProcessTransport {
     fn drop(&mut self) {
         self.state.lock().arrivals[self.rank as usize].departed = true;
+        self.state.departed.store(true, Ordering::Relaxed);
         self.state.changed.notify_all();
     }
 }

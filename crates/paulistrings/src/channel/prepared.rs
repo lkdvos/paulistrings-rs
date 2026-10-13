@@ -111,6 +111,15 @@ impl<const W: usize> LocalPtm<W> {
             .all(|a| *a != ZERO)
     }
 
+    /// Entries with a nonzero amplitude on some support pattern: the rows-per-term fanout a device block is sized by.
+    #[cfg(any(feature = "cuda", test))]
+    pub(crate) fn emitting_entries(&self) -> usize {
+        self.deltas
+            .iter()
+            .filter(|d| d.amplitude.iter().any(|a| *a != ZERO))
+            .count()
+    }
+
     /// Whether the first entry is the identity delta.
     pub(crate) fn has_identity(&self) -> bool {
         self.deltas.first().is_some_and(|d| d.local_delta == 0)

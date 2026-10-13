@@ -102,15 +102,7 @@ pub(crate) fn gpu_desired_bits(
 /// The entries `prepared` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
 pub(crate) fn prepared_fanout<const W: usize>(prepared: &Prepared<W>) -> usize {
     match prepared {
-        Prepared::Local(ptm) => ptm
-            .deltas()
-            .iter()
-            .filter(|d| {
-                d.amplitude
-                    .iter()
-                    .any(|a| *a != num_complex::Complex64::new(0.0, 0.0))
-            })
-            .count(),
+        Prepared::Local(ptm) => ptm.emitting_entries(),
         Prepared::Rotation(_) => 2,
     }
 }

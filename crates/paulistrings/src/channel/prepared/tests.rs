@@ -413,6 +413,21 @@ fn retain_entries_keeps_the_selected_entries_in_order() {
     assert_entry_eq(&sub.deltas()[1], &p.deltas()[2], "entry 1");
 }
 
+/// SWAP's four entries each emit; a dephasing, which never changes a key, emits from its identity entry alone.
+#[test]
+fn emitting_entries_count_the_entries_with_a_nonzero_amplitude() {
+    let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+    let Prepared::Local(swap) = PtmChannel::swap(1, 4).prepare(&hash, false).unwrap() else {
+        panic!("expected Local")
+    };
+    assert_eq!((swap.num_deltas(), swap.emitting_entries()), (4, 4));
+    let Prepared::Local(dephasing) = PtmChannel::dephasing(3, 0.5).prepare(&hash, false).unwrap()
+    else {
+        panic!("expected Local")
+    };
+    assert_eq!(dephasing.emitting_entries(), 1);
+}
+
 #[test]
 fn a_retain_to_the_identity_alone_is_key_preserving() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);

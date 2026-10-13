@@ -41,7 +41,8 @@ pub struct FaultPlan {
 /// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop (ARCHITECTURE.md §GPU-Readiness).
 /// `hash` is the driver's view of the bucket count: `refine` advances it alone, `apply_layer` brings the device up to it, and [`Self::take_error`] re-syncs it to the device.
 /// `keep` is the per-term half of the run's policy, lowered once per call.
-/// Nominally `pub`, like `HostPartition`, so it can be the drivers' device backend; the module is crate-private.
+// `pub` only because it is the backend parameter of the `pub` device driver aliases, like `HostPartition`.
+#[doc(hidden)]
 pub struct DevicePartition<const W: usize> {
     sum: Option<GpuSum<W>>,
     scratch: Option<LayerScratch<W>>,

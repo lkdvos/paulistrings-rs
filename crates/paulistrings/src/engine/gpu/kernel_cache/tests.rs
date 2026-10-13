@@ -126,7 +126,7 @@ fn concurrent_writers_leave_one_valid_file() {
 /// End-to-end through `module::compile_ptx`: the second call with identical inputs must not invoke NVRTC again, and no cache always compiles.
 #[test]
 fn a_second_compile_with_the_same_inputs_hits_the_cache() {
-    if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
+    if !libnvrtc_present() {
         return;
     }
     use super::super::module::{compile_ptx, NVRTC_COMPILES};

@@ -4,7 +4,7 @@ use cudarc::driver::PushKernelArg;
 /// CI-runnable: needs NVRTC only, no device or driver.
 #[test]
 fn kernels_compile_for_every_width() {
-    if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
+    if !libnvrtc_present() {
         return;
     }
     for w in [1usize, 2, 4, 8, 16] {

@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::engine::cuda_context::ContextError;
+
 /// Everything that can go wrong talking to a CUDA device.
 #[derive(Debug)]
 pub enum GpuError {
@@ -101,6 +103,15 @@ impl From<cudarc::driver::DriverError> for GpuError {
             }
         } else {
             GpuError::Driver(e)
+        }
+    }
+}
+
+impl From<ContextError> for GpuError {
+    fn from(e: ContextError) -> Self {
+        match e {
+            ContextError::LibraryMissing => GpuError::LibraryMissing("libcuda"),
+            ContextError::Driver(e) => GpuError::from(e),
         }
     }
 }

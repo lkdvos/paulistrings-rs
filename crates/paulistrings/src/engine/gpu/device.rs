@@ -1,39 +1,30 @@
 //! Runtime device probe and the process-wide context cache.
 //!
-//! `cudarc`'s own `culib()`/`device_count()` panic when the driver library is absent, so every function here checks `is_culib_present()` first.
+//! `cudarc`'s own `culib()`/`device_count()` panic when the driver library is absent, so every function here checks `libcuda_present()` first.
 
 use std::sync::Arc;
 
 use cudarc::driver::CudaContext;
 
 use super::error::GpuError;
-use crate::engine::cuda_context::ContextError;
+#[cfg(feature = "mpi")]
+use crate::engine::cuda_context::libnccl_present;
+use crate::engine::cuda_context::{self, libcuda_present, libnvrtc_present};
 
 /// Whether both `libcuda` and `libnvrtc` are present *and* at least one device answers; never panics, even with no CUDA installation at all.
 pub fn cuda_available() -> bool {
-    // SAFETY: `is_culib_present` only probes `dlopen`-style candidates; it never touches a device.
-    let libs_present = unsafe {
-        cudarc::driver::sys::is_culib_present() && cudarc::nvrtc::sys::is_culib_present()
-    };
-    if !libs_present {
-        return false;
-    }
-    device_count() > 0
+    libcuda_present() && libnvrtc_present() && device_count() > 0
 }
 
 /// Whether `libnccl` can be loaded and a CUDA device is visible, per [`cuda_available`]; never panics, even with no NCCL installation.
 #[cfg(feature = "mpi")]
 pub fn nccl_available() -> bool {
-    if !cuda_available() {
-        return false;
-    }
-    // SAFETY: `is_culib_present` only probes `dlopen`-style candidates; it never touches a device.
-    unsafe { cudarc::nccl::sys::is_culib_present() }
+    cuda_available() && libnccl_present()
 }
 
 /// Number of CUDA devices visible to this process, `0` when CUDA is unavailable.
 pub fn device_count() -> usize {
-    if !unsafe { cudarc::driver::sys::is_culib_present() } {
+    if !libcuda_present() {
         return 0;
     }
     CudaContext::device_count()
@@ -56,7 +47,7 @@ pub struct DeviceInfo {
 
 /// [`DeviceInfo`] for every visible device, or [`GpuError::NoDevice`] rather than an empty `Vec`.
 pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
-    if !unsafe { cudarc::driver::sys::is_culib_present() } {
+    if !libcuda_present() {
         return Err(GpuError::LibraryMissing("libcuda"));
     }
     let count = CudaContext::device_count().map_err(GpuError::from)?;
@@ -79,10 +70,7 @@ pub fn devices() -> Result<Vec<DeviceInfo>, GpuError> {
 
 /// The context for `ordinal`, created on first use and cached for the process.
 pub(crate) fn context(ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
-    crate::engine::cuda_context::context(ordinal).map_err(|err| match err {
-        ContextError::LibraryMissing => GpuError::LibraryMissing("libcuda"),
-        ContextError::Driver(e) => GpuError::from(e),
-    })
+    Ok(cuda_context::context(ordinal)?)
 }
 
 #[cfg(test)]

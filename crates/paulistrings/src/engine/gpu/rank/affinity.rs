@@ -4,6 +4,7 @@ use cudarc::driver::{result, sys};
 
 use super::super::device::device_count;
 use super::super::error::GpuError;
+use crate::engine::cuda_context::libcuda_present;
 use crate::engine::gpu::GPU_LOG_TARGET as LOG_TARGET;
 use crate::engine::partitioned::mpi::rsmpi::collective::CommunicatorCollectives;
 use crate::engine::partitioned::mpi::rsmpi::topology::Communicator;
@@ -230,8 +231,7 @@ fn assign_devices(ranks: &[u64], devices: &[Option<u32>]) -> Vec<u32> {
 /// Device `ordinal`'s PCI `(domain, bus, device)`, `None` when the driver cannot say.
 fn device_pci(ordinal: u32) -> Option<(u32, u32, u32)> {
     use sys::CUdevice_attribute_enum as A;
-    // SAFETY: `is_culib_present` only probes the library; `result::*` is reached only when it is present.
-    if !unsafe { sys::is_culib_present() } {
+    if !libcuda_present() {
         return None;
     }
     result::init().ok()?;

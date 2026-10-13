@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cudarc::nvrtc::{CompileOptions, Ptx};
 
 use super::GPU_LOG_TARGET;
+use crate::engine::cuda_context::libnvrtc_present;
 use crate::engine::knob::Knob;
 
 /// `PAULISTRINGS_KERNEL_CACHE`: `off` disables the cache, any other value is its directory, unset is [`default_directory`].
@@ -35,7 +36,7 @@ fn default_directory(xdg_cache_home: Option<String>, home: Option<String>) -> Op
 
 /// NVRTC's own version, part of the key since another NVRTC can emit other PTX; `(0, 0)` without the library, a key no real compile writes.
 fn nvrtc_version() -> (i32, i32) {
-    if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
+    if !libnvrtc_present() {
         return (0, 0);
     }
     let mut major = 0;

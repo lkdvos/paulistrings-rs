@@ -25,10 +25,29 @@ impl fmt::Display for ContextError {
     }
 }
 
+/// Whether `libcuda` can be loaded.
+pub(crate) fn libcuda_present() -> bool {
+    // SAFETY: `is_culib_present` only probes `dlopen`-style candidates; it never touches a device.
+    unsafe { cudarc::driver::sys::is_culib_present() }
+}
+
+/// Whether `libnvrtc` can be loaded.
+pub(crate) fn libnvrtc_present() -> bool {
+    // SAFETY: as for `libcuda_present`.
+    unsafe { cudarc::nvrtc::sys::is_culib_present() }
+}
+
+/// Whether `libnccl` can be loaded.
+#[cfg(feature = "mpi")]
+pub(crate) fn libnccl_present() -> bool {
+    // SAFETY: as for `libcuda_present`.
+    unsafe { cudarc::nccl::sys::is_culib_present() }
+}
+
 /// The context for `ordinal`, created on first use and cached for the process.
 pub(crate) fn context(ordinal: u32) -> Result<Arc<CudaContext>, ContextError> {
     static CONTEXTS: Mutex<Vec<(u32, Arc<CudaContext>)>> = Mutex::new(Vec::new());
-    if !unsafe { cudarc::driver::sys::is_culib_present() } {
+    if !libcuda_present() {
         return Err(ContextError::LibraryMissing);
     }
     let mut cache = CONTEXTS.lock().unwrap_or_else(PoisonError::into_inner);

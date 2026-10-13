@@ -14,6 +14,7 @@ use super::device;
 use super::error::GpuError;
 use super::kernel_cache;
 use super::GPU_LOG_TARGET;
+use crate::engine::cuda_context::libnvrtc_present;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
 const HASH: &str = include_str!("kernels/hash.cu");
@@ -141,7 +142,7 @@ pub(crate) fn compile_ptx(
     extra_options: &[String],
     cache: Option<&Path>,
 ) -> Result<cudarc::nvrtc::Ptx, GpuError> {
-    if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
+    if !libnvrtc_present() {
         return Err(GpuError::LibraryMissing("libnvrtc"));
     }
     let source = KERNEL_SOURCES.concat();

@@ -19,22 +19,19 @@ typedef unsigned char u8;
 #define FINGERPRINT_ROWS 64
 #define WARP 32
 
-// Fused-layer block width per W, register-bound (ARCHITECTURE.md §GPU-Readiness); `layer_threads` in module.rs mirrors it.
-#if W <= 2
-#define THREADS 1024
-#elif W == 4
-#define THREADS 512
-#else
-#define THREADS 256
+// THREADS (the fused-layer block width per W), LAYER_CAP (records per fused block) and MAX_BUCKET_LEN come from module.rs as -D options.
+#if !defined(THREADS) || !defined(LAYER_CAP) || !defined(MAX_BUCKET_LEN)
+#error "THREADS, LAYER_CAP and MAX_BUCKET_LEN must be defined"
 #endif
 #define WARPS (THREADS / WARP)
 
-// Records per fused block, and the tag layout `entry:4 | offset-in-source-bucket:12`.
-#define CAP 8192
+// The record tag layout `entry:4 | offset-in-source-bucket:log2(MAX_BUCKET_LEN)`, in 16 bits.
 #define MAX_ENTRIES 16
-#define TAG_OFF_BITS 12
-#define TAG_OFF_MASK 0xFFFu
-#define MAX_BUCKET_LEN (1u << TAG_OFF_BITS)
+__host__ __device__ constexpr u32 log2_exact(u32 v) { return v <= 1u ? 0u : 1u + log2_exact(v >> 1); }
+static_assert((MAX_BUCKET_LEN & (MAX_BUCKET_LEN - 1u)) == 0u, "MAX_BUCKET_LEN is a power of two");
+static_assert(MAX_BUCKET_LEN * MAX_ENTRIES <= 65536u, "a tag fits 16 bits");
+constexpr u32 TAG_OFFSET_BITS = log2_exact(MAX_BUCKET_LEN);
+#define TAG_OFFSET_MASK (MAX_BUCKET_LEN - 1u)
 #define LOCAL_DIM 16
 // `rem[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot (ARCHITECTURE.md §Partitioning).
 #define NO_REMOTE 0xFFFFFFFFu

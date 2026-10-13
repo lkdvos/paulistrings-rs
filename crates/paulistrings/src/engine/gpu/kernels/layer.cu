@@ -195,7 +195,7 @@ __device__ __forceinline__ void layer_body(
             if (ok) {
                 const u32 idx = wbase + __popc(bal & lanemask_lt());
                 S.sg[idx] = (u32)gv;
-                S.stag[idx] = (u16)((e << TAG_OFF_BITS) | r);
+                S.stag[idx] = (u16)((e << TAG_OFFSET_BITS) | r);
             }
             wbase += __popc(bal);
         }
@@ -218,9 +218,9 @@ __device__ __forceinline__ void layer_body(
 
     auto src_of = [&](u32 j, u32& e, bool& received) -> u32 {
         const u32 t = stag[j];
-        e = t >> TAG_OFF_BITS;
+        e = t >> TAG_OFFSET_BITS;
         received = s_rem[e] != NO_REMOTE;
-        return s_sb[e] + (t & TAG_OFF_MASK);
+        return s_sb[e] + (t & TAG_OFFSET_MASK);
     };
     auto out_key = [&](u32 j) -> Key {
         u32 e;
@@ -476,14 +476,23 @@ __device__ __forceinline__ void layer_body(
 
 #define LAYER_PAIR(C) LAYER_KERNEL(C, false, k_layer_serial_##C) LAYER_KERNEL(C, true, k_layer_segscan_##C)
 
-// Every items-per-thread variant whose record capacity fits CAP at this block width.
+#ifndef TEST_CARVE_BYTES
+// Every items-per-thread variant whose record capacity fits LAYER_CAP at this block width.
 LAYER_PAIR(1)
 LAYER_PAIR(2)
 LAYER_PAIR(4)
 LAYER_PAIR(8)
-#if THREADS * 16 <= CAP
+#if THREADS * 16 <= LAYER_CAP
 LAYER_PAIR(16)
 #endif
-#if THREADS * 32 <= CAP
+#if THREADS * 32 <= LAYER_CAP
 LAYER_PAIR(32)
+#endif
+#else
+// Test hook in place of the variants: the bytes `carve` lays out for n_cap records, which `layer_shared_bytes` in module.rs must equal.
+extern "C" __global__ void k_carve_bytes(u32 n_cap, u64* out) {
+    u8* base = (u8*)out;
+    const Smem s = carve(base, n_cap);
+    *out = (u64)((u8*)(s.s_segf + 32) - base);
+}
 #endif

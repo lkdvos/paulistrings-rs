@@ -46,16 +46,16 @@ const KERNEL_SOURCES: &[&str] = &[
     TRUNCATE,
 ];
 
-/// Records per fused-layer block at the full opt-in shared memory; must match `CAP` in `kernels/prelude.cuh`.
+/// Records per fused-layer block at the full opt-in shared memory; `-DLAYER_CAP` to the kernels.
 const LAYER_CAP: usize = 8192;
 
 /// Test hook: an extra option `-DTEST_SHARED_LIMIT=<bytes>` caps the opt-in shared memory the loader assumes, which is inert to NVRTC.
 const TEST_SHARED_LIMIT: &str = "-DTEST_SHARED_LIMIT=";
 
-/// Source-bucket rows the 12-bit tag offset can address; must match `MAX_BUCKET_LEN` in `kernels/prelude.cuh`.
+/// Source-bucket rows the 12-bit tag offset of a fused-layer record can address; `-DMAX_BUCKET_LEN` to the kernels.
 pub(crate) const MAX_BUCKET_LEN: usize = 1 << 12;
 
-/// Fused-layer block width for `w`; must match `THREADS` in `kernels/prelude.cuh`.
+/// Fused-layer block width for `w`, register-bound (ARCHITECTURE.md §GPU-Readiness); `-DTHREADS` to the kernels.
 pub(crate) fn layer_threads(w: usize) -> u32 {
     match w {
         1 | 2 => 1024,
@@ -145,7 +145,13 @@ pub(crate) fn compile_ptx(
         return Err(GpuError::LibraryMissing("libnvrtc"));
     }
     let source = KERNEL_SOURCES.concat();
-    let mut options = vec![format!("-DW={w}"), "--std=c++17".to_string()];
+    let mut options = vec![
+        format!("-DW={w}"),
+        format!("-DTHREADS={}", layer_threads(w)),
+        format!("-DLAYER_CAP={LAYER_CAP}"),
+        format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
+        "--std=c++17".to_string(),
+    ];
     options.extend_from_slice(extra_options);
     let compile_options = CompileOptions {
         arch: Some(arch_static(arch)),

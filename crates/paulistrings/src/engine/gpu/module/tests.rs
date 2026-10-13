@@ -1,4 +1,5 @@
 use super::*;
+use cudarc::driver::PushKernelArg;
 
 /// CI-runnable: needs NVRTC only, no device or driver.
 #[test]
@@ -78,4 +79,46 @@ fn a_small_shared_memory_limit_loads_fewer_variants() {
     ));
     let full = kernel_set(0, 2).expect("load");
     assert_eq!(full.layer_cap(), LAYER_CAP);
+}
+
+/// `layer_shared_bytes` is the byte count `carve` in `kernels/layer.cu` lays out, read back from the `-DTEST_CARVE_BYTES` hook.
+#[test]
+fn layer_shared_bytes_matches_the_carve_layout() {
+    crate::require_cuda!();
+    let context = device::context(0).expect("context");
+    let (major, minor) = context.compute_capability().expect("capability");
+    let stream = context.default_stream();
+    for w in [1usize, 2, 4, 8, 16] {
+        let ptx = compile_ptx(
+            w,
+            &format!("compute_{major}{minor}"),
+            &["-DTEST_CARVE_BYTES".to_string()],
+            kernel_cache::directory(),
+        )
+        .expect("compile");
+        let carve_bytes = context
+            .load_module(ptx)
+            .and_then(|module| module.load_function("k_carve_bytes"))
+            .expect("load");
+        let threads = layer_threads(w) as usize;
+        for capacity in [2, 1000, threads, 2 * threads, 4096, LAYER_CAP] {
+            let mut out = stream.alloc_zeros::<u64>(1).unwrap();
+            let n_cap = capacity as u32;
+            // SAFETY: arguments match `k_carve_bytes` in layer.cu; `out` holds one entry.
+            unsafe {
+                stream
+                    .launch_builder(&carve_bytes)
+                    .arg(&n_cap)
+                    .arg(&mut out)
+                    .launch(thread_per(1, 1))
+            }
+            .unwrap();
+            let carved = stream.clone_dtoh(&out).unwrap()[0];
+            assert_eq!(
+                carved,
+                u64::from(layer_shared_bytes(capacity, w)),
+                "W={w} capacity={capacity}"
+            );
+        }
+    }
 }

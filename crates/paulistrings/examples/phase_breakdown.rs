@@ -1472,7 +1472,7 @@ fn run_cell_gpu<const W: usize>(
     cfg: &Config,
     policy: &BuiltinTruncation,
 ) -> CellResult {
-    use paulistrings::gpu::GpuPartitionedSum;
+    use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
 
     let partitions = devices.len() * cfg.gpu_partitions;
     let config = PartitionConfig {
@@ -1504,9 +1504,10 @@ fn run_cell_gpu<const W: usize>(
     let started = Instant::now();
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &base,
-        ScatterOptions {
-            runtime,
+        GpuScatterOptions {
+            devices: runtime,
             rows: ScatterRows::Explicit(rows),
+            layer: GpuLayerOptions::default(),
         },
     )
     .unwrap_or_else(|e| fail("scatter", e));
@@ -2192,7 +2193,7 @@ fn run_cell_mpi_gpu<const W: usize>(
     cfg: &Config,
     policy: &BuiltinTruncation,
 ) -> CellResult {
-    use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+    use paulistrings::gpu::{local_device_for_comm, GpuScatterOptions, MpiGpuSum};
     use paulistrings::mpi::{rsmpi, MpiTransport};
     use paulistrings::Collectives;
     use rsmpi::topology::{Communicator, SimpleCommunicator};
@@ -2239,9 +2240,12 @@ fn run_cell_mpi_gpu<const W: usize>(
 
     let transport = MpiTransport::from_communicator(&world);
     let started = Instant::now();
-    let mut split =
-        MpiGpuSum::scatter_to_device_with(&base, transport, device, ScatterRows::Explicit(rows))
-            .unwrap_or_else(|e| fail("scatter", e));
+    let options = GpuScatterOptions {
+        rows: ScatterRows::Explicit(rows),
+        ..GpuScatterOptions::new(&[device]).unwrap_or_else(|e| fail("placement", e))
+    };
+    let mut split = MpiGpuSum::scatter_to_device_with(&base, transport, options)
+        .unwrap_or_else(|e| fail("scatter", e));
     drop(base);
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();

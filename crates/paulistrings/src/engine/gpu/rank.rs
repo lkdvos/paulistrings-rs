@@ -1,8 +1,11 @@
 //! [`GpuDistributedSum`], [`DistributedSum`] over one device partition per process, with the MPI front door `MpiGpuSum` and the device pick `local_device_for_comm` (feature `mpi`). See ARCHITECTURE.md §Partitioning.
 
+use std::sync::Arc;
 use std::time::Instant;
 
-use super::driver::{device_runtime, first_failure, lower_for_run, upload_share};
+use super::driver::{
+    device_runtime, first_failure, lower_for_run, upload_share, GpuScatterOptions,
+};
 use super::error::GpuError;
 use super::layer::{GpuLayerCounters, GpuLayerOptions};
 use super::partition::DevicePartition;
@@ -11,7 +14,9 @@ use crate::collectives::Collectives;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::distributed::{gather_share, group_bits};
 use crate::engine::partitioned::transport::Transport;
-use crate::engine::partitioned::{DistributedSum, PartitionRowPolicy, ScatterRows};
+use crate::engine::partitioned::{
+    DistributedSum, PartitionRowPolicy, PartitionRuntime, ScatterRows,
+};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::timed;
@@ -82,47 +87,50 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         transport: X,
         device: u32,
     ) -> Result<Self, GpuError> {
-        Self::scatter_to_device_with(
-            sum,
-            transport,
-            device,
-            ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
-        )
+        let rows = ScatterRows::Policy(PartitionRowPolicy::Seeded(None));
+        let rows = rows.resolve(sum, group_bits(transport.size()));
+        let runtime = device_runtime(device);
+        let layer = GpuLayerOptions::default();
+        Self::scatter_then(sum, transport, (runtime, layer), rows, start_exchange)
     }
 
-    /// [`scatter_to_device`](Self::scatter_to_device) split by the rows `rows` names; [`ScatterRows::Explicit`] rows must be the same on every rank. **Collective.**
+    /// [`scatter_to_device`](Self::scatter_to_device) onto the one device `options.devices` resolves to, split by the rows `options` names under `options.layer`; [`ScatterRows::Explicit`] rows must be the same on every rank. **Collective.**
     ///
     /// # Errors
     ///
-    /// As [`scatter_to_device`](Self::scatter_to_device).
+    /// As [`scatter_to_device`](Self::scatter_to_device), and [`GpuError::Unsupported`] on every rank if any rank's runtime is not one partition on one device.
     ///
     /// # Panics
     ///
-    /// If the group size is not a power of two, if the rows do not name one partition per rank or are for a different qubit count than `sum`, or as [`PartitionRows::cut`].
+    /// If the group size is not a power of two, if the rows do not name one partition per rank or are for a different qubit count than `sum`, as [`PartitionRows::cut`], or if `options.layer` fails [`GpuLayerOptions::validate`].
     pub fn scatter_to_device_with(
         sum: &PauliSum<W>,
         transport: X,
-        device: u32,
-        rows: ScatterRows<W>,
+        options: GpuScatterOptions<W>,
     ) -> Result<Self, GpuError> {
-        let rows = rows.resolve(sum, group_bits(transport.size()));
-        Self::scatter_then(sum, transport, device, rows, start_exchange)
+        let rows = options.rows.resolve(sum, group_bits(transport.size()));
+        let devices = (Ok(options.devices), options.layer);
+        Self::scatter_then(sum, transport, devices, rows, start_exchange)
     }
 
     fn scatter_then(
         sum: &PauliSum<W>,
         transport: X,
-        device: u32,
+        (runtime, layer): (Result<Arc<PartitionRuntime>, GpuError>, GpuLayerOptions),
         rows: PartitionRows<W>,
         start: impl FnOnce(&X, &mut DevicePartition<W>) -> Result<(), GpuError>,
     ) -> Result<Self, GpuError> {
         let (rank, size) = (transport.rank(), transport.size());
+        layer.assert_valid();
         rows.assert_splits(sum.hash(), sum.num_qubits(), size as usize);
         let started = Instant::now();
-        let runtime = agree(&transport, device_runtime(device))?;
+        let placed = runtime.and_then(|runtime| Ok((lone_device(&runtime)?, runtime)));
+        let (device, runtime) = agree(&transport, placed)?;
         let partition = {
             let (rows, transport) = (&rows, &transport);
-            runtime.install(move || upload_share(sum, rows, (rank, size), device, transport, &[]))
+            let options = (layer, &[][..]);
+            runtime
+                .install(move || upload_share(sum, rows, (rank, size), device, transport, options))
         };
         let mut partition = agree(&transport, partition)?;
         start(&transport, &mut partition)?;
@@ -244,6 +252,18 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
             gather_ns,
             layers,
         }
+    }
+}
+
+/// The device of a one-partition runtime resolved from `Placement::Devices`.
+fn lone_device(runtime: &PartitionRuntime) -> Result<u32, GpuError> {
+    match runtime.slots() {
+        [slot] => slot.device.ok_or(GpuError::Unsupported(
+            "a distributed device scatter needs a runtime resolved from Placement::Devices",
+        )),
+        _ => Err(GpuError::Unsupported(
+            "a distributed device scatter needs a runtime of one partition",
+        )),
     }
 }
 

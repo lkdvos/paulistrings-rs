@@ -32,6 +32,7 @@ pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};
 pub use driver::{
     first_failure, propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuPauliSum,
+    GpuScatterOptions,
 };
 pub use error::GpuError;
 pub use layer::{

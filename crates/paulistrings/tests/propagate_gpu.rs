@@ -5,9 +5,10 @@ use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, cancellation_channel,
-    cancellation_sum, differential_channels_w1, differential_channels_w2, haar_su4_matrix,
-    heavy_cut, or, propagate_discarding, rand_sum, random_circuit, single_cuts, spread_magnitudes,
-    trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
+    cancellation_sum, differential_channels_w1, differential_channels_w2,
+    from_host_with_nvrtc_options, haar_su4_matrix, heavy_cut, or, propagate_discarding, rand_sum,
+    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, with_hash, zz_rotation,
+    KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
@@ -38,7 +39,7 @@ fn device_run<const W: usize, T>(
 where
     T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
-    let mut dev = GpuPauliSum::from_host_with_options(sum, 0, extra).expect("upload");
+    let mut dev = from_host_with_nvrtc_options(sum, 0, extra).expect("upload");
     if let Some(o) = options {
         dev.set_layer_options(o);
     }
@@ -349,18 +350,10 @@ fn exact_top_n_edge_cases_match_the_host() {
 fn exact_top_n_is_unsupported_above_one_partition() {
     require_cuda!();
     use paulistrings::gpu::GpuPartitionedSum;
-    use paulistrings::{PartitionConfig, Placement};
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);
     let circuit = one_layer(8, Box::new(PtmChannel::cnot(0, 1)));
-    let config = PartitionConfig {
-        placement: Placement::Devices {
-            devices: vec![0, 0],
-            per_device: 1,
-        },
-        ..PartitionConfig::default()
-    };
-    let mut split = GpuPartitionedSum::scatter_to_devices(&input, &config).expect("scatter");
+    let mut split = GpuPartitionedSum::scatter_to_devices(&input, &[0, 0]).expect("scatter");
     let r = split.propagate(&circuit, T::TopN(10), Direction::Forward);
     assert!(
         matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),

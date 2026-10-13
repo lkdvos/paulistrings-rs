@@ -1,8 +1,9 @@
 //! Device hooks for tests, benches and the probe: fault injection on the device drivers and the crate-private `GpuSum` checks.
 
 use crate::engine::gpu::partition::DevicePartition;
-use crate::engine::gpu::{GpuError, GpuSum};
+use crate::engine::gpu::{GpuError, GpuPartitionedSum, GpuSum};
 use crate::engine::partitioned::{DistributedSum, PartitionedSum, Transport};
+use crate::pauli_sum::PauliSum;
 
 pub use crate::engine::gpu::{FaultPlan, WireFault};
 
@@ -46,4 +47,13 @@ pub fn assert_invariants_device<const W: usize>(sum: &GpuSum<W>) -> Result<(), S
 /// Refine `sum` until its bucket count is `1 << bits`, up to four bits per counting pass.
 pub fn refine_to<const W: usize>(sum: &mut GpuSum<W>, bits: u8) -> Result<(), GpuError> {
     sum.refine_to(bits)
+}
+
+/// [`GpuPartitionedSum::from_host`] with extra NVRTC options, such as the `-DFINGERPRINT_BITS=<b>` collision hook.
+pub fn from_host_with_nvrtc_options<const W: usize>(
+    sum: &PauliSum<W>,
+    device: u32,
+    extra_options: &[String],
+) -> Result<GpuPartitionedSum<W>, GpuError> {
+    GpuPartitionedSum::one_device(sum, device, extra_options)
 }

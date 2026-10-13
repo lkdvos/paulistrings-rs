@@ -146,7 +146,7 @@ if let Some(evolved) = split.gather()? {
 }
 ```
 
-`gpu::propagate_mpi_gpu` is the one-shot form.
+`scatter_to_device_with(&observable, transport, GpuScatterOptions { rows, ..GpuScatterOptions::new(&[device])? })` splits by other rows or layer options; `gpu::propagate_mpi_gpu` is the one-shot form.
 A device failure on any rank fails the call on every rank, with `GpuError::Poisoned` naming the failing rank on its peers, so the group never falls out of step.
 Launch with every node GPU visible to every task (`srun --gpus-per-node=<k> --mpi=pmix`, as `scripts/slurm/mpi-gpu.sbatch` does), where the locality pick matters.
 

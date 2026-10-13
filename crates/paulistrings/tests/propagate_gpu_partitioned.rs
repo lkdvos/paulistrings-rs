@@ -2,7 +2,9 @@
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
-use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum};
+use paulistrings::gpu::{
+    GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum, GpuScatterOptions,
+};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
@@ -17,7 +19,7 @@ use paulistrings::{
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
-use paulistrings::{PartitionRowPolicy, PtmChannel, ScatterOptions, ScatterRows};
+use paulistrings::{PartitionRowPolicy, PtmChannel, ScatterRows};
 
 const TOL: f64 = 1e-11;
 const THETA: f64 = 0.01;
@@ -62,9 +64,10 @@ fn config(partitions: usize) -> PartitionConfig {
 
 /// A split of `sum` over `p` partitions.
 fn split_of<const W: usize>(sum: &PauliSum<W>, p: usize) -> GpuPartitionedSum<W> {
-    let options = ScatterOptions {
-        runtime: PartitionRuntime::new(&config(p)).expect("placement"),
+    let options = GpuScatterOptions {
+        devices: PartitionRuntime::new(&config(p)).expect("placement"),
         rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(ROW_SEED))),
+        layer: GpuLayerOptions::default(),
     };
     GpuPartitionedSum::scatter_to_devices_with(sum, options).expect("scatter")
 }
@@ -252,9 +255,10 @@ fn cut_rows_agree() {
             let runtime = PartitionRuntime::new(&config(p)).expect("placement");
             let mut split = GpuPartitionedSum::scatter_to_devices_with(
                 &sum,
-                ScatterOptions {
-                    runtime,
+                GpuScatterOptions {
+                    devices: runtime,
                     rows: ScatterRows::Explicit(rows.clone()),
+                    layer: GpuLayerOptions::default(),
                 },
             )
             .expect("scatter");
@@ -548,9 +552,10 @@ fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &input,
-        ScatterOptions {
-            runtime,
+        GpuScatterOptions {
+            devices: runtime,
             rows: ScatterRows::Explicit(rows),
+            layer: GpuLayerOptions::default(),
         },
     )
     .expect("scatter");
@@ -587,9 +592,10 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &input,
-        ScatterOptions {
-            runtime,
+        GpuScatterOptions {
+            devices: runtime,
             rows: ScatterRows::Explicit(rows_reading_z63()),
+            layer: GpuLayerOptions::default(),
         },
     )
     .expect("scatter");
@@ -656,9 +662,10 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &sum,
-        ScatterOptions {
-            runtime,
+        GpuScatterOptions {
+            devices: runtime,
             rows: ScatterRows::Explicit(rows.clone()),
+            layer: GpuLayerOptions::default(),
         },
     )
     .expect("scatter");
@@ -697,9 +704,10 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     let runtime = PartitionRuntime::new(&config(4)).expect("placement");
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &sum,
-        ScatterOptions {
-            runtime,
+        GpuScatterOptions {
+            devices: runtime,
             rows: ScatterRows::Explicit(rows),
+            layer: GpuLayerOptions::default(),
         },
     )
     .expect("scatter");

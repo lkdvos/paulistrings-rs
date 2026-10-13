@@ -16,13 +16,11 @@ fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
                 .map(|t| {
                     let input = &input;
                     s.spawn(move || {
-                        GpuDistributedSum::scatter_to_device_with(
-                            input,
-                            t,
-                            0,
-                            ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(0x5EED))),
-                        )
-                        .map(|_| ())
+                        let options = GpuScatterOptions {
+                            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(0x5EED))),
+                            ..GpuScatterOptions::new(&[0]).expect("placement")
+                        };
+                        GpuDistributedSum::scatter_to_device_with(input, t, options).map(|_| ())
                     })
                 })
                 .collect();
@@ -678,7 +676,11 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
             (wire.rank(), wire.size()),
             (transport.rank(), transport.size())
         );
-        Self::scatter_then(sum, transport, device, rows, move |_, part| {
+        let devices = (
+            super::super::driver::device_runtime(device),
+            GpuLayerOptions::default(),
+        );
+        Self::scatter_then(sum, transport, devices, rows, move |_, part| {
             part.scratch_mut().export.wire = Some(std::sync::Arc::new(wire));
             Ok(())
         })

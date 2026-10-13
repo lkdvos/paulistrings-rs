@@ -121,26 +121,22 @@ A rank that cannot use its device fails the call on every rank, the peers raisin
 
 ## Rust: several devices, and one device per MPI rank {#rust-multi-device}
 
-`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device, and holds it across calls; `GpuPauliSum` is its one-device form, built by `GpuPauliSum::from_host(&sum, ordinal)`:
+`GpuPartitionedSum` splits a sum across device partitions, one per listed device, and holds it across calls; `GpuPartitionedSum::from_host(&sum, ordinal)` is the one-device form:
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::{PartitionConfig, Placement};
 use paulistrings::gpu::GpuPartitionedSum;
 
-let config = PartitionConfig {
-    placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
-    bind_memory: false,
-    threads_per_partition: None,
-};
-let mut split = GpuPartitionedSum::scatter_to_devices(&observable, &config)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&observable, &[0, 1, 2, 3])?;
 split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 ```
 
+`scatter_to_devices_with` takes a `GpuScatterOptions { devices, rows, layer }`: a runtime resolved from `Placement::Devices`, the partition rows, and the device layer's knobs (`GpuLayerOptions`); `GpuScatterOptions::new(&devices)` fills in the defaults.
+
 The exchanged columns move device to device.
 A device driver takes its policy as a `BuiltinTruncation`, which every builtin and combinator converts into (`ApproxTopN(n)` or `&ApproxTopN(n)` alike).
-`per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
+A runtime of `Placement::Devices { per_device > 1 }` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
 With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.
 
 ## Exchange mode, merge and chunking {#exchange}

@@ -297,13 +297,22 @@ impl MpiGpuRun {
             gather,
             device,
         } = self;
-        let mut split = MpiGpuSum::<W>::scatter_to_device_with(
-            sum,
-            transport,
-            device,
-            ScatterRows::Policy(rows.clone()),
-        )
-        .map_err(MpiGpuFailure::Gpu)?;
+        use paulistrings::gpu::{GpuError, GpuScatterOptions};
+        // Agreed, so a rank whose placement fails does not leave its peers in the scatter's collectives.
+        let placed = GpuScatterOptions::new(&[device]);
+        let failed = first_failure(&transport, u64::from(placed.is_err()));
+        let scatter = match (placed, failed) {
+            (Err(err), _) => return Err(MpiGpuFailure::Gpu(err)),
+            (Ok(_), Some((rank, _))) => {
+                return Err(MpiGpuFailure::Gpu(GpuError::Poisoned { rank, layer: 0 }))
+            }
+            (Ok(options), None) => GpuScatterOptions {
+                rows: ScatterRows::Policy(rows.clone()),
+                ..options
+            },
+        };
+        let mut split = MpiGpuSum::<W>::scatter_to_device_with(sum, transport, scatter)
+            .map_err(MpiGpuFailure::Gpu)?;
         if traced {
             split.enable_trace();
         }

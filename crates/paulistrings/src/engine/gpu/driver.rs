@@ -16,8 +16,7 @@ use crate::collectives::Collectives;
 use crate::engine::partitioned::backend::PartitionStorage;
 use crate::engine::partitioned::driver::{scatter_local, DECLINED_PREPARATION};
 use crate::engine::partitioned::{
-    PartitionConfig, PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement,
-    ScatterOptions, ScatterRows,
+    PartitionConfig, PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement, ScatterRows,
 };
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PartitionPhaseStats;
@@ -32,7 +31,7 @@ use crate::engine::LOG_TARGET;
 ///
 /// Rows a layer moves between partitions go device to device and never touch the host.
 /// Several partitions may share one device (`per_device > 1`), which is a testing shape; one partition per device is the production one.
-/// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
+/// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) or [`scatter_to_devices_with`](Self::scatter_to_devices_with) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
 ///
 /// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form.
 ///
@@ -83,6 +82,45 @@ fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
         .map(|rank| (rank, codes[rank]))
 }
 
+/// Where and how a device scatter splits a sum: the shape of every device driver's `_with` scatter.
+pub struct GpuScatterOptions<const W: usize> {
+    /// The runtime the partitions run on, resolved from [`Placement::Devices`]: one slot per partition, each naming its device.
+    pub devices: Arc<PartitionRuntime>,
+    /// The rows the split follows; resolved at the scatter.
+    pub rows: ScatterRows<W>,
+    /// The device layer's knobs every partition starts with.
+    pub layer: GpuLayerOptions,
+}
+
+impl<const W: usize> GpuScatterOptions<W> {
+    /// One partition on each of `devices`, the default seeded rows and the default layer options; a lone device's runtime is built once per process.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuError::Topology`] if the placement does not resolve.
+    pub fn new(devices: &[u32]) -> Result<Self, GpuError> {
+        let devices = match devices {
+            &[device] => device_runtime(device)?,
+            _ => {
+                let config = PartitionConfig {
+                    placement: Placement::Devices {
+                        devices: devices.to_vec(),
+                        per_device: 1,
+                    },
+                    bind_memory: false,
+                    threads_per_partition: None,
+                };
+                PartitionRuntime::new(&config).map_err(GpuError::Topology)?
+            }
+        };
+        Ok(Self {
+            devices,
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
+            layer: GpuLayerOptions::default(),
+        })
+    }
+}
+
 /// The one-partition runtime on `device`, built once per process and device so a caller scattering every call pays for its pool once.
 pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuError> {
     static RUNTIMES: Mutex<Vec<(u32, Arc<PartitionRuntime>)>> = Mutex::new(Vec::new());
@@ -103,14 +141,14 @@ pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuEr
     Ok(runtime)
 }
 
-/// Rank `rank` of a `size`-partition group: its share of `sum` under `rows` uploaded to `device`. **Collective** above one partition, through [`scatter_local`].
+/// Rank `rank` of a `size`-partition group: its share of `sum` under `rows` uploaded to `device`, under `layer`. **Collective** above one partition, through [`scatter_local`].
 pub(super) fn upload_share<const W: usize>(
     sum: &PauliSum<W>,
     rows: &PartitionRows<W>,
     (rank, size): (u32, u32),
     device: u32,
     collectives: &dyn Collectives,
-    extra_options: &[String],
+    (layer, extra_options): (GpuLayerOptions, &[String]),
 ) -> Result<DevicePartition<W>, GpuError> {
     let device_sum = if size == 1 {
         GpuSum::from_host_with_options(sum, device, extra_options)?
@@ -118,7 +156,7 @@ pub(super) fn upload_share<const W: usize>(
         let local = scatter_local(sum, rows, rank, collectives);
         GpuSum::from_host_with_options(&local, device, extra_options)?
     };
-    let mut partition = DevicePartition::new(device_sum, GpuLayerOptions::default())?;
+    let mut partition = DevicePartition::new(device_sum, layer)?;
     partition.group_size = size;
     Ok(partition)
 }
@@ -133,69 +171,59 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         Self::one_device(sum, ordinal, &[])
     }
 
-    /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn from_host_with_options(
-        sum: &PauliSum<W>,
-        ordinal: u32,
-        extra_options: &[String],
-    ) -> Result<Self, GpuError> {
-        Self::one_device(sum, ordinal, extra_options)
-    }
-
-    fn one_device(
+    /// [`Self::from_host`] with extra NVRTC options, `test_support`'s collision hook.
+    pub(crate) fn one_device(
         sum: &PauliSum<W>,
         ordinal: u32,
         extra_options: &[String],
     ) -> Result<Self, GpuError> {
         let runtime = device_runtime(ordinal)?;
+        let rows = PartitionRows::none(sum.num_qubits());
         Self::upload(
             sum,
-            PartitionRows::none(sum.num_qubits()),
+            rows,
             runtime,
-            extra_options,
+            (GpuLayerOptions::default(), extra_options),
         )
     }
 
-    /// Splits `sum` across the device partitions `config` places, by the default rows as [`PartitionedSum::scatter`] draws them.
+    /// Split `sum` one partition per device of `devices`, by the default rows as [`PartitionedSum::scatter`] draws them.
     ///
     /// # Errors
     ///
-    /// [`GpuError::Topology`] if `config` does not resolve, [`GpuError::Unsupported`] if a slot names no device, and any device error of the uploads.
-    pub fn scatter_to_devices(
-        sum: &PauliSum<W>,
-        config: &PartitionConfig,
-    ) -> Result<Self, GpuError> {
-        let options = ScatterOptions {
-            runtime: PartitionRuntime::new(config).map_err(GpuError::Topology)?,
-            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
-        };
-        Self::scatter_to_devices_with(sum, options)
+    /// [`GpuError::Topology`] if the placement does not resolve, and any device error of the uploads.
+    pub fn scatter_to_devices(sum: &PauliSum<W>, devices: &[u32]) -> Result<Self, GpuError> {
+        Self::scatter_to_devices_with(sum, GpuScatterOptions::new(devices)?)
     }
 
-    /// [`scatter_to_devices`](Self::scatter_to_devices) onto a caller-built runtime, split by the rows `options` names.
+    /// [`scatter_to_devices`](Self::scatter_to_devices) onto a caller-built runtime, split by the rows `options` names, every partition under `options.layer`.
     ///
     /// # Errors
     ///
-    /// As [`Self::scatter_to_devices`], [`GpuError::Topology`] aside.
+    /// [`GpuError::Unsupported`] if a slot of the runtime names no device, and any device error of the uploads.
     ///
     /// # Panics
     ///
-    /// If the rows do not name the runtime's partition count or the sum's qubit count.
+    /// If the rows do not name the runtime's partition count or the sum's qubit count, or if `options.layer` fails [`GpuLayerOptions::validate`].
     pub fn scatter_to_devices_with(
         sum: &PauliSum<W>,
-        options: ScatterOptions<W>,
+        options: GpuScatterOptions<W>,
     ) -> Result<Self, GpuError> {
-        let ScatterOptions { runtime, rows } = options;
-        let rows = rows.resolve(sum, runtime.partition_bits());
-        Self::upload(sum, rows, runtime, &[])
+        let GpuScatterOptions {
+            devices,
+            rows,
+            layer,
+        } = options;
+        layer.assert_valid();
+        let rows = rows.resolve(sum, devices.partition_bits());
+        Self::upload(sum, rows, devices, (layer, &[]))
     }
 
     fn upload(
         sum: &PauliSum<W>,
         rows: PartitionRows<W>,
         runtime: Arc<PartitionRuntime>,
-        extra_options: &[String],
+        options: (GpuLayerOptions, &[String]),
     ) -> Result<Self, GpuError> {
         let size = runtime.num_partitions();
         rows.assert_splits(sum.hash(), sum.num_qubits(), size);
@@ -215,7 +243,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
             runtime.map_partitions(wires, |rank, wire, transport| {
                 let ids = (rank as u32, size as u32);
                 let mut partition =
-                    upload_share(sum, rows, ids, devices[rank], transport, extra_options)?;
+                    upload_share(sum, rows, ids, devices[rank], transport, options)?;
                 partition.scratch_mut().export.wire = Some(Arc::new(wire));
                 Ok(partition)
             })
@@ -387,7 +415,12 @@ pub fn propagate_gpu_partitioned<const W: usize>(
     direction: Direction,
     config: &PartitionConfig,
 ) -> Result<PauliSum<W>, GpuError> {
-    let mut split = GpuPartitionedSum::scatter_to_devices(sum, config)?;
+    let options = GpuScatterOptions {
+        devices: PartitionRuntime::new(config).map_err(GpuError::Topology)?,
+        rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
+        layer: GpuLayerOptions::default(),
+    };
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(sum, options)?;
     split.propagate(circuit, policy, direction)?;
     split.gather()
 }

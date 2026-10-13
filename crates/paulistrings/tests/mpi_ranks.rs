@@ -260,15 +260,14 @@ impl Runner<'_> {
             }
             #[cfg(feature = "cuda")]
             Backend::Device => {
-                use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+                use paulistrings::gpu::{local_device_for_comm, GpuScatterOptions, MpiGpuSum};
                 let device = local_device_for_comm(self.world).expect("a device on every rank");
-                let mut split = MpiGpuSum::scatter_to_device_with(
-                    sum,
-                    transport,
-                    device,
-                    ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(seed))),
-                )
-                .expect("device scatter");
+                let options = GpuScatterOptions {
+                    rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(seed))),
+                    ..GpuScatterOptions::new(&[device]).expect("placement")
+                };
+                let mut split = MpiGpuSum::scatter_to_device_with(sum, transport, options)
+                    .expect("device scatter");
                 assert_eq!(split.device(), device);
                 split
                     .propagate(circuit, policy, direction)
@@ -947,7 +946,8 @@ fn run_host_cases(r: &mut Runner) {
 mod device {
     use super::*;
     use paulistrings::gpu::{
-        cuda_available, local_device_for_comm, propagate_mpi_gpu, GpuError, MpiGpuSum,
+        cuda_available, local_device_for_comm, propagate_mpi_gpu, GpuError, GpuScatterOptions,
+        MpiGpuSum,
     };
 
     /// The number of ranks for which `flag` holds. **Collective.**
@@ -976,11 +976,14 @@ mod device {
 
         // A group of more than one rank needs NCCL on distinct devices; where the ranks share one, or cannot load NCCL, every rank must fail the scatter alike.
         let device = local_device_for_comm(r.world).expect("a device on every rank");
+        let options = GpuScatterOptions {
+            rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(SEED))),
+            ..GpuScatterOptions::new(&[device]).expect("placement")
+        };
         let started = MpiGpuSum::<1>::scatter_to_device_with(
             &rand_sum::<1>(50, 8, 0xB0FF),
             MpiTransport::from_communicator(r.world),
-            device,
-            ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(SEED))),
+            options,
         )
         .map(|_| ());
         let failed = count(r, started.is_err());

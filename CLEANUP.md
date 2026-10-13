@@ -241,6 +241,7 @@ Not yet measured: code A/B against `89bdcca` (D8).
   Measured (jobs 7229613/7229614/7229615, 5 pairs abba): spin vs condvar, P = 2: cnot n 1e5 −18.8% (5/5), n 1e3 −5.9% (4/5); P = 4: cnot n 1e5 −8.2% (5/5), n 1e3 −24.9% (5/5); su4 and rotation_zz no consistent change. Spin vs the original lock-free `9deb5ad`, P = 2: cnot n 1e3 +4.7% (5/5, about 2 µs on a 0.042 ms layer), everything else no consistent change. Accepted: the spin version replaces the lock-free protocol. Note for chunk 23: `ab-campaign` writes to `<date>-<host>/slurm-<cell>-ab.log`, so two jobs on one node share a directory and same-named cells would overwrite each other; tag results with the job id.
   As applied: cherry-picked `52369f3` (dispatch) and `e69919d` (spin) after D58–D61; merged tree fmt, clippy (default, cuda, py cuda), 783 workspace tests and 522 pytest green. Branch `d62` can go.
 - **D63** Chunk 21: the core layer loop moves up to engine level as pure moves (`engine/{driver,backend,plan,transport}.rs`: `run_layers`/`DriverFrame`/`LayerRun`, `PartitionBackend`/`PartitionStorage`/`HostPartition`, `PartitionPlan`, `Transport`/`SoloTransport`/`ChunkMap`/`Payload`); `engine/partitioned/` keeps only the P > 1 parts. Observability files stay flat. CLAUDE.md organisation and layout updated (incl. `knob`, `timing`, `trace`, `test_support/rows`).
+  As applied: `30251b7`..`5cc5449`, pure moves (diffs only `use`/module-doc lines). Core `engine/{driver,backend,plan,transport}.rs`; `DriverFrame`, `LayerRun`, `DriverLaps`, `scatter_local`, `propagate_partitioned` stay in `partitioned/driver.rs` (P > 1 only); `in_process.rs` and `exchange_block.rs` flat in `engine/partitioned/`. Two documented upward edges remain: `engine/backend.rs` → `partitioned::layer` (the host layer with its exchange branch) and `cuda_context` → `PLACEMENT_LOG_TARGET`. Flakes under full parallel load: `a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs` (60 s bound) and once `ranks_match_propagate`; both pass alone (chunk 22).
 
 ## Possible improvements
 
@@ -272,4 +273,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunk 21 (D63) implementing. Next: 22 (tests: timing, coverage, trimming), 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.
+Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–21 done. Next: 22 (tests: timing, coverage, trimming), 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.

@@ -25,7 +25,8 @@ These rules are binding on every file, including markdown.
 
 ## Code organisation
 
-- Dependencies point downward only: leaf algebra (`pauli_string`, `phase`, `rng`) → `pauli_sum` → `channel`/`circuit` → `truncation` → `engine` → `engine/partitioned` → `engine/gpu`; `readout` reads `pauli_sum`, never the other way.
+- Dependencies point downward only: leaf algebra (`pauli_string`, `phase`, `rng`) → `pauli_sum` → `channel`/`circuit` → `truncation` → `engine` (the layer loop and its seams, `driver`/`backend`/`plan`/`transport`, at any partition count) → `engine/partitioned` (what `P > 1` adds) → `engine/gpu`; `readout` reads `pauli_sum`, never the other way.
+- Two edges point up: `HostPartition` (`engine/backend`) runs the host layer `engine/partitioned/layer`, which also serves `P = 1`, and `engine/cuda_context` logs under `PLACEMENT_LOG_TARGET`.
 - Modules are private; the user API is re-exported flat at the crate root, `gpu` and `mpi` are public modules behind their features, everything else is `pub(crate)`.
 - Each entry point is one plain call plus one `_with(…, options)` variant (`propagate`/`propagate_with`, `scatter`/`scatter_with`).
 - About 800 production lines per file is a soft cap; split on real seams.
@@ -177,11 +178,12 @@ crates/paulistrings/      pure Rust core, no Python deps
                           pauli_sum/{storage,partition,hash,accumulator},
                           channel/{ptm,rotation,prepared},
                           truncation/{builtin,tree},
-                          engine/{bucketed,coset,merge,direct,stats,trace,cuda_context,driver,backend,plan,transport},
-                          engine/partitioned/{distributed,driver,exchange_block,export,in_process,layer,mpi,
-                          runtime,sum,topology,truncation},
+                          engine/{backend,bucketed,coset,cuda_context,driver,knob,merge,plan,
+                          stats,timing,trace,transport},
+                          engine/partitioned/{distributed,driver,exchange_block,export,in_process,
+                          layer,mpi,runtime,sum,topology},
                           engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),
-                          readout/{product_state,stabilizer}, test_support
+                          readout/{product_state,stabilizer}, test_support/{gpu,rows}
   tests/ benches/ examples/ (the phase_breakdown probe)
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

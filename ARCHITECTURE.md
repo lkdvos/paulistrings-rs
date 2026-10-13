@@ -314,6 +314,8 @@ Traffic-minimizing rows are cut-like, reading the qubits on the boundary of a sp
 
 The engine's *partition* is not a thread and not a process: it is whatever a `Transport` says a peer is, and `run_layers` is one function generic over the transport, with `scatter_local`, `PartitionWork` and `apply_layer_partitioned` shared below it.
 
+The loop and its seams (`engine/{driver,backend,plan,transport}.rs`) serve every partition count; `engine/partitioned/` holds what `P > 1` adds: the drivers and their call frame, the scatter, the in-process and MPI transports, the exchange wire unit and export, and the host layer `HostPartition` runs.
+
 Unpartitioned `propagate` is the third caller: one `HostPartition` on the caller's own Rayon pool over a no-op `SoloTransport`, with the policy wrapped so its plain `finalize_layer` is the collective one; alone, the host backend rebuckets before `prepare` (`PartitionStorage::refine_unprepared`), so a growing layer prepares once.
 
 **Two drivers, because three things above the layer loop do not reconcile.**

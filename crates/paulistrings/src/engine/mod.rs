@@ -6,6 +6,7 @@ pub(crate) mod bucketed;
 mod coset;
 #[cfg(feature = "cuda")]
 mod cuda_context;
+pub(crate) mod driver;
 #[cfg(feature = "cuda")]
 pub mod gpu;
 pub(crate) mod knob;
@@ -22,8 +23,8 @@ use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 use bucketed::LayerScratch;
+use driver::{run_layers, PartitionContext, PartitionWork};
 use partitioned::backend::HostPartition;
-use partitioned::driver::{run_layers, PartitionContext, PartitionWork};
 use partitioned::transport::SoloTransport;
 use trace::assemble;
 

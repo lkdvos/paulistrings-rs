@@ -28,7 +28,7 @@ pub use crate::engine::bucketed::apply_layer_bucketed;
 pub use crate::engine::partitioned::transport::InProcessTransport;
 
 /// Layers between two bucket-count agreements of the partitioned driver (ARCHITECTURE.md §Partitioning).
-pub const BITS_AGREE_EVERY: usize = crate::engine::partitioned::driver::BITS_AGREE_EVERY;
+pub const BITS_AGREE_EVERY: usize = crate::engine::driver::BITS_AGREE_EVERY;
 
 pub use crate::pauli_sum::hash::B_MAX_BITS;
 pub use crate::pauli_sum::storage::{

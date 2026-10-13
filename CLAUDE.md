@@ -177,7 +177,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           pauli_sum/{storage,partition,hash,accumulator},
                           channel/{ptm,rotation,prepared},
                           truncation/{builtin,tree},
-                          engine/{bucketed,coset,merge,direct,stats,trace,cuda_context},
+                          engine/{bucketed,coset,merge,direct,stats,trace,cuda_context,driver},
                           engine/partitioned/{backend,distributed,driver,export,layer,mpi,plan,
                           runtime,sum,topology,transport,truncation},
                           engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),

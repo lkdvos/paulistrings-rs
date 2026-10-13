@@ -1,7 +1,7 @@
 //! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance (ARCHITECTURE.md §Determinism).
 //! Every case returns early without a device.
 
-use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPauliSum};
+use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, cancellation_channel,
@@ -304,7 +304,7 @@ where
 {
     let input = rand_sum::<1>(100, 8, 0x55);
     let circuit = one_layer(8, Box::new(PtmChannel::cnot(0, 1)));
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     let r = dev.propagate(&circuit, policy, Direction::Forward);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{what}: {r:?}");
     assert_eq!(dev.len(), input.len(), "{what}: nothing ran");
@@ -334,22 +334,21 @@ fn exact_top_n_edge_cases_match_the_host() {
     let circuit = Circuit::<1>::new(8);
     check(&circuit, &sum, &T::TopN(50), "tie group fits exactly");
     check(&circuit, &sum, &T::TopN(80), "tie group straddles the cut");
-    let mut dev = GpuPauliSum::from_host(&sum, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&sum, 0).expect("upload");
     for n in [0usize, 1, sum.len(), sum.len() + 5] {
         let want = propagate(&circuit, sum.clone(), &T::TopN(n), Direction::Forward);
         dev.propagate(&circuit, T::TopN(n), Direction::Forward)
             .expect("device propagate");
         assert_eq!(dev.len(), want.len(), "n={n}");
         assert_terms_close(&dev.gather().unwrap(), &want, TOL, &format!("n={n}"));
-        dev = GpuPauliSum::from_host(&sum, 0).expect("re-upload");
+        dev = GpuPartitionedSum::from_host(&sum, 0).expect("re-upload");
     }
 }
 
-/// A group member (`per_device > 1`) still rejects exact `TopN`, unlike a lone `GpuPauliSum`.
+/// A group member (`per_device > 1`) still rejects exact `TopN`, unlike a lone device.
 #[test]
 fn exact_top_n_is_unsupported_above_one_partition() {
     require_cuda!();
-    use paulistrings::gpu::GpuPartitionedSum;
     use BuiltinTruncation as T;
     let input = rand_sum::<1>(500, 8, 0x7093);
     let circuit = one_layer(8, Box::new(PtmChannel::cnot(0, 1)));
@@ -451,7 +450,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         &mut LayerScratch::new(),
         options,
     );
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(GpuLayerOptions {
         records_per_block: 1 << 30,
         ..GpuLayerOptions::default()
@@ -516,7 +515,7 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
     all.push(su4());
     all.push(PtmChannel::cnot(7, 90));
 
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(GpuLayerOptions {
         max_bits: 3,
         ..GpuLayerOptions::default()
@@ -545,7 +544,7 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
 fn repeated_propagate_on_one_resident_sum() {
     require_cuda!();
     let mut host = rand_sum::<1>(2000, 8, 0x8E9);
-    let mut dev = GpuPauliSum::from_host(&host, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&host, 0).expect("upload");
     let mut c1 = Circuit::<1>::new(8);
     c1.push(PtmChannel::depolarizing(3, 0.1));
     let mut c2 = Circuit::<1>::new(8);
@@ -653,7 +652,7 @@ fn propagate_gpu_front_door_and_options() {
     let got = paulistrings::gpu::propagate_gpu(&circuit, &input, KeepAll, Direction::Forward, 0)
         .expect("propagate_gpu");
     assert_terms_close(&got, &want, TOL, "front door");
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.enable_trace();
     dev.propagate_with(
         &circuit,
@@ -817,7 +816,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
             min_buckets: 1 << 20,
         },
     );
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(opts);
     dev.propagate_with(
         &circuit,
@@ -865,7 +864,7 @@ impl<const W: usize> Channel<W> for ThreeQubits {
 fn a_declined_preparation_is_unsupported_as_on_the_host() {
     require_cuda!();
     let input = rand_sum::<1>(100, 8, 0x56);
-    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     let r = dev.propagate(
         &one_layer(8, Box::new(ThreeQubits)),
         KeepAll,

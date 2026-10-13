@@ -1463,7 +1463,7 @@ fn builtin_truncation(spec: TruncSpec) -> BuiltinTruncation {
     }
 }
 
-/// One device cell, `--gpu-partitions` partitions on each of `devices` (one device at one partition is `GpuPauliSum`): [`run_cell_partitioned`] with `GpuPartitionedSum`.
+/// One device cell, `--gpu-partitions` partitions on each of `devices` (one device at one partition is `GpuPartitionedSum::from_host`'s shape): [`run_cell_partitioned`] with `GpuPartitionedSum`.
 #[cfg(feature = "cuda")]
 fn run_cell_gpu<const W: usize>(
     layer: LayerKind,
@@ -3016,8 +3016,8 @@ const MPI_USAGE: &str = "\
 /// The extra `--help` lines the `cuda` feature adds.
 #[cfg(feature = "cuda")]
 const DEVICE_USAGE: &str = "\
-  --device <csv|auto>      Run each cell on CUDA devices: one ordinal is GpuPauliSum,
-                            several (or auto, every visible device) GpuPartitionedSum,
+  --device <csv|auto>      Run each cell on CUDA devices through GpuPartitionedSum, one
+                            partition per ordinal (or auto, every visible device),
                             and with --mpi one device per rank (MpiGpuSum, one ordinal
                             or auto). The upload and download are untimed (upload_ns,
                             download_ns); wall_ns is the second call on the resident sum.

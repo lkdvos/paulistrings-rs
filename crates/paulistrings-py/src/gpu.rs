@@ -89,7 +89,7 @@ mod cuda {
     };
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::PyTruncation;
-    use paulistrings::gpu::{device_count, GpuError, GpuPauliSum as CoreGpuPauliSum};
+    use paulistrings::gpu::{device_count, GpuError, GpuPartitionedSum};
     use paulistrings::BuiltinTruncation;
     use paulistrings::P_MAX_BITS;
     use paulistrings::{Direction, PartitionTrace, PropagateOptions};
@@ -192,18 +192,18 @@ mod cuda {
 
     /// Width-dispatch enum over the device-resident core sum, the device twin of `PauliSumImpl`.
     pub(crate) enum GpuPauliSumImpl {
-        W1(CoreGpuPauliSum<1>),
-        W2(CoreGpuPauliSum<2>),
-        W4(CoreGpuPauliSum<4>),
-        W8(CoreGpuPauliSum<8>),
-        W16(CoreGpuPauliSum<16>),
+        W1(GpuPartitionedSum<1>),
+        W2(GpuPartitionedSum<2>),
+        W4(GpuPartitionedSum<4>),
+        W8(GpuPartitionedSum<8>),
+        W16(GpuPartitionedSum<16>),
     }
 
     impl GpuPauliSumImpl {
         pub(crate) fn upload(sum: &PauliSumImpl, device: u32) -> Result<Self, GpuError> {
             Ok(
                 for_each_width_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
-                    CoreGpuPauliSum::from_host(s, device)?
+                    GpuPartitionedSum::from_host(s, device)?
                 }),
             )
         }

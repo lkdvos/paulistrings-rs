@@ -1,10 +1,8 @@
-//! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device agree to tolerance, and `P = 1` is `GpuPauliSum` bit for bit (ARCHITECTURE.md §Partitioning, §Determinism).
+//! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device agree to tolerance, and `P = 1` is `GpuPartitionedSum::from_host` bit for bit (ARCHITECTURE.md §Partitioning, §Determinism).
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
-use paulistrings::gpu::{
-    GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum, GpuScatterOptions,
-};
+use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
@@ -309,7 +307,7 @@ fn edge_cases() {
     }
 }
 
-/// `P = 1` takes the same path as `GpuPauliSum`, so the two agree bit for bit, and both agree with the host to tolerance.
+/// `P = 1` takes the same path as `GpuPartitionedSum::from_host`, so the two agree bit for bit, and both agree with the host to tolerance.
 #[test]
 fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
     require_cuda!();
@@ -318,7 +316,7 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
     for direction in [Direction::Forward, Direction::Heisenberg] {
         let (host, discarded) =
             propagate_discarding(&circuit, sum.clone(), &ApproxTopN(4_000), direction);
-        let mut dev = GpuPauliSum::from_host(&sum, test_devices()[0]).expect("upload");
+        let mut dev = GpuPartitionedSum::from_host(&sum, test_devices()[0]).expect("upload");
         dev.propagate(&circuit, ApproxTopN(4_000), direction)
             .expect("device");
         let want = dev.gather().expect("download");

@@ -230,7 +230,7 @@ mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
 
 ### The device axis
 
-`--device <ordinal>` (feature `cuda`) runs each cell on one CUDA device through `GpuPauliSum`, the one-partition `GpuPartitionedSum`, the same shape as a `P = 1` partitioned cell: the input is uploaded untimed, an untimed warm-up call drives the resident sum to its steady state, the timed call applies the layer set again, and the output is downloaded untimed.
+`--device <ordinal>` (feature `cuda`) runs each cell on one CUDA device through the one-partition `GpuPartitionedSum`, the same shape as a `P = 1` partitioned cell: the input is uploaded untimed, an untimed warm-up call drives the resident sum to its steady state, the timed call applies the layer set again, and the output is downloaded untimed.
 `wall_ns` therefore means the same thing on a device row as on a host row, and `n` is the steady-state term count on the device.
 
 ```bash

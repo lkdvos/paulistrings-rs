@@ -1,6 +1,6 @@
 //! The CUDA backend (feature `cuda`): device probes, device-resident sums and their propagation drivers. See ARCHITECTURE.md §GPU-Readiness.
 //!
-//! [`GpuPauliSum`] holds a sum on one device, [`GpuPartitionedSum`] splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
+//! [`GpuPartitionedSum`] holds a sum on one device or splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
 
 mod columns;
 mod device;
@@ -31,8 +31,7 @@ pub(crate) const GPU_LOG_TARGET: &str = "paulistrings::gpu";
 pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};
 pub use driver::{
-    first_failure, propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuPauliSum,
-    GpuScatterOptions,
+    first_failure, propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuScatterOptions,
 };
 pub use error::GpuError;
 pub use layer::{

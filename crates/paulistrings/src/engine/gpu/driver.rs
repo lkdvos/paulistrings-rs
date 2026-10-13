@@ -1,4 +1,4 @@
-//! [`GpuPartitionedSum`], [`PartitionedSum`] over device partitions, its one-device form [`GpuPauliSum`], and their front doors.
+//! [`GpuPartitionedSum`], [`PartitionedSum`] over device partitions, its scatter options, and the front doors.
 
 use crate::channel::Prepare;
 use crate::engine::timing::timed;
@@ -37,9 +37,6 @@ use crate::engine::LOG_TARGET;
 ///
 /// A device error mid-run leaves a one-partition sum holding the last completed layer's output, and a later call resumes from it; above one partition the split is **poisoned** instead (see [`propagate_with`](Self::propagate_with)).
 pub type GpuPartitionedSum<const W: usize> = PartitionedSum<W, DevicePartition<W>>;
-
-/// A [`PauliSum`] resident on one CUDA device: a [`GpuPartitionedSum`] of one partition, built by [`from_host`](GpuPartitionedSum::from_host) (ARCHITECTURE.md §GPU-Readiness).
-pub type GpuPauliSum<const W: usize> = GpuPartitionedSum<W>;
 
 /// The policy's per-term program, after checking that it lowers, that every channel prepares, and that an exact `TopN` runs only at `single_partition`.
 pub(super) fn lower_for_run<const W: usize>(
@@ -388,7 +385,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 
 /// Propagate `sum` through `circuit` on device `device` and return the result on the host.
 ///
-/// One-shot convenience over [`GpuPauliSum`]; a caller stepping repeatedly should hold the resident sum instead.
+/// One-shot convenience over a one-partition [`GpuPartitionedSum`]; a caller stepping repeatedly should hold the resident sum instead.
 pub fn propagate_gpu<const W: usize>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -396,7 +393,7 @@ pub fn propagate_gpu<const W: usize>(
     direction: Direction,
     device: u32,
 ) -> Result<PauliSum<W>, GpuError> {
-    let mut resident = GpuPauliSum::from_host(sum, device)?;
+    let mut resident = GpuPartitionedSum::from_host(sum, device)?;
     resident.propagate(circuit, policy, direction)?;
     resident.gather()
 }

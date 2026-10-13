@@ -209,7 +209,7 @@ fn interleaved_self_sends_match_in_posting_order() {
     let Some((_nccl, comm, stream)) = one_rank() else {
         return;
     };
-    let wire = NcclWire::new(Arc::new(comm));
+    let wire = comm;
     assert_eq!((wire.rank(), wire.size()), (0, 1));
     let msgs = messages();
     let sends = upload(&stream, &msgs);
@@ -235,7 +235,7 @@ fn interleaved_self_sends_match_in_posting_order() {
         );
         assert_eq!(got[msg.len()], 0, "message {m} overran its receive");
     }
-    assert!(wire.comm().is_healthy());
+    assert!(wire.is_healthy());
 }
 
 /// Every send first, then every receive carved from one concatenated column, as the exchange's `received_*` layout is: matching is per peer in posting order across the whole group.
@@ -244,7 +244,7 @@ fn self_sends_land_in_one_column_in_posting_order() {
     let Some((_nccl, comm, stream)) = one_rank() else {
         return;
     };
-    let wire = NcclWire::new(Arc::new(comm));
+    let wire = comm;
     let msgs = messages();
     let sends = upload(&stream, &msgs);
     let total: usize = SIZES.iter().sum();
@@ -269,7 +269,7 @@ fn self_sends_land_in_one_column_in_posting_order() {
         at += msg.len();
     }
     assert_eq!(got[total], 0, "nothing lands past the last message");
-    assert!(wire.comm().is_healthy());
+    assert!(wire.is_healthy());
 }
 
 /// NCCL itself refuses a self-receive with no matching send at group end; the error aborts the communicator.
@@ -278,7 +278,7 @@ fn an_unmatched_self_receive_fails_the_group_and_aborts() {
     let Some((_nccl, comm, stream)) = one_rank() else {
         return;
     };
-    let wire = NcclWire::new(Arc::new(comm));
+    let wire = comm;
     let mut destination = stream.alloc_zeros::<u64>(4).expect("alloc");
     let mut group = WireGroup::new();
     group.receive(destination.as_view_mut(), 0, &stream);
@@ -287,7 +287,7 @@ fn an_unmatched_self_receive_fails_the_group_and_aborts() {
         matches!(posted, Err(GpuError::Nccl { code: 5, .. })),
         "{posted:?}"
     );
-    assert!(!wire.comm().is_healthy());
+    assert!(!wire.is_healthy());
     assert!(matches!(wire.wait(&stream), Err(GpuError::Nccl { .. })));
 }
 
@@ -300,7 +300,7 @@ fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     let bound = Duration::from_millis(300);
     comm.set_timeout(bound);
     comm.force_timeout();
-    let wire = NcclWire::new(Arc::new(comm));
+    let wire = comm;
     let source = stream.alloc_zeros::<u64>(64).expect("alloc");
     let mut destination = stream.alloc_zeros::<u64>(64).expect("alloc");
     let mut group = WireGroup::new();
@@ -316,7 +316,7 @@ fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     );
     assert!(elapsed >= bound, "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
-    assert!(!wire.comm().is_healthy());
+    assert!(!wire.is_healthy());
     assert!(matches!(wire.wait(&stream), Err(GpuError::Nccl { .. })));
     stream.synchronize().expect("the stream drains");
     drop(wire);
@@ -327,12 +327,12 @@ fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
     let Some((_nccl, comm, stream)) = one_rank() else {
         return;
     };
-    let wire = NcclWire::new(Arc::new(comm));
+    let wire = comm;
     let source = stream.alloc_zeros::<u8>(8).expect("alloc");
     let mut group = WireGroup::new();
     group.send(source.as_view(), 1, &stream);
     assert!(matches!(group.post(&wire), Err(GpuError::Nccl { .. })));
-    assert!(wire.comm().is_healthy());
+    assert!(wire.is_healthy());
 }
 
 impl NcclComm {

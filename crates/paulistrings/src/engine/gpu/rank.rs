@@ -285,7 +285,8 @@ fn start_nccl<const W: usize>(
     collectives: &dyn Collectives,
     partition: &mut DevicePartition<W>,
 ) -> Result<(), GpuError> {
-    use super::nccl::{self, NcclComm, NcclWire};
+    use super::nccl::{self, NcclComm};
+    use super::wire::DeviceWire;
     let context = partition.sum().context.clone();
     let device = if super::device::nccl_available() {
         nccl::device_uuid(&context).ok()
@@ -300,9 +301,7 @@ fn start_nccl<const W: usize>(
         |comm| comm.warm_up(&stream),
         NcclComm::abort,
     )?;
-    partition.scratch_mut().export.wire = Some(std::sync::Arc::new(NcclWire::new(
-        std::sync::Arc::new(comm),
-    )));
+    partition.scratch_mut().export.wire = Some(std::sync::Arc::new(comm));
     Ok(())
 }
 

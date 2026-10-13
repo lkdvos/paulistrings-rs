@@ -1,4 +1,4 @@
-//! [`NcclComm`], the NCCL communicator of a device group over MPI, its [`DeviceWire`] form [`NcclWire`], and the group's start agreement.
+//! [`NcclComm`], the NCCL communicator and [`DeviceWire`] of a device group over MPI, and the group's start agreement.
 //! See ARCHITECTURE.md §Partitioning.
 
 use std::ffi::CStr;
@@ -134,11 +134,6 @@ impl NcclComm {
         Ok(this)
     }
 
-    /// Whether the communicator has not been aborted.
-    pub(crate) fn is_healthy(&self) -> bool {
-        !self.lock().aborted
-    }
-
     /// Pay NCCL's lazy connection setup now: one small send/receive with every other rank (with itself in a one-rank world), completed on `stream`.
     /// **Collective over the communicator**, after the group has agreed that every [`init`](Self::init) succeeded.
     pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
@@ -162,12 +157,6 @@ impl NcclComm {
         group.receive_parts(back.as_view_mut(), &parts, stream);
         group.post_with(|ops| self.post(ops))?;
         self.wait(stream)
-    }
-
-    /// Abort the communicator if it is still live; idempotent, and returns at once.
-    pub(crate) fn abort(&self) {
-        let mut raw = self.lock();
-        Self::abort_locked(&mut raw, self.rank, &self.context);
     }
 
     fn lock(&self) -> MutexGuard<'_, Raw> {
@@ -267,6 +256,19 @@ impl NcclComm {
         Self::abort_locked(raw, self.rank, &self.context);
         Err(GpuError::Timeout { what: waiting_on })
     }
+}
+
+/// The communicator is a [`DeviceWire`] itself: a group is one NCCL group, a wait polls its completion event.
+impl DeviceWire for NcclComm {
+    #[cfg(test)]
+    fn rank(&self) -> u32 {
+        self.rank
+    }
+
+    #[cfg(test)]
+    fn size(&self) -> u32 {
+        self.size
+    }
 
     fn post(&self, ops: &[WireOp<'_>]) -> Result<(), GpuError> {
         let mut raw = self.lock();
@@ -346,6 +348,16 @@ impl NcclComm {
         Err(GpuError::Timeout {
             what: "an NCCL group to complete",
         })
+    }
+
+    /// Abort the communicator if it is still live; idempotent, and returns at once.
+    fn abort(&self) {
+        let mut raw = self.lock();
+        Self::abort_locked(&mut raw, self.rank, &self.context);
+    }
+
+    fn is_healthy(&self) -> bool {
+        !self.lock().aborted
     }
 }
 
@@ -515,47 +527,6 @@ fn unpack_id(words: &[u64]) -> sys::ncclUniqueId {
         }
     }
     id
-}
-
-/// The [`DeviceWire`] over a real NCCL communicator.
-#[derive(Clone)]
-pub(crate) struct NcclWire {
-    comm: Arc<NcclComm>,
-}
-
-impl NcclWire {
-    pub(crate) fn new(comm: Arc<NcclComm>) -> Self {
-        Self { comm }
-    }
-
-    /// The communicator, for the health checks and abort of the failure paths.
-    #[cfg(test)]
-    pub(crate) fn comm(&self) -> &Arc<NcclComm> {
-        &self.comm
-    }
-}
-
-impl DeviceWire for NcclWire {
-    #[cfg(test)]
-    fn rank(&self) -> u32 {
-        self.comm.rank
-    }
-    #[cfg(test)]
-    fn size(&self) -> u32 {
-        self.comm.size
-    }
-    fn post(&self, ops: &[WireOp<'_>]) -> Result<(), GpuError> {
-        self.comm.post(ops)
-    }
-    fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
-        self.comm.wait(stream)
-    }
-    fn abort(&self) {
-        self.comm.abort();
-    }
-    fn is_healthy(&self) -> bool {
-        self.comm.is_healthy()
-    }
 }
 
 /// Whether the group can start NCCL, the same verdict on every rank: every rank `can` (libnccl 2.22+ loads) and no two `device` UUIDs coincide, which NCCL refuses (**collective**: one `allreduce_sum_u64` of `1 + 2 × size` words).

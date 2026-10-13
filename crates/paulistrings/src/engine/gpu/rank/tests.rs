@@ -43,13 +43,14 @@ mod protocol {
 
     use super::super::super::layer::GpuBucketPolicy;
     use super::super::super::module::MAX_BUCKET_LEN;
-    use super::super::super::wire::{DeviceWire, PeerFault, PeerTally, PeerWire};
+    use super::super::super::wire::{DeviceWire, PeerTally, PeerWire};
     use super::*;
     use crate::engine::partitioned::{PartitionRuntime, ScatterOptions, ScatterRows};
     use crate::test_support::{
         assert_runs_agree, assert_terms_close, propagate_discarding, rand_sum_real, random_circuit,
-        rows_reading_z63, single_cuts, spread_magnitudes, su4_chain, trotter_circuit,
-        unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog, LoggingTransport,
+        rows_reading_z63, set_fault_plan, single_cuts, spread_magnitudes, su4_chain,
+        trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog,
+        FaultPlan, LoggingTransport, WireFault,
     };
     use crate::truncation::ApproxTopN;
 
@@ -317,7 +318,11 @@ mod protocol {
             let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 split.set_layer_options(capped(8));
                 if split.rank() == culprit {
-                    split.inject_chunk_oom(1);
+                    let plan = FaultPlan {
+                        after_chunk: Some(1),
+                        ..FaultPlan::default()
+                    };
+                    set_fault_plan(split, culprit as usize, plan);
                 }
             };
             let start = Instant::now();
@@ -349,7 +354,11 @@ mod protocol {
         for size in [2u32, 4] {
             let fail = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 if split.rank() == 1 {
-                    split.inject_failure(2);
+                    let plan = FaultPlan {
+                        at_layer: Some(2),
+                        ..FaultPlan::default()
+                    };
+                    set_fault_plan(split, 1, plan);
                 }
             };
             let errs =
@@ -374,7 +383,11 @@ mod protocol {
             let culprit = size - 1;
             let oom = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 if split.rank() == culprit {
-                    split.inject_recv_oom();
+                    let plan = FaultPlan {
+                        receive_growth: true,
+                        ..FaultPlan::default()
+                    };
+                    set_fault_plan(split, culprit as usize, plan);
                 }
             };
             let (group, tally) = wired(size);
@@ -460,18 +473,26 @@ mod protocol {
         let dense = random_circuit::<1>(8, 6, 0xD1C, true);
         let input = rand_sum::<1>(300, 8, 0xD1D);
         for size in [2u32, 4] {
-            for fault in [PeerFault::Post, PeerFault::Wait] {
+            for fault in [WireFault::Post, WireFault::Wait] {
                 let culprit = size - 1;
-                let wires =
-                    PeerWire::group_with_fault(size, culprit, fault, Duration::from_secs(2));
+                let wires = PeerWire::group_with_timeout(size, Duration::from_secs(2));
                 let transports =
                     InProcessTransport::group_with_timeout(size, Duration::from_secs(120));
                 let (group, tally) = over_wires(transports, wires);
+                let arm = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                    if split.rank() == culprit {
+                        let plan = FaultPlan {
+                            wire: Some(fault),
+                            ..FaultPlan::default()
+                        };
+                        set_fault_plan(split, culprit as usize, plan);
+                    }
+                };
                 let start = Instant::now();
-                let out = Run::new(&input, seeded_rows(8, size), &dense).on(group, &|_| {});
+                let out = Run::new(&input, seeded_rows(8, size), &dense).on(group, &arm);
                 let what = format!("size {size} {fault:?}");
                 assert!(start.elapsed() < Duration::from_secs(60), "{what}");
-                let posted = if fault == PeerFault::Post {
+                let posted = if fault == WireFault::Post {
                     size - 1
                 } else {
                     size

@@ -299,7 +299,7 @@ fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     };
     let bound = Duration::from_millis(300);
     comm.set_timeout(bound);
-    comm.force_timeout();
+    comm.inject(WireFault::Wait);
     let wire = comm;
     let source = stream.alloc_zeros::<u64>(64).expect("alloc");
     let mut destination = stream.alloc_zeros::<u64>(64).expect("alloc");
@@ -322,6 +322,22 @@ fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     drop(wire);
 }
 
+/// An injected post failure refuses the group before NCCL sees it and aborts the communicator.
+#[test]
+fn an_injected_post_failure_aborts_the_communicator() {
+    let Some((_nccl, comm, stream)) = one_rank() else {
+        return;
+    };
+    comm.inject(WireFault::Post);
+    let source = stream.alloc_zeros::<u64>(8).expect("alloc");
+    let mut destination = stream.alloc_zeros::<u64>(8).expect("alloc");
+    let mut group = WireGroup::new();
+    group.send(source.as_view(), 0, &stream);
+    group.receive(destination.as_view_mut(), 0, &stream);
+    assert!(matches!(group.post(&comm), Err(GpuError::Wire(m)) if m.contains("injected")));
+    assert!(!comm.is_healthy());
+}
+
 #[test]
 fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
     let Some((_nccl, comm, stream)) = one_rank() else {
@@ -339,10 +355,5 @@ impl NcclComm {
     /// Replace the wait bound, so a test can force a timeout without waiting out the default.
     pub(crate) fn set_timeout(&self, timeout: Duration) {
         self.lock().timeout = timeout;
-    }
-
-    /// Make the next [`DeviceWire::wait`] treat its work as never completing, so it times out and aborts whatever the device does.
-    pub(crate) fn force_timeout(&self) {
-        self.lock().force_timeout = true;
     }
 }

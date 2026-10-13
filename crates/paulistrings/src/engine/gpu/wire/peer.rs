@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use cudarc::driver::{sys, CudaContext, CudaEvent, CudaStream};
 
+#[cfg(any(test, feature = "test-utils"))]
+use super::WireFault;
 use super::{wire_timeout, DeviceWire, WireOp, WireOpKind};
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::GPU_LOG_TARGET;
@@ -58,19 +60,6 @@ struct Shared {
     /// Groups posted by every rank so far.
     #[cfg(test)]
     posted: AtomicU64,
-    /// The rank that fails and how (test hook).
-    #[cfg(test)]
-    fault: Option<(u32, PeerFault)>,
-}
-
-/// Where a [`PeerWire`] group's failing rank fails, returning an error as a failed NCCL call would.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PeerFault {
-    /// Its first post fails before any op is visible to a peer.
-    Post,
-    /// Its first post succeeds and its wait fails once its peers have copied from it, with no copies of its own, so its peers' waits time out.
-    Wait,
 }
 
 /// A [`DeviceWire`] over a group of in-process ranks: each rank's `n`-th group is matched against every other rank's `n`-th, per peer in posting order, and every receive is a device-to-device copy from its send on the receiver's stream, a peer copy across devices.
@@ -83,35 +72,19 @@ pub(crate) struct PeerWire {
     generation: Mutex<(u64, Option<u64>)>,
     /// Set once this wire failed or timed out; every later call fails.
     dead: AtomicBool,
+    /// The fault armed by [`DeviceWire::inject`].
+    #[cfg(any(test, feature = "test-utils"))]
+    fault: Mutex<Option<WireFault>>,
 }
 
 impl PeerWire {
     /// One wire per rank of a group of `size`, rank `r`'s at index `r`.
     pub(crate) fn group(size: u32) -> Vec<PeerWire> {
-        Self::build(
-            size,
-            wire_timeout(),
-            #[cfg(test)]
-            None,
-        )
+        Self::group_with_timeout(size, wire_timeout())
     }
 
-    /// A group whose rank `rank` fails as `fault` says, every other rank's wait then timing out after `timeout`.
-    #[cfg(test)]
-    pub(crate) fn group_with_fault(
-        size: u32,
-        rank: u32,
-        fault: PeerFault,
-        timeout: Duration,
-    ) -> Vec<PeerWire> {
-        Self::build(size, timeout, Some((rank, fault)))
-    }
-
-    fn build(
-        size: u32,
-        timeout: Duration,
-        #[cfg(test)] fault: Option<(u32, PeerFault)>,
-    ) -> Vec<PeerWire> {
+    /// As [`Self::group`] with every wait bounded by `timeout`.
+    pub(crate) fn group_with_timeout(size: u32, timeout: Duration) -> Vec<PeerWire> {
         let shared = Arc::new(Shared {
             size,
             state: Mutex::new(State {
@@ -122,8 +95,6 @@ impl PeerWire {
             timeout,
             #[cfg(test)]
             posted: AtomicU64::new(0),
-            #[cfg(test)]
-            fault,
         });
         (0..size)
             .map(|rank| PeerWire {
@@ -131,6 +102,8 @@ impl PeerWire {
                 shared: shared.clone(),
                 generation: Mutex::new((0, None)),
                 dead: AtomicBool::new(false),
+                #[cfg(any(test, feature = "test-utils"))]
+                fault: Mutex::new(None),
             })
             .collect()
     }
@@ -148,9 +121,15 @@ impl PeerWire {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    #[cfg(test)]
-    fn faulty(&self, fault: PeerFault) -> bool {
-        self.shared.fault == Some((self.rank, fault))
+    /// Whether `fault` is armed, disarming it.
+    #[cfg(any(test, feature = "test-utils"))]
+    fn faulty(&self, fault: WireFault) -> bool {
+        let mut armed = self.fault.lock().unwrap_or_else(PoisonError::into_inner);
+        let fires = *armed == Some(fault);
+        if fires {
+            *armed = None;
+        }
+        fires
     }
 
     /// Record `msg` for the group and panic with it.
@@ -217,7 +196,7 @@ impl PeerWire {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     fn die(&self, what: &'static str) -> GpuError {
         self.dead.store(true, Ordering::Relaxed);
         GpuError::Wire(what)
@@ -258,11 +237,16 @@ impl DeviceWire for PeerWire {
         !self.dead.load(Ordering::Relaxed)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    fn inject(&self, fault: WireFault) {
+        *self.fault.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
+    }
+
     fn post(&self, ops: &[WireOp<'_>]) -> Result<(), GpuError> {
         let size = self.shared.size;
         self.alive()?;
-        #[cfg(test)]
-        if self.faulty(PeerFault::Post) {
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.faulty(WireFault::Post) {
             return Err(self.die("an injected peer wire post failure"));
         }
         if ops.iter().any(|op| op.peer() >= size) {
@@ -338,8 +322,8 @@ impl DeviceWire for PeerWire {
         let state = self.wait_for(state, generation, "every rank's group", |r| {
             r.posted.iter().all(Option::is_some)
         })?;
-        #[cfg(test)]
-        if self.faulty(PeerFault::Wait) {
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.faulty(WireFault::Wait) {
             // The peers' copies read this rank's buffers, which its caller reuses as soon as this returns.
             drop(self.wait_for(state, generation, "the peers' copies", |r| {
                 r.done + 1 >= size

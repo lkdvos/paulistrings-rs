@@ -192,24 +192,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         }
     }
 
-    /// Fail this rank before the exchange of its `layer`-th layer of the next call (test hook).
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn inject_failure(&mut self, layer: usize) {
-        self.backend_mut().fail_at_layer = Some(layer);
-    }
-
-    /// Make the next exchange's receive growth on this rank fail as out of memory, after the skeletons and before the vote (test hook).
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn inject_recv_oom(&mut self) {
-        self.backend_mut().scratch_mut().export.fail_recv_growth = true;
-    }
-
-    /// Make this rank's next chunked receive fail as out of memory once chunk `chunk` has moved, after the vote and mid-layer (test hook).
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn inject_chunk_oom(&mut self, chunk: usize) {
-        self.backend_mut().scratch_mut().export.fail_after_chunk = Some(chunk);
-    }
-
     /// Download every rank's share and collect the whole sum on rank 0: `Ok(Some(sum))` there, `Ok(None)` elsewhere. **Collective.**
     ///
     /// # Errors

@@ -13,9 +13,20 @@ use super::GPU_LOG_TARGET;
 use crate::engine::knob::Knob;
 use crate::engine::partitioned::transport::{chunk_rows_of, BlockHeader, ChunkMap, Payload};
 
-pub(crate) use peer::PeerWire;
 #[cfg(test)]
-pub(crate) use peer::{PeerFault, PeerTally};
+pub(crate) use peer::PeerTally;
+pub(crate) use peer::PeerWire;
+
+/// Where a wire fails when a test injects a fault, returning an error as a failed NCCL call would; the wire is dead afterwards.
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WireFault {
+    /// The next post fails before any op is visible to a peer.
+    Post,
+    /// The next post succeeds and its wait fails once the peers have read from this rank, so their own waits time out.
+    Wait,
+}
 
 /// The bound on every wire wait when `PAULISTRINGS_WIRE_TIMEOUT_S` is unset.
 const DEFAULT_WIRE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -202,6 +213,9 @@ pub(crate) trait DeviceWire: Send + Sync {
     fn abort(&self);
     /// Whether the wire can still carry a group: `false` once it failed, timed out or was aborted.
     fn is_healthy(&self) -> bool;
+    /// Arm `fault` for this rank's next post or wait (test hook).
+    #[cfg(any(test, feature = "test-utils"))]
+    fn inject(&self, fault: WireFault);
 }
 
 /// One exchange block without its columns: what a receiver sizes its receives and the fused layer's segments from.

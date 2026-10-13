@@ -14,7 +14,11 @@ use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 
+#[cfg(feature = "cuda")]
+mod gpu;
 mod rows;
+#[cfg(feature = "cuda")]
+pub use gpu::{set_fault_plan, DeviceSplit, FaultPlan, WireFault};
 pub use rows::{circuit_generators, count_remote_deltas, GeneratorWeight};
 
 pub use crate::engine::bucketed::apply_layer_bucketed;

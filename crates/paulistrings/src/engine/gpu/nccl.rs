@@ -11,6 +11,8 @@ use cudarc::nccl::result::{self as nccl, NcclError, NcclStatus};
 use cudarc::nccl::sys;
 
 use super::error::GpuError;
+#[cfg(any(test, feature = "test-utils"))]
+use super::wire::WireFault;
 use super::wire::{wire_timeout, DeviceWire, WireGroup, WireOp, WireOpKind};
 use super::GPU_LOG_TARGET;
 use crate::collectives::Collectives;
@@ -58,8 +60,11 @@ struct Raw {
     aborted: bool,
     timeout: Duration,
     /// Test hook: the next completion wait sees its work as never finishing.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-utils"))]
     force_timeout: bool,
+    /// Test hook: the next post fails before any op is enqueued.
+    #[cfg(any(test, feature = "test-utils"))]
+    force_post_failure: bool,
 }
 
 // SAFETY: an NCCL communicator may be driven from any thread provided no two calls on it overlap, which the `Mutex` around every `Raw` enforces.
@@ -118,8 +123,10 @@ impl NcclComm {
                 comm,
                 aborted: comm.is_null(),
                 timeout,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-utils"))]
                 force_timeout: false,
+                #[cfg(any(test, feature = "test-utils"))]
+                force_post_failure: false,
             }),
             context: context.clone(),
             rank,
@@ -273,6 +280,11 @@ impl DeviceWire for NcclComm {
     fn post(&self, ops: &[WireOp<'_>]) -> Result<(), GpuError> {
         let mut raw = self.lock();
         Self::usable(&raw, "ncclGroupStart")?;
+        #[cfg(any(test, feature = "test-utils"))]
+        if std::mem::take(&mut raw.force_post_failure) {
+            Self::abort_locked(&mut raw, self.rank, &self.context);
+            return Err(GpuError::Wire("an injected wire post failure"));
+        }
         if let Some(op) = ops
             .iter()
             .find(|op| op.peer() >= self.size || op.stream().context() != &self.context)
@@ -333,9 +345,9 @@ impl DeviceWire for NcclComm {
         done.record(stream)?;
         let mut raw = self.lock();
         let timeout = raw.timeout;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         let forced = std::mem::take(&mut raw.force_timeout);
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-utils")))]
         let forced = false;
         let ready = poll_until(timeout, || {
             self.check_async_locked(&mut raw, "an NCCL group")?;
@@ -358,6 +370,15 @@ impl DeviceWire for NcclComm {
 
     fn is_healthy(&self) -> bool {
         !self.lock().aborted
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    fn inject(&self, fault: WireFault) {
+        let mut raw = self.lock();
+        match fault {
+            WireFault::Post => raw.force_post_failure = true,
+            WireFault::Wait => raw.force_timeout = true,
+        }
     }
 }
 

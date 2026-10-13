@@ -289,21 +289,6 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         std::mem::replace(&mut outcomes[rank], Ok(()))
     }
 
-    /// Fail partition `rank` before the exchange of its `layer`-th layer of the next call (test hook).
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn inject_failure(&mut self, rank: usize, layer: usize) {
-        self.backends_mut()[rank].fail_at_layer = Some(layer);
-    }
-
-    /// Make partition `rank`'s next chunked receive fail as out of memory once chunk `chunk` has moved, mid-layer (test hook).
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn inject_chunk_oom(&mut self, rank: usize, chunk: usize) {
-        self.backends_mut()[rank]
-            .scratch_mut()
-            .export
-            .fail_after_chunk = Some(chunk);
-    }
-
     /// Download every partition, each bucket re-sorted to the host's order, and merge them back into one sum.
     ///
     /// # Errors

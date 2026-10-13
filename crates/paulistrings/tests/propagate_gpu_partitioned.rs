@@ -6,13 +6,13 @@ use paulistrings::gpu::{
     GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
 };
 use paulistrings::require_cuda;
-use paulistrings::test_support::count_remote_deltas;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
     heavy_cut, propagate_discarding, rand_sum, rand_sum_real, random_circuit, rows_reading_z63,
     single_cuts, spread_magnitudes, su4_chain, trotter_circuit, with_hash,
     x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
+use paulistrings::test_support::{count_remote_deltas, set_fault_plan, FaultPlan};
 use paulistrings::{
     propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
     PropagateOptions, TruncationPolicy,
@@ -506,7 +506,11 @@ fn an_injected_failure_poisons_the_split_and_the_partners_finish() {
     let sum = rand_sum::<1>(400, 8, 0x1F02);
     for p in [2usize, 4] {
         let mut split = split_of(&sum, p);
-        split.inject_failure(1, 2);
+        let plan = FaultPlan {
+            at_layer: Some(2),
+            ..FaultPlan::default()
+        };
+        set_fault_plan(&mut split, 1, plan);
         let r = split.propagate(&circuit, KeepAll, Direction::Forward);
         assert!(
             matches!(
@@ -946,7 +950,11 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
     let circuit = su4_chain::<1>(10);
     for p in [2usize, 4] {
         let mut split = capped_split(&sum, p, recv_bytes::<1>(128));
-        split.inject_chunk_oom(1, 1);
+        let plan = FaultPlan {
+            after_chunk: Some(1),
+            ..FaultPlan::default()
+        };
+        set_fault_plan(&mut split, 1, plan);
         let r = split.propagate(&circuit, KeepAll, Direction::Forward);
         assert!(
             matches!(

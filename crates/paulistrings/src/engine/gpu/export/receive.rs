@@ -36,7 +36,7 @@ pub(super) fn stage_receive<const W: usize>(
         ));
     }
     #[cfg(any(test, feature = "test-utils"))]
-    if std::mem::take(&mut export.fail_recv_growth) {
+    if std::mem::take(&mut export.fail_receive_growth) {
         return Err(GpuError::OutOfMemory {
             device: Some(sum.device()),
             bytes: Some((export.received_rows * received_row_bytes::<W>()) as u64),

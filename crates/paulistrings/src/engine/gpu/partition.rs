@@ -21,6 +21,21 @@ use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
 
+/// Faults a test arms on one device partition, each firing once (`test_support::set_fault_plan`).
+#[cfg(any(test, feature = "test-utils"))]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FaultPlan {
+    /// Fail before the exchange of this layer, counted over every layer the partition has applied since its scatter.
+    pub at_layer: Option<usize>,
+    /// The next remote layer's receive growth fails as out of memory, after the skeletons and before the vote.
+    pub receive_growth: bool,
+    /// The next chunked receive fails as out of memory once this chunk has moved, after the vote and mid-layer.
+    pub after_chunk: Option<usize>,
+    /// The partition's device wire fails in its next post or wait.
+    pub wire: Option<super::wire::WireFault>,
+}
+
 /// A partition whose sum lives on a device.
 ///
 /// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop (ARCHITECTURE.md §GPU-Readiness).
@@ -82,6 +97,22 @@ impl<const W: usize> DevicePartition<W> {
 
     pub(crate) fn counters(&self) -> GpuLayerCounters {
         self.scratch().counters
+    }
+
+    /// Arm `plan`; a wire fault needs the partition's wire, which a one-partition split has none of.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn set_fault_plan(&mut self, plan: FaultPlan) {
+        self.fail_at_layer = plan.at_layer;
+        let export = &mut self.scratch_mut().export;
+        export.fail_receive_growth = plan.receive_growth;
+        export.fail_after_chunk = plan.after_chunk;
+        if let Some(fault) = plan.wire {
+            export
+                .wire
+                .as_ref()
+                .expect("a wire fault on a partition without a device wire")
+                .inject(fault);
+        }
     }
 
     /// The recorded error, if any, after re-syncing the hash mirror to the device sum.

@@ -14,7 +14,7 @@ mod layer;
 mod module;
 #[cfg(feature = "mpi")]
 mod nccl;
-mod partition;
+pub(crate) mod partition;
 mod payload;
 mod prepared;
 mod rank;
@@ -38,7 +38,11 @@ pub use layer::{
     GpuBucketPolicy, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
     DEFAULT_RECORDS_PER_BLOCK,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use partition::FaultPlan;
 pub use rank::GpuDistributedSum;
 #[cfg(feature = "mpi")]
 pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};
 pub use sum::GpuSum;
+#[cfg(any(test, feature = "test-utils"))]
+pub use wire::WireFault;

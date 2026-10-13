@@ -9,24 +9,36 @@ use cudarc::driver::{CudaStream, CudaView, CudaViewMut, SyncOnDrop};
 
 use super::error::GpuError;
 use super::payload::DeviceBlock;
+use super::GPU_LOG_TARGET;
+use crate::engine::knob::Knob;
 use crate::engine::partitioned::transport::{chunk_rows_of, BlockHeader, ChunkMap, Payload};
 
 pub(crate) use peer::PeerWire;
 #[cfg(test)]
 pub(crate) use peer::{PeerFault, PeerTally};
 
-/// The bound on every wire wait when `PAULISTRINGS_NCCL_TIMEOUT_S` is unset.
+/// The bound on every wire wait when `PAULISTRINGS_WIRE_TIMEOUT_S` is unset.
 const DEFAULT_WIRE_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// `PAULISTRINGS_NCCL_TIMEOUT_S` as a positive number of seconds, else [`DEFAULT_WIRE_TIMEOUT`].
+/// `PAULISTRINGS_WIRE_TIMEOUT_S`, the bound on every wait of an NCCL or peer wire, in seconds.
+static WIRE_TIMEOUT: Knob<Duration> = Knob::new(
+    "PAULISTRINGS_WIRE_TIMEOUT_S",
+    GPU_LOG_TARGET,
+    parse_timeout,
+    || DEFAULT_WIRE_TIMEOUT,
+);
+
+/// [`WIRE_TIMEOUT`]'s value.
 pub(crate) fn wire_timeout() -> Duration {
-    parse_timeout(std::env::var("PAULISTRINGS_NCCL_TIMEOUT_S").ok().as_deref())
+    *WIRE_TIMEOUT.get()
 }
 
-fn parse_timeout(raw: Option<&str>) -> Duration {
-    raw.and_then(|s| s.trim().parse::<f64>().ok())
+/// A positive, finite number of seconds.
+fn parse_timeout(text: &str) -> Option<Duration> {
+    text.parse::<f64>()
+        .ok()
         .filter(|s| s.is_finite() && *s > 0.0)
-        .map_or(DEFAULT_WIRE_TIMEOUT, Duration::from_secs_f64)
+        .map(Duration::from_secs_f64)
 }
 
 /// Which way a [`WireOp`] moves bytes.

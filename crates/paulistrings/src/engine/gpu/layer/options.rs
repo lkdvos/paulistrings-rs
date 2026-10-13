@@ -1,6 +1,8 @@
 //! The device layer's knobs: [`GpuLayerOptions`] and the [`GpuBucketPolicy`] that sizes a layer's bucket count.
 
 use crate::channel::prepared::Prepared;
+use crate::engine::gpu::GPU_LOG_TARGET;
+use crate::engine::knob::Knob;
 use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::pauli_sum::storage::desired_bits;
 
@@ -45,35 +47,27 @@ pub struct GpuLayerOptions {
     pub clifford: bool,
 }
 
-/// The default of [`GpuLayerOptions::exchange_bytes`], read once per process.
-fn exchange_bytes_default() -> usize {
-    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *BYTES.get_or_init(|| {
-        parse_bytes(
-            std::env::var("PAULISTRINGS_GPU_EXCHANGE_BYTES")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
+/// `PAULISTRINGS_GPU_EXCHANGE_BYTES`, the default of [`GpuLayerOptions::exchange_bytes`]; unbounded when unset.
+static EXCHANGE_BYTES: Knob<usize> = Knob::new(
+    "PAULISTRINGS_GPU_EXCHANGE_BYTES",
+    GPU_LOG_TARGET,
+    parse_bytes,
+    || usize::MAX,
+);
 
-/// A positive byte count with an optional binary `K`/`M`/`G` suffix; anything else is unbounded.
-pub(super) fn parse_bytes(raw: Option<&str>) -> usize {
-    let Some(raw) = raw.map(str::trim) else {
-        return usize::MAX;
-    };
-    let (digits, shift) = match raw.as_bytes().last() {
-        Some(b'K' | b'k') => (&raw[..raw.len() - 1], 10),
-        Some(b'M' | b'm') => (&raw[..raw.len() - 1], 20),
-        Some(b'G' | b'g') => (&raw[..raw.len() - 1], 30),
-        _ => (raw, 0),
+/// A positive byte count with an optional binary `K`/`M`/`G` suffix.
+pub(super) fn parse_bytes(text: &str) -> Option<usize> {
+    let (digits, shift) = match text.as_bytes().last() {
+        Some(b'K' | b'k') => (&text[..text.len() - 1], 10),
+        Some(b'M' | b'm') => (&text[..text.len() - 1], 20),
+        Some(b'G' | b'g') => (&text[..text.len() - 1], 30),
+        _ => (text, 0),
     };
     digits
         .parse::<usize>()
         .ok()
         .filter(|&n| n > 0)
         .and_then(|n| n.checked_mul(1usize << shift))
-        .unwrap_or(usize::MAX)
 }
 
 impl Default for GpuLayerOptions {
@@ -83,7 +77,7 @@ impl Default for GpuLayerOptions {
             arena_bytes: DEFAULT_ARENA_BYTES,
             max_bits: B_MAX_BITS,
             premerge: true,
-            exchange_bytes: exchange_bytes_default(),
+            exchange_bytes: *EXCHANGE_BYTES.get(),
             clifford: true,
         }
     }

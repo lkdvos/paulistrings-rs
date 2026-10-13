@@ -84,6 +84,9 @@ Placement, pinning and transport setup log under `paulistrings.partitioned`, and
 Call [`reset_log_cache()`](../../library/module-helpers.md) again after changing the level mid-process; the cache is otherwise stale for the rest of the process.
 Leave logging off when timing — an enabled DEBUG filter adds a clock read per layer.
 
+Every `PAULISTRINGS_*` environment variable is read once per process, the first time it is needed, and its effective value is logged at DEBUG under the target of the subsystem it tunes; an unparsable value logs a warning and the default applies.
+Set them before the first call, and alike on every rank of a `comm=` run.
+
 ## Threads {#threads}
 
 In a single unpartitioned process, set the thread count via `RAYON_NUM_THREADS` **before the interpreter starts** — Rayon builds its global pool at the first `propagate` call and never resizes it, so setting the variable from inside an already-running script does not reliably reach it:

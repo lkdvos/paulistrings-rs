@@ -8,6 +8,7 @@ mod coset;
 mod cuda_context;
 #[cfg(feature = "cuda")]
 pub mod gpu;
+pub(crate) mod knob;
 mod merge;
 pub(crate) mod partitioned;
 #[cfg(feature = "phase-timing")]

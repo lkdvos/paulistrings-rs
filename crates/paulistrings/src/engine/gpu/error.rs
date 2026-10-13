@@ -46,7 +46,7 @@ pub enum GpuError {
     },
     /// A device wire of an exchange failed or was given up.
     Wire(&'static str),
-    /// A bounded wait on a device wire exceeded its deadline; see `PAULISTRINGS_NCCL_TIMEOUT_S`.
+    /// A bounded wait on a device wire exceeded its deadline; see `PAULISTRINGS_WIRE_TIMEOUT_S`.
     Timeout {
         /// What was being waited on.
         what: &'static str,

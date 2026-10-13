@@ -27,7 +27,7 @@
 #   PROBE=0  run the differential net alone, skip the probe
 #   PS_REV   commit to build (default: HEAD when the job starts), in a private git worktree
 #   NET_BOUND, PROBE_BOUND   seconds the differential net / one probe step may take (default 1200 / 1500)
-#   NCCL_TIMEOUT_S           PAULISTRINGS_NCCL_TIMEOUT_S for the differential net (default 60)
+#   WIRE_TIMEOUT_S           PAULISTRINGS_WIRE_TIMEOUT_S for the differential net (default 60)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/bounded.sh
@@ -88,7 +88,7 @@ echo "== mpi_ranks: $bin"
 
 # The net runs under a short NCCL wait bound with NCCL_DEBUG on, so the chosen transport is on record.
 failed=0
-bounded "${NET_BOUND:-1200}" env PAULISTRINGS_NCCL_TIMEOUT_S="${NCCL_TIMEOUT_S:-60}" \
+bounded "${NET_BOUND:-1200}" env PAULISTRINGS_WIRE_TIMEOUT_S="${WIRE_TIMEOUT_S:-60}" \
     NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET \
     srun --mpi=pmix --cpu-bind=cores --export=ALL \
     stdbuf -oL -eL "$bin" || { failed=$?; echo "== mpi_ranks FAILED (exit $failed)"; leftover_gpu_processes; }

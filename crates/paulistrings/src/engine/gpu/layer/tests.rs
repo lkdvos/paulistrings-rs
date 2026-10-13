@@ -121,13 +121,12 @@ fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
 
 #[test]
 fn the_exchange_cap_parses_bytes_with_binary_suffixes() {
-    assert_eq!(parse_bytes(None), usize::MAX);
-    assert_eq!(parse_bytes(Some("4096")), 4096);
-    assert_eq!(parse_bytes(Some(" 3K ")), 3 << 10);
-    assert_eq!(parse_bytes(Some("2m")), 2 << 20);
-    assert_eq!(parse_bytes(Some("1G")), 1 << 30);
+    assert_eq!(parse_bytes("4096"), Some(4096));
+    assert_eq!(parse_bytes("3K"), Some(3 << 10));
+    assert_eq!(parse_bytes("2m"), Some(2 << 20));
+    assert_eq!(parse_bytes("1G"), Some(1 << 30));
     for bad in ["", "0", "-1", "G", "1.5G", "lots"] {
-        assert_eq!(parse_bytes(Some(bad)), usize::MAX, "{bad:?}");
+        assert_eq!(parse_bytes(bad), None, "{bad:?}");
     }
 }
 

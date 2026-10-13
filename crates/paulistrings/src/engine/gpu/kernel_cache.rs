@@ -3,30 +3,34 @@
 use std::env;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cudarc::nvrtc::{CompileOptions, Ptx};
 
-/// `$PAULISTRINGS_KERNEL_CACHE` (`off` disables it), else `$XDG_CACHE_HOME/paulistrings/kernels`, else `~/.cache/paulistrings/kernels`.
-fn cache_dir() -> Option<PathBuf> {
-    match env::var("PAULISTRINGS_KERNEL_CACHE") {
-        Ok(value) if value == "off" => return None,
-        Ok(value) if !value.is_empty() => return Some(PathBuf::from(value)),
-        _ => {}
-    }
-    if let Ok(xdg) = env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("paulistrings").join("kernels"));
-        }
-    }
-    let home = env::var("HOME").ok()?;
-    Some(
-        PathBuf::from(home)
-            .join(".cache")
-            .join("paulistrings")
-            .join("kernels"),
-    )
+use super::GPU_LOG_TARGET;
+use crate::engine::knob::Knob;
+
+/// `PAULISTRINGS_KERNEL_CACHE`: `off` disables the cache, any other value is its directory, unset is [`default_directory`].
+static DIRECTORY: Knob<Option<PathBuf>> = Knob::new(
+    "PAULISTRINGS_KERNEL_CACHE",
+    GPU_LOG_TARGET,
+    |text| Some((text != "off").then(|| PathBuf::from(text))),
+    || default_directory(env::var("XDG_CACHE_HOME").ok(), env::var("HOME").ok()),
+);
+
+/// The process's cache directory, `None` when disabled.
+pub(crate) fn directory() -> Option<&'static Path> {
+    DIRECTORY.get().as_deref()
+}
+
+/// `$XDG_CACHE_HOME/paulistrings/kernels`, else `$HOME/.cache/paulistrings/kernels`.
+fn default_directory(xdg_cache_home: Option<String>, home: Option<String>) -> Option<PathBuf> {
+    let base = match xdg_cache_home.filter(|xdg| !xdg.is_empty()) {
+        Some(xdg) => PathBuf::from(xdg),
+        None => PathBuf::from(home?).join(".cache"),
+    };
+    Some(base.join("paulistrings").join("kernels"))
 }
 
 /// NVRTC's own version, part of the key since another NVRTC can emit other PTX; `(0, 0)` without the library, a key no real compile writes.
@@ -51,9 +55,8 @@ fn entry_name(source: &str, options: &CompileOptions) -> String {
     format!("{:016x}.ptx", hasher.finish())
 }
 
-/// The cached PTX for `(source, options)`; any failure (disabled, missing, unreadable, empty) is a miss, never an error, so the caller falls back to compiling.
-pub(crate) fn lookup(source: &str, options: &CompileOptions) -> Option<Ptx> {
-    let dir = cache_dir()?;
+/// The PTX cached in `dir` for `(source, options)`; any failure (missing, unreadable, empty) is a miss, never an error, so the caller falls back to compiling.
+pub(crate) fn lookup(dir: &Path, source: &str, options: &CompileOptions) -> Option<Ptx> {
     let path = dir.join(entry_name(source, options));
     let text = fs::read_to_string(&path).ok()?;
     if text.is_empty() {
@@ -62,12 +65,11 @@ pub(crate) fn lookup(source: &str, options: &CompileOptions) -> Option<Ptx> {
     Some(Ptx::from_src(text))
 }
 
-/// Best-effort write-back of `ptx_text` through a temp file and a rename, so a concurrent reader never sees a torn file; an unwritable directory is skipped with a debug line.
-pub(crate) fn store(source: &str, options: &CompileOptions, ptx_text: &str) {
-    let Some(dir) = cache_dir() else { return };
-    if let Err(e) = fs::create_dir_all(&dir) {
+/// Best-effort write-back of `ptx_text` into `dir` through a temp file and a rename, so a concurrent reader never sees a torn file; an unwritable directory is skipped with a debug line.
+pub(crate) fn store(dir: &Path, source: &str, options: &CompileOptions, ptx_text: &str) {
+    if let Err(e) = fs::create_dir_all(dir) {
         log::debug!(
-            target: super::GPU_LOG_TARGET,
+            target: GPU_LOG_TARGET,
             "kernel cache directory {} unwritable, compiling without a cache: {e}",
             dir.display()
         );

@@ -4,11 +4,13 @@
 use super::export::{export_layer, ExportScratch};
 use super::plan::PartitionPlan;
 use super::transport::{ChunkMap, ChunkWait, ExchangeBlock, PartnerPayload, Transport};
+use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
 use crate::engine::bucketed::{
     apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
 };
 use crate::engine::coset::{CosetOrder, Gf2Span};
+use crate::engine::knob::{parse_positive, Knob};
 use crate::engine::merge::rest_rows_per_key;
 use crate::engine::timing::{lap, stamp, tally, timed};
 use crate::pauli_sum::hash::PartitionRows;
@@ -18,17 +20,13 @@ use crate::truncation::TruncationPolicy;
 /// Chunks a layer's bulk transfer is cut into by default; not derived from the thread count, since both sides must cut a block alike.
 const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
 
-/// [`DEFAULT_EXCHANGE_CHUNKS`] unless `PAULISTRINGS_EXCHANGE_CHUNKS` names another; every rank must see the same environment.
-fn exchange_chunks() -> usize {
-    static CHUNKS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *CHUNKS.get_or_init(|| {
-        std::env::var("PAULISTRINGS_EXCHANGE_CHUNKS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .filter(|&k| k > 0)
-            .unwrap_or(DEFAULT_EXCHANGE_CHUNKS)
-    })
-}
+/// `PAULISTRINGS_EXCHANGE_CHUNKS`, else [`DEFAULT_EXCHANGE_CHUNKS`].
+static EXCHANGE_CHUNKS: Knob<usize> = Knob::new(
+    "PAULISTRINGS_EXCHANGE_CHUNKS",
+    PLACEMENT_LOG_TARGET,
+    parse_positive,
+    || DEFAULT_EXCHANGE_CHUNKS,
+);
 
 /// The rows this partition received, one block per remote delta, as an [`ExtraRows`] source for the coset loop.
 struct ReceivedRows<'a, const W: usize> {
@@ -186,7 +184,7 @@ where
     let span = Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits());
     let mut order = std::mem::take(&mut state.layer.order);
     order.rebuild(&span, true);
-    state.chunks = ChunkMap::of_order(&order, exchange_chunks());
+    state.chunks = ChunkMap::of_order(&order, *EXCHANGE_CHUNKS.get());
     let (send, mut counts) = export_layer(local, prepared, plan, size, &order, &mut state.export);
     lap!(stamp, state.layer.stats.export_ns);
     tally!(

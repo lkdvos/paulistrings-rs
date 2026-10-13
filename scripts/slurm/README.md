@@ -136,7 +136,7 @@ Its preamble logs `nvidia-smi topo -m`, `ibv_devinfo -l`, the `nvidia_peermem`/`
 
 Every `srun` in the GPU templates runs through `bounded <secs> srun ...` from `scripts/slurm/bounded.sh`: `timeout` sends TERM at the bound and KILL 30 s later, the step's status is reported, and a failed step lists the compute processes left on the node's GPUs (`leftover_gpu_processes`, an `--overlap` step so it runs beside whatever is stuck).
 A hung rank (a device wait that never ends, an `MPI_Abort` that never returns) therefore costs one step's bound, not the allocation's time limit; `NET_BOUND` and `PROBE_BOUND` set the bounds in seconds.
-The differential net of `mpi-gpu.sbatch` runs under `PAULISTRINGS_NCCL_TIMEOUT_S=60` (`NCCL_TIMEOUT_S` overrides), since its exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
+The differential net of `mpi-gpu.sbatch` runs under `PAULISTRINGS_WIRE_TIMEOUT_S=60` (`WIRE_TIMEOUT_S` overrides), since its exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
 A failed net is reported, the probe is skipped and the job exits non-zero.
 `tests/mpi_ranks.rs` itself arms a watchdog before `MPI_Abort` and aborts the process 15 s later if the launcher has not ended it.
 

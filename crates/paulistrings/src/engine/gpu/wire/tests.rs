@@ -4,12 +4,13 @@ use crate::engine::partitioned::transport::InProcessTransport;
 
 #[test]
 fn the_timeout_knob_parses_positive_seconds() {
-    assert_eq!(parse_timeout(None), DEFAULT_WIRE_TIMEOUT);
-    assert_eq!(parse_timeout(Some("12")), Duration::from_secs(12));
-    assert_eq!(parse_timeout(Some(" 0.5 ")), Duration::from_millis(500));
+    assert_eq!(parse_timeout("12"), Some(Duration::from_secs(12)));
+    assert_eq!(parse_timeout("0.5"), Some(Duration::from_millis(500)));
     for bad in ["0", "-3", "nan", "inf", "soon", ""] {
-        assert_eq!(parse_timeout(Some(bad)), DEFAULT_WIRE_TIMEOUT, "{bad:?}");
+        assert_eq!(parse_timeout(bad), None, "{bad:?}");
     }
+    assert_eq!(WIRE_TIMEOUT.resolve(Some(" soon ")), DEFAULT_WIRE_TIMEOUT);
+    assert_eq!(WIRE_TIMEOUT.resolve(None), DEFAULT_WIRE_TIMEOUT);
 }
 
 fn skeletons_of<const W: usize>(seed: u64, blocks: usize, b: usize) -> BlockSkeletons<W> {

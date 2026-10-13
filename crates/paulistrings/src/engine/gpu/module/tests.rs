@@ -7,10 +7,16 @@ fn kernels_compile_for_every_width() {
         return;
     }
     for w in [1usize, 2, 4, 8, 16] {
-        compile_ptx(w, "compute_80", &[]).unwrap_or_else(|e| panic!("W={w}: {e}"));
+        compile_ptx(w, "compute_80", &[], kernel_cache::directory())
+            .unwrap_or_else(|e| panic!("W={w}: {e}"));
     }
-    compile_ptx(2, "compute_80", &["-DFP_BITS=8".to_string()])
-        .unwrap_or_else(|e| panic!("FP_BITS=8: {e}"));
+    compile_ptx(
+        2,
+        "compute_80",
+        &["-DFP_BITS=8".to_string()],
+        kernel_cache::directory(),
+    )
+    .unwrap_or_else(|e| panic!("FP_BITS=8: {e}"));
 }
 
 #[test]

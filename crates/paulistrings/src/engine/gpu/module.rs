@@ -3,6 +3,7 @@
 //! Every `.cu` family in [`KERNEL_SOURCES`] is concatenated behind `kernels/prelude.cuh` into one translation unit, and [`KernelSet`] holds the loaded functions.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cudarc::driver::sys::{CUdevice_attribute, CUfunction_attribute};
@@ -133,11 +134,12 @@ thread_local! {
     pub(crate) static NVRTC_COMPILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook); needs only NVRTC, no device.
+/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFP_BITS=<b>` hook), through the PTX cache in `cache`; needs only NVRTC, no device.
 pub(crate) fn compile_ptx(
     w: usize,
     arch: &str,
     extra_options: &[String],
+    cache: Option<&Path>,
 ) -> Result<cudarc::nvrtc::Ptx, GpuError> {
     if !unsafe { cudarc::nvrtc::sys::is_culib_present() } {
         return Err(GpuError::LibraryMissing("libnvrtc"));
@@ -151,7 +153,7 @@ pub(crate) fn compile_ptx(
         options,
         ..Default::default()
     };
-    if let Some(ptx) = kernel_cache::lookup(&source, &compile_options) {
+    if let Some(ptx) = cache.and_then(|dir| kernel_cache::lookup(dir, &source, &compile_options)) {
         log::debug!(target: GPU_LOG_TARGET, "kernels W={w} {arch}: kernel cache hit");
         return Ok(ptx);
     }
@@ -169,7 +171,9 @@ pub(crate) fn compile_ptx(
         "kernels W={w} {arch}: NVRTC compile in {:.2} s",
         start.elapsed().as_secs_f64()
     );
-    kernel_cache::store(&source, &compile_options, &ptx.to_src());
+    if let Some(dir) = cache {
+        kernel_cache::store(dir, &source, &compile_options, &ptx.to_src());
+    }
     Ok(ptx)
 }
 
@@ -212,7 +216,7 @@ pub(crate) fn kernel_set_with_options(
     let context = device::context(ordinal)?;
     let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
-    let ptx = compile_ptx(w, &arch, extra_options)?;
+    let ptx = compile_ptx(w, &arch, extra_options, kernel_cache::directory())?;
     let module = context.load_module(ptx).map_err(GpuError::from)?;
     let load = |name: &str| module.load_function(name).map_err(GpuError::from);
     let threads = layer_threads(w) as usize;

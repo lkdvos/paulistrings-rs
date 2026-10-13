@@ -11,7 +11,6 @@ pub(crate) mod export;
 pub(crate) mod layer;
 #[cfg(feature = "mpi")]
 pub mod mpi;
-pub(crate) mod plan;
 pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;

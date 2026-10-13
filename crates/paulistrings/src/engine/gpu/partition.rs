@@ -12,8 +12,8 @@ use crate::channel::prepared::Prepared;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
-use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;
+use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;

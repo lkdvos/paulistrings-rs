@@ -2,7 +2,6 @@
 //! It neither rebuckets nor finalizes the layer; the driver owns both.
 
 use super::export::{export_layer, ExportScratch};
-use super::plan::PartitionPlan;
 use super::transport::{ChunkMap, ChunkWait, ExchangeBlock, PartnerPayload, Transport};
 use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
@@ -12,6 +11,7 @@ use crate::engine::bucketed::{
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::knob::{parse_positive, Knob};
 use crate::engine::merge::rest_rows_per_key;
+use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::{lap, stamp, tally, timed};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};

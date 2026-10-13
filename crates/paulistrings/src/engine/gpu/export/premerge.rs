@@ -16,7 +16,7 @@ use crate::engine::gpu::prepared::DevicePrepared;
 use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
-use crate::engine::partitioned::plan::PartitionPlan;
+use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::timed;
 
 use super::DeviceExport;

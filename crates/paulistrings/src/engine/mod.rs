@@ -13,6 +13,7 @@ pub mod gpu;
 pub(crate) mod knob;
 mod merge;
 pub(crate) mod partitioned;
+pub(crate) mod plan;
 #[cfg(feature = "phase-timing")]
 pub(crate) mod stats;
 pub(crate) mod timing;

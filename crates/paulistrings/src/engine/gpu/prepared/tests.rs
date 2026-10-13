@@ -44,7 +44,7 @@ fn classification_and_fanout_per_table() {
 /// An identity-only retained table with received entries must not take the rescale path, and its position map spans the local deltas only.
 #[test]
 fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
-    use crate::engine::partitioned::plan::PartitionPlan;
+    use crate::engine::plan::PartitionPlan;
     use crate::pauli_sum::hash::PartitionRows;
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
     let fingerprints = FingerprintRows::new(hash.seed());
@@ -148,7 +148,7 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
 
 #[test]
 fn a_received_entry_disables_the_permutation_path() {
-    use crate::engine::partitioned::plan::PartitionPlan;
+    use crate::engine::plan::PartitionPlan;
     use crate::pauli_sum::hash::PartitionRows;
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
     let fingerprints = FingerprintRows::new(hash.seed());

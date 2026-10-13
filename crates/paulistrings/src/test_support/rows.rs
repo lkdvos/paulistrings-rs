@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::channel::prepared::Prepared;
 use crate::channel::Prepare;
 use crate::circuit::Circuit;
-use crate::engine::partitioned::plan::PartitionPlan;
+use crate::engine::plan::PartitionPlan;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 
 /// One key delta mask the circuit produces, with how many layers carry it.

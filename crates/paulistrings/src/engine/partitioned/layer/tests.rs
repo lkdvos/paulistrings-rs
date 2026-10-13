@@ -57,7 +57,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             let plan = PartitionPlan {
                 local_entries: vec![true, false],
                 local_bucket_deltas: plan_deltas,
-                remote: vec![super::super::plan::RemoteDelta {
+                remote: vec![crate::engine::plan::RemoteDelta {
                     entry: 1,
                     partner: 1,
                     bucket_delta: 0,

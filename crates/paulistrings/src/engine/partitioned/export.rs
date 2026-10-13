@@ -4,10 +4,10 @@ use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::layer::LayerExchangeCounts;
-use super::plan::PartitionPlan;
 use super::transport::{ExchangeBlock, PartnerPayload};
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
 use crate::engine::coset::CosetOrder;
+use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
 

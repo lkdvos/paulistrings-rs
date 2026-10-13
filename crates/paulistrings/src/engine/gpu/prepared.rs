@@ -4,7 +4,7 @@ use num_complex::Complex64;
 
 use super::fingerprint::FingerprintRows;
 use crate::channel::prepared::{Prepared, LOCAL_DIM};
-use crate::engine::partitioned::plan::RemoteDelta;
+use crate::engine::plan::RemoteDelta;
 use crate::pauli_sum::hash::Gf2Hash;
 
 /// `received_slot[e]` of an entry sourced from a local bucket; matches `NO_REMOTE` in `kernels/prelude.cuh`.

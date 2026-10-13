@@ -38,8 +38,8 @@ pub(super) fn stage_receive<const W: usize>(
     #[cfg(any(test, feature = "test-utils"))]
     if std::mem::take(&mut export.fail_recv_growth) {
         return Err(GpuError::OutOfMemory {
-            device: sum.device(),
-            bytes: (export.received_rows * recv_row_bytes::<W>()) as u64,
+            device: Some(sum.device()),
+            bytes: Some((export.received_rows * recv_row_bytes::<W>()) as u64),
         });
     }
     let (log2, most) = recv_chunks(&export.offsets_host, b, cap_rows);
@@ -209,8 +209,8 @@ pub(crate) fn receive_chunk<const W: usize>(
     if r.is_ok() && scratch.export.fail_after_chunk == Some(c) {
         scratch.export.fail_after_chunk = None;
         return Err(GpuError::OutOfMemory {
-            device: sum.device(),
-            bytes: 0,
+            device: Some(sum.device()),
+            bytes: None,
         });
     }
     r

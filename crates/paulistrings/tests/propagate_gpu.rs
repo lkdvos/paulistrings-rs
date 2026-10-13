@@ -840,3 +840,47 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     assert!(c.permuted && c.bits == 0 && c.refine_passes == 0, "{c:?}");
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "one bucket of 20000");
 }
+
+/// Support on three qubits, so `prepare` declines.
+struct ThreeQubits;
+impl<const W: usize> Channel<W> for ThreeQubits {
+    fn apply_adjoint(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: num_complex::Complex64,
+        out: &mut paulistrings::OutputBuffer<W>,
+    ) {
+        self.apply(input_x, input_z, coeff, out);
+    }
+    fn support(&self) -> [u64; W] {
+        paulistrings::support_mask(&[0, 1, 2])
+    }
+    fn apply(
+        &self,
+        input_x: &[u64; W],
+        input_z: &[u64; W],
+        coeff: num_complex::Complex64,
+        out: &mut paulistrings::OutputBuffer<W>,
+    ) {
+        out.push(*input_x, *input_z, coeff);
+    }
+}
+
+/// A declined preparation is `Unsupported` before any layer, worded as the host panic.
+#[test]
+fn a_declined_preparation_is_unsupported_as_on_the_host() {
+    require_cuda!();
+    let input = rand_sum::<1>(100, 8, 0x56);
+    let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
+    let r = dev.propagate(
+        &one_layer(8, Box::new(ThreeQubits)),
+        KeepAll,
+        Direction::Forward,
+    );
+    assert!(
+        matches!(r, Err(GpuError::Unsupported(m)) if m.contains("unsupported except for PauliRotation")),
+        "{r:?}"
+    );
+    assert_eq!(dev.len(), input.len());
+}

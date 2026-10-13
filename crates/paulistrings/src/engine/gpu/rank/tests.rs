@@ -328,7 +328,13 @@ mod protocol {
                 out[culprit as usize].1
             );
             agreed(&errors(out), culprit, |e| {
-                matches!(e, GpuError::OutOfMemory { device: 0, .. })
+                matches!(
+                    e,
+                    GpuError::OutOfMemory {
+                        device: Some(0),
+                        ..
+                    }
+                )
             });
         }
     }
@@ -378,7 +384,13 @@ mod protocol {
                 "a no vote posts nothing, and the culprit votes no from then on"
             );
             agreed(&errs, culprit, |e| {
-                matches!(e, GpuError::OutOfMemory { device: 0, .. })
+                matches!(
+                    e,
+                    GpuError::OutOfMemory {
+                        device: Some(0),
+                        ..
+                    }
+                )
             });
         }
     }

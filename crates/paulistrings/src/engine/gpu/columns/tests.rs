@@ -13,8 +13,8 @@ fn reserve_of_an_absurd_term_count_is_out_of_memory() {
     let terms = 4_000_000_000usize;
     match columns.reserve(terms, 1) {
         Err(GpuError::OutOfMemory { device, bytes }) => {
-            assert_eq!(device, 0);
-            assert_eq!(bytes, terms as u64 * (16 * 16 + 24));
+            assert_eq!(device, Some(0));
+            assert_eq!(bytes, Some(terms as u64 * (16 * 16 + 24)));
         }
         other => panic!("expected OutOfMemory, got {other:?}"),
     }

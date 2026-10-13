@@ -949,7 +949,13 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
         split.inject_chunk_oom(1, 1);
         let r = split.propagate(&circuit, KeepAll, Direction::Forward);
         assert!(
-            matches!(r, Err(GpuError::OutOfMemory { device: 0, .. })),
+            matches!(
+                r,
+                Err(GpuError::OutOfMemory {
+                    device: Some(0),
+                    ..
+                })
+            ),
             "P={p}: {r:?}"
         );
         assert!(

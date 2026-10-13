@@ -112,6 +112,14 @@ pub(crate) struct PartitionContext<'a, const W: usize> {
     pub(crate) tracing: bool,
 }
 
+/// Why a channel's preparation declines, shared by the host panic and the device's `GpuError::Unsupported`.
+pub(crate) const DECLINED_PREPARATION: &str = "support above MAX_LOCAL_SUPPORT (2) qubits is \
+     unsupported except for PauliRotation, and a channel must not write outside its declared support";
+const _: () = assert!(
+    MAX_LOCAL_SUPPORT == 2,
+    "DECLINED_PREPARATION names the value"
+);
+
 /// The channel's preparation, or the unpartitioned engine's hard error naming the partition and layer.
 fn prepare_or_panic<const W: usize>(
     channel: &dyn Channel<W>,
@@ -124,9 +132,7 @@ fn prepare_or_panic<const W: usize>(
         let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
             "partition {rank}, layer {circuit_index}: channel preparation declined for a \
-             channel of support {weight}: support above MAX_LOCAL_SUPPORT \
-             ({MAX_LOCAL_SUPPORT}) qubits is unsupported except for PauliRotation, and a \
-             channel must not write outside its declared support",
+             channel of support {weight}: {DECLINED_PREPARATION}",
         )
     })
 }

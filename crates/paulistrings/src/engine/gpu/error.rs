@@ -22,10 +22,10 @@ pub enum GpuError {
     },
     /// A device allocation ran out of memory.
     OutOfMemory {
-        /// Which device ordinal.
-        device: u32,
-        /// The requested size, `0` when unknown.
-        bytes: u64,
+        /// Which device ordinal, `None` when the failing call does not say.
+        device: Option<u32>,
+        /// The requested size in bytes, `None` when unknown.
+        bytes: Option<u64>,
     },
     /// A feature this backend does not implement.
     Unsupported(&'static str),
@@ -65,7 +65,14 @@ impl fmt::Display for GpuError {
                 write!(f, "NVRTC compilation failed at W={width}: {log}")
             },
             GpuError::OutOfMemory { device, bytes } => {
-                write!(f, "device {device} out of memory (requested {bytes} bytes)")
+                match device {
+                    Some(device) => write!(f, "device {device} out of memory")?,
+                    None => write!(f, "CUDA device out of memory")?,
+                }
+                match bytes {
+                    Some(bytes) => write!(f, " (requested {bytes} bytes)"),
+                    None => Ok(()),
+                }
             }
             GpuError::Unsupported(what) => write!(f, "unsupported on the CUDA backend: {what}"),
             GpuError::Topology(e) => write!(f, "device placement: {e}"),
@@ -87,19 +94,22 @@ impl GpuError {
     /// `e` with an out-of-memory result attributed to `device` and a request of `bytes`.
     pub(crate) fn from_alloc(e: cudarc::driver::DriverError, device: u32, bytes: u64) -> Self {
         match GpuError::from(e) {
-            GpuError::OutOfMemory { .. } => GpuError::OutOfMemory { device, bytes },
+            GpuError::OutOfMemory { .. } => GpuError::OutOfMemory {
+                device: Some(device),
+                bytes: Some(bytes),
+            },
             other => other,
         }
     }
 }
 
 impl From<cudarc::driver::DriverError> for GpuError {
-    /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with `device = 0` and `bytes = 0`, since the driver error carries neither.
+    /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with neither `device` nor `bytes`, since the driver error carries neither.
     fn from(e: cudarc::driver::DriverError) -> Self {
         if e.0 == cudarc::driver::sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY {
             GpuError::OutOfMemory {
-                device: 0,
-                bytes: 0,
+                device: None,
+                bytes: None,
             }
         } else {
             GpuError::Driver(e)

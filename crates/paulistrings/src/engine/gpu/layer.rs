@@ -13,13 +13,14 @@ use super::export::{
 use super::module::{thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan, ScanScratch};
-use super::sum::GpuSum;
+use super::sum::{GpuSum, REFINE_MAX_DELTA};
 use super::truncation::KeepProgram;
 use crate::channel::prepared::Prepared;
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;
+use crate::engine::trace::DeviceLayerRecord;
 use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::truncation::builtin::APPROX_BINS;
 
@@ -33,39 +34,6 @@ pub(super) use fused::{
 };
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
-
-/// Per-layer counters of the most recent device layer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GpuLayerCounters {
-    /// Bucket bits the layer ran at.
-    pub bits: u8,
-    /// Refine passes the layer itself issued.
-    pub refine_passes: u32,
-    /// Pre-dedup records over every block.
-    pub records: u64,
-    /// The largest block's records.
-    pub records_max: u32,
-    /// Record capacity of the launched variant.
-    pub record_capacity: u32,
-    /// Arena batches.
-    pub batches: u32,
-    /// Blocks that fell back to the `g_hi32` passes, the sender-side merge's included.
-    pub fallback_hi: u32,
-    /// Blocks that fell back to the full-key sort, the sender-side merge's included.
-    pub fallback_key: u32,
-    /// The layer took the rescale path.
-    pub rescaled: bool,
-    /// The layer took the permutation path, `k_permute_*`, with `records` its input rows.
-    pub permuted: bool,
-    /// The layer reduced by the segmented scan rather than the head-serial walk.
-    pub dense: bool,
-    /// Rows received from partners and merged by the fused layer.
-    pub rows_received: u64,
-    /// Exported rows the sender-side merge folded away before the exchange.
-    pub rows_premerged: u64,
-    /// Chunks the received rows moved in ([`GpuLayerOptions::exchange_bytes`]); zero on a local layer.
-    pub recv_chunks: u32,
-}
 
 /// Kernel milliseconds per family, accumulated under `phase-timing` and folded into the partition's `PhaseStats`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -173,7 +141,12 @@ pub(crate) struct LayerScratch<const W: usize> {
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
-    pub(crate) counters: GpuLayerCounters,
+    /// The current layer's device counters, read into its trace row.
+    pub(crate) record: DeviceLayerRecord,
+    /// The current layer's refine passes.
+    pub(crate) refine_passes: u32,
+    /// The current layer's receive chunks, planned before the first moves, so a failure mid-receive keeps it.
+    pub(crate) receive_chunks: u32,
     pub(crate) kernel_ms: GpuKernelMs,
     /// Timing events, reused across layers.
     events: Vec<CudaEvent>,
@@ -251,7 +224,9 @@ impl<const W: usize> LayerScratch<W> {
             export: DeviceExport::new(sum)?,
             extent: sum.len(),
             options,
-            counters: GpuLayerCounters::default(),
+            record: DeviceLayerRecord::default(),
+            refine_passes: 0,
+            receive_chunks: 0,
             kernel_ms: GpuKernelMs::default(),
             events: Vec::new(),
             next_event: 0,
@@ -510,11 +485,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
     let mut table = DevicePrepared::new(prepared, &sum.hash, &sum.fingerprints, &plan.remote);
     let has_remote = plan.has_remote();
     debug_assert_eq!(table.received_entries, plan.remote.len());
-    scratch.counters = GpuLayerCounters {
-        bits: sum.hash.bits(),
+    scratch.record = DeviceLayerRecord {
         dense: table.dense,
-        ..GpuLayerCounters::default()
+        ..DeviceLayerRecord::default()
     };
+    scratch.refine_passes = 0;
+    scratch.receive_chunks = 0;
     scratch.export.received_rows = 0;
     scratch.export.received_max_segment = 0;
     scratch.longest = None;
@@ -522,11 +498,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
             let t = scratch.event(sum)?;
+            let before = sum.hash.bits();
             sum.refine_to(bits)?;
             scratch.lap(sum, t, |m| &mut m.refine)?;
             scratch.extent = sum.len();
             scratch.longest = None;
-            scratch.counters.refine_passes += 1;
+            scratch.refine_passes += u32::from(bits - before).div_ceil(u32::from(REFINE_MAX_DELTA));
             Ok(())
         };
     if table.key_preserving {
@@ -619,17 +596,14 @@ fn apply_layer_body<const W: usize, X: Transport>(
         refine(sum, scratch, sum.hash.bits() + 1)?;
         table.rehash(&sum.hash);
     };
-    let bits = sum.hash.bits();
     let b = sum.hash.num_buckets();
-    scratch.counters.bits = bits;
-    scratch.counters.records = u64::from(records);
-    scratch.counters.records_max = records_max;
-    scratch.counters.rows_received = counts.rows_received;
+    scratch.record.records = u64::from(records);
+    scratch.record.max_block_records = records_max;
 
     let kernels: Arc<KernelSet> = sum.kernels.clone();
     let (func, record_capacity, smem) =
         fused_variant(&kernels, W, records_max as usize, table.dense);
-    scratch.counters.record_capacity = record_capacity as u32;
+    scratch.record.record_capacity = record_capacity as u32;
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
     let chunk_starts: Vec<usize> = scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
@@ -643,8 +617,9 @@ fn apply_layer_body<const W: usize, X: Transport>(
         record_cap,
         &chunk_starts,
     );
-    scratch.counters.batches = batches.len() as u32;
-    scratch.counters.recv_chunks = chunk_starts.len() as u32;
+    scratch.record.batches = batches.len() as u32;
+    scratch.receive_chunks = chunk_starts.len() as u32;
+    counts.receive_chunks = scratch.receive_chunks;
 
     let stream = sum.stream.clone();
     let ordinal = sum.device();
@@ -757,8 +732,8 @@ fn apply_layer_body<const W: usize, X: Transport>(
     debug_assert_eq!(next_chunk, chunk_starts.len());
     let fallbacks = stream.clone_dtoh(&scratch.fallback)?;
     stream.synchronize()?;
-    scratch.counters.fallback_hi += fallbacks[0];
-    scratch.counters.fallback_key += fallbacks[1];
+    scratch.record.high_word_fallbacks += fallbacks[0];
+    scratch.record.full_key_fallbacks += fallbacks[1];
     out.len = running as usize;
     out.buckets = b;
     scratch.arena = Some(arena);

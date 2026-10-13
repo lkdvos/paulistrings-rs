@@ -18,7 +18,7 @@ use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
 
 /// Hash bits one refine pass adds at most; must match `REFINE_MAX_DELTA` in `kernels/refine.cu`.
-const REFINE_MAX_DELTA: u8 = 4;
+pub(super) const REFINE_MAX_DELTA: u8 = 4;
 
 /// GF(2) rows in the device layout of `kernels/prelude.cuh`, padded so an empty matrix still allocates.
 fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -> Vec<u64> {

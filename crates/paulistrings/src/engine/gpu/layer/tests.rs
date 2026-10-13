@@ -20,6 +20,14 @@ fn sixteen_delta_permutation() -> PtmChannel {
     PtmChannel::unitary_2q(0, 1, [e(0), e(3), e(1), e(2)])
 }
 
+/// What [`single_bucket_layer`] observed: the bits the layer ran at, its refine passes and its device counters.
+#[derive(Debug)]
+struct Observed {
+    bits: u8,
+    refine_passes: u32,
+    record: DeviceLayerRecord,
+}
+
 /// One layer on a single-bucket device sum under `opts`, against the naive oracle; returns the counters.
 /// With `x0`, every term carries `X` on qubit 0, so a two-qubit table on `(0, 1)` never sees the identity pattern and every entry emits for every row.
 fn single_bucket_layer(
@@ -27,7 +35,7 @@ fn single_bucket_layer(
     x0: bool,
     channel: &dyn Channel<2>,
     options: GpuLayerOptions,
-) -> Result<GpuLayerCounters, GpuError> {
+) -> Result<Observed, GpuError> {
     let mut input = rand_sum::<2>(n, 128, 0x4096 + n as u64);
     if x0 {
         let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<2>::new(128);
@@ -59,7 +67,11 @@ fn single_bucket_layer(
     apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0])?;
     let want = naive_apply_layer(&input, channel, &KeepAll, false);
     assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
-    Ok(scratch.counters)
+    Ok(Observed {
+        bits: sum.hash().bits(),
+        refine_passes: scratch.refine_passes,
+        record: scratch.record,
+    })
 }
 
 #[test]
@@ -74,7 +86,12 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
     let perm = sixteen_delta_permutation();
     let c = single_bucket_layer(MAX_BUCKET_LEN, false, &perm, options).unwrap();
     assert_eq!(
-        (c.bits, c.refine_passes, c.records, c.records_max),
+        (
+            c.bits,
+            c.refine_passes,
+            c.record.records,
+            c.record.max_block_records
+        ),
         (0, 0, 4096, 4096)
     );
     let c = single_bucket_layer(MAX_BUCKET_LEN + 1, false, &perm, options).unwrap();
@@ -90,8 +107,8 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
         (
             c.bits,
             c.refine_passes,
-            c.records_max as usize,
-            c.record_capacity as usize
+            c.record.max_block_records as usize,
+            c.record.record_capacity as usize
         ),
         (0, 0, 15 * (record_cap / 15), record_cap)
     );

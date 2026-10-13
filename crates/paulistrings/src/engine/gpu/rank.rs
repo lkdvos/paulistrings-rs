@@ -7,7 +7,7 @@ use super::driver::{
     device_runtime, first_failure, lower_for_run, upload_share, GpuScatterOptions,
 };
 use super::error::GpuError;
-use super::layer::{GpuLayerCounters, GpuLayerOptions};
+use super::layer::GpuLayerOptions;
 use super::partition::DevicePartition;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
@@ -234,11 +234,6 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     pub fn set_layer_options(&mut self, options: GpuLayerOptions) {
         options.assert_valid();
         self.backend_mut().scratch_mut().options = options;
-    }
-
-    /// The counters of this rank's most recent layer.
-    pub fn last_layer_counters(&self) -> GpuLayerCounters {
-        self.backend().counters()
     }
 
     /// Drain this rank's phase counters in the in-process driver's shape, `per_partition` holding this rank's one entry (feature `phase-timing`).

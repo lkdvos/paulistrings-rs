@@ -140,6 +140,8 @@ pub(crate) struct LayerExchangeCounts {
     pub bytes_sent: Vec<u64>,
     /// Summed over partners.
     pub rows_received: u64,
+    /// Chunks the received rows moved in; zero after a layer without an exchange.
+    pub receive_chunks: u32,
 }
 
 impl LayerExchangeCounts {
@@ -150,6 +152,7 @@ impl LayerExchangeCounts {
             rows_sent: vec![0; size as usize],
             bytes_sent: vec![0; size as usize],
             rows_received: 0,
+            receive_chunks: 0,
         }
     }
 }
@@ -288,6 +291,7 @@ where
 
     counts.remote_deltas = plan.remote.len();
     counts.rows_received = rows_received;
+    counts.receive_chunks = map.chunks() as u32;
     counts
 }
 

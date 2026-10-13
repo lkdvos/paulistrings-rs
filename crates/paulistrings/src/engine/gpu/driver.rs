@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use super::error::GpuError;
-use super::layer::{GpuLayerCounters, GpuLayerOptions};
+use super::layer::GpuLayerOptions;
 use super::partition::DevicePartition;
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
@@ -356,11 +356,6 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         for partition in self.backends_mut() {
             partition.scratch_mut().options = options;
         }
-    }
-
-    /// The counters of the most recent layer on partition `rank`.
-    pub fn last_layer_counters(&self, rank: usize) -> GpuLayerCounters {
-        self.backends()[rank].counters()
     }
 
     /// Drain the per-phase counters: one [`PhaseStats`](crate::PhaseStats) per partition plus the driver's scatter and gather laps (feature `phase-timing`).

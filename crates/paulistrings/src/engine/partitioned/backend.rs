@@ -8,6 +8,7 @@ use crate::collectives::Collectives;
 use crate::engine::bucketed::LayerScratch;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::engine::trace::PartitionLayerRow;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::PauliSum;
 use crate::truncation::TruncationPolicy;
@@ -52,6 +53,10 @@ pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W
         transport: &X,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
+    /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
+    fn trace_layer(&self, row: &mut PartitionLayerRow) {
+        let _ = row;
+    }
 }
 
 /// A partition in host memory with its retained scratch.

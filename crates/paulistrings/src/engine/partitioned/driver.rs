@@ -179,6 +179,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         let timed_layer = tracing || debug_enabled;
         let layer_start = timed_layer.then(Instant::now);
         let terms_before = local.len();
+        let bits_before = local.hash().bits();
 
         stamp!(stamp);
         tally!(local.stats().layers, 1);
@@ -236,23 +237,25 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         let rows_received = counts.rows_received;
         let elapsed = layer_start.map(|start| start.elapsed());
         if tracing {
-            record_layer_row(
-                &mut work.rows,
-                PartitionLayerRow {
-                    bits: local.hash().bits(),
-                    remote_deltas: counts.remote_deltas as u32,
-                    collectives,
-                    circuit_index: circuit_index as u32,
-                    application_index: application_index as u32,
-                    gate_name: channel.debug_name(),
-                    terms_in: terms_before,
-                    terms_out: local.len(),
-                    rows_sent: counts.rows_sent,
-                    bytes_sent: counts.bytes_sent,
-                    rows_received: counts.rows_received,
-                    nanos: elapsed.unwrap_or_default().as_nanos() as u64,
-                },
-            );
+            let mut row = PartitionLayerRow {
+                bits: local.hash().bits(),
+                remote_deltas: counts.remote_deltas as u32,
+                collectives,
+                circuit_index: circuit_index as u32,
+                application_index: application_index as u32,
+                gate_name: channel.debug_name(),
+                terms_in: terms_before,
+                terms_out: local.len(),
+                rows_sent: counts.rows_sent,
+                bytes_sent: counts.bytes_sent,
+                rows_received: counts.rows_received,
+                nanos: elapsed.unwrap_or_default().as_nanos() as u64,
+                refine_passes: u32::from(local.hash().bits() - bits_before),
+                receive_chunks: counts.receive_chunks,
+                device: None,
+            };
+            local.trace_layer(&mut row);
+            record_layer_row(&mut work.rows, row);
         }
 
         if debug_enabled {

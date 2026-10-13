@@ -101,6 +101,15 @@ fn a_trace_records_every_layer() {
         if layer.remote_deltas == 0 {
             assert_eq!(sent, 0, "layer {k} is local but sent rows");
         }
+        // A host partition receives in chunks on a remote layer only and carries no device record.
+        for r in 0..4 {
+            assert_eq!(
+                layer.receive_chunks[r] > 0,
+                layer.remote_deltas > 0,
+                "layer {k} partition {r}"
+            );
+            assert_eq!(layer.device[r], None, "layer {k} partition {r}");
+        }
     }
 
     // Draining leaves tracing enabled with an empty record set.
@@ -235,6 +244,16 @@ fn bits_are_uniform_and_grow_only() {
             layer.bits, layer.terms_in,
         );
         assert!(layer.bits >= prev, "layer {k}: bits fell from {prev}");
+        // A host partition refines one doubling per pass.
+        assert!(
+            layer
+                .refine_passes
+                .iter()
+                .all(|&passes| passes == u32::from(layer.bits - prev)),
+            "layer {k}: {:?} refine passes from {prev} to {} bits",
+            layer.refine_passes,
+            layer.bits
+        );
         grew |= layer.bits > prev;
         prev = layer.bits;
     }

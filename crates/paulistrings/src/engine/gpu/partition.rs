@@ -3,8 +3,8 @@
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
-    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuLayerCounters,
-    GpuLayerOptions, LayerScratch,
+    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuLayerOptions,
+    LayerScratch,
 };
 use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, KeepProgram};
@@ -17,6 +17,7 @@ use crate::engine::partitioned::transport::Transport;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;
+use crate::engine::trace::{DeviceLayerRecord, PartitionLayerRow};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
@@ -88,16 +89,8 @@ impl<const W: usize> DevicePartition<W> {
         self.sum.as_ref().expect("DevicePartition: detached")
     }
 
-    fn scratch(&self) -> &LayerScratch<W> {
-        self.scratch.as_ref().expect("DevicePartition: detached")
-    }
-
     pub(crate) fn scratch_mut(&mut self) -> &mut LayerScratch<W> {
         self.scratch.as_mut().expect("DevicePartition: detached")
-    }
-
-    pub(crate) fn counters(&self) -> GpuLayerCounters {
-        self.scratch().counters
     }
 
     /// Arm `plan`; a wire fault needs the partition's wire, which a one-partition split has none of.
@@ -248,6 +241,11 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
     ) -> LayerExchangeCounts {
         let size = transport.size();
         self.layers_applied += 1;
+        if let Some(scratch) = self.scratch.as_mut() {
+            scratch.record = DeviceLayerRecord::default();
+            scratch.refine_passes = 0;
+            scratch.receive_chunks = 0;
+        }
         #[cfg(any(test, feature = "test-utils"))]
         if self.fail_at_layer == Some(self.layers_applied - 1) {
             self.record(Err(GpuError::Unsupported("injected before the exchange")));
@@ -266,7 +264,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
                     &mut scratch.export,
                 );
             }
-            return LayerExchangeCounts::none(size);
+            return failed_counts(plan, size);
         }
         timed!(let (started, before) = (std::time::Instant::now(), scratch.kernel_ms));
         let layer = DeviceLayer {
@@ -281,14 +279,26 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             scratch,
             before,
             started.elapsed().as_nanos() as u64,
+            sum.hash().bits(),
         ));
-        self.hash = sum.hash().clone();
         match result {
-            Ok(counts) => counts,
-            Err(e) => {
-                self.record(Err(e));
-                LayerExchangeCounts::none(size)
+            Ok(counts) => {
+                self.hash = sum.hash().clone();
+                counts
             }
+            Err(e) => {
+                // The mirror keeps the agreed bucket count, so the group's trace rows still agree; `take_error` re-syncs it.
+                self.record(Err(e));
+                failed_counts(plan, size)
+            }
+        }
+    }
+
+    fn trace_layer(&self, row: &mut PartitionLayerRow) {
+        if let Some(scratch) = self.scratch.as_ref() {
+            row.refine_passes = scratch.refine_passes;
+            row.receive_chunks = scratch.receive_chunks;
+            row.device = Some(scratch.record);
         }
     }
 
@@ -328,6 +338,14 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
     }
 }
 
+/// A failed or skipped layer's counts: nothing moved, but the remote-delta count the group agrees on.
+fn failed_counts(plan: &PartitionPlan, size: u32) -> LayerExchangeCounts {
+    LayerExchangeCounts {
+        remote_deltas: plan.remote.len(),
+        ..LayerExchangeCounts::none(size)
+    }
+}
+
 /// One device layer's counters into the partition's [`PhaseStats`], mapped as [`GpuPartitionedSum::take_stats`](super::GpuPartitionedSum::take_stats) documents.
 #[cfg(feature = "phase-timing")]
 fn fold_layer_stats<const W: usize>(
@@ -335,6 +353,7 @@ fn fold_layer_stats<const W: usize>(
     scratch: &mut LayerScratch<W>,
     before: super::layer::GpuKernelMs,
     wall_ns: u64,
+    bits: u8,
 ) {
     let after = scratch.kernel_ms;
     let ns = |ms: f64| (ms.max(0.0) * 1e6) as u64;
@@ -355,17 +374,17 @@ fn fold_layer_stats<const W: usize>(
     let [h2d, d2h] = std::mem::take(&mut scratch.transfer_ns);
     stats.h2d_ns += h2d;
     stats.d2h_ns += d2h;
-    let counters = scratch.counters;
-    if counters.permuted {
+    let record = scratch.record;
+    if record.permuted {
         stats.cosets += 1;
-        stats.runs += 1u64 << counters.bits;
-        stats.rows_gathered += counters.records;
-    } else if !counters.rescaled {
+        stats.runs += 1u64 << bits;
+        stats.rows_gathered += record.records;
+    } else if !record.rescaled {
         // Every pre-dedup record is gathered and sorted on the device; nothing takes the identity stream's shortcut.
-        stats.cosets += u64::from(counters.batches);
-        stats.runs += 1u64 << counters.bits;
-        stats.rows_gathered += counters.records;
-        stats.rows_sorted += counters.records;
+        stats.cosets += u64::from(record.batches);
+        stats.runs += 1u64 << bits;
+        stats.rows_gathered += record.records;
+        stats.rows_sorted += record.records;
     }
 }
 

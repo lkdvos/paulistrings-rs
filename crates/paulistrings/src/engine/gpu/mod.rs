@@ -32,9 +32,7 @@ pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};
 pub use driver::{propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuScatterOptions};
 pub use error::GpuError;
-pub use layer::{
-    GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK,
-};
+pub use layer::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 #[cfg(any(test, feature = "test-utils"))]
 pub use partition::FaultPlan;
 pub use rank::GpuDistributedSum;

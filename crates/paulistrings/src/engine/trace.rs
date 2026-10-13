@@ -27,6 +27,37 @@ pub struct PartitionLayerRecord {
     pub rows_received: Vec<u64>,
     /// Each partition's own wall time for the layer; ranks are not synchronized mid-layer, so `max` is only a critical-rank proxy.
     pub nanos: Vec<u64>,
+    /// Passes each partition made over its terms to raise the bucket count for this layer: one per doubling on the host, one per counting pass of up to four bits on a device.
+    pub refine_passes: Vec<u32>,
+    /// Chunks each partition's received rows moved in; zero on a layer without an exchange.
+    pub receive_chunks: Vec<u32>,
+    /// Each partition's device counters, `None` on a host partition.
+    pub device: Vec<Option<DeviceLayerRecord>>,
+}
+
+/// What one device partition counted for a layer beyond the shared record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeviceLayerRecord {
+    /// Pre-dedup records over every fused block; on the permutation path, its input rows.
+    pub records: u64,
+    /// The largest fused block's records.
+    pub max_block_records: u32,
+    /// Record capacity of the launched fused-layer variant.
+    pub record_capacity: u32,
+    /// Arena batches of the fused layer.
+    pub batches: u32,
+    /// Fused blocks that fell back to the high-word fingerprint passes, the sender-side merge's included.
+    pub high_word_fallbacks: u32,
+    /// Fused blocks that fell back to the full-key sort, the sender-side merge's included.
+    pub full_key_fallbacks: u32,
+    /// Exported rows the sender-side merge folded away before the exchange.
+    pub rows_premerged: u64,
+    /// The layer took the key-preserving rescale.
+    pub rescaled: bool,
+    /// The layer took the permutation path.
+    pub permuted: bool,
+    /// The fused layer reduced by the segmented scan rather than the head-serial walk.
+    pub dense: bool,
 }
 
 /// Per-layer records of propagations in application order, accumulated until drained by a driver's `take_trace`.
@@ -116,6 +147,9 @@ pub(crate) struct PartitionLayerRow {
     pub bytes_sent: Vec<u64>,
     pub rows_received: u64,
     pub nanos: u64,
+    pub refine_passes: u32,
+    pub receive_chunks: u32,
+    pub device: Option<DeviceLayerRecord>,
 }
 
 /// Append one layer's record; cold and out of line to keep it from perturbing the inlined merge kernels' layout.
@@ -158,6 +192,9 @@ pub(crate) fn assemble(
             bytes_sent: Vec::with_capacity(size),
             rows_received: Vec::with_capacity(size),
             nanos: Vec::with_capacity(size),
+            refine_passes: Vec::with_capacity(size),
+            receive_chunks: Vec::with_capacity(size),
+            device: Vec::with_capacity(size),
         };
         for (rank, rows) in per_partition.iter().enumerate() {
             let row = &rows[k];
@@ -202,6 +239,9 @@ pub(crate) fn assemble(
             record.bytes_sent.push(bytes_sent);
             record.rows_received.push(row.rows_received);
             record.nanos.push(row.nanos);
+            record.refine_passes.push(row.refine_passes);
+            record.receive_chunks.push(row.receive_chunks);
+            record.device.push(row.device);
         }
         trace.layers.push(record);
     }

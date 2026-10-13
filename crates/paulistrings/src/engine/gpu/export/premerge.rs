@@ -219,9 +219,9 @@ pub(super) fn premerge_partner<const W: usize>(
     }
     let fallbacks = stream.clone_dtoh(&scratch.export.premerge.fallback)?;
     stream.synchronize()?;
-    scratch.counters.fallback_hi += fallbacks[0];
-    scratch.counters.fallback_key += fallbacks[1];
-    scratch.counters.rows_premerged += total - merged;
+    scratch.record.high_word_fallbacks += fallbacks[0];
+    scratch.record.full_key_fallbacks += fallbacks[1];
+    scratch.record.rows_premerged += total - merged;
     scratch.lap(sum, t0, |m| &mut m.export)?;
     Ok(Some(merged))
 }

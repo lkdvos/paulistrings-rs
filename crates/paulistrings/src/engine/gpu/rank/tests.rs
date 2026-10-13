@@ -129,12 +129,12 @@ mod protocol {
             )
         }
 
-        /// Every rank scatters onto device 0 over its wire, runs `setup`, propagates and gathers; its outcome and last layer's counters.
+        /// Every rank scatters onto device 0 over its wire, runs `setup`, propagates and gathers; its outcome and the most receive chunks a layer moved in.
         fn on<X: Transport + 'static>(
             &self,
             group: Vec<(X, PeerWire)>,
             setup: &(dyn Fn(&mut GpuDistributedSum<W, X>) + Sync),
-        ) -> Vec<(Outcome<W>, GpuLayerCounters)> {
+        ) -> Vec<(Outcome<W>, u32)> {
             std::thread::scope(|s| {
                 let hs: Vec<_> = group
                     .into_iter()
@@ -145,17 +145,25 @@ mod protocol {
                                 self.input, transport, 0, rows, wire,
                             ) {
                                 Ok(split) => split,
-                                Err(e) => return (Err(e), GpuLayerCounters::default()),
+                                Err(e) => return (Err(e), 0),
                             };
                             setup(&mut split);
+                            split.enable_trace();
                             let ran = split.propagate_with(
                                 self.circuit,
                                 &self.policy,
                                 self.direction,
                                 self.options,
                             );
-                            let counters = split.last_layer_counters();
-                            (ran.and_then(|()| split.gather()), counters)
+                            let chunks = split
+                                .take_trace()
+                                .unwrap()
+                                .layers
+                                .iter()
+                                .map(|layer| layer.receive_chunks[0])
+                                .max()
+                                .unwrap_or(0);
+                            (ran.and_then(|()| split.gather()), chunks)
                         })
                     })
                     .collect();
@@ -172,7 +180,7 @@ mod protocol {
     }
 
     /// Rank 0's gathered sum, every other rank having succeeded with nothing.
-    fn rank0<const W: usize>(out: Vec<(Outcome<W>, GpuLayerCounters)>) -> PauliSum<W> {
+    fn rank0<const W: usize>(out: Vec<(Outcome<W>, u32)>) -> PauliSum<W> {
         let mut out = out
             .into_iter()
             .map(|(o, _)| o.expect("every rank succeeds"));
@@ -182,7 +190,7 @@ mod protocol {
     }
 
     /// Every rank's error, for the failure nets.
-    fn errors<const W: usize>(out: Vec<(Outcome<W>, GpuLayerCounters)>) -> Vec<GpuError> {
+    fn errors<const W: usize>(out: Vec<(Outcome<W>, u32)>) -> Vec<GpuError> {
         out.into_iter()
             .enumerate()
             .map(|(r, (o, _))| match o {
@@ -316,7 +324,7 @@ mod protocol {
                 split.set_layer_options(capped(caps[split.rank() as usize]));
             };
             let out = run.on(wired(size).0, &setup);
-            let chunks: Vec<u32> = out.iter().map(|(_, c)| c.recv_chunks).collect();
+            let chunks: Vec<u32> = out.iter().map(|&(_, chunks)| chunks).collect();
             let what = format!("ranks={size} caps={caps:?}");
             assert!(
                 chunks[0] > 1,
@@ -349,7 +357,7 @@ mod protocol {
             let out = Run::new(&input, seeded_rows(10, size), &circuit).on(wired(size).0, &setup);
             assert!(start.elapsed() < Duration::from_secs(60));
             assert!(
-                out[culprit as usize].1.recv_chunks > 1,
+                out[culprit as usize].1 > 1,
                 "ranks={size}: {:?}",
                 out[culprit as usize].1
             );

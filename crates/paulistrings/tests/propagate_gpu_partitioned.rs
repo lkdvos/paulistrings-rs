@@ -439,13 +439,10 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
             }
         }
         let last = trace.layers.last().unwrap();
-        for r in 0..p {
-            assert_eq!(
-                split.last_layer_counters(r).bits,
-                last.bits,
-                "P={p} rank {r}"
-            );
-        }
+        assert!(
+            last.device.iter().all(Option::is_some),
+            "P={p}: every partition is a device partition"
+        );
         let (want, discarded) = propagate_discarding(
             &circuit,
             sum.clone(),
@@ -897,17 +894,18 @@ fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
         for cap in [usize::MAX, recv_bytes::<W>(128), recv_bytes::<W>(8)] {
             let what = format!("W={W} P={p} cap={cap}");
             let mut split = capped_split(&sum, p, cap);
+            split.enable_trace();
             let mut widest = 0u32;
             for (k, c) in layers.iter().enumerate() {
                 split
                     .propagate(c, KeepAll, Direction::Forward)
                     .expect("propagate");
+                let layer = split.take_trace().unwrap().layers.pop().unwrap();
                 for r in 0..p {
-                    let counters = split.last_layer_counters(r);
-                    if cap == usize::MAX && counters.rows_received > 0 {
-                        assert_eq!(counters.recv_chunks, 1, "{what} layer {k} rank {r}");
+                    if cap == usize::MAX && layer.rows_received[r] > 0 {
+                        assert_eq!(layer.receive_chunks[r], 1, "{what} layer {k} rank {r}");
                     }
-                    widest = widest.max(counters.recv_chunks);
+                    widest = widest.max(layer.receive_chunks[r]);
                 }
             }
             let got = split.gather().expect("gather");
@@ -946,7 +944,7 @@ fn a_capped_device_receive_moves_in_chunks_and_agrees_w2() {
 }
 
 /// A partition failing mid-receive, after its second chunk moved, returns the error, its partners finish, and the split refuses every later call.
-/// The cap forces at least 3 chunks and the failing rank's own layer proves it: `recv_chunks` is the planned count, set before the chunk loop runs, so it stands even though the loop broke partway through.
+/// The cap forces at least 3 chunks and the failing rank's own trace row proves it: `receive_chunks` is the planned count, set before the chunk loop runs, so it stands even though the loop broke partway through.
 #[test]
 fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
     require_cuda!();
@@ -959,6 +957,7 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
             ..FaultPlan::default()
         };
         set_fault_plan(&mut split, 1, plan);
+        split.enable_trace();
         let r = split.propagate(&circuit, KeepAll, Direction::Forward);
         assert!(
             matches!(
@@ -970,10 +969,16 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
             ),
             "P={p}: {r:?}"
         );
+        let trace = split.take_trace().unwrap();
+        let failing = trace
+            .layers
+            .iter()
+            .rev()
+            .find(|layer| layer.receive_chunks[1] > 0)
+            .expect("a remote layer");
         assert!(
-            split.last_layer_counters(1).recv_chunks > 1,
-            "P={p}: the failing layer must have had more than one chunk, got {:?}",
-            split.last_layer_counters(1)
+            failing.receive_chunks[1] > 1,
+            "P={p}: the failing layer must have had more than one chunk, got {failing:?}"
         );
         let again = split.propagate(&circuit, KeepAll, Direction::Forward);
         assert!(
@@ -1005,25 +1010,28 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
         let delta_local = |q: usize| split.rows().partition_of(&[1u64 << q], &[1u64 << q]) == 0;
         let local = (0..nq).find(|&q| delta_local(q)).expect("a local H");
         let remote = (0..nq).find(|&q| !delta_local(q)).expect("a crossing H");
+        split.enable_trace();
         let mut c = Circuit::<1>::new(nq);
         c.push(PtmChannel::hadamard(local));
         split
             .propagate(&c, KeepAll, Direction::Forward)
             .expect("local H");
+        let layer = split.take_trace().unwrap().layers.pop().unwrap();
         for rank in 0..p {
-            let counters = split.last_layer_counters(rank);
-            assert!(counters.permuted, "P={p} rank {rank}: {counters:?}");
+            let device = layer.device[rank].unwrap();
+            assert!(device.permuted, "P={p} rank {rank}: {layer:?}");
         }
         let mut c = Circuit::<1>::new(nq);
         c.push(PtmChannel::hadamard(remote));
         split
             .propagate(&c, KeepAll, Direction::Forward)
             .expect("crossing H");
+        let layer = split.take_trace().unwrap().layers.pop().unwrap();
         for rank in 0..p {
-            let counters = split.last_layer_counters(rank);
+            let device = layer.device[rank].unwrap();
             assert!(
-                !counters.permuted && counters.rows_received > 0,
-                "P={p} rank {rank}: {counters:?}"
+                !device.permuted && layer.rows_received[rank] > 0,
+                "P={p} rank {rank}: {layer:?}"
             );
         }
         let mut both = Circuit::<1>::new(nq);

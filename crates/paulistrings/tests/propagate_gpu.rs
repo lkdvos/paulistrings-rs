@@ -11,8 +11,8 @@ use paulistrings::test_support::{
     KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
-    propagate, propagate_with, Circuit, Direction, Gf2Hash, LayerScratch, PauliString, PauliSum,
-    PropagateOptions, TruncationPolicy,
+    propagate, propagate_with, Circuit, DeviceLayerRecord, Direction, Gf2Hash, LayerScratch,
+    PartitionLayerRecord, PauliString, PauliSum, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, TopN, WeightCutoff,
@@ -27,7 +27,20 @@ fn one_layer<const W: usize>(num_qubits: usize, ch: Box<dyn Channel<W>>) -> Circ
     c
 }
 
-/// One device run: the downloaded sum and the last layer's counters.
+/// The trace record of `dev`'s last layer, its one partition's device counters unwrapped; defaults for an empty circuit.
+fn last_layer<const W: usize>(
+    dev: &mut GpuPartitionedSum<W>,
+) -> (PartitionLayerRecord, DeviceLayerRecord) {
+    match dev.take_trace().expect("tracing").layers.pop() {
+        Some(layer) => {
+            let device = layer.device[0].expect("a device partition");
+            (layer, device)
+        }
+        None => Default::default(),
+    }
+}
+
+/// One device run: the downloaded sum and the last layer's device counters.
 fn device_run<const W: usize, T>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -35,7 +48,7 @@ fn device_run<const W: usize, T>(
     direction: Direction,
     options: Option<GpuLayerOptions>,
     extra: &[String],
-) -> (PauliSum<W>, paulistrings::gpu::GpuLayerCounters)
+) -> (PauliSum<W>, DeviceLayerRecord)
 where
     T: TruncationPolicy<W> + Clone + Into<BuiltinTruncation>,
 {
@@ -43,11 +56,12 @@ where
     if let Some(o) = options {
         dev.set_layer_options(o);
     }
+    dev.enable_trace();
     dev.propagate(circuit, policy, direction)
         .expect("device propagate");
     let got = dev.gather().expect("download");
     assert_eq!(dev.len(), got.len());
-    (got, dev.last_layer_counters(0))
+    (got, last_layer(&mut dev).1)
 }
 
 /// Host oracle versus the device in both directions, the device run under `options` and `extra`; with `permuted`, whether the last layer must take the permutation path.
@@ -409,14 +423,17 @@ fn fallback_paths_run_resolve_and_are_reproducible() {
         (arrays_bits(&got), c)
     };
     let (hi, c) = run(&["-DFINGERPRINT_ZERO_LOW".to_string()]);
-    assert!(c.fallback_hi > 0, "{c:?}");
-    assert_eq!(c.fallback_key, 0, "{c:?}");
+    assert!(c.high_word_fallbacks > 0, "{c:?}");
+    assert_eq!(c.full_key_fallbacks, 0, "{c:?}");
     assert_eq!(run(&["-DFINGERPRINT_ZERO_LOW".to_string()]).0, hi);
     let (key, c) = run(&["-DFINGERPRINT_BITS=0".to_string()]);
-    assert!(c.fallback_hi > 0 && c.fallback_key > 0, "{c:?}");
+    assert!(
+        c.high_word_fallbacks > 0 && c.full_key_fallbacks > 0,
+        "{c:?}"
+    );
     assert_eq!(run(&["-DFINGERPRINT_BITS=0".to_string()]).0, key);
     let (_, c) = run(&[]);
-    assert_eq!((c.fallback_hi, c.fallback_key), (0, 0));
+    assert_eq!((c.high_word_fallbacks, c.full_key_fallbacks), (0, 0));
 }
 
 /// A smaller opt-in shared memory lowers the record cap, and the refine loop absorbs it.
@@ -428,7 +445,10 @@ fn a_small_shared_memory_limit_still_agrees() {
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let limit = ["-DTEST_SHARED_LIMIT=40000".to_string()];
     let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &limit);
-    assert!(c.record_capacity <= 2048 && c.records_max <= 2048, "{c:?}");
+    assert!(
+        c.record_capacity <= 2048 && c.max_block_records <= 2048,
+        "{c:?}"
+    );
     assert_terms_close(&got, &want, TOL, "small shared limit");
 }
 
@@ -455,10 +475,11 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         records_per_block: 1 << 30,
         ..GpuLayerOptions::default()
     });
+    dev.enable_trace();
     dev.propagate_with(&circuit, KeepAll, Direction::Forward, options)
         .expect("propagate");
-    let c = dev.last_layer_counters(0);
-    assert!(c.refine_passes > 0, "{c:?}");
+    let (layer, _) = last_layer(&mut dev);
+    assert!(layer.refine_passes[0] > 0, "{layer:?}");
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "oversize loop");
 }
 
@@ -818,6 +839,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     );
     let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(opts);
+    dev.enable_trace();
     dev.propagate_with(
         &circuit,
         KeepAll,
@@ -828,8 +850,11 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         },
     )
     .expect("device propagate");
-    let c = dev.last_layer_counters(0);
-    assert!(c.permuted && c.bits == 0 && c.refine_passes == 0, "{c:?}");
+    let (layer, c) = last_layer(&mut dev);
+    assert!(
+        c.permuted && layer.bits == 0 && layer.refine_passes[0] == 0,
+        "{layer:?}"
+    );
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "one bucket of 20000");
 }
 

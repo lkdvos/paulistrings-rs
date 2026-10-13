@@ -81,7 +81,7 @@ pub(super) fn rescale_device<const W: usize>(
     out.len = total as usize;
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
-    scratch.counters.rescaled = true;
+    scratch.record.rescaled = true;
     sum.debug_check();
     Ok(())
 }
@@ -219,9 +219,8 @@ pub(super) fn permute_device<const W: usize>(
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.extent = sum.len();
-    scratch.counters.bits = sum.hash.bits();
-    scratch.counters.records = n_in as u64;
-    scratch.counters.permuted = true;
+    scratch.record.records = n_in as u64;
+    scratch.record.permuted = true;
     sum.debug_check();
     Ok(())
 }

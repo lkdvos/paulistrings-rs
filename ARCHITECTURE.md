@@ -299,7 +299,7 @@ Scatter and gather bracket a run, not a layer: `filter_partition` runs on the ow
 The **scatter bits rule** is `want.max(bits − pbits).min(bits)`: a partition sheds at most `log2 P` of the bits the whole sum arrived with, never going below what its own share wants, so the bucket count summed over partitions equals the unpartitioned one.
 At `P = 1` it is the identity and the round trip is bitwise.
 
-`PartitionTrace` is the opt-in per-layer record of every driver, a plain `propagate_with` recording one partition into its `LayerScratch` (bucket bits, remote-delta count, collectives issued, terms in and out, rows and bytes sent `[from][to]`, rows received, imbalance), and under `phase-timing` the same run adds the export and exchange laps — the field list is contract (a) in `benchmarks/PROFILING.md`.
+`PartitionTrace` is the opt-in per-layer record of every driver, a plain `propagate_with` recording one partition into its `LayerScratch` (bucket bits, remote-delta count, collectives issued, terms in and out, rows and bytes sent `[from][to]`, rows received, refine passes, receive chunks, imbalance, and on a device partition a `DeviceLayerRecord` of the fused layer's counters, filled through `PartitionBackend::trace_layer`), and under `phase-timing` the same run adds the export and exchange laps — the field list is contract (a) in `benchmarks/PROFILING.md`.
 `chunk_wait_ns` is the part of the transfer the coset loop failed to hide, and is read together with `exchange_ns`, which the overlap makes small by construction.
 
 What the split guarantees: **at `P = 1` the partitioned engine is `propagate`, bit for bit** — the scatter is the identity, the all-reduce is the identity, and the layer takes its unpartitioned branch.

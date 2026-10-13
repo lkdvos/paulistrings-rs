@@ -388,8 +388,8 @@ fn premerge_matches_host_by_key<const W: usize>(
             );
             sent += shipped as u64;
             unmerged += e.want_rows.iter().sum::<u64>();
-            fallbacks.0 += e.scratch.counters.fallback_hi;
-            fallbacks.1 += e.scratch.counters.fallback_key;
+            fallbacks.0 += e.scratch.record.high_word_fallbacks;
+            fallbacks.1 += e.scratch.record.full_key_fallbacks;
         }
         totals.push((*name, sent, unmerged, fallbacks));
     }
@@ -548,7 +548,7 @@ fn assert_unmerged_fallback(input: &PauliSum<1>, rows: &PartitionRows<1>, nvrtc:
         };
         remote_layers += 1;
         assert_eq!(
-            e.scratch.counters.rows_premerged, 0,
+            e.scratch.record.rows_premerged, 0,
             "rank {rank}: no rows were premerged"
         );
         assert_payloads_eq(&e, &format!("rank {rank}"));

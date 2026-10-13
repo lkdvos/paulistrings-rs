@@ -1,6 +1,7 @@
-//! Device hooks for tests, benches and the probe: fault injection on the device drivers.
+//! Device hooks for tests, benches and the probe: fault injection on the device drivers and the crate-private `GpuSum` checks.
 
 use crate::engine::gpu::partition::DevicePartition;
+use crate::engine::gpu::{GpuError, GpuSum};
 use crate::engine::partitioned::{DistributedSum, PartitionedSum, Transport};
 
 pub use crate::engine::gpu::{FaultPlan, WireFault};
@@ -35,4 +36,14 @@ pub fn set_fault_plan<const W: usize>(
     plan: FaultPlan,
 ) {
     split.device_partition_mut(rank).set_fault_plan(plan);
+}
+
+/// `sum`'s device-side structural invariant, order within a bucket free: the first class of violation, or the device error that stopped the check.
+pub fn assert_invariants_device<const W: usize>(sum: &GpuSum<W>) -> Result<(), String> {
+    sum.assert_invariants_device()
+}
+
+/// Refine `sum` until its bucket count is `1 << bits`, up to four bits per counting pass.
+pub fn refine_to<const W: usize>(sum: &mut GpuSum<W>, bits: u8) -> Result<(), GpuError> {
+    sum.refine_to(bits)
 }

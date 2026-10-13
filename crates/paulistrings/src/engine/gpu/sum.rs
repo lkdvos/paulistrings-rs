@@ -254,10 +254,8 @@ impl<const W: usize> GpuSum<W> {
         self.refine_pass(1)
     }
 
-    /// Refine until the bucket count is `1 << bits`, up to four bits per counting pass; a no-op at or above it.
-    /// The result is the one repeated [`Self::refine`] gives.
-    /// Returns [`GpuError::Unsupported`] past `B_MAX_BITS`, leaving the sum unchanged.
-    pub fn refine_to(&mut self, bits: u8) -> Result<(), GpuError> {
+    /// Refine until the bucket count is `1 << bits`, up to four bits per counting pass, as repeated [`Self::refine`] would; a no-op at or above it, [`GpuError::Unsupported`] past `B_MAX_BITS` with the sum unchanged.
+    pub(crate) fn refine_to(&mut self, bits: u8) -> Result<(), GpuError> {
         if bits > B_MAX_BITS {
             return Err(GpuError::Unsupported("refine_to beyond B_MAX_BITS"));
         }
@@ -338,8 +336,9 @@ impl<const W: usize> GpuSum<W> {
         Ok(())
     }
 
-    /// Check the device-side analogue of the [`PauliSum`] structural invariant, with order within a bucket free; the error describes the first class of violation, or the device error that stopped the check.
-    pub fn assert_invariants_device(&self) -> Result<(), String> {
+    /// The device-side analogue of the [`PauliSum`] structural invariant, order within a bucket free: the first class of violation, or the device error that stopped the check.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn assert_invariants_device(&self) -> Result<(), String> {
         self.check_invariants().map_err(|e| e.to_string())?
     }
 

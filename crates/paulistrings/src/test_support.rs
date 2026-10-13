@@ -18,7 +18,9 @@ use crate::truncation::TruncationPolicy;
 mod gpu;
 mod rows;
 #[cfg(feature = "cuda")]
-pub use gpu::{set_fault_plan, DeviceSplit, FaultPlan, WireFault};
+pub use gpu::{
+    assert_invariants_device, refine_to, set_fault_plan, DeviceSplit, FaultPlan, WireFault,
+};
 pub use rows::{circuit_generators, count_remote_deltas, GeneratorWeight};
 
 pub use crate::engine::bucketed::apply_layer_bucketed;

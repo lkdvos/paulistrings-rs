@@ -5,8 +5,6 @@
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
 use crate::truncation_spec::{collapse_count, collapses_since};
-#[cfg(feature = "cuda")]
-use paulistrings::gpu::first_failure;
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::BuiltinTruncation;
 use paulistrings::Collectives;
@@ -215,6 +213,18 @@ fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
     } else {
         split.local().clone()
     }
+}
+
+/// `(rank, code)` of the first rank of `collectives`'s group whose `code` is non-zero, agreed in one all-reduce of `size` words. **Collective.**
+#[cfg(feature = "cuda")]
+fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize, u64)> {
+    let mut codes = vec![0u64; collectives.size() as usize];
+    codes[collectives.rank() as usize] = code;
+    collectives.allreduce_sum_u64(&mut codes);
+    codes
+        .iter()
+        .position(|&code| code != 0)
+        .map(|rank| (rank, codes[rank]))
 }
 
 /// This rank's device pick `local`, agreed over `transport`'s group, so a rank that cannot use its device fails the call on every rank. **Collective.**

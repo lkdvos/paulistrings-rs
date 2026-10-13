@@ -65,7 +65,7 @@ pub(super) fn lower_for_run<const W: usize>(
 }
 
 /// `(rank, code)` of the first rank of `collectives`'s group whose `code` is non-zero: every rank's failure agreed in one all-reduce of `size` words. **Collective.**
-pub fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize, u64)> {
+pub(crate) fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize, u64)> {
     let mut codes = vec![0u64; collectives.size() as usize];
     codes[collectives.rank() as usize] = code;
     collectives.allreduce_sum_u64(&mut codes);

@@ -257,4 +257,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–15 done. Pending user A/Bs: D42 (job 7216669, `KNOB_B="--truncation-dispatch builtin"`), D16, D51 collectives (A `9deb5ad`, B `244175a`, P = 2 and P = 4 unpinned). GPU inventory for chunks 16–20 in `scratchpad/d54-gpu-inventory.md`. Next: chunk 16 (GPU), then 17–20, 21 (organisation revisit), 22 (tests), 23 (benches/examples).
+Chunks 0–15 done. Pending user A/Bs (submitted 2026-10-13; 7216669 had failed on a stale shared crate cache, refreshed): D42 7228665 (PS_REV `655b5bc`), D51 P = 2 7228666 and P = 4 7228667 (A `9deb5ad`, B `244175a`), D16 7228668 (A `89bdcca`, B `bfb19b3`), D56 MPI unpaired 7228669 (`3327140`) and 7228670 (`88d6422`); outputs `benchmarks/results/slurm-<id>.out`. GPU inventory for chunks 16–20 in `scratchpad/d54-gpu-inventory.md`. Next: chunk 16 (GPU), then 17–20, 21 (organisation revisit), 22 (tests), 23 (benches/examples).

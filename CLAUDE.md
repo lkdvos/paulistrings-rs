@@ -110,7 +110,7 @@ Development is test-driven: red (the smallest failing test that pins the behavio
 
 - Unit tests live in a sibling `<module>/tests.rs`; the module file keeps one `#[cfg(test)] mod tests;` line, so tests keep private access.
 - Cross-module and integration tests live in `crates/paulistrings/tests/`.
-- Shared fixtures live in `test_support` (`#[doc(hidden)]`, behind `test-utils`), which also exposes the crate-private pieces tests, benches and the probe need: `InProcessTransport`, `Prepared`, `apply_layer_bucketed`, the bucket constants (`DEFAULT_MIN_BUCKETS`, `DEFAULT_TARGET_BUCKET_LEN`) and `TIMER_READ_OVERHEAD_NS`; add helpers there rather than copy-pasting.
+- Shared fixtures live in `test_support` (`#[doc(hidden)]`, behind `test-utils`), which also exposes the crate-private pieces tests, benches and the probe need: `InProcessTransport`, `Prepared`, `apply_layer_bucketed`, the bucket constants (`DEFAULT_MIN_BUCKETS`, `DEFAULT_TARGET_BUCKET_LEN`), `TIMER_READ_OVERHEAD_NS`, and the device hooks (`set_fault_plan` with a `FaultPlan`, `assert_invariants_device`, `refine_to`, `from_host_with_nvrtc_options`); add helpers there rather than copy-pasting.
 - Tests assert hand-computed expected values; where a reference identity exists (`XZ = -iY`), encode it.
 - Parameterize multi-qubit and multi-word logic over `W ∈ {1, 2}`.
 - Property tests (`proptest`) cover the algebraic laws: multiplication associativity, sortedness/uniqueness after a merge, idempotence of `truncate(0.0)`.

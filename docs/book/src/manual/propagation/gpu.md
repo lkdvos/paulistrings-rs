@@ -135,6 +135,7 @@ let evolved = split.gather()?;
 `scatter_to_devices_with` takes a `GpuScatterOptions { devices, rows, layer }`: a runtime resolved from `Placement::Devices`, the partition rows, and the device layer's knobs (`GpuLayerOptions`); `GpuScatterOptions::new(&devices)` fills in the defaults.
 
 The exchanged columns move device to device.
+With `enable_trace`, every layer's `PartitionLayerRecord` carries the device partitions' counters as `device` (a `DeviceLayerRecord` each: records, block size, arena batches, fallbacks, path taken) beside the shared `refine_passes` and `receive_chunks`.
 A device driver takes its policy as a `BuiltinTruncation`, which every builtin and combinator converts into (`ApproxTopN(n)` or `&ApproxTopN(n)` alike).
 A runtime of `Placement::Devices { per_device > 1 }` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
 With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.

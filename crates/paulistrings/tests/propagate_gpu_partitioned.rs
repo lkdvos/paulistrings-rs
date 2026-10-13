@@ -2,9 +2,7 @@
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
-use paulistrings::gpu::{
-    GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum,
-};
+use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
@@ -411,7 +409,7 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
     for p in [2usize, 4] {
         let mut split = split_of(&sum, p);
         split.set_layer_options(GpuLayerOptions {
-            bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
+            records_per_block: 8,
             ..GpuLayerOptions::default()
         });
         split.enable_trace();
@@ -596,7 +594,7 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     )
     .expect("scatter");
     split.set_layer_options(GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        records_per_block: 1 << 30,
         ..GpuLayerOptions::default()
     });
     split.enable_trace();
@@ -629,7 +627,7 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
     circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
     let mut split = split_of(&sum, 2);
     split.set_layer_options(GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        records_per_block: 1 << 30,
         max_bits: 0,
         ..GpuLayerOptions::default()
     });
@@ -862,7 +860,7 @@ fn capped_split<const W: usize>(
 ) -> GpuPartitionedSum<W> {
     let mut split = split_of(sum, p);
     split.set_layer_options(GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
+        records_per_block: 8,
         exchange_bytes,
         ..GpuLayerOptions::default()
     });

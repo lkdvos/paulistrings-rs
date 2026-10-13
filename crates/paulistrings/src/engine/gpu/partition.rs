@@ -3,8 +3,8 @@
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
-    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuBucketPolicy,
-    GpuLayerCounters, GpuLayerOptions, LayerScratch,
+    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuLayerCounters,
+    GpuLayerOptions, LayerScratch,
 };
 use super::sum::GpuSum;
 use super::truncation::{layer_pass_leaves, KeepProgram};
@@ -193,19 +193,14 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
             return host;
         };
         // Between agreements a group member cannot refine, so its proposal plans for twice the load a lone device would.
-        let policy = match scratch.options.bucket_policy {
-            policy if self.group_size == 1 => policy,
-            GpuBucketPolicy::RecordsPerBlock(target) => {
-                GpuBucketPolicy::RecordsPerBlock((target / 2).max(1))
-            }
-            GpuBucketPolicy::TermsPerBucket(target) => {
-                GpuBucketPolicy::TermsPerBucket((target / 2).max(1))
-            }
+        let records_per_block = match scratch.options.records_per_block {
+            records if self.group_size == 1 => records,
+            records => (records / 2).max(1),
         };
         let device = gpu_desired_bits(
             self.len(),
             prepared_fanout(prepared),
-            policy,
+            records_per_block,
             self.hash.bits(),
         )
         .min(scratch.options.max_bits.min(B_MAX_BITS));

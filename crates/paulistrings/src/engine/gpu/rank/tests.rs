@@ -41,7 +41,6 @@ fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
 mod protocol {
     use std::time::{Duration, Instant};
 
-    use super::super::super::layer::GpuBucketPolicy;
     use super::super::super::module::MAX_BUCKET_LEN;
     use super::super::super::wire::{DeviceWire, PeerTally, PeerWire};
     use super::*;
@@ -233,7 +232,7 @@ mod protocol {
     /// Many small buckets, so a remote layer has positions to cut, and a receive cap of `rows` rows.
     fn capped(rows: usize) -> GpuLayerOptions {
         GpuLayerOptions {
-            bucket_policy: GpuBucketPolicy::TermsPerBucket(8),
+            records_per_block: 8,
             exchange_bytes: rows
                 .saturating_mul(super::super::super::export::received_row_bytes::<1>()),
             ..GpuLayerOptions::default()
@@ -436,7 +435,7 @@ mod protocol {
             };
             let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 split.set_layer_options(GpuLayerOptions {
-                    bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+                    records_per_block: 1 << 30,
                     ..GpuLayerOptions::default()
                 });
             };

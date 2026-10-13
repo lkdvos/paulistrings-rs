@@ -219,7 +219,12 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     /// The device layer's knobs; takes effect from the next layer.
     ///
     /// Every rank must set the same options, since the bucket-count proposal reads them.
+    ///
+    /// # Panics
+    ///
+    /// If `options` fail [`GpuLayerOptions::validate`].
     pub fn set_layer_options(&mut self, options: GpuLayerOptions) {
+        options.assert_valid();
         self.backend_mut().scratch_mut().options = options;
     }
 

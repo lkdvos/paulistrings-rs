@@ -35,8 +35,7 @@ pub use driver::{
 };
 pub use error::GpuError;
 pub use layer::{
-    GpuBucketPolicy, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
-    DEFAULT_RECORDS_PER_BLOCK,
+    GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK,
 };
 #[cfg(any(test, feature = "test-utils"))]
 pub use partition::FaultPlan;

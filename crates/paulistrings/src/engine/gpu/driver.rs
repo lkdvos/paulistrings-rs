@@ -322,7 +322,12 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     }
 
     /// The device layer's knobs on every partition; takes effect from the next layer.
+    ///
+    /// # Panics
+    ///
+    /// If `options` fail [`GpuLayerOptions::validate`].
     pub fn set_layer_options(&mut self, options: GpuLayerOptions) {
+        options.assert_valid();
         for partition in self.backends_mut() {
             partition.scratch_mut().options = options;
         }

@@ -517,7 +517,7 @@ It refines only to the agreed bucket count, has no record cap and no source-buck
 A layer with received entries keeps the fused path, whose receive already merges by position.
 
 **Bucket policy on device.**
-The target is records per block rather than terms per bucket: the bucket count is the smallest `2^b` with `fanout × terms ≤ 4096 × 2^b`, where `fanout` is the number of table entries with any nonzero amplitude, never below the current count, and capped at `B_MAX_BITS`.
+The target is records per block rather than terms per bucket: the bucket count is the smallest `2^b` with `fanout × terms ≤ records_per_block × 2^b` (`GpuLayerOptions::records_per_block`, 4096 by default), where `fanout` is `LocalPtm::emitting_entries` (2 for a rotation), never below the current count, and capped at `B_MAX_BITS`.
 
 **Errors.**
 Every device operation returns `GpuError`; the layer loop's seam is infallible, so `DevicePartition` records the first error, skips every later layer, and the driver returns it after the loop, agreed over the group: a lone partition holds the last completed layer's output and resumes from it, while a group of more than one is poisoned until the caller scatters again.

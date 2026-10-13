@@ -67,7 +67,7 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
     crate::require_cuda!();
     // The limits under test are the fused layer's, which a permutation table only reaches with the scatter path off.
     let options = GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        records_per_block: 1 << 30,
         clifford: false,
         ..GpuLayerOptions::default()
     };
@@ -148,8 +148,8 @@ fn arena_batches_start_anew_at_every_chunk_start() {
 }
 
 #[test]
-fn records_per_block_policy_scales_with_fanout_and_is_grow_only() {
-    let p = GpuBucketPolicy::RecordsPerBlock(4096);
+fn records_per_block_scales_with_fanout_and_is_grow_only() {
+    let p = 4096;
     // 1e6 terms: fanout 1 wants 2^8 buckets (3906 records), fanout 2 one more bit, fanout 16 four more.
     assert_eq!(gpu_desired_bits(1_000_000, 1, p, 0), 8);
     assert_eq!(gpu_desired_bits(1_000_000, 2, p, 0), 9);
@@ -163,9 +163,34 @@ fn records_per_block_policy_scales_with_fanout_and_is_grow_only() {
     assert_eq!(gpu_desired_bits(4096, 1, p, 0), 0);
     assert_eq!(gpu_desired_bits(4097, 1, p, 0), 1);
     assert_eq!(gpu_desired_bits(usize::MAX / 2, 16, p, 0), B_MAX_BITS);
-    let fixed = GpuBucketPolicy::TermsPerBucket(256);
-    assert_eq!(gpu_desired_bits(1_000_000, 16, fixed, 0), 12);
-    assert_eq!(gpu_desired_bits(1_000_000, 1, fixed, 0), 12);
-    assert_eq!(gpu_desired_bits(256, 1, fixed, 0), 0);
-    assert_eq!(gpu_desired_bits(257, 1, fixed, 0), 1);
+}
+
+#[test]
+fn layer_options_validate_their_bounds() {
+    assert_eq!(GpuLayerOptions::default().validate(), Ok(()));
+    let bad = |options: GpuLayerOptions| options.validate().unwrap_err();
+    assert_eq!(
+        bad(GpuLayerOptions {
+            records_per_block: 0,
+            ..GpuLayerOptions::default()
+        }),
+        "records_per_block must be at least 1, got 0"
+    );
+    assert_eq!(
+        bad(GpuLayerOptions {
+            arena_bytes: 0,
+            ..GpuLayerOptions::default()
+        }),
+        "arena_bytes must be at least 1, got 0"
+    );
+    assert_eq!(
+        bad(GpuLayerOptions {
+            max_bits: B_MAX_BITS + 1,
+            ..GpuLayerOptions::default()
+        }),
+        format!(
+            "max_bits must be at most {B_MAX_BITS}, got {}",
+            B_MAX_BITS + 1
+        )
+    );
 }

@@ -32,9 +32,7 @@ pub(super) use fused::{
     arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
 };
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
-pub use options::{
-    GpuBucketPolicy, GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK,
-};
+pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 
 /// Per-layer counters of the most recent device layer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -572,7 +570,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         gpu_desired_bits(
             n_in,
             table.fanout,
-            scratch.options.bucket_policy,
+            scratch.options.records_per_block,
             sum.hash.bits(),
         )
         .min(max_bits)

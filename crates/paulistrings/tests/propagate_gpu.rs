@@ -1,7 +1,7 @@
 //! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance (ARCHITECTURE.md §Determinism).
 //! Every case returns early without a device.
 
-use paulistrings::gpu::{GpuBucketPolicy, GpuError, GpuLayerOptions, GpuPauliSum};
+use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPauliSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, cancellation_channel,
@@ -460,7 +460,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
     );
     let mut dev = GpuPauliSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        records_per_block: 1 << 30,
         ..GpuLayerOptions::default()
     });
     dev.propagate_with(&circuit, KeepAll, Direction::Forward, options)
@@ -598,12 +598,12 @@ fn no_identity_delta_and_a_zero_bucket_delta_generator() {
 }
 
 #[test]
-fn fixed_terms_per_bucket_policy_agrees() {
+fn a_small_records_per_block_agrees() {
     require_cuda!();
     let input = rand_sum::<1>(4000, 8, 0x77);
     let circuit = random_circuit::<1>(8, 10, 0x8888, true);
     let o = GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(256),
+        records_per_block: 256,
         arena_bytes: 1 << 20,
         ..GpuLayerOptions::default()
     };
@@ -806,7 +806,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     );
     assert_eq!(input.num_buckets(), 1);
     let opts = GpuLayerOptions {
-        bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
+        records_per_block: 1 << 30,
         ..GpuLayerOptions::default()
     };
     let circuit = one_layer(

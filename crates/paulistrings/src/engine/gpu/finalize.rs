@@ -30,7 +30,7 @@ fn octave_histogram_device<const W: usize>(
 ) -> Result<Vec<u64>, GpuError> {
     let stream = sum.stream.clone();
     let b = sum.hash.num_buckets();
-    stream.memset_zeros(&mut scratch.hist)?;
+    stream.memset_zeros(&mut scratch.histogram)?;
     let b32 = b as u32;
     let started = scratch.event(sum)?;
     // SAFETY: arguments match `k_octave_histogram` in truncate.cu; `hist` holds `1 + APPROX_BINS` entries.
@@ -41,11 +41,11 @@ fn octave_histogram_device<const W: usize>(
             .arg(&sum.columns.start)
             .arg(&sum.columns.lengths)
             .arg(&b32)
-            .arg(&mut scratch.hist)
+            .arg(&mut scratch.histogram)
             .launch(whole_sum_launch(b))?;
     }
     scratch.lap(sum, started, |m| &mut m.truncate)?;
-    let packed = stream.clone_dtoh(&scratch.hist)?;
+    let packed = stream.clone_dtoh(&scratch.histogram)?;
     stream.synchronize()?;
     debug_assert_eq!(packed[0] as usize, sum.len(), "histogram term count");
     Ok(packed)

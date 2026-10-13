@@ -7,8 +7,8 @@ use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::layer::{
-    arena_batches, fused_variant, launch_fused, timed_transfer, FusedOut, FusedRecv, FusedTable,
-    LayerScratch, TableBuffers, Transfer,
+    arena_batches, fused_variant, launch_fused, timed_transfer, FusedOut, FusedReceived,
+    FusedTable, LayerScratch, TableBuffers, Transfer,
 };
 use crate::engine::gpu::module::{thread_per, warp_per_bucket, MAX_BUCKET_LEN};
 use crate::engine::gpu::payload::DeviceBlock;
@@ -27,7 +27,7 @@ pub(super) struct PremergeScratch {
     counts: CudaSlice<u32>,
     rows: CudaSlice<u32>,
     start: CudaSlice<u32>,
-    out_len_pos: CudaSlice<u32>,
+    rows_per_position: CudaSlice<u32>,
     lens: CudaSlice<u32>,
     split_offsets: CudaSlice<u32>,
     fallback: CudaSlice<u32>,
@@ -44,7 +44,7 @@ impl PremergeScratch {
             counts: stream.alloc_zeros(1)?,
             rows: stream.alloc_zeros(1)?,
             start: stream.alloc_zeros(2)?,
-            out_len_pos: stream.alloc_zeros(1)?,
+            rows_per_position: stream.alloc_zeros(1)?,
             lens: stream.alloc_zeros(1)?,
             split_offsets: stream.alloc_zeros(2)?,
             fallback: stream.alloc_zeros(2)?,
@@ -114,7 +114,7 @@ pub(super) fn premerge_partner<const W: usize>(
         grow(&stream, &mut premerge.counts, b * nk, ordinal)?;
         grow(&stream, &mut premerge.rows, b, ordinal)?;
         grow(&stream, &mut premerge.start, b + 1, ordinal)?;
-        grow(&stream, &mut premerge.out_len_pos, b, ordinal)?;
+        grow(&stream, &mut premerge.rows_per_position, b, ordinal)?;
         timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
             premerge.table.upload(&stream, &sub)?;
             stream.memcpy_htod(&selected[..], &mut premerge.selected)?;
@@ -132,14 +132,14 @@ pub(super) fn premerge_partner<const W: usize>(
                 .arg(&mut premerge.counts)
                 .launch(thread_per(b * nk, 256))?;
         }
-        // SAFETY: arguments match `k_rows` in count.cu; every `rem` entry is `NO_REMOTE`, so `received_offsets` is never read.
+        // SAFETY: arguments match `k_rows` in count.cu; every `received_slot` entry is `NO_REMOTE`, so `received_offsets` is never read.
         unsafe {
             stream
                 .launch_builder(&kernels.rows)
                 .arg(&premerge.counts)
                 .arg(&scratch.bucket_at)
                 .arg(&premerge.table.bucket_delta)
-                .arg(&premerge.table.rem)
+                .arg(&premerge.table.received_slot)
                 .arg(&scratch.export.received_offsets)
                 .arg(&mut premerge.rows)
                 .arg(&b32)
@@ -263,24 +263,24 @@ fn premerge_batches<const W: usize>(
             segment_start: &premerge.start,
             table: &premerge.table,
         };
-        let recv = FusedRecv {
+        let received = FusedReceived {
             offsets: received_offsets,
             base: received_base,
             x: received_x,
             z: received_z,
             coefficient: received_coefficient,
-            g: received_fingerprint,
+            fingerprint: received_fingerprint,
         };
         let written = FusedOut {
             arena: &mut *arena,
-            out_len_pos: &mut premerge.out_len_pos,
+            rows_per_position: &mut premerge.rows_per_position,
             fallback: &mut premerge.fallback,
         };
         launch_fused(
             sum,
             sub,
             &fused,
-            &recv,
+            &received,
             bucket_at,
             &KeepProgram::KEEP,
             kernel,
@@ -293,7 +293,7 @@ fn premerge_batches<const W: usize>(
         unsafe {
             stream
                 .launch_builder(&kernels.premerge_split)
-                .arg(&premerge.out_len_pos)
+                .arg(&premerge.rows_per_position)
                 .arg(&premerge.counts)
                 .arg(&*bucket_at)
                 .arg(&premerge.table.bucket_delta)

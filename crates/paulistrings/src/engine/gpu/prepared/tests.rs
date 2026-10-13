@@ -64,13 +64,13 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
     let t = DevicePrepared::new(&prepared, &hash, &fingerprints, &plan.remote);
     assert!(!plan.remote.is_empty());
     assert!(!t.key_preserving, "received rows force the full path");
-    assert_eq!(t.n_remote, plan.remote.len());
+    assert_eq!(t.received_entries, plan.remote.len());
     for r in &plan.remote {
-        assert_ne!(t.rem[r.entry], NO_REMOTE);
+        assert_ne!(t.received_slot[r.entry], NO_REMOTE);
     }
     assert_eq!(t.bucket_deltas(), plan.local_bucket_deltas);
     let local = DevicePrepared::new(&prepared, &hash, &fingerprints, &[]);
-    assert!(!local.key_preserving && local.n_remote == 0);
+    assert!(!local.key_preserving && local.received_entries == 0);
 }
 
 /// A Clifford maps patterns bijectively, so no two of its entries share an output pattern; a dense SU(4) and `sqrt(SWAP)` do, and a rotation never restricts.
@@ -109,10 +109,10 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
     for (name, channel) in &cliffords {
         let t = table::<1>(channel.as_ref(), 8);
         assert!(t.permutation && !t.key_preserving, "{name}");
-        let dim = 1usize << (2 * t.kq);
+        let dim = 1usize << (2 * t.support_size);
         for s in 0..LOCAL_DIM {
             let emitting: Vec<usize> = (0..t.entries)
-                .filter(|&e| (t.nz[e] >> s) & 1 != 0)
+                .filter(|&e| (t.nonzero_patterns[e] >> s) & 1 != 0)
                 .collect();
             if s < dim {
                 assert_eq!(emitting, vec![t.entry_of[s] as usize], "{name} pattern {s}");
@@ -166,19 +166,33 @@ fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
     let su4 = table::<2>(&PtmChannel::unitary_2q(1, 70, haar_su4_matrix()), 128);
     let pick = [9usize, 2, 14];
     let r = su4.restrict(&pick);
-    assert_eq!((r.entries, r.n_remote, r.key_preserving), (3, 0, false));
+    assert_eq!(
+        (r.entries, r.received_entries, r.key_preserving),
+        (3, 0, false)
+    );
     assert_eq!(r.dense, su4.dense);
     for (j, &e) in pick.iter().enumerate() {
         let a = LOCAL_DIM * 2;
-        assert_eq!(r.amp[j * a..(j + 1) * a], su4.amp[e * a..(e + 1) * a]);
+        assert_eq!(
+            r.amplitude[j * a..(j + 1) * a],
+            su4.amplitude[e * a..(e + 1) * a]
+        );
         assert_eq!(r.mask[j * 4..(j + 1) * 4], su4.mask[e * 4..(e + 1) * 4]);
         assert_eq!(
-            (r.nz[j], r.bucket_delta[j], r.gm[j]),
-            (su4.nz[e], su4.bucket_delta[e], su4.gm[e])
+            (
+                r.nonzero_patterns[j],
+                r.bucket_delta[j],
+                r.fingerprint_delta[j]
+            ),
+            (
+                su4.nonzero_patterns[e],
+                su4.bucket_delta[e],
+                su4.fingerprint_delta[e]
+            )
         );
     }
-    assert!(r.rem.iter().all(|&k| k == NO_REMOTE));
-    assert!(r.nz[3..].iter().all(|&m| m == 0));
+    assert!(r.received_slot.iter().all(|&k| k == NO_REMOTE));
+    assert!(r.nonzero_patterns[3..].iter().all(|&m| m == 0));
     assert_eq!(r.fanout, 3);
 }
 
@@ -194,7 +208,10 @@ fn rehash_tracks_the_hash_and_gm_is_the_fingerprint_of_the_mask() {
     };
     for (e, d) in ptm.deltas().iter().enumerate() {
         assert_eq!(t.bucket_delta[e], d.bucket_delta);
-        assert_eq!(t.gm[e], fingerprints.fingerprint(&d.mask_x, &d.mask_z));
+        assert_eq!(
+            t.fingerprint_delta[e],
+            fingerprints.fingerprint(&d.mask_x, &d.mask_z)
+        );
     }
     let mut refined = hash.clone();
     refined.refine();

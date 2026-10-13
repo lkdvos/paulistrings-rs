@@ -71,19 +71,19 @@ pub(in crate::engine::gpu) struct FusedTable<'a> {
 }
 
 /// The concatenated received blocks a fused-layer launch reads for its received entries.
-pub(in crate::engine::gpu) struct FusedRecv<'a> {
+pub(in crate::engine::gpu) struct FusedReceived<'a> {
     pub(in crate::engine::gpu) offsets: &'a CudaSlice<u32>,
     pub(in crate::engine::gpu) base: &'a CudaSlice<u32>,
     pub(in crate::engine::gpu) x: &'a CudaSlice<u64>,
     pub(in crate::engine::gpu) z: &'a CudaSlice<u64>,
     pub(in crate::engine::gpu) coefficient: &'a CudaSlice<f64>,
-    pub(in crate::engine::gpu) g: &'a CudaSlice<u64>,
+    pub(in crate::engine::gpu) fingerprint: &'a CudaSlice<u64>,
 }
 
 /// What a fused-layer launch writes: the loose arena, rows per position, and the fallback counters.
 pub(in crate::engine::gpu) struct FusedOut<'a, const W: usize> {
     pub(in crate::engine::gpu) arena: &'a mut DeviceColumns<W>,
-    pub(in crate::engine::gpu) out_len_pos: &'a mut CudaSlice<u32>,
+    pub(in crate::engine::gpu) rows_per_position: &'a mut CudaSlice<u32>,
     pub(in crate::engine::gpu) fallback: &'a mut CudaSlice<u32>,
 }
 
@@ -93,7 +93,7 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,
     fused: &FusedTable<'_>,
-    received: &FusedRecv<'_>,
+    received: &FusedReceived<'_>,
     bucket_at: &CudaSlice<u32>,
     keep: &KeepProgram,
     kernel: (&CudaFunction, u32),
@@ -105,10 +105,10 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
     let b32 = sum.hash.num_buckets() as u32;
     let FusedOut {
         arena,
-        out_len_pos,
+        rows_per_position,
         fallback,
     } = out;
-    // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds the batch's pre-dedup rows, `out_len_pos` has `b` entries, `fused` is `table`'s upload with `counts`/`segment_start` sized for it, and the received columns hold every row `table.rem` names.
+    // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds the batch's pre-dedup rows, `rows_per_position` has `b` entries, `fused` is `table`'s upload with `counts`/`segment_start` sized for it, and the received columns hold every row `table.received_slot` names.
     unsafe {
         sum.stream
             .launch_builder(func)
@@ -123,31 +123,31 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
             .arg(fused.segment_start)
             .arg(&table.mode)
             .arg(&e32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&table.rot_cos)
-            .arg(&table.rot_sin)
-            .arg(&fused.table.amp)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&table.rotation_cos)
+            .arg(&table.rotation_sin)
+            .arg(&fused.table.amplitude)
             .arg(&fused.table.mask)
-            .arg(&fused.table.nz)
+            .arg(&fused.table.nonzero_patterns)
             .arg(&fused.table.bucket_delta)
-            .arg(&fused.table.gm)
-            .arg(&fused.table.rem)
+            .arg(&fused.table.fingerprint_delta)
+            .arg(&fused.table.received_slot)
             .arg(received.offsets)
             .arg(received.base)
             .arg(&b32)
             .arg(received.x)
             .arg(received.z)
             .arg(received.coefficient)
-            .arg(received.g)
+            .arg(received.fingerprint)
             .arg(keep)
             .arg(&p0)
             .arg(&mut arena.x)
             .arg(&mut arena.z)
             .arg(&mut arena.coeff)
             .arg(&mut arena.fingerprint)
-            .arg(out_len_pos)
+            .arg(rows_per_position)
             .arg(fallback)
             .launch(LaunchConfig {
                 grid_dim: (num_blocks, 1, 1),

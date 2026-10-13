@@ -27,7 +27,7 @@ mod options;
 
 use fast_paths::{permute_device, rescale_device};
 pub(super) use fused::{
-    arena_batches, fused_variant, launch_fused, FusedOut, FusedRecv, FusedTable,
+    arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
 };
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{
@@ -102,23 +102,23 @@ pub(crate) struct ExchangeLaps {
 
 /// A [`DevicePrepared`]'s per-entry tables on the device.
 pub(super) struct TableBuffers {
-    pub(super) amp: CudaSlice<f64>,
+    pub(super) amplitude: CudaSlice<f64>,
     pub(super) mask: CudaSlice<u64>,
-    pub(super) nz: CudaSlice<u32>,
+    pub(super) nonzero_patterns: CudaSlice<u32>,
     pub(super) bucket_delta: CudaSlice<u32>,
-    pub(super) gm: CudaSlice<u64>,
-    pub(super) rem: CudaSlice<u32>,
+    pub(super) fingerprint_delta: CudaSlice<u64>,
+    pub(super) received_slot: CudaSlice<u32>,
 }
 
 impl TableBuffers {
     pub(super) fn new(stream: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
         Ok(Self {
-            amp: stream.alloc_zeros(512)?,
+            amplitude: stream.alloc_zeros(512)?,
             mask: stream.alloc_zeros(32 * w)?,
-            nz: stream.alloc_zeros(16)?,
+            nonzero_patterns: stream.alloc_zeros(16)?,
             bucket_delta: stream.alloc_zeros(16)?,
-            gm: stream.alloc_zeros(16)?,
-            rem: stream.alloc_zeros(16)?,
+            fingerprint_delta: stream.alloc_zeros(16)?,
+            received_slot: stream.alloc_zeros(16)?,
         })
     }
 
@@ -128,12 +128,12 @@ impl TableBuffers {
         stream: &Arc<CudaStream>,
         table: &DevicePrepared<W>,
     ) -> Result<(), GpuError> {
-        stream.memcpy_htod(&table.amp, &mut self.amp)?;
+        stream.memcpy_htod(&table.amplitude, &mut self.amplitude)?;
         stream.memcpy_htod(&table.mask, &mut self.mask)?;
-        stream.memcpy_htod(&table.nz, &mut self.nz)?;
+        stream.memcpy_htod(&table.nonzero_patterns, &mut self.nonzero_patterns)?;
         stream.memcpy_htod(&table.bucket_delta, &mut self.bucket_delta)?;
-        stream.memcpy_htod(&table.gm, &mut self.gm)?;
-        stream.memcpy_htod(&table.rem, &mut self.rem)?;
+        stream.memcpy_htod(&table.fingerprint_delta, &mut self.fingerprint_delta)?;
+        stream.memcpy_htod(&table.received_slot, &mut self.received_slot)?;
         Ok(())
     }
 }
@@ -144,10 +144,10 @@ pub(crate) struct LayerScratch<const W: usize> {
     pub(super) counts: CudaSlice<u32>,
     rows: CudaSlice<u32>,
     segment_start: CudaSlice<u32>,
-    out_len_pos: CudaSlice<u32>,
+    rows_per_position: CudaSlice<u32>,
     pub(super) destination_offsets: CudaSlice<u32>,
     /// The octave histogram's `[len, bins…]`.
-    pub(super) hist: CudaSlice<u64>,
+    pub(super) histogram: CudaSlice<u64>,
     /// The radix-select's 256-bin digit histogram, reused across passes.
     pub(super) radix_histogram: CudaSlice<u64>,
     /// The radix-select's extracted singleton bits.
@@ -229,9 +229,9 @@ impl<const W: usize> LayerScratch<W> {
             counts: stream.alloc_zeros(1)?,
             rows: stream.alloc_zeros(1)?,
             segment_start: stream.alloc_zeros(2)?,
-            out_len_pos: stream.alloc_zeros(1)?,
+            rows_per_position: stream.alloc_zeros(1)?,
             destination_offsets: stream.alloc_zeros(2)?,
-            hist: stream.alloc_zeros(1 + APPROX_BINS)?,
+            histogram: stream.alloc_zeros(1 + APPROX_BINS)?,
             radix_histogram: stream.alloc_zeros(256)?,
             radix_out: stream.alloc_zeros(2)?,
             fallback: stream.alloc_zeros(2)?,
@@ -365,14 +365,14 @@ impl<const W: usize> LayerScratch<W> {
                 .arg(&b32)
                 .arg(&table.mode)
                 .arg(&e32)
-                .arg(&table.kq)
-                .arg(&table.q0)
-                .arg(&table.q1)
-                .arg(&table.rot_cos)
-                .arg(&table.rot_sin)
-                .arg(&self.table.amp)
+                .arg(&table.support_size)
+                .arg(&table.qubit_0)
+                .arg(&table.qubit_1)
+                .arg(&table.rotation_cos)
+                .arg(&table.rotation_sin)
+                .arg(&self.table.amplitude)
                 .arg(&self.table.mask)
-                .arg(&self.table.nz)
+                .arg(&self.table.nonzero_patterns)
                 .arg(&mut self.counts)
                 .launch(warp_per_bucket(b))?;
         }
@@ -420,14 +420,14 @@ impl<const W: usize> LayerScratch<W> {
         let b = sum.hash.num_buckets();
         let (b32, e32) = (b as u32, table.entries as u32);
         let t1 = self.event(sum)?;
-        // SAFETY: arguments match `k_rows` in count.cu; `received_offsets` holds `K × (b + 1)` entries for the `K` received entries `rem` names.
+        // SAFETY: arguments match `k_rows` in count.cu; `received_offsets` holds `K × (b + 1)` entries for the `K` received entries `received_slot` names.
         unsafe {
             stream
                 .launch_builder(&kernels.rows)
                 .arg(&self.counts)
                 .arg(&self.bucket_at)
                 .arg(&self.table.bucket_delta)
-                .arg(&self.table.rem)
+                .arg(&self.table.received_slot)
                 .arg(&self.export.received_offsets)
                 .arg(&mut self.rows)
                 .arg(&b32)
@@ -499,7 +499,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.next_event = 0;
     let mut table = DevicePrepared::new(prepared, &sum.hash, &sum.fingerprints, &plan.remote);
     let has_remote = plan.has_remote();
-    debug_assert_eq!(table.n_remote, plan.remote.len());
+    debug_assert_eq!(table.received_entries, plan.remote.len());
     scratch.counters = GpuLayerCounters {
         bits: sum.hash.bits(),
         dense: table.dense,
@@ -652,7 +652,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     out.len = 0;
     out.buckets = 0;
     out.reserve(out.term_capacity(), b)?;
-    grow(&stream, &mut scratch.out_len_pos, b, ordinal)?;
+    grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
     stream.memset_zeros(&mut scratch.fallback)?;
     let mut running = 0u32;
     let mut next_chunk = 0usize;
@@ -669,24 +669,24 @@ fn apply_layer_body<const W: usize, X: Transport>(
             segment_start: &scratch.segment_start,
             table: &scratch.table,
         };
-        let recv = FusedRecv {
+        let received = FusedReceived {
             offsets: &scratch.export.received_offsets,
             base: &scratch.export.received_base,
             x: &scratch.export.received_x,
             z: &scratch.export.received_z,
             coefficient: &scratch.export.received_coefficient,
-            g: &scratch.export.received_fingerprint,
+            fingerprint: &scratch.export.received_fingerprint,
         };
         let written = FusedOut {
             arena: &mut arena,
-            out_len_pos: &mut scratch.out_len_pos,
+            rows_per_position: &mut scratch.rows_per_position,
             fallback: &mut scratch.fallback,
         };
         launch_fused(
             sum,
             &table,
             &fused,
-            &recv,
+            &received,
             &scratch.bucket_at,
             keep,
             (func, smem),
@@ -699,7 +699,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         exclusive_scan(
             &stream,
             &kernels,
-            &scratch.out_len_pos.slice(p0..p1),
+            &scratch.rows_per_position.slice(p0..p1),
             &mut scratch.destination_offsets.slice_mut(0..n + 1),
             n,
             &mut scratch.scan,
@@ -729,7 +729,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
                 .arg(&arena.fingerprint)
                 .arg(&scratch.segment_start)
                 .arg(&scratch.destination_offsets)
-                .arg(&scratch.out_len_pos)
+                .arg(&scratch.rows_per_position)
                 .arg(&scratch.bucket_at)
                 .arg(&p0u)
                 .arg(&running)

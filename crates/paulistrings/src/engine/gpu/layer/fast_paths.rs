@@ -31,9 +31,9 @@ pub(super) fn rescale_device<const W: usize>(
     out.buckets = 0;
     out.reserve(extent, b)?;
     grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
-    let amp = &mut scratch.table.amp;
+    let amplitude = &mut scratch.table.amplitude;
     timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
-        stream.memcpy_htod(&table.amp, amp)?;
+        stream.memcpy_htod(&table.amplitude, amplitude)?;
         Ok(())
     })?;
     let b32 = b as u32;
@@ -49,10 +49,10 @@ pub(super) fn rescale_device<const W: usize>(
             .arg(&sum.columns.start)
             .arg(&sum.columns.lengths)
             .arg(&b32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&scratch.table.amp)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&scratch.table.amplitude)
             .arg(keep)
             .arg(&mut out.x)
             .arg(&mut out.z)
@@ -115,10 +115,10 @@ pub(super) fn permute_device<const W: usize>(
     out.reserve(n_in, b)?;
     let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
     timed_transfer(&stream, &mut scratch.transfer_ns, Transfer::H2d, || {
-        stream.memcpy_htod(&table.amp, &mut buffers.amp)?;
+        stream.memcpy_htod(&table.amplitude, &mut buffers.amplitude)?;
         stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
         stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
-        stream.memcpy_htod(&table.gm, &mut buffers.gm)?;
+        stream.memcpy_htod(&table.fingerprint_delta, &mut buffers.fingerprint_delta)?;
         stream.memcpy_htod(&table.entry_of, entry_of)?;
         Ok(())
     })?;
@@ -139,14 +139,14 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&sum.columns.lengths)
             .arg(&table.mode)
             .arg(&e32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&table.rot_cos)
-            .arg(&table.rot_sin)
-            .arg(&scratch.table.amp)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&table.rotation_cos)
+            .arg(&table.rotation_sin)
+            .arg(&scratch.table.amplitude)
             .arg(&scratch.table.mask)
-            .arg(&scratch.table.nz)
+            .arg(&scratch.table.nonzero_patterns)
             .arg(&scratch.entry_of)
             .arg(keep)
             .arg(&mut scratch.counts)
@@ -188,17 +188,17 @@ pub(super) fn permute_device<const W: usize>(
             .arg(&sum.columns.lengths)
             .arg(&table.mode)
             .arg(&e32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&table.rot_cos)
-            .arg(&table.rot_sin)
-            .arg(&scratch.table.amp)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&table.rotation_cos)
+            .arg(&table.rotation_sin)
+            .arg(&scratch.table.amplitude)
             .arg(&scratch.table.mask)
-            .arg(&scratch.table.nz)
+            .arg(&scratch.table.nonzero_patterns)
             .arg(&scratch.entry_of)
             .arg(&scratch.table.bucket_delta)
-            .arg(&scratch.table.gm)
+            .arg(&scratch.table.fingerprint_delta)
             .arg(&scratch.counts)
             .arg(&out.start)
             .arg(keep)

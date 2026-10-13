@@ -33,7 +33,7 @@ static_assert(MAX_BUCKET_LEN * MAX_ENTRIES <= 65536u, "a tag fits 16 bits");
 constexpr u32 TAG_OFFSET_BITS = log2_exact(MAX_BUCKET_LEN);
 #define TAG_OFFSET_MASK (MAX_BUCKET_LEN - 1u)
 #define LOCAL_DIM 16
-// `rem[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot (ARCHITECTURE.md §Partitioning).
+// `received_slot[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot (ARCHITECTURE.md §Partitioning).
 #define NO_REMOTE 0xFFFFFFFFu
 // `entry_of[s]` for a support pattern no entry of a permutation table emits for (permute.cu).
 #define NO_ENTRY 0xFFFFFFFFu
@@ -61,18 +61,18 @@ struct Key {
     u64 z[W];
 };
 
-// One prepared channel as the kernels see it; `amp` holds 16 entries of LOCAL_DIM complex amplitudes as f64 pairs.
+// One prepared channel as the kernels see it; `amplitude` holds 16 entries of LOCAL_DIM complex amplitudes as f64 pairs.
 struct Table {
     u32 mode;
     u32 entries;
-    u32 kq;
-    u32 q0;
-    u32 q1;
-    double rot_cos;
-    double rot_sin;
-    const double* amp;
+    u32 support_size;
+    u32 qubit_0;
+    u32 qubit_1;
+    double rotation_cos;
+    double rotation_sin;
+    const double* amplitude;
     const u64* mask;
-    const u32* nz;
+    const u32* nonzero_patterns;
 };
 
 __device__ __forceinline__ u32 lane_id() { return threadIdx.x & 31u; }
@@ -135,15 +135,15 @@ __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
 }
 
 // `LocalPtm::support_bits`: bit 2j is the x-bit of support qubit j, bit 2j+1 its z-bit.
-__device__ __forceinline__ u32 support_bits(const Key& k, u32 kq, u32 q0, u32 q1) {
+__device__ __forceinline__ u32 support_bits(const Key& k, u32 support_size, u32 qubit_0, u32 qubit_1) {
     u32 s = 0;
-    if (kq > 0) {
-        s |= (u32)((k.x[q0 >> 6] >> (q0 & 63)) & 1ull);
-        s |= (u32)((k.z[q0 >> 6] >> (q0 & 63)) & 1ull) << 1;
+    if (support_size > 0) {
+        s |= (u32)((k.x[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull);
+        s |= (u32)((k.z[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull) << 1;
     }
-    if (kq > 1) {
-        s |= (u32)((k.x[q1 >> 6] >> (q1 & 63)) & 1ull) << 2;
-        s |= (u32)((k.z[q1 >> 6] >> (q1 & 63)) & 1ull) << 3;
+    if (support_size > 1) {
+        s |= (u32)((k.x[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 2;
+        s |= (u32)((k.z[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 3;
     }
     return s;
 }
@@ -177,8 +177,8 @@ __device__ __forceinline__ u32 product_phase_generator(const Table& T, const Key
 // Whether entry e emits a row for key k: the table-entry filter, never a product test (signed-zero contract).
 __device__ __forceinline__ bool entry_emits(const Table& T, const Key& k, u32 e) {
     if (T.mode == MODE_LOCAL) {
-        const u32 s = support_bits(k, T.kq, T.q0, T.q1);
-        return ((T.nz[e] >> s) & 1u) != 0;
+        const u32 s = support_bits(k, T.support_size, T.qubit_0, T.qubit_1);
+        return ((T.nonzero_patterns[e] >> s) & 1u) != 0;
     }
     return e == 0 || anticommutes_generator(T, k);
 }
@@ -186,16 +186,16 @@ __device__ __forceinline__ bool entry_emits(const Table& T, const Key& k, u32 e)
 // The row entry e emits for (k, c): bitwise `DeltaEntry::emit` for a local table, `PreparedRotation::emit_generator` and the identity pass of the rotation arm otherwise.
 __device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 e, double cr, double ci, double& pr, double& pi) {
     if (T.mode == MODE_LOCAL) {
-        const u32 s = support_bits(k, T.kq, T.q0, T.q1);
-        const double ar = T.amp[(e * LOCAL_DIM + s) * 2], ai = T.amp[(e * LOCAL_DIM + s) * 2 + 1];
+        const u32 s = support_bits(k, T.support_size, T.qubit_0, T.qubit_1);
+        const double ar = T.amplitude[(e * LOCAL_DIM + s) * 2], ai = T.amplitude[(e * LOCAL_DIM + s) * 2 + 1];
         pr = cr * ar - ci * ai;
         pi = cr * ai + ci * ar;
         return;
     }
     if (e == 0) {
         if (anticommutes_generator(T, k)) {
-            pr = cr * T.rot_cos;
-            pi = ci * T.rot_cos;
+            pr = cr * T.rotation_cos;
+            pi = ci * T.rotation_cos;
         } else {
             pr = cr;
             pi = ci;
@@ -210,8 +210,8 @@ __device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 
         case 2: tr = -cr; ti = -ci; break;
         default: tr = ci; ti = -cr; break;
     }
-    pr = tr * T.rot_sin;
-    pi = ti * T.rot_sin;
+    pr = tr * T.rotation_sin;
+    pi = ti * T.rotation_sin;
 }
 
 // `TruncationPolicy::keep_term` of the lowered tree on the summed coefficient; `key()` is called at most once, and only by a weight node.

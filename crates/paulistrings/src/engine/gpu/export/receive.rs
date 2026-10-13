@@ -255,11 +255,11 @@ fn move_chunk<const W: usize>(
     } = export;
     let PendingReceive { send, own, ops, .. } = &*pending;
     // `schedule` lists every send before every receive, each chunk-major.
-    let (sends, recvs) = ops.split_at(ops.partition_point(|op| op.kind == WireOpKind::Send));
+    let (sends, receives) = ops.split_at(ops.partition_point(|op| op.kind == WireOpKind::Send));
     let of_chunk = |ops: &'_ [ScheduledOp]| -> std::ops::Range<usize> {
         ops.partition_point(|op| op.chunk < chunk)..ops.partition_point(|op| op.chunk <= chunk)
     };
-    let (sends, recvs) = (&sends[of_chunk(sends)], &recvs[of_chunk(recvs)]);
+    let (sends, receives) = (&sends[of_chunk(sends)], &receives[of_chunk(receives)]);
     let mut group = WireGroup::new();
     for op in sends {
         let (q, j) = own[op.delta];
@@ -268,7 +268,7 @@ fn move_chunk<const W: usize>(
             .expect("a payload for every partner")
             .blocks[j];
         let (r0, r1) = op.rows;
-        let elements = op.column.elems_per_row::<W>();
+        let elements = op.column.elements_per_row::<W>();
         match op.column {
             WireColumn::X => {
                 group.send(block.x.slice(r0 * elements..r1 * elements), op.peer, stream)
@@ -283,27 +283,27 @@ fn move_chunk<const W: usize>(
             ),
         }
     }
-    let recv_parts = |column: WireColumn| -> Vec<(usize, u32)> {
-        let elements = column.elems_per_row::<W>();
-        recvs
+    let receive_parts = |column: WireColumn| -> Vec<(usize, u32)> {
+        let elements = column.elements_per_row::<W>();
+        receives
             .iter()
             .filter(|op| op.column == column)
             .map(|op| ((op.rows.1 - op.rows.0) * elements, op.peer))
             .collect()
     };
-    group.recv_parts(
+    group.receive_parts(
         received_x.slice_mut(0..n * W),
-        &recv_parts(WireColumn::X),
+        &receive_parts(WireColumn::X),
         stream,
     );
-    group.recv_parts(
+    group.receive_parts(
         received_z.slice_mut(0..n * W),
-        &recv_parts(WireColumn::Z),
+        &receive_parts(WireColumn::Z),
         stream,
     );
-    group.recv_parts(
+    group.receive_parts(
         received_coefficient.slice_mut(0..2 * n),
-        &recv_parts(WireColumn::Coefficient),
+        &receive_parts(WireColumn::Coefficient),
         stream,
     );
     if let Err(error) = group.post(&*wire).and_then(|()| wire.wait(stream)) {

@@ -30,7 +30,7 @@ fn the_unique_id_survives_the_word_packing() {
     for (i, c) in id.internal.iter_mut().enumerate() {
         *c = (i as u8).wrapping_mul(37).wrapping_add(11) as std::ffi::c_char;
     }
-    let mut words = [0u64; ID_WORDS];
+    let mut words = [0u64; UNIQUE_ID_WORDS];
     pack_id(&id, &mut words);
     assert_eq!(unpack_id(&words), id);
 }
@@ -46,13 +46,13 @@ fn the_id_broadcast_reaches_every_rank_over_an_all_reduce() {
             .into_iter()
             .map(|t| {
                 s.spawn(move || {
-                    let mut buf = [0u64; ID_WORDS + 1];
+                    let mut buf = [0u64; UNIQUE_ID_WORDS + 1];
                     if t.rank() == 0 {
-                        pack_id(&id, &mut buf[..ID_WORDS]);
+                        pack_id(&id, &mut buf[..UNIQUE_ID_WORDS]);
                     }
                     t.allreduce_sum_u64(&mut buf);
-                    assert_eq!(buf[ID_WORDS], 0);
-                    unpack_id(&buf[..ID_WORDS])
+                    assert_eq!(buf[UNIQUE_ID_WORDS], 0);
+                    unpack_id(&buf[..UNIQUE_ID_WORDS])
                 })
             })
             .collect();
@@ -213,20 +213,20 @@ fn interleaved_self_sends_match_in_posting_order() {
     assert_eq!((wire.rank(), wire.size()), (0, 1));
     let msgs = messages();
     let sends = upload(&stream, &msgs);
-    let mut recvs: Vec<_> = SIZES
+    let mut receives: Vec<_> = SIZES
         .iter()
         .map(|&n| stream.alloc_zeros::<u64>(n + 1).expect("alloc"))
         .collect();
     let mut group = WireGroup::new();
-    for ((send, recv), &n) in sends.iter().zip(recvs.iter_mut()).zip(&SIZES) {
+    for ((send, received), &n) in sends.iter().zip(receives.iter_mut()).zip(&SIZES) {
         group.send(send.slice(0..n), 0, &stream);
-        group.recv(recv.slice_mut(0..n), 0, &stream);
+        group.receive(received.slice_mut(0..n), 0, &stream);
     }
     assert_eq!(group.ops().len(), 2 * SIZES.len());
     group.post(&wire).expect("the group posts");
     wire.wait(&stream).expect("the group completes");
-    for (m, (msg, recv)) in msgs.iter().zip(&recvs).enumerate() {
-        let got = stream.clone_dtoh(recv).expect("download");
+    for (m, (msg, received)) in msgs.iter().zip(&receives).enumerate() {
+        let got = stream.clone_dtoh(received).expect("download");
         assert_eq!(
             &got[..msg.len()],
             &msg[..],
@@ -248,16 +248,16 @@ fn self_sends_land_in_one_column_in_posting_order() {
     let msgs = messages();
     let sends = upload(&stream, &msgs);
     let total: usize = SIZES.iter().sum();
-    let mut recv = stream.alloc_zeros::<u64>(total + 1).expect("alloc");
+    let mut received = stream.alloc_zeros::<u64>(total + 1).expect("alloc");
     let mut group = WireGroup::new();
     for (send, &n) in sends.iter().zip(&SIZES) {
         group.send(send.slice(0..n), 0, &stream);
     }
     let parts: Vec<(usize, u32)> = SIZES.iter().map(|&n| (n, 0)).collect();
-    group.recv_parts(recv.as_view_mut(), &parts, &stream);
+    group.receive_parts(received.as_view_mut(), &parts, &stream);
     group.post(&wire).expect("the group posts");
     wire.wait(&stream).expect("the group completes");
-    let got = stream.clone_dtoh(&recv).expect("download");
+    let got = stream.clone_dtoh(&received).expect("download");
     let mut at = 0;
     for (m, msg) in msgs.iter().enumerate() {
         assert_eq!(
@@ -279,9 +279,9 @@ fn an_unmatched_self_receive_fails_the_group_and_aborts() {
         return;
     };
     let wire = NcclWire::new(Arc::new(comm));
-    let mut dst = stream.alloc_zeros::<u64>(4).expect("alloc");
+    let mut destination = stream.alloc_zeros::<u64>(4).expect("alloc");
     let mut group = WireGroup::new();
-    group.recv(dst.as_view_mut(), 0, &stream);
+    group.receive(destination.as_view_mut(), 0, &stream);
     let posted = group.post(&wire);
     assert!(
         matches!(posted, Err(GpuError::Nccl { code: 5, .. })),
@@ -291,7 +291,7 @@ fn an_unmatched_self_receive_fails_the_group_and_aborts() {
     assert!(matches!(wire.wait(&stream), Err(GpuError::Nccl { .. })));
 }
 
-/// The forced timeout: a real self send/recv group whose wait is told its work never completes returns `Timeout` within the bound, aborts the communicator, and nothing hangs.
+/// The forced timeout: a real self send/receive group whose wait is told its work never completes returns `Timeout` within the bound, aborts the communicator, and nothing hangs.
 #[test]
 fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     let Some((_nccl, comm, stream)) = one_rank() else {
@@ -301,11 +301,11 @@ fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     comm.set_timeout(bound);
     comm.force_timeout();
     let wire = NcclWire::new(Arc::new(comm));
-    let src = stream.alloc_zeros::<u64>(64).expect("alloc");
-    let mut dst = stream.alloc_zeros::<u64>(64).expect("alloc");
+    let source = stream.alloc_zeros::<u64>(64).expect("alloc");
+    let mut destination = stream.alloc_zeros::<u64>(64).expect("alloc");
     let mut group = WireGroup::new();
-    group.send(src.as_view(), 0, &stream);
-    group.recv(dst.as_view_mut(), 0, &stream);
+    group.send(source.as_view(), 0, &stream);
+    group.receive(destination.as_view_mut(), 0, &stream);
     group.post(&wire).expect("the group posts");
     let start = Instant::now();
     let waited = wire.wait(&stream);
@@ -328,9 +328,9 @@ fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
         return;
     };
     let wire = NcclWire::new(Arc::new(comm));
-    let src = stream.alloc_zeros::<u8>(8).expect("alloc");
+    let source = stream.alloc_zeros::<u8>(8).expect("alloc");
     let mut group = WireGroup::new();
-    group.send(src.as_view(), 1, &stream);
+    group.send(source.as_view(), 1, &stream);
     assert!(matches!(group.post(&wire), Err(GpuError::Nccl { .. })));
     assert!(wire.comm().is_healthy());
 }

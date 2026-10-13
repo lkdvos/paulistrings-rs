@@ -46,15 +46,15 @@ fn every_pair_exchanges_in_posting_order() {
             .flat_map(|&q| (0..2).map(move |m| (msg(q, me, m).len(), q)))
             .collect();
         let total: usize = parts.iter().map(|p| p.0).sum();
-        let mut dst = stream.alloc_zeros::<u64>(total).expect("alloc");
+        let mut destination = stream.alloc_zeros::<u64>(total).expect("alloc");
         let mut group = WireGroup::new();
         for (q, s) in &sends {
             group.send(s.as_view(), *q, &stream);
         }
-        group.recv_parts(dst.as_view_mut(), &parts, &stream);
+        group.receive_parts(destination.as_view_mut(), &parts, &stream);
         group.post(&wire).expect("post");
         wire.wait(&stream).expect("wait");
-        let got = stream.clone_dtoh(&dst).expect("download");
+        let got = stream.clone_dtoh(&destination).expect("download");
         let want: Vec<u64> = peers
             .iter()
             .flat_map(|&q| (0..2).flat_map(move |m| msg(q, me, m)))
@@ -73,10 +73,10 @@ fn an_unmatched_receive_panics_naming_both_ranks() {
     let out = on_ranks(2, |wire| {
         let context = crate::engine::gpu::device::context(0).expect("device 0");
         let stream = context.new_stream().expect("stream");
-        let mut dst = stream.alloc_zeros::<u64>(4).expect("alloc");
+        let mut destination = stream.alloc_zeros::<u64>(4).expect("alloc");
         let mut group = WireGroup::new();
         if wire.rank() == 0 {
-            group.recv(dst.as_view_mut(), 1, &stream);
+            group.receive(destination.as_view_mut(), 1, &stream);
         }
         group.post(&wire).expect("post");
         wire.wait(&stream).expect("wait");
@@ -95,13 +95,13 @@ fn a_size_mismatch_panics_naming_both_ranks() {
     let out = on_ranks(2, |wire| {
         let context = crate::engine::gpu::device::context(0).expect("device 0");
         let stream = context.new_stream().expect("stream");
-        let src = stream.alloc_zeros::<u64>(8).expect("alloc");
-        let mut dst = stream.alloc_zeros::<u64>(8).expect("alloc");
+        let source = stream.alloc_zeros::<u64>(8).expect("alloc");
+        let mut destination = stream.alloc_zeros::<u64>(8).expect("alloc");
         let mut group = WireGroup::new();
         let peer = 1 - wire.rank();
         let n = if wire.rank() == 0 { 8 } else { 4 };
-        group.send(src.slice(0..n), peer, &stream);
-        group.recv(dst.slice_mut(0..8), peer, &stream);
+        group.send(source.slice(0..n), peer, &stream);
+        group.receive(destination.slice_mut(0..8), peer, &stream);
         group.post(&wire).expect("post");
         wire.wait(&stream).expect("wait");
     });
@@ -118,17 +118,17 @@ fn a_size_mismatch_panics_naming_both_ranks() {
 fn peer_access_is_reported_for_every_pair() {
     crate::require_cuda!();
     let n = crate::engine::gpu::device_count();
-    for dst in 0..n {
-        for src in 0..n {
+    for destination in 0..n {
+        for source in 0..n {
             let context =
                 |o: usize| crate::engine::gpu::device::context(o as u32).expect("visible");
-            let access = enable_peer_access(&context(dst), &context(src));
-            if dst == src {
+            let access = enable_peer_access(&context(destination), &context(source));
+            if destination == source {
                 assert_eq!(access, PeerAccess::SameDevice);
             } else {
                 assert!(
                     !matches!(access, PeerAccess::Failed(_)),
-                    "{dst} <- {src}: {access:?}"
+                    "{destination} <- {source}: {access:?}"
                 );
             }
         }

@@ -47,16 +47,16 @@ pub(crate) enum WireOpKind {
     /// This rank's bytes to `peer`.
     Send,
     /// `peer`'s bytes into this rank's buffer.
-    Recv,
+    Receive,
 }
 
-/// One point-to-point transfer of a [`WireGroup`]: `bytes` bytes at device address `ptr`, to or from `peer`, ordered on `stream`.
-// Only a `WireGroup` builds one, which is what lets `DeviceWire::post` trust `ptr` without being `unsafe`.
+/// One point-to-point transfer of a [`WireGroup`]: `bytes` bytes at device `address`, to or from `peer`, ordered on `stream`.
+// Only a `WireGroup` builds one, which is what lets `DeviceWire::post` trust `address` without being `unsafe`.
 #[derive(Clone, Copy)]
 pub(crate) struct WireOp<'a> {
     kind: WireOpKind,
     peer: u32,
-    ptr: u64,
+    address: u64,
     bytes: usize,
     stream: &'a CudaStream,
 }
@@ -69,8 +69,8 @@ impl<'a> WireOp<'a> {
         self.peer
     }
     /// The device address, valid for [`bytes`](Self::bytes) bytes while the op's [`WireGroup`] lives.
-    pub(crate) fn ptr(&self) -> u64 {
-        self.ptr
+    pub(crate) fn address(&self) -> u64 {
+        self.address
     }
     pub(crate) fn bytes(&self) -> usize {
         self.bytes
@@ -92,43 +92,48 @@ impl<'a> WireGroup<'a> {
         Self::default()
     }
 
-    /// Send `src`'s bytes to `peer`, ordered on `stream`.
-    pub(crate) fn send<T>(&mut self, src: CudaView<'a, T>, peer: u32, stream: &'a CudaStream) {
-        let bytes = src.len() * std::mem::size_of::<T>();
-        let (ptr, guard) = src.view_ptr(stream);
-        self.push(WireOpKind::Send, peer, ptr, bytes, stream, guard);
+    /// Send `source`'s bytes to `peer`, ordered on `stream`.
+    pub(crate) fn send<T>(&mut self, source: CudaView<'a, T>, peer: u32, stream: &'a CudaStream) {
+        let bytes = source.len() * std::mem::size_of::<T>();
+        let (address, guard) = source.view_ptr(stream);
+        self.push(WireOpKind::Send, peer, address, bytes, stream, guard);
     }
 
-    /// Receive `dst.len()` elements' bytes from `peer` into `dst`, ordered on `stream`.
+    /// Receive `destination.len()` elements' bytes from `peer` into `destination`, ordered on `stream`.
     #[cfg(test)]
-    pub(crate) fn recv<T>(&mut self, dst: CudaViewMut<'a, T>, peer: u32, stream: &'a CudaStream) {
-        let bytes = dst.len() * std::mem::size_of::<T>();
-        let (ptr, guard) = dst.view_ptr(stream);
-        self.push(WireOpKind::Recv, peer, ptr, bytes, stream, guard);
+    pub(crate) fn receive<T>(
+        &mut self,
+        destination: CudaViewMut<'a, T>,
+        peer: u32,
+        stream: &'a CudaStream,
+    ) {
+        let bytes = destination.len() * std::mem::size_of::<T>();
+        let (address, guard) = destination.view_ptr(stream);
+        self.push(WireOpKind::Receive, peer, address, bytes, stream, guard);
     }
 
-    /// Receive consecutive ranges of `dst`, `parts[i] = (len, peer)` being `len` elements from `peer`, on `stream`; panics if the parts are longer than `dst`.
+    /// Receive consecutive ranges of `destination`, `parts[i] = (len, peer)` being `len` elements from `peer`, on `stream`; panics if the parts are longer than `destination`.
     // Carved here from one view, since a borrowed split of a cudarc view cannot outlive its parent.
-    pub(crate) fn recv_parts<T>(
+    pub(crate) fn receive_parts<T>(
         &mut self,
-        dst: CudaViewMut<'a, T>,
+        destination: CudaViewMut<'a, T>,
         parts: &[(usize, u32)],
         stream: &'a CudaStream,
     ) {
         let total: usize = parts.iter().map(|&(len, _)| len).sum();
         assert!(
-            total <= dst.len(),
-            "recv_parts: {total} elements into a view of {}",
-            dst.len()
+            total <= destination.len(),
+            "receive_parts: {total} elements into a view of {}",
+            destination.len()
         );
         let elem_bytes = std::mem::size_of::<T>();
-        let (base, guard) = dst.view_ptr(stream);
+        let (base, guard) = destination.view_ptr(stream);
         let mut offset = 0usize;
         for &(len, peer) in parts {
             self.ops.push(WireOp {
-                kind: WireOpKind::Recv,
+                kind: WireOpKind::Receive,
                 peer,
-                ptr: base + (offset * elem_bytes) as u64,
+                address: base + (offset * elem_bytes) as u64,
                 bytes: len * elem_bytes,
                 stream,
             });
@@ -141,7 +146,7 @@ impl<'a> WireGroup<'a> {
         &mut self,
         kind: WireOpKind,
         peer: u32,
-        ptr: u64,
+        address: u64,
         bytes: usize,
         stream: &'a CudaStream,
         guard: SyncOnDrop<'a>,
@@ -149,7 +154,7 @@ impl<'a> WireGroup<'a> {
         self.ops.push(WireOp {
             kind,
             peer,
-            ptr,
+            address,
             bytes,
             stream,
         });
@@ -322,7 +327,7 @@ impl WireColumn {
     const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coefficient];
 
     /// Device elements per row at width `W`: `u64` words for a key column, `f64` halves for the coefficient.
-    pub(crate) fn elems_per_row<const W: usize>(self) -> usize {
+    pub(crate) fn elements_per_row<const W: usize>(self) -> usize {
         match self {
             WireColumn::X | WireColumn::Z => W,
             WireColumn::Coefficient => 2,
@@ -341,21 +346,21 @@ pub(crate) struct ScheduledOp {
     pub(crate) rows: (usize, usize),
 }
 
-/// The transfers of one exchange: `partners[k]`, `own[k]` and `recv[k]` are remote delta `k`'s partner and the offsets of the blocks sent and received for it, `k` naming one block pair on both ends.
+/// The transfers of one exchange: `partners[k]`, `own[k]` and `received[k]` are remote delta `k`'s partner and the offsets of the blocks sent and received for it, `k` naming one block pair on both ends.
 /// Per peer, sends and receives both run chunk, column, delta, the order a wire matches in; receives are column-major across peers so each column's tile its `received_*` column, and an empty piece is posted by neither end.
 pub(crate) fn schedule(
     partners: &[u32],
     own: &[&[u32]],
-    recv: &[&[u32]],
+    received: &[&[u32]],
     map: &ChunkMap,
 ) -> Vec<ScheduledOp> {
     assert_eq!(partners.len(), own.len());
-    assert_eq!(partners.len(), recv.len());
+    assert_eq!(partners.len(), received.len());
     let own_rows: Vec<Vec<usize>> = own
         .iter()
         .map(|offsets| chunk_rows_of(offsets, map))
         .collect();
-    let recv_rows: Vec<Vec<usize>> = recv
+    let received_rows: Vec<Vec<usize>> = received
         .iter()
         .map(|offsets| chunk_rows_of(offsets, map))
         .collect();
@@ -389,10 +394,10 @@ pub(crate) fn schedule(
     for chunk in 0..map.chunks() {
         for column in WireColumn::ALL {
             for (k, &peer) in partners.iter().enumerate() {
-                let rows = (recv_rows[k][chunk], recv_rows[k][chunk + 1]);
+                let rows = (received_rows[k][chunk], received_rows[k][chunk + 1]);
                 if rows.1 > rows.0 {
                     ops.push(ScheduledOp {
-                        kind: WireOpKind::Recv,
+                        kind: WireOpKind::Receive,
                         peer,
                         chunk,
                         column,

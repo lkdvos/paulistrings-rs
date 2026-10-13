@@ -43,8 +43,8 @@ fn byte_round_trip<const W: usize>(
     let parts: Vec<Vec<u8>> = sent.byte_parts().iter().map(|p| p.to_vec()).collect();
     let lens: Vec<usize> = parts.iter().map(Vec::len).collect();
     let mut got = pooled;
-    for (dst, src) in got.receive_into(&lens).into_iter().zip(&parts) {
-        dst.copy_from_slice(src);
+    for (destination, source) in got.receive_into(&lens).into_iter().zip(&parts) {
+        destination.copy_from_slice(source);
     }
     got.finish_receive();
     got
@@ -78,8 +78,8 @@ fn skeletons_travel_over_the_in_process_transport() {
             .collect();
         hs.into_iter().map(|h| h.join().unwrap()).collect()
     });
-    for (me, recv) in got.iter().enumerate() {
-        for (q, r) in recv.iter().enumerate() {
+    for (me, received) in got.iter().enumerate() {
+        for (q, r) in received.iter().enumerate() {
             if q == me {
                 assert!(r.is_none());
             } else {
@@ -120,7 +120,7 @@ fn sends_to(ops: &[ScheduledOp], to: u32) -> Vec<(usize, WireColumn, usize, (usi
 
 fn recvs_from(ops: &[ScheduledOp], from: u32) -> Vec<(usize, WireColumn, usize, (usize, usize))> {
     ops.iter()
-        .filter(|op| op.kind == WireOpKind::Recv && op.peer == from)
+        .filter(|op| op.kind == WireOpKind::Receive && op.peer == from)
         .map(|op| (op.chunk, op.column, op.delta, op.rows))
         .collect()
 }
@@ -147,12 +147,12 @@ fn group_schedules(
         .map(|r| {
             let partners: Vec<u32> = pds.iter().map(|&pd| r ^ pd).collect();
             let own: Vec<&[u32]> = offsets[r as usize].iter().map(Vec::as_slice).collect();
-            let recv: Vec<&[u32]> = partners
+            let received: Vec<&[u32]> = partners
                 .iter()
                 .enumerate()
                 .map(|(k, &q)| offsets[q as usize][k].as_slice())
                 .collect();
-            schedule(&partners, &own, &recv, map)
+            schedule(&partners, &own, &received, map)
         })
         .collect()
 }
@@ -205,13 +205,13 @@ proptest::proptest! {
                 per_k.iter().enumerate().filter(move |&(k, _)| r as u32 ^ pds[k] == a)
                     .map(|(_, c)| c.iter().map(|&n| u64::from(n)).sum::<u64>())
             }).sum();
-            let got: u64 = ops[a as usize].iter().filter(|op| op.kind == WireOpKind::Recv && op.column == WireColumn::X)
+            let got: u64 = ops[a as usize].iter().filter(|op| op.kind == WireOpKind::Receive && op.column == WireColumn::X)
                 .map(|op| (op.rows.1 - op.rows.0) as u64).sum();
             proptest::prop_assert_eq!(got, rows, "rank {} receives every row once", a);
             for chunk in 0..map.chunks() {
                 for column in WireColumn::ALL {
                     let ks: Vec<(usize, (usize, usize))> = ops[a as usize].iter()
-                        .filter(|op| op.kind == WireOpKind::Recv && op.column == column && op.chunk == chunk)
+                        .filter(|op| op.kind == WireOpKind::Receive && op.column == column && op.chunk == chunk)
                         .map(|op| (op.delta, op.rows)).collect();
                     proptest::prop_assert!(ks.windows(2).all(|w| w[0].0 < w[1].0));
                     if chunk == 0 {
@@ -219,7 +219,7 @@ proptest::proptest! {
                     }
                 }
             }
-            for kind in [WireOpKind::Send, WireOpKind::Recv] {
+            for kind in [WireOpKind::Send, WireOpKind::Receive] {
                 let chunk_of: Vec<usize> = ops[a as usize].iter().filter(|op| op.kind == kind).map(|op| op.chunk).collect();
                 proptest::prop_assert!(chunk_of.windows(2).all(|w| w[0] <= w[1]), "{:?}s are chunk-major", kind);
             }
@@ -232,11 +232,15 @@ fn a_group_records_its_ops_in_posting_order_with_carved_ranges() {
     crate::require_cuda!();
     let context = super::super::device::context(0).expect("a visible device");
     let stream = context.new_stream().expect("a stream");
-    let src = stream.alloc_zeros::<f64>(6).expect("alloc");
-    let mut dst = stream.alloc_zeros::<u64>(10).expect("alloc");
+    let source = stream.alloc_zeros::<f64>(6).expect("alloc");
+    let mut destination = stream.alloc_zeros::<u64>(10).expect("alloc");
     let mut group = WireGroup::new();
-    group.send(src.slice(2..6), 3, &stream);
-    group.recv_parts(dst.as_view_mut(), &[(4, 1), (0, 2), (5, 1)], &stream);
+    group.send(source.slice(2..6), 3, &stream);
+    group.receive_parts(
+        destination.as_view_mut(),
+        &[(4, 1), (0, 2), (5, 1)],
+        &stream,
+    );
     let ops = group.ops();
     let shape: Vec<_> = ops
         .iter()
@@ -246,12 +250,12 @@ fn a_group_records_its_ops_in_posting_order_with_carved_ranges() {
         shape,
         [
             (WireOpKind::Send, 3, 32),
-            (WireOpKind::Recv, 1, 32),
-            (WireOpKind::Recv, 2, 0),
-            (WireOpKind::Recv, 1, 40),
+            (WireOpKind::Receive, 1, 32),
+            (WireOpKind::Receive, 2, 0),
+            (WireOpKind::Receive, 1, 40),
         ]
     );
-    assert_eq!(ops[2].ptr() - ops[1].ptr(), 32);
-    assert_eq!(ops[3].ptr() - ops[1].ptr(), 32);
+    assert_eq!(ops[2].address() - ops[1].address(), 32);
+    assert_eq!(ops[3].address() - ops[1].address(), 32);
     assert!(ops.iter().all(|op| std::ptr::eq(op.stream(), &*stream)));
 }

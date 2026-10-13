@@ -127,8 +127,8 @@ pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
             .expect("just set")
             .push_empty(r.entry as u32, 1 << bits);
     }
-    let recv = transport.exchange(send, &mut export.skeletons);
-    export.skeletons.extend(recv.into_iter().flatten());
+    let received = transport.exchange(send, &mut export.skeletons);
+    export.skeletons.extend(received.into_iter().flatten());
     vote(transport, None);
 }
 
@@ -180,9 +180,9 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
             })
         })
         .collect();
-    let recv = transport.exchange(skeletons, &mut export.skeletons);
+    let received = transport.exchange(skeletons, &mut export.skeletons);
     let (rows, ops) = {
-        let blocks = paired_blocks(plan, &recv);
+        let blocks = paired_blocks(plan, &received);
         let ready = stage_receive(sum, export, &blocks, cap_rows, transfer_ns)
             .and_then(|log2| wire_ready(export).map(|()| log2));
         match vote(transport, ready.as_ref().ok().copied()) {
@@ -211,7 +211,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
             None => (ready.and_then(|_| discard_received(export)), None),
         }
     };
-    export.skeletons.extend(recv.into_iter().flatten());
+    export.skeletons.extend(received.into_iter().flatten());
     match ops {
         Some((map, own, ops)) => {
             export.pending = Some(PendingReceive {
@@ -263,12 +263,12 @@ fn own_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
 /// The received skeleton per remote delta in plan order, by [`paired_at`].
 fn paired_blocks<'a, const W: usize>(
     plan: &PartitionPlan,
-    recv: &'a [Option<BlockSkeletons<W>>],
+    received: &'a [Option<BlockSkeletons<W>>],
 ) -> Vec<&'a Skeleton> {
     paired_at(plan)
         .into_iter()
         .map(|(q, j)| {
-            recv[q]
+            received[q]
                 .as_ref()
                 .and_then(|payload| payload.blocks.get(j))
                 .unwrap_or_else(|| panic!("partition {q} sent no block {j} for a remote delta"))

@@ -30,7 +30,7 @@ impl PeerTally {
 struct Posted {
     kind: WireOpKind,
     peer: u32,
-    ptr: u64,
+    address: u64,
     bytes: usize,
     stream: usize,
     context: Arc<CudaContext>,
@@ -273,7 +273,7 @@ impl DeviceWire for PeerWire {
         for op in ops {
             let stream = op.stream().cu_stream() as usize;
             let ready = match op.kind() {
-                WireOpKind::Recv => None,
+                WireOpKind::Receive => None,
                 WireOpKind::Send => Some(match events.iter().find(|(s, _)| *s == stream) {
                     Some((_, e)) => e.clone(),
                     None => {
@@ -286,7 +286,7 @@ impl DeviceWire for PeerWire {
             posted.push(Posted {
                 kind: op.kind(),
                 peer: op.peer(),
-                ptr: op.ptr(),
+                address: op.address(),
                 bytes: op.bytes(),
                 stream,
                 context: op.stream().context().clone(),
@@ -372,8 +372,8 @@ impl DeviceWire for PeerWire {
                     // SAFETY: both addresses are live device allocations of at least `bytes` bytes, the receiver's borrowed by its caller until this wait returns and the sender's until its own wait returns, which is after every receiver's copy has completed.
                     unsafe {
                         cudarc::driver::result::memcpy_dtod_async(
-                            c.dst,
-                            c.src,
+                            c.destination,
+                            c.source,
                             c.bytes,
                             stream.cu_stream(),
                         )?;
@@ -406,8 +406,8 @@ impl DeviceWire for PeerWire {
 
 /// One receive's copy from its matching send.
 struct PeerCopy {
-    dst: u64,
-    src: u64,
+    destination: u64,
+    source: u64,
     bytes: usize,
     source_context: Arc<CudaContext>,
     ready: Arc<CudaEvent>,
@@ -423,7 +423,7 @@ fn check_round(
     let mine = round.posted[me].as_ref().expect("every rank posted");
     if let Some(r) = mine
         .iter()
-        .find(|p| p.kind == WireOpKind::Recv && p.stream != stream)
+        .find(|p| p.kind == WireOpKind::Receive && p.stream != stream)
     {
         return Err(format!(
             "peer wire: rank {me} waits on another stream than its receive from rank {} was posted on",
@@ -433,31 +433,31 @@ fn check_round(
     let mut copies = Vec::new();
     for q in 0..size {
         let theirs = round.posted[q].as_ref().expect("every rank posted");
-        let recvs: Vec<usize> = (0..mine.len())
-            .filter(|&i| mine[i].kind == WireOpKind::Recv && mine[i].peer as usize == q)
+        let receives: Vec<usize> = (0..mine.len())
+            .filter(|&i| mine[i].kind == WireOpKind::Receive && mine[i].peer as usize == q)
             .collect();
         let sends: Vec<usize> = (0..theirs.len())
             .filter(|&j| theirs[j].kind == WireOpKind::Send && theirs[j].peer as usize == me)
             .collect();
-        if recvs.len() != sends.len() {
+        if receives.len() != sends.len() {
             return Err(format!(
                 "peer wire: rank {me} posts {} receives from rank {q}, which posts {} sends to rank {me}",
-                recvs.len(),
+                receives.len(),
                 sends.len()
             ));
         }
-        for (n, (&i, &j)) in recvs.iter().zip(&sends).enumerate() {
+        for (n, (&i, &j)) in receives.iter().zip(&sends).enumerate() {
             if mine[i].bytes != theirs[j].bytes {
                 return Err(format!(
                     "peer wire: receive {n} of rank {me} from rank {q} is {} bytes, rank {q}'s send {n} to rank {me} is {}",
                     mine[i].bytes, theirs[j].bytes
                 ));
             }
-            let (recv, send) = (&mine[i], &theirs[j]);
+            let (received, send) = (&mine[i], &theirs[j]);
             copies.push(PeerCopy {
-                dst: recv.ptr,
-                src: send.ptr,
-                bytes: recv.bytes,
+                destination: received.address,
+                source: send.address,
+                bytes: received.bytes,
                 source_context: send.context.clone(),
                 ready: send.ready.clone().expect("a send records its event"),
             });
@@ -479,10 +479,10 @@ enum PeerAccess {
     Failed(String),
 }
 
-/// Enable direct access from `dst`'s context to `src`'s memory, once per ordered pair; a pair without it stays correct through host staging, so the outcome is logged, not an error.
-fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAccess {
+/// Enable direct access from `destination`'s context to `source`'s memory, once per ordered pair; a pair without it stays correct through host staging, so the outcome is logged, not an error.
+fn enable_peer_access(destination: &Arc<CudaContext>, source: &Arc<CudaContext>) -> PeerAccess {
     static DONE: Mutex<Vec<((usize, usize), PeerAccess)>> = Mutex::new(Vec::new());
-    let pair = (dst.ordinal(), src.ordinal());
+    let pair = (destination.ordinal(), source.ordinal());
     if pair.0 == pair.1 {
         return PeerAccess::SameDevice;
     }
@@ -490,7 +490,7 @@ fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAcc
     if let Some((_, access)) = done.iter().find(|(p, _)| *p == pair) {
         return access.clone();
     }
-    let access = try_enable_peer_access(dst, src, pair);
+    let access = try_enable_peer_access(destination, source, pair);
     match &access {
         PeerAccess::Enabled => {
             log::info!(target: GPU_LOG_TARGET, "peer access {} -> {} enabled", pair.1, pair.0)
@@ -507,8 +507,8 @@ fn enable_peer_access(dst: &Arc<CudaContext>, src: &Arc<CudaContext>) -> PeerAcc
 }
 
 fn try_enable_peer_access(
-    dst: &Arc<CudaContext>,
-    src: &Arc<CudaContext>,
+    destination: &Arc<CudaContext>,
+    source: &Arc<CudaContext>,
     pair: (usize, usize),
 ) -> PeerAccess {
     let failed = |e: sys::CUresult| PeerAccess::Failed(format!("{e:?}"));
@@ -522,11 +522,11 @@ fn try_enable_peer_access(
     if can == 0 {
         return PeerAccess::Unsupported;
     }
-    if let Err(e) = dst.bind_to_thread() {
+    if let Err(e) = destination.bind_to_thread() {
         return failed(e.0);
     }
-    // SAFETY: `dst` is the bound context and `src`'s handle stays valid while `src` is alive.
-    match unsafe { sys::cuCtxEnablePeerAccess(src.cu_ctx(), 0) } {
+    // SAFETY: `destination` is the bound context and `source`'s handle stays valid while `source` is alive.
+    match unsafe { sys::cuCtxEnablePeerAccess(source.cu_ctx(), 0) } {
         sys::CUresult::CUDA_SUCCESS | sys::CUresult::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED => {}
         e => return failed(e),
     }
@@ -543,7 +543,7 @@ fn try_enable_peer_access(
         },
         flags: sys::CUmemAccess_flags::CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
     };
-    // SAFETY: `pool` is `src`'s current pool and `desc` one valid entry.
+    // SAFETY: `pool` is `source`'s current pool and `desc` one valid entry.
     match unsafe { sys::cuMemPoolSetAccess(pool, &desc, 1) }.result() {
         Ok(()) => PeerAccess::Enabled,
         Err(e) => failed(e.0),

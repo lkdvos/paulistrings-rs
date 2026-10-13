@@ -19,7 +19,7 @@ use crate::collectives::Collectives;
 const MIN_NCCL_VERSION: i32 = 22200;
 
 /// `sizeof(ncclUniqueId)` in `u64` words.
-const ID_WORDS: usize = 16;
+const UNIQUE_ID_WORDS: usize = 16;
 
 /// Poll `probe` until it reports ready (`true`), fails, or `timeout` elapses (`Ok(false)`).
 fn poll_until(
@@ -90,20 +90,20 @@ impl NcclComm {
             (Ok(()), 0) => nccl::get_uniqueid().map_err(|e| nccl_error(e, "ncclGetUniqueId")),
             _ => Ok(sys::ncclUniqueId { internal: [0; 128] }),
         };
-        let mut buffer = [0u64; ID_WORDS + 1];
+        let mut buffer = [0u64; UNIQUE_ID_WORDS + 1];
         match &id {
-            Ok(id) if local.is_ok() => pack_id(id, &mut buffer[..ID_WORDS]),
-            _ => buffer[ID_WORDS] = 1,
+            Ok(id) if local.is_ok() => pack_id(id, &mut buffer[..UNIQUE_ID_WORDS]),
+            _ => buffer[UNIQUE_ID_WORDS] = 1,
         }
         collectives.allreduce_sum_u64(&mut buffer);
         local?;
         id?;
-        if buffer[ID_WORDS] != 0 {
+        if buffer[UNIQUE_ID_WORDS] != 0 {
             return Err(GpuError::Unsupported(
                 "a peer rank cannot start NCCL (libnccl missing, older than 2.22, or no unique id)",
             ));
         }
-        let id = unpack_id(&buffer[..ID_WORDS]);
+        let id = unpack_id(&buffer[..UNIQUE_ID_WORDS]);
         context.bind_to_thread()?;
         let mut config = default_config();
         config.blocking = 0;
@@ -139,7 +139,7 @@ impl NcclComm {
         !self.lock().aborted
     }
 
-    /// Pay NCCL's lazy connection setup now: one small send/recv with every other rank (with itself in a one-rank world), completed on `stream`.
+    /// Pay NCCL's lazy connection setup now: one small send/receive with every other rank (with itself in a one-rank world), completed on `stream`.
     /// **Collective over the communicator**, after the group has agreed that every [`init`](Self::init) succeeded.
     pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
         let (me, size) = (self.rank, self.size);
@@ -159,7 +159,7 @@ impl NcclComm {
             );
         }
         let parts: Vec<(usize, u32)> = peers.iter().map(|&peer| (WARM_UP_BYTES, peer)).collect();
-        group.recv_parts(back.as_view_mut(), &parts, stream);
+        group.receive_parts(back.as_view_mut(), &parts, stream);
         group.post_with(|ops| self.post(ops))?;
         self.wait(stream)
     }
@@ -293,12 +293,16 @@ impl NcclComm {
             let stream = op.stream().cu_stream() as sys::cudaStream_t;
             let peer = op.peer() as i32;
             let dtype = sys::ncclDataType_t::ncclUint8;
-            let (ptr, bytes) = (op.ptr(), op.bytes());
-            // SAFETY: `ptr` addresses `bytes` bytes of device memory on this communicator's device, borrowed by the `WireGroup` until the group is enqueued, and `comm` is live.
+            let (address, bytes) = (op.address(), op.bytes());
+            // SAFETY: `address` addresses `bytes` bytes of device memory on this communicator's device, borrowed by the `WireGroup` until the group is enqueued, and `comm` is live.
             let posted = unsafe {
                 match op.kind() {
-                    WireOpKind::Send => nccl::send(ptr as _, bytes, dtype, peer, raw.comm, stream),
-                    WireOpKind::Recv => nccl::recv(ptr as _, bytes, dtype, peer, raw.comm, stream),
+                    WireOpKind::Send => {
+                        nccl::send(address as _, bytes, dtype, peer, raw.comm, stream)
+                    }
+                    WireOpKind::Receive => {
+                        nccl::recv(address as _, bytes, dtype, peer, raw.comm, stream)
+                    }
                 }
             };
             if let Err(e) = posted {

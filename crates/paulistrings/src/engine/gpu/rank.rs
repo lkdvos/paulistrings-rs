@@ -163,7 +163,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     /// # Errors
     ///
     /// [`GpuError::Unsupported`] on every rank before any layer if `policy` or a channel cannot run on device (as [`GpuPartitionedSum::propagate_with`](super::GpuPartitionedSum::propagate_with)), or if the policy contains an exact `TopN` and the group has more than one rank.
-    /// A device error on any rank is agreed after the loop, the partners having finished the call on empty exchange blocks, and poisons a group of more than one rank on every rank.
+    /// A device error on any rank is agreed after the loop, the partners having finished the call on empty exchange blocks, and poisons a group of more than one rank on every rank; so is an error a previous call left recorded, which this rank returns.
     ///
     /// # Panics
     ///
@@ -181,8 +181,8 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         let partition = self.backend_mut();
         partition.check_poison()?;
         let keep = lower_for_run(circuit, &policy, direction, partition.hash(), single)?;
-        let stale = partition.take_error();
-        debug_assert!(stale.is_ok(), "a device error survived the previous call");
+        // A stale error stays recorded: this rank skips every layer in step with its peers, and the agreement after the loop returns it.
+        partition.resync_hash();
         partition.keep = keep;
 
         self.propagate_on_backend(circuit, &policy, direction, options);

@@ -116,11 +116,16 @@ impl<const W: usize> DevicePartition<W> {
         }
     }
 
-    /// The recorded error, if any, after re-syncing the hash mirror to the device sum.
-    pub(crate) fn take_error(&mut self) -> Result<(), GpuError> {
+    /// Re-sync the hash mirror to the device sum.
+    pub(crate) fn resync_hash(&mut self) {
         if let Some(sum) = self.sum.as_ref() {
             self.hash = sum.hash().clone();
         }
+    }
+
+    /// The recorded error, if any, after re-syncing the hash mirror to the device sum.
+    pub(crate) fn take_error(&mut self) -> Result<(), GpuError> {
+        self.resync_hash();
         match self.error.take() {
             Some(e) => Err(e),
             None => Ok(()),
@@ -158,7 +163,7 @@ impl<const W: usize> DevicePartition<W> {
         }
     }
 
-    fn record(&mut self, result: Result<(), GpuError>) {
+    pub(crate) fn record(&mut self, result: Result<(), GpuError>) {
         if let Err(e) = result {
             if self.error.is_none() {
                 self.error = Some(e);

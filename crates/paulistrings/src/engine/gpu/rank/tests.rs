@@ -35,6 +35,29 @@ fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
     }
 }
 
+/// An error a previous call left recorded is returned by the next call, which runs no layer, and the call after that runs normally.
+#[test]
+fn a_stale_error_is_returned_by_the_next_call() {
+    crate::require_cuda!();
+    let input = rand_sum::<1>(100, 8, 0x57A1);
+    let circuit = crate::test_support::random_circuit::<1>(8, 4, 0x57A2, true);
+    let transport = InProcessTransport::group(1).pop().expect("one rank");
+    let mut split = GpuDistributedSum::scatter_to_device(&input, transport, 0).expect("scatter");
+    split
+        .backend_mut()
+        .record(Err(GpuError::Unsupported("a stale error")));
+    let stale = split.propagate(&circuit, BuiltinTruncation::Keep, Direction::Forward);
+    assert!(
+        matches!(stale, Err(GpuError::Unsupported("a stale error"))),
+        "{stale:?}"
+    );
+    let got = split.gather().expect("gather").expect("rank 0");
+    crate::test_support::assert_same_terms(&got, &input, "no layer ran");
+    split
+        .propagate(&circuit, BuiltinTruncation::Keep, Direction::Forward)
+        .expect("the next call runs");
+}
+
 /// The exchange protocol over the in-process [`PeerWire`](super::super::wire::PeerWire).
 mod protocol {
     use std::time::{Duration, Instant};

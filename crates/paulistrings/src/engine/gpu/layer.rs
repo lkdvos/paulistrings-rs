@@ -16,7 +16,7 @@ use super::scan::{exclusive_scan, ScanScratch};
 use super::sum::GpuSum;
 use super::truncation::KeepProgram;
 use crate::channel::prepared::Prepared;
-use crate::engine::coset::Gf2Span;
+use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::partitioned::plan::PartitionPlan;
 use crate::engine::partitioned::transport::Transport;
@@ -159,6 +159,8 @@ pub(crate) struct LayerScratch<const W: usize> {
     entry_of: CudaSlice<u32>,
     pub(super) arena: Option<DeviceColumns<W>>,
     segment_start_host: Vec<u32>,
+    /// The coset order `bucket_at` uploads the inverse of, and that inverse on the host.
+    order: CosetOrder,
     bucket_at_host: Vec<u32>,
     /// `(bits, bucket deltas)` the resident `bucket_at` was built for; the map is a function of those two alone.
     bucket_at_key: Option<(u8, Vec<u32>)>,
@@ -241,6 +243,7 @@ impl<const W: usize> LayerScratch<W> {
             entry_of: stream.alloc_zeros(16)?,
             arena: None,
             segment_start_host: Vec::new(),
+            order: CosetOrder::default(),
             bucket_at_host: Vec::new(),
             bucket_at_key: None,
             longest: None,
@@ -320,12 +323,11 @@ impl<const W: usize> LayerScratch<W> {
         let key = (sum.hash.bits(), table.bucket_deltas());
         let map_stale = self.bucket_at_key.as_ref() != Some(&key);
         if map_stale {
-            let span = Gf2Span::new(&key.1, key.0);
+            self.order.rebuild(&Gf2Span::new(&key.1, key.0), true);
+            let order = &self.order;
             self.bucket_at_host.clear();
-            self.bucket_at_host.resize(b, 0);
-            for beta in 0..b as u32 {
-                self.bucket_at_host[span.permuted_index(beta) as usize] = beta;
-            }
+            self.bucket_at_host
+                .extend((0..b as u32).map(|position| order.bucket_at(position)));
             grow(stream, &mut self.bucket_at, b, ordinal)?;
         }
         grow(stream, &mut self.counts, b * e, ordinal)?;

@@ -233,40 +233,25 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     Ok(counts)
 }
 
-/// Remote delta `k`'s `(partner, index)` among the partner's received blocks, in plan order: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `received[q]`, as `ReceivedRows::new`.
-fn paired_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
-    plan.remote
-        .iter()
-        .map(|r| {
-            let j = plan
-                .remote_for_partner(r.partner)
-                .position(|other| other.entry == r.entry)
-                .expect("a remote delta is in its own partner's list");
-            (r.partner as usize, j)
-        })
-        .collect()
-}
-
-/// Remote delta `k`'s `(partner, index)` among this rank's send blocks, which the export fills in plan order per partner.
+/// Remote delta `k`'s `(partner, index)` among this rank's send blocks.
 fn own_at(plan: &PartitionPlan) -> Vec<(usize, usize)> {
-    let mut used = std::collections::HashMap::<u32, usize>::new();
-    plan.remote
-        .iter()
-        .map(|r| {
-            let j = used.entry(r.partner).or_default();
-            *j += 1;
-            (r.partner as usize, *j - 1)
-        })
+    (0..plan.remote.len())
+        .map(|k| (plan.remote[k].partner as usize, plan.sent_block_index(k)))
         .collect()
 }
 
-/// The received skeleton per remote delta in plan order, by [`paired_at`].
+/// The received skeleton per remote delta in plan order, by [`PartitionPlan::received_block_index`].
 fn paired_blocks<'a, const W: usize>(
     plan: &PartitionPlan,
     received: &'a [Option<BlockSkeletons<W>>],
 ) -> Vec<&'a Skeleton> {
-    paired_at(plan)
-        .into_iter()
+    (0..plan.remote.len())
+        .map(|k| {
+            (
+                plan.remote[k].partner as usize,
+                plan.received_block_index(k),
+            )
+        })
         .map(|(q, j)| {
             received[q]
                 .as_ref()
@@ -413,11 +398,11 @@ fn export_blocks_device<const W: usize>(
         }
     }
     let mut blocks_used = vec![0usize; size as usize];
-    for r in &plan.remote {
+    for (k, r) in plan.remote.iter().enumerate() {
         let q = r.partner as usize;
         let payload = send[q].as_mut().expect("a payload for every partner");
-        let j = blocks_used[q];
-        blocks_used[q] += 1;
+        let j = plan.sent_block_index(k);
+        blocks_used[q] = j + 1;
         if merged[q] {
             continue;
         }

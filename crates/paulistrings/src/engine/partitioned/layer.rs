@@ -43,7 +43,7 @@ struct ReceivedRows<'a, const W: usize> {
 }
 
 impl<'a, const W: usize> ReceivedRows<'a, W> {
-    /// Pair each remote delta with its block: the `j`-th of `remote_for_partner(q)` is the `j`-th block of `received[q]`, since remoteness is symmetric.
+    /// Pair each remote delta with its block by [`PartitionPlan::received_block_index`].
     fn new(
         plan: &PartitionPlan,
         received: &'a [Option<PartnerPayload<W>>],
@@ -52,11 +52,8 @@ impl<'a, const W: usize> ReceivedRows<'a, W> {
         wait: &'a dyn ChunkWait,
     ) -> Self {
         let mut blocks = Vec::with_capacity(plan.remote.len());
-        for remote in &plan.remote {
-            let block_index = plan
-                .remote_for_partner(remote.partner)
-                .position(|other| other.entry == remote.entry)
-                .expect("a remote delta is in its own partner's list");
+        for (k, remote) in plan.remote.iter().enumerate() {
+            let block_index = plan.received_block_index(k);
             let block = received[remote.partner as usize]
                 .as_ref()
                 .and_then(|payload| payload.blocks.get(block_index));

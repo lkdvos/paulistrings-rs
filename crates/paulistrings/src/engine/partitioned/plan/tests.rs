@@ -106,11 +106,15 @@ fn a_delta_whose_mask_sets_the_partition_bit_is_remote() {
             "rank {rank}",
         );
         assert_eq!(
-            plan.remote_for_partner(rank ^ 1).count(),
+            plan.remote.iter().filter(|r| r.partner == rank ^ 1).count(),
             1,
             "rank {rank}: partner stream",
         );
-        assert_eq!(plan.remote_for_partner(rank).count(), 0, "rank {rank}");
+        assert_eq!(
+            plan.remote.iter().filter(|r| r.partner == rank).count(),
+            0,
+            "rank {rank}"
+        );
     }
 }
 
@@ -187,7 +191,7 @@ fn local_and_remote_cover_every_entry_exactly_once() {
         assert_eq!(
             partners
                 .iter()
-                .map(|&q| plan.remote_for_partner(q).count())
+                .map(|&q| plan.remote.iter().filter(|r| r.partner == q).count())
                 .sum::<usize>(),
             plan.remote.len(),
             "trial {trial}",
@@ -214,4 +218,28 @@ impl PartitionPlan {
         v.dedup();
         v.into_iter()
     }
+}
+
+/// A remote delta's block is its rank among the partner's remote deltas, on both the sending and the receiving side.
+#[test]
+fn block_indices_count_within_each_partner() {
+    let remote = |entry: usize, partner: u32| RemoteDelta {
+        entry,
+        partner,
+        bucket_delta: 0,
+    };
+    let plan = PartitionPlan {
+        remote: vec![
+            remote(1, 1),
+            remote(2, 3),
+            remote(4, 1),
+            remote(5, 3),
+            remote(7, 1),
+        ],
+        ..PartitionPlan::default()
+    };
+    let received: Vec<usize> = (0..5).map(|k| plan.received_block_index(k)).collect();
+    let sent: Vec<usize> = (0..5).map(|k| plan.sent_block_index(k)).collect();
+    assert_eq!(received, [0, 0, 1, 1, 2]);
+    assert_eq!(sent, [0, 0, 1, 1, 2]);
 }

@@ -101,9 +101,22 @@ impl PartitionPlan {
         !self.remote.is_empty()
     }
 
-    /// The remote deltas destined for partition `q`, ascending by entry.
-    pub(crate) fn remote_for_partner(&self, q: u32) -> impl Iterator<Item = &RemoteDelta> {
-        self.remote.iter().filter(move |r| r.partner == q)
+    /// The index of remote delta `remote`'s block among those its partner sends this partition: the `j`-th remote delta with partner `q` is the `j`-th block received from `q`, since remoteness is symmetric.
+    pub(crate) fn received_block_index(&self, remote: usize) -> usize {
+        self.index_among_partner(remote)
+    }
+
+    /// The index of remote delta `remote`'s block among those this partition sends its partner, which an export fills in plan order per partner.
+    pub(crate) fn sent_block_index(&self, remote: usize) -> usize {
+        self.index_among_partner(remote)
+    }
+
+    fn index_among_partner(&self, remote: usize) -> usize {
+        let partner = self.remote[remote].partner;
+        self.remote[..remote]
+            .iter()
+            .filter(|other| other.partner == partner)
+            .count()
     }
 }
 

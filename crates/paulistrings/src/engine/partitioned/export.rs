@@ -127,8 +127,8 @@ pub(crate) fn export_layer<const W: usize>(
         }
         let partner = remote.partner as usize;
         let payload = send[partner].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
-        let block_index = blocks_used[partner];
-        blocks_used[partner] += 1;
+        let block_index = plan.sent_block_index(i);
+        blocks_used[partner] = block_index + 1;
         if payload.blocks.len() <= block_index {
             payload
                 .blocks

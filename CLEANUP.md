@@ -63,7 +63,7 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 19 | GPU: wire | wire, wire/peer, nccl | pending |
 | 20 | GPU: drivers | driver, rank, rank/affinity | pending |
 | 21 | Organisation revisit | — | pending |
-| 22 | Test infrastructure | test_support, tests/, in-source tests | pending |
+| 22 | Test infrastructure | test_support, tests/, in-source tests | decided (D64) |
 | 23 | Benches and examples | benches/, examples/ (phase_breakdown 3k lines) | pending |
 
 ## Decisions
@@ -242,6 +242,7 @@ Not yet measured: code A/B against `89bdcca` (D8).
   As applied: cherry-picked `52369f3` (dispatch) and `e69919d` (spin) after D58–D61; merged tree fmt, clippy (default, cuda, py cuda), 783 workspace tests and 522 pytest green. Branch `d62` can go.
 - **D63** Chunk 21: the core layer loop moves up to engine level as pure moves (`engine/{driver,backend,plan,transport}.rs`: `run_layers`/`DriverFrame`/`LayerRun`, `PartitionBackend`/`PartitionStorage`/`HostPartition`, `PartitionPlan`, `Transport`/`SoloTransport`/`ChunkMap`/`Payload`); `engine/partitioned/` keeps only the P > 1 parts. Observability files stay flat. CLAUDE.md organisation and layout updated (incl. `knob`, `timing`, `trace`, `test_support/rows`).
   As applied: `30251b7`..`5cc5449`, pure moves (diffs only `use`/module-doc lines). Core `engine/{driver,backend,plan,transport}.rs`; `DriverFrame`, `LayerRun`, `DriverLaps`, `scatter_local`, `propagate_partitioned` stay in `partitioned/driver.rs` (P > 1 only); `in_process.rs` and `exchange_block.rs` flat in `engine/partitioned/`. Two documented upward edges remain: `engine/backend.rs` → `partitioned::layer` (the host layer with its exchange branch) and `cuda_context` → `PLACEMENT_LOG_TARGET`. Flakes under full parallel load: `a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs` (60 s bound) and once `ranks_match_propagate`; both pass alone (chunk 22).
+- **D64** Chunk 22 (tests), measured: 27.4k test lines against 19.8k production; default `cargo test -p paulistrings` 28 s wall (12.4 s fresh compile), cuda about 15 min, pytest 71 s; line coverage 94.4% (default and cuda). Four capped-receive device tests (277/340/170/89 s alone) add 0 unique lines and starve the wire-failure test (failed 2/2 alongside them, passes without). Agreed: (1) drop the cap = 8 arm of the four capped-receive tests; (2) shrink the default oracle matrices (`partitioned_layer_matches_naive_oracle_w1` 9.1 s, `bucketed` dense 7 s / sparse 5.4 s); user is not convinced the dense oracles still earn their time, and CLAUDE.md is updated to allow an opt-in `#[ignore]`d exhaustive tier; (3) trim the duplicated agreement cases in `propagate_gpu_partitioned` (keep P = 1 bitwise, poison, tag-limit, unsupported, uneven bits); (4) merge `bucket_knob.rs` + `propagate_scratch.rs`, `layer_trace.rs` + `partitioned_trace.rs`, fold `tests/pauli_string.rs` into its unit tests; (5) product-state tests out of `storage/tests.rs` into `readout/product_state/tests.rs`; (6) split `test_support.rs` into `test_support/{mod,random,oracle,compare,circuits,transport}.rs`, delete `rand_sum_on`, privatise internal-only helpers; (7) `test_partitioned.py`: drop width 68, one case per binding knob. The keep-as-is list (PTM value tests, merge/coset proptests, thread-count tripwire, collapse-sampling seeds, `in_process` timing/failure tests, `runs_agree` self-tests) gets a second, more aggressive audit (user).
 
 ## Possible improvements
 
@@ -273,4 +274,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–21 done. Next: 22 (tests: timing, coverage, trimming), 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.
+Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–21 done; 22 decided (D64), being applied, second audit of the keep-as-is tests running. Next: 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.

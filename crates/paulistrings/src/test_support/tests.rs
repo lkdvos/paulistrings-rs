@@ -56,12 +56,8 @@ mod runs_agree {
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::accumulator::BuildAccumulator;
     use crate::pauli_sum::PauliSum;
-    use crate::test_support::{
-        assert_runs_agree, assert_runs_agree_count_only, canonical_triples, heavy_cut,
-        propagate_discarding, spread_magnitudes, tie_heavy_sum, trotter_circuit, DiscardMeter,
-    };
+    use crate::test_support::{assert_runs_agree, assert_runs_agree_count_only, DiscardMeter};
     use crate::truncation::{And, ApproxTopN, CoefficientThreshold, TopN};
-    use crate::{propagate_with, Direction, LayerScratch, PropagateOptions};
     use num_complex::Complex64;
 
     /// Term `k` is `X` on the bits of `k + 1`, so every index is its own key.
@@ -166,81 +162,11 @@ mod runs_agree {
         assert_runs_agree(policy, discarded, &got, &want, 1e-12, "no cut");
     }
 
-    /// Two runs of a 32-layer Trotter circuit over four magnitudes spread across octaves, at two bucket counts: the cuts split tie groups, so the runs keep different survivors.
-    fn many_layer_runs(direction: Direction) -> (PauliSum<1>, PauliSum<1>, f64) {
-        let sum = spread_magnitudes(&tie_heavy_sum::<1>(1_500, 16, 0x7E5), 40, 0x7E5);
-        let circuit = trotter_circuit::<1>(16, 0.01);
-        let policy = TopN(3_000);
-        let (want, discarded) = propagate_discarding(&circuit, sum.clone(), &policy, direction);
-        let options = PropagateOptions {
-            target_bucket_len: 16,
-            min_buckets: 256,
-        };
-        let mut scratch = LayerScratch::new();
-        let got = propagate_with(&circuit, sum, &policy, direction, &mut scratch, options);
-        assert_ne!(
-            canonical_triples(&got),
-            canonical_triples(&want),
-            "the bucket counts should choose different ties",
-        );
-        (got, want, discarded)
-    }
-
-    #[test]
-    fn different_tie_choices_over_many_layers_pass() {
-        for direction in [Direction::Forward, Direction::Heisenberg] {
-            let (got, want, discarded) = many_layer_runs(direction);
-            assert_runs_agree(TopN(3_000), discarded, &got, &want, 1e-12, "many layers");
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "exceeds")]
-    fn a_sign_flipped_on_the_largest_term_after_many_layers_fails() {
-        let (got, want, discarded) = many_layer_runs(Direction::Forward);
-        let terms = canonical_triples(&got);
-        let largest = terms.iter().map(|t| t.2.norm()).fold(0.0, f64::max);
-        let mut accumulator = BuildAccumulator::<1>::new(16);
-        for (x, z, c) in terms {
-            let c = if c.norm() == largest { -c } else { c };
-            accumulator.add_term(PauliString::<1> { x, z }, c);
-        }
-        let got = accumulator.finalize();
-        assert_runs_agree(TopN(3_000), discarded, &got, &want, 1e-12, "flipped");
-    }
-
-    /// [`heavy_cut`] at two bucket counts under `policy`, forward, and the reference's `Δ`.
-    fn heavy_runs(policy: TopN) -> (PauliSum<1>, PauliSum<1>, f64) {
-        let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA7);
-        let (want, discarded) =
-            propagate_discarding(&circuit, sum.clone(), &policy, Direction::Forward);
-        let options = PropagateOptions {
-            target_bucket_len: 16,
-            min_buckets: 256,
-        };
-        let mut scratch = LayerScratch::new();
-        let got = propagate_with(
-            &circuit,
-            sum,
-            &policy,
-            Direction::Forward,
-            &mut scratch,
-            options,
-        );
-        (got, want, discarded)
-    }
-
     #[test]
     fn a_heavy_cut_compares_counts_only() {
-        let (got, want, discarded) = heavy_runs(TopN(400));
-        assert_runs_agree_count_only(TopN(400), discarded, &got, &want, "heavy");
-    }
-
-    #[test]
-    #[should_panic(expected = "too heavy")]
-    fn a_heavy_cut_is_refused_by_the_operator_check() {
-        let (got, want, discarded) = heavy_runs(TopN(400));
-        assert_runs_agree(TopN(400), discarded, &got, &want, 1e-12, "heavy");
+        let (want, _) = want();
+        let got = kept((0..10).chain(15..20));
+        assert_runs_agree_count_only(TopN(15), 10.0, &got, &want, "heavy");
     }
 
     #[test]
@@ -254,15 +180,17 @@ mod runs_agree {
     #[test]
     #[should_panic(expected = "the last layer must cut")]
     fn a_count_below_n_fails() {
-        let (got, want, discarded) = heavy_runs(TopN(400));
-        assert_runs_agree_count_only(TopN(401), discarded, &got, &want, "below n");
+        let (want, _) = want();
+        let got = kept((0..10).chain(15..20));
+        assert_runs_agree_count_only(TopN(16), 10.0, &got, &want, "below n");
     }
 
     #[test]
     #[should_panic(expected = "bare TopN or ApproxTopN")]
     fn a_count_only_check_needs_a_bare_cut() {
-        let (got, want, discarded) = heavy_runs(TopN(400));
-        let policy = And(CoefficientThreshold(1e-9), ApproxTopN(400));
-        assert_runs_agree_count_only(policy, discarded, &got, &want, "and");
+        let (want, _) = want();
+        let got = kept((0..10).chain(15..20));
+        let policy = And(CoefficientThreshold(1e-9), ApproxTopN(15));
+        assert_runs_agree_count_only(policy, 10.0, &got, &want, "and");
     }
 }

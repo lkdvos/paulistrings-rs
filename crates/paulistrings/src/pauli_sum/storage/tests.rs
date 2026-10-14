@@ -1541,6 +1541,26 @@ fn merge_partitions_of_a_single_input_returns_it_unchanged() {
     assert_same_columns(&back, &s, "single-input merge");
 }
 
+/// Three parts, a count no pairwise merge divides evenly, gather to exactly their union.
+#[test]
+fn merge_partitions_of_three_parts_keeps_every_term() {
+    let s = rand_sum_real::<1>(400, 64, 0xDA).with_hash(Gf2Hash::<1>::new(64, 3, 0xBEEF));
+    let rows = PartitionRows::<1>::from_seed(64, 2, 0x5EED);
+    let parts: Vec<PauliSum<1>> = (0..3u32).map(|r| s.filter_partition(&rows, r)).collect();
+    assert!(
+        parts.iter().all(|p| !p.is_empty()),
+        "every part must hold terms"
+    );
+    let back = PauliSum::<1>::merge_partitions(parts.clone());
+    back.assert_invariants();
+    assert_eq!(back.len(), parts.iter().map(|p| p.len()).sum::<usize>());
+    for (r, part) in parts.iter().enumerate() {
+        for (x, z, c) in part.iter() {
+            assert_eq!(back.get(x, z), Some(c), "part {r} lost a term");
+        }
+    }
+}
+
 #[test]
 #[should_panic(expected = "bucket count mismatch")]
 fn merge_partitions_panics_on_mismatched_bits() {

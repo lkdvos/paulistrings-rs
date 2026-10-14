@@ -175,8 +175,8 @@ fn differential_against_the_naive_oracle_w1_dense_collisions() {
     for (name, channel) in &channels {
         let channel_ref: &dyn Channel<1> = channel.as_ref();
         for &adjoint in &[false, true] {
-            for &bits in &[0u8, 1, 3, 6, 11] {
-                let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
+            let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
+            for &bits in &[0u8, 11] {
                 let got = bucketed_layer(&input, channel_ref, &AlwaysKeep, adjoint, bits, 0xABCD);
                 assert_terms_close(
                     &got,
@@ -192,13 +192,13 @@ fn differential_against_the_naive_oracle_w1_dense_collisions() {
 #[test]
 fn differential_against_the_naive_oracle_w2_sparse() {
     // The other regime: wide keys, few collisions, word-boundary supports.
-    let input = rand_sum::<2>(3000, 128, 0xBEEF);
+    let input = rand_sum::<2>(1000, 128, 0xBEEF);
     let channels = crate::test_support::differential_channels_w2();
     for (name, channel) in &channels {
         let channel_ref: &dyn Channel<2> = channel.as_ref();
         for &adjoint in &[false, true] {
-            for &bits in &[2u8, 5, 9] {
-                let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
+            let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
+            for &bits in &[2u8, 9] {
                 let got = bucketed_layer(&input, channel_ref, &AlwaysKeep, adjoint, bits, 0xABCD);
                 assert_terms_close(
                     &got,

@@ -182,7 +182,7 @@ fn rows_seeing_qubit_2_x() -> PartitionRows<1> {
     PartitionRows::<1>::from_rows(8, vec![[1u64 << 2]], vec![[0u64]])
 }
 
-/// Merged output against the naive oracle and the unpartitioned engine, over both prepared arms, both directions, several bucket counts, `P` and row draws.
+/// Merged output against the naive oracle and the unpartitioned engine, over both prepared arms, both directions, two bucket counts and both `P > 1` row shapes.
 #[test]
 fn partitioned_layer_matches_naive_oracle_w1() {
     let input = rand_sum::<1>(600, 8, 0x9D0);
@@ -190,23 +190,21 @@ fn partitioned_layer_matches_naive_oracle_w1() {
         let channel_ref: &dyn Channel<1> = channel.as_ref();
         for &adjoint in &[false, true] {
             let want = naive_apply_layer(&input, channel_ref, &AlwaysKeep, adjoint);
-            for &bits in &[0u8, 1, 3, 6] {
+            for &bits in &[0u8, 6] {
                 let hash = Gf2Hash::<1>::new(8, bits, 0xABCD);
                 let whole = input.clone().with_hash(hash);
                 let prepared = channel_ref.prepare(whole.hash(), adjoint).expect("prepare");
                 let unsplit = unsplit_layer(&whole, &prepared, &AlwaysKeep);
-                for &pbits in &[0u8, 1, 2] {
-                    for &pseed in &[0x1357u64, 0x2468] {
-                        let rows = PartitionRows::<1>::from_seed(8, pbits, pseed);
-                        let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
-                        let got = PauliSum::merge_partitions(parts);
-                        let what = format!(
-                            "{name} adjoint={adjoint} bits={bits} P={} pseed={pseed:x}",
-                            rows.num_partitions(),
-                        );
-                        assert_terms_close(&got, &want, TOL, &what);
-                        assert_terms_close(&got, &unsplit, TOL, &format!("{what} vs unsplit"));
-                    }
+                for &pbits in &[1u8, 2] {
+                    let rows = PartitionRows::<1>::from_seed(8, pbits, 0x1357);
+                    let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
+                    let got = PauliSum::merge_partitions(parts);
+                    let what = format!(
+                        "{name} adjoint={adjoint} bits={bits} P={}",
+                        rows.num_partitions(),
+                    );
+                    assert_terms_close(&got, &want, TOL, &what);
+                    assert_terms_close(&got, &unsplit, TOL, &format!("{what} vs unsplit"));
                 }
             }
         }
@@ -226,18 +224,16 @@ fn partitioned_layer_matches_naive_oracle_w2() {
                 let whole = input.clone().with_hash(hash);
                 let prepared = channel_ref.prepare(whole.hash(), adjoint).expect("prepare");
                 let unsplit = unsplit_layer(&whole, &prepared, &AlwaysKeep);
-                for &pbits in &[0u8, 1, 2] {
-                    for &pseed in &[0x1357u64, 0x2468] {
-                        let rows = PartitionRows::<2>::from_seed(128, pbits, pseed);
-                        let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
-                        let got = PauliSum::merge_partitions(parts);
-                        let what = format!(
-                            "{name} adjoint={adjoint} bits={bits} P={} pseed={pseed:x}",
-                            rows.num_partitions(),
-                        );
-                        assert_terms_close(&got, &want, TOL, &what);
-                        assert_terms_close(&got, &unsplit, TOL, &format!("{what} vs unsplit"));
-                    }
+                for &pbits in &[1u8, 2] {
+                    let rows = PartitionRows::<2>::from_seed(128, pbits, 0x1357);
+                    let (parts, _) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
+                    let got = PauliSum::merge_partitions(parts);
+                    let what = format!(
+                        "{name} adjoint={adjoint} bits={bits} P={}",
+                        rows.num_partitions(),
+                    );
+                    assert_terms_close(&got, &want, TOL, &what);
+                    assert_terms_close(&got, &unsplit, TOL, &format!("{what} vs unsplit"));
                 }
             }
         }

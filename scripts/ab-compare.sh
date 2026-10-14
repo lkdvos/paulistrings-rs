@@ -1,53 +1,9 @@
 #!/usr/bin/env bash
-# Interleaved A/B measurement harness for paulistrings-rs.
-#
-# Usage: scripts/ab-compare.sh <name> --a <git-rev|.> --b <git-rev|.> \
-#            --probe '<phase_breakdown args>' [--pairs N] [--order abab|abba] \
-#            [--features <cargo features>] [--keep-worktrees]
-#
-# Why this exists: this box's single-shot campaign noise is ~±5-8% at 1
-# thread and ~±10-26% at 8/32 threads -- untouched code has moved that much
-# between campaigns (see benchmarks/PROFILING.md, Interleaved A/B protocol).
-# Comparing "one campaign per build" therefore cannot resolve the ~5-10%
-# effects the engine work actually produces. This script implements the
-# protocol that can: build *both* sides up front into two separate
-# binaries, then alternate them adjacent in time for several pairs, and
-# report paired per-run deltas (scripts/ab-report.py) rather than a
-# difference of two independently-noisy campaign means.
-#
-# Writes into benchmarks/results/<date>-<hostname>/:
-#   <name>-ab.log              provenance header + every run's stdout + report
-#   <name>-a.probe.jsonl       phase_breakdown --json-out sidecar, side A
-#   <name>-b.probe.jsonl       ditto, side B
-#   <name>-{a,b}-<sha|worktree>[-dirty]   the exact binaries that were run
-# Pre-existing sidecars from an earlier run of the same name/day are rotated
-# aside (never appended to), because the report pairs runs by their order of
-# appearance in the file.
-#
-# Design notes:
-#   - Probe args are passed through *verbatim* (word-split via `eval` into a
-#     bash array, so quoting inside --probe works). No flags are injected --
-#     not even --seed: the probe already defaults to a fixed seed, and adding
-#     a flag the pinned binary might not accept would break the A side, the
-#     B side, or both. If you want a specific seed, put it in --probe.
-#   - --probe-b (optional, defaults to --probe's value) gives side B its own
-#     probe args, so a runtime-knob A/B (e.g. --partitions 1 on A vs
-#     --partitions 2 on B, same binary via --a . --b .) measures the knob,
-#     not a code change. The verbatim-passthrough symmetry above still holds
-#     per side: A gets exactly --probe's words, B gets exactly --probe-b's
-#     (or --probe's, if --probe-b was not given) -- neither side's args leak
-#     into the other's invocation.
-#   - A failing single run is logged and the campaign continues; ab-report.py
-#     pairs up to the minimum run count per cell, so a lost run costs one
-#     pair, not the whole comparison. Build failures, malformed usage and
-#     unresolvable revs abort -- those are caller mistakes, not flaky
-#     measurements.
-#   - Each side builds in its own tree (a detached `git worktree` for a rev,
-#     the working tree for `.`), so the two builds cannot evict each other
-#     from a shared target dir mid-campaign. A rev without a committed
-#     Cargo.lock gets the working tree's, so the two sides differ only in
-#     source, not in resolved dependency versions.
-#
+# Interleaved A/B harness: build the two sides' probes up front, alternate them adjacent in time, and report paired per-run deltas (scripts/ab-report.py).
+# The protocol, and why a difference of two campaign means cannot resolve the effects it measures: benchmarks/PROFILING.md §Interleaved A/B protocol.
+# Probe args pass through verbatim (`eval` into an array, so quoting inside --probe survives); nothing is injected, not even --seed, because a pinned binary may not accept it.
+# A failing run is logged and the campaign continues (ab-report.py pairs up to the minimum run count per cell); a failing build, malformed usage or an unresolvable rev aborts.
+# Each rev builds once, in its own detached worktree, so the two builds cannot evict each other; two sides on the same clean commit (or both `.`) share one binary.
 # Never invokes any Slurm command.
 
 set -euo pipefail
@@ -63,55 +19,41 @@ usage() {
 Usage: scripts/ab-compare.sh <name> --a <git-rev|.> --b <git-rev|.> \
            --probe '<phase_breakdown args>' [options]
 
-Builds two phase_breakdown binaries and alternates them adjacent in time,
-then reports paired per-run deltas. This is the protocol for effects
-smaller than this host's campaign-to-campaign noise (±5-8% at 1 thread,
-±10-26% at 8/32 threads).
-
 Required:
   <name>                  Campaign name; prefixes every output file.
-  --a <git-rev|.>         Baseline side. A git revision (tag, branch, SHA,
-                          HEAD~1, ...) or "." for the current working tree
-                          (uncommitted changes included).
+  --a <git-rev|.>         Baseline side: a git revision, or "." for the
+                          working tree (uncommitted changes included).
   --b <git-rev|.>         Candidate side, same syntax.
-  --probe '<args>'        Arguments for the phase_breakdown probe, passed
-                          through verbatim, e.g.
-                            --probe '--n 1000000 --threads 1,32 --layers rotation_zz'
-                          See `cargo run --release --features phase-timing \
-                          --example phase_breakdown -- --help`.
+  --probe '<args>'        phase_breakdown arguments, passed verbatim, e.g.
+                          '--n 1000000 --threads 1,32 --layers rotation_zz'.
 
 Options:
-  --probe-b '<args>'      Side B's probe args, if different from --probe
-                          (default: same as --probe). Use this for a
-                          runtime-knob A/B on one binary -- e.g. --a . --b .
-                          with --probe '--partitions 1 ...' and --probe-b
-                          '--partitions 2 ...' -- rather than a code change.
-                          One (layer, threads) cell per invocation is
-                          recommended so the report pairs cleanly; when
-                          --probe-b is given, the report is invoked with
-                          --pair-on layer,threads (dropping partitions from
-                          the pairing key, since A and B deliberately differ
-                          there).
-  --pairs N               Number of A/B pairs to run (default: 3). Direction
-                          consistency across all N pairs is the acceptance
-                          criterion -- see the report's closing note.
-  --order abab|abba       abab (default): every pair runs A then B.
-                          abba: alternate the within-pair order per pair, so
-                          a monotone drift in machine state cannot masquerade
-                          as a consistent B-is-faster signal.
-  --features <list>       Cargo features for both builds
-                          (default: phase-timing -- the probe requires it).
-  --keep-worktrees        Don't remove the temporary git worktrees after
-                          building (for inspecting exactly what was built).
+  --probe-b '<args>'      Side B's probe args (default: --probe's). With the
+                          same rev on both sides this is a runtime-knob A/B,
+                          e.g. '--partitions 2 ...' against '--partitions 1 ...';
+                          the report then pairs on layer,threads.
+  --pairs N               A/B pairs to run (default 3). Direction consistency
+                          across every pair is the acceptance criterion.
+  --order abab|abba       abab (default) runs A then B in every pair; abba
+                          alternates the order so a monotone drift cannot pose
+                          as a consistent effect.
+  --features <list>       Cargo features for the builds (default phase-timing).
+  --bin-a <path>          Run this prebuilt probe as side A instead of building
+  --bin-b <path>          --a/--b; the rev then only labels the side.
+  --launch '<prefix>'     Run every probe under this launcher, e.g.
+                          'mpirun -n 2' or 'srun --mpi=pmix --ntasks 4'; the
+                          probe args need --mpi. Each run's per-rank sidecars
+                          (<file>.rank<N>) merge into one row per cell: every
+                          *_ns time and vmhwm_kb is the maximum over ranks (the
+                          critical path), every other key is rank 0's.
+  --keep-worktrees        Keep the temporary build worktrees.
 
-Outputs (benchmarks/results/<date>-<hostname>/):
-  <name>-ab.log, <name>-{a,b}.probe.jsonl, <name>-{a,b}-<sha|worktree>[-dirty]
+Outputs (benchmarks/results/<date>-<host>/):
+  <name>-ab.log, <name>-{a,b}.probe.jsonl, <name>-{a,b}-<sha|worktree>[-dirty|-prebuilt]
 
-The report can be re-run at any time on the archived sidecars:
+Re-run the report on the archived sidecars at any time:
   python3 scripts/ab-report.py <name>-a.probe.jsonl <name>-b.probe.jsonl \
       [--field wall_ns] [--all-phases] [--pair-on layer,threads]
-
-Never invokes any Slurm command.
 EOF
 }
 
@@ -122,11 +64,7 @@ die() {
   exit 2
 }
 
-if [[ $# -eq 0 ]]; then
-  # A bare invocation is malformed, not a help request: every argument this
-  # script needs is one you cannot guess a default for.
-  die "no arguments (need at least <name> --a REV --b REV --probe 'ARGS')"
-fi
+[[ $# -gt 0 ]] || die "no arguments (need at least <name> --a REV --b REV --probe 'ARGS')"
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
   usage
   exit 0
@@ -134,9 +72,7 @@ fi
 
 name=$1
 shift
-if [[ -z "$name" || "$name" == -* ]]; then
-  die "first argument must be a campaign name, got '${name}'"
-fi
+[[ -n "$name" && "$name" != -* ]] || die "first argument must be a campaign name, got '${name}'"
 
 a_rev=""
 b_rev=""
@@ -147,10 +83,13 @@ pairs=3
 order="abab"
 features="phase-timing"
 keep_worktrees=0
+bin_a_given=""
+bin_b_given=""
+launch=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --a | --b | --probe | --probe-b | --pairs | --order | --features)
+    --a | --b | --probe | --probe-b | --pairs | --order | --features | --bin-a | --bin-b | --launch)
       [[ $# -ge 2 ]] || die "$1 requires a value"
       case "$1" in
         --a) a_rev=$2 ;;
@@ -163,6 +102,9 @@ while [[ $# -gt 0 ]]; do
         --pairs) pairs=$2 ;;
         --order) order=$2 ;;
         --features) features=$2 ;;
+        --bin-a) bin_a_given=$2 ;;
+        --bin-b) bin_b_given=$2 ;;
+        --launch) launch=$2 ;;
       esac
       shift 2
       ;;
@@ -174,9 +116,7 @@ while [[ $# -gt 0 ]]; do
       usage
       exit 0
       ;;
-    *)
-      die "unknown argument '$1'"
-      ;;
+    *) die "unknown argument '$1'" ;;
   esac
 done
 
@@ -186,32 +126,23 @@ done
 [[ "$pairs" =~ ^[1-9][0-9]*$ ]] || die "--pairs must be a positive integer, got '${pairs}'"
 [[ "$order" == "abab" || "$order" == "abba" ]] || die "--order must be abab or abba, got '${order}'"
 [[ -n "$features" ]] || die "--features must not be empty (the probe requires phase-timing)"
+for b in "$bin_a_given" "$bin_b_given"; do
+  [[ -z "$b" || -x "$b" ]] || die "'$b' is not an executable"
+done
+[[ $probe_b_given -eq 1 ]] || probe_b="$probe"
 
-# --probe-b defaults to --probe's value, so the "no flags are injected"
-# verbatim passthrough below is symmetric: each side gets exactly its own
-# args, and an unset --probe-b is not a special case for run_side.
-if [[ $probe_b_given -eq 0 ]]; then
-  probe_b="$probe"
-fi
-
-# Verbatim pass-through of the probe args: `eval` so that quoting *inside*
-# --probe/--probe-b is honored, unlike bench-campaign.sh's plain word-splitting.
 eval "probe_args_a=( $probe )"
-if [[ ${#probe_args_a[@]} -eq 0 ]]; then
-  die "--probe expanded to no arguments"
-fi
+[[ ${#probe_args_a[@]} -gt 0 ]] || die "--probe expanded to no arguments"
 eval "probe_args_b=( $probe_b )"
-if [[ ${#probe_args_b[@]} -eq 0 ]]; then
-  die "--probe-b expanded to no arguments"
-fi
+[[ ${#probe_args_b[@]} -gt 0 ]] || die "--probe-b expanded to no arguments"
+launch_args=()
+[[ -z "$launch" ]] || eval "launch_args=( $launch )"
 
 out_dir="benchmarks/results/$(date +%F)-$(hostname -s)"
 mkdir -p "$out_dir"
 log_file="$out_dir/${name}-ab.log"
 sidecar_a="$out_dir/${name}-a.probe.jsonl"
 sidecar_b="$out_dir/${name}-b.probe.jsonl"
-# Honour CARGO_TARGET_DIR (cluster jobs build into a job-private dir; on the
-# CCQ workstations `target` is a symlink into the local NVMe /home).
 target_dir="${CARGO_TARGET_DIR:-target}"
 wt_root="${target_dir}/ab-worktrees"
 
@@ -219,48 +150,20 @@ log() {
   printf '%s\n' "$*" | tee -a "$log_file"
 }
 
-# ---------------------------------------------------------------------------
-# Temporary worktree bookkeeping
-# ---------------------------------------------------------------------------
-
 worktrees=()
-
 cleanup_worktrees() {
-  if [[ $keep_worktrees -eq 1 ]]; then
-    return 0
-  fi
+  [[ $keep_worktrees -eq 0 ]] || return 0
   local d
   for d in ${worktrees[@]+"${worktrees[@]}"}; do
     [[ -n "$d" && -d "$d" ]] || continue
-    # --force: the build left untracked artifacts (target/) behind, which
-    # plain `git worktree remove` refuses to discard.
+    # --force: the build left untracked artifacts behind, which plain `git worktree remove` refuses to discard.
     git worktree remove --force "$d" >/dev/null 2>&1 || rm -rf "$d"
   done
 }
 trap cleanup_worktrees EXIT
 
-# ---------------------------------------------------------------------------
-# Revision resolution
-# ---------------------------------------------------------------------------
-
 tree_is_dirty() {
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    echo yes
-  else
-    echo no
-  fi
-}
-
-# Validated before any substitution below, so an unresolvable rev prints the
-# usage heredoc and exits nonzero from the *script*, not from a subshell.
-require_rev() {
-  local rev=$1
-  if [[ "$rev" == "." ]]; then
-    return 0
-  fi
-  if ! git rev-parse --verify --quiet "${rev}^{commit}" >/dev/null; then
-    die "cannot resolve revision '${rev}' to a commit (--a/--b take a git rev or '.')"
-  fi
+  if ! git diff --quiet || ! git diff --cached --quiet; then echo yes; else echo no; fi
 }
 
 resolve_sha() {
@@ -268,167 +171,116 @@ resolve_sha() {
   if [[ "$rev" == "." ]]; then
     git rev-parse HEAD
   else
-    git rev-parse --verify "${rev}^{commit}"
+    git rev-parse --verify --quiet "${rev}^{commit}" \
+      || die "cannot resolve revision '${rev}' to a commit (--a/--b take a git rev or '.')"
   fi
 }
 
-require_rev "$a_rev"
-require_rev "$b_rev"
-a_sha=$(resolve_sha "$a_rev")
-b_sha=$(resolve_sha "$b_rev")
+a_sha=$(resolve_sha "$a_rev") || exit 2
+b_sha=$(resolve_sha "$b_rev") || exit 2
 wt_dirty=$(tree_is_dirty)
 a_dirty=no
 b_dirty=no
 [[ "$a_rev" == "." ]] && a_dirty=$wt_dirty
 [[ "$b_rev" == "." ]] && b_dirty=$wt_dirty
 
-# ---------------------------------------------------------------------------
-# Provenance header
-# ---------------------------------------------------------------------------
-
-if [[ -f "$log_file" ]]; then
-  {
-    echo
-    echo "############################################################"
-    echo "# RERUN: $(date -Iseconds)"
-    echo "############################################################"
-    echo
-  } >>"$log_file"
-fi
-
-hostname_full=$(hostname -f 2>/dev/null || hostname)
-governor=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)
-cpu_model=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //')
-
-log "${name} interleaved A/B comparison — ${hostname_full}"
-log "date: $(date -Iseconds)"
-log "command: $(printf '%q ' "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"})"
-log "side A: rev '${a_rev}' -> ${a_sha} (dirty: ${a_dirty})"
-log "side B: rev '${b_rev}' -> ${b_sha} (dirty: ${b_dirty})"
-log "probe args: ${probe_args_a[*]}"
-log "probe args B: ${probe_args_b[*]}"
-log "pairs: ${pairs}   order: ${order}   features: ${features}"
-log "$(rustc -V)"
-log "threads (nproc): $(nproc)"
-log "governor: ${governor}"
-log "cpu: ${cpu_model}"
-log "load at start: $(cut -d' ' -f1-3 /proc/loadavg)"
-
-# Smoke mode: identical trees on both sides measure the harness, not a
-# change -- UNLESS --probe-b was given, in which case identical trees are
-# the *point*: this is a runtime-knob A/B (e.g. --partitions 1 vs 2 on the
-# same binary), not a code change, and the smoke-mode warning would be
-# misleading.
+# The two sides build the same thing when both are the working tree or both the same clean commit.
 same_tree=0
 if [[ "$a_rev" == "." && "$b_rev" == "." ]]; then
   same_tree=1
 elif [[ "$a_sha" == "$b_sha" && "$a_dirty" == "no" && "$b_dirty" == "no" ]]; then
   same_tree=1
 fi
+
+if [[ -f "$log_file" ]]; then
+  printf '\n############################################################\n# RERUN: %s\n############################################################\n\n' \
+    "$(date -Iseconds)" >>"$log_file"
+fi
+
+log "${name} interleaved A/B comparison — $(hostname -f 2>/dev/null || hostname)"
+log "date: $(date -Iseconds)"
+log "command: $(printf '%q ' "$0" ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"})"
+log "side A: rev '${a_rev}' -> ${a_sha} (dirty: ${a_dirty})${bin_a_given:+, prebuilt ${bin_a_given}}"
+log "side B: rev '${b_rev}' -> ${b_sha} (dirty: ${b_dirty})${bin_b_given:+, prebuilt ${bin_b_given}}"
+log "probe args: ${probe_args_a[*]}"
+log "probe args B: ${probe_args_b[*]}"
+[[ -z "$launch" ]] || log "launcher: ${launch_args[*]} (per-rank rows merged: *_ns and vmhwm_kb max over ranks, the rest rank 0's)"
+log "pairs: ${pairs}   order: ${order}   features: ${features}"
+log "$(rustc -V)"
+log "threads (nproc): $(nproc)"
+log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"
+log "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | sed 's/^ //')"
+log "load at start: $(cut -d' ' -f1-3 /proc/loadavg)"
 if [[ $same_tree -eq 1 && $probe_b_given -eq 1 ]]; then
-  log "note: both sides share the same tree/commit, and --probe-b differs from"
-  log "      --probe by design -- this is a runtime-knob A/B measuring the"
-  log "      probe-arg difference (${probe} vs ${probe_b}), not a code change."
-elif [[ "$a_rev" == "." && "$b_rev" == "." ]]; then
-  log "WARNING: both sides are the current working tree — this measures this"
-  log "         host's own noise floor (smoke mode), not a code change."
-elif [[ "$a_sha" == "$b_sha" && "$a_dirty" == "no" && "$b_dirty" == "no" ]]; then
-  log "WARNING: both sides resolve to the same clean commit ${a_sha} — this"
-  log "         measures this host's own noise floor, not a code change."
+  log "note: both sides share one tree, and --probe-b differs by design: a runtime-knob A/B of '${probe}' vs '${probe_b}'."
+elif [[ $same_tree -eq 1 ]]; then
+  log "WARNING: both sides are the same tree (${a_sha}); this measures the host's noise floor, not a change."
 fi
 log ""
 
-# ---------------------------------------------------------------------------
-# Build phase
-# ---------------------------------------------------------------------------
-
-# build_side <a|b> <rev> <dirty:yes|no> <sha>: builds that side and sets the
-# global `built_bin` to the archived binary path. Deliberately *not* a
-# command substitution -- its progress has to reach the log live, and an
-# `exit 1` inside `$(...)` would only kill the subshell.
+# build_side <a|b> <rev> <dirty> <sha>: builds that side and sets the global `built_bin` to the archived binary.
+# Not a command substitution: its progress must reach the log live, and an `exit 1` inside `$(...)` would only end the subshell.
 built_bin=""
 build_side() {
   local side=$1 rev=$2 dirty=$3 sha=$4
-  local short tag src dest wt
-  built_bin=""
-
-  if [[ "$rev" == "." ]]; then
-    tag="worktree"
-  else
-    short=$(git rev-parse --short "$sha")
-    tag="$short"
-  fi
+  local tag src dest wt
+  if [[ "$rev" == "." ]]; then tag="worktree"; else tag=$(git rev-parse --short "$sha"); fi
   [[ "$dirty" == "yes" ]] && tag="${tag}-dirty"
   dest="$out_dir/${name}-${side}-${tag}"
 
   if [[ "$rev" == "." ]]; then
-    log "build[${side}]: current working tree (${sha}, dirty=${dirty}) in ${target_dir}"
-    if ! (cargo build --offline --release --features "$features" \
-      -p paulistrings --example phase_breakdown) 2>&1 | tee -a "$log_file"; then
-      log "error: build of side ${side} (working tree) failed — aborting"
-      exit 1
-    fi
+    log "build[${side}]: working tree (${sha}, dirty=${dirty}) in ${target_dir}"
+    (cargo build --offline --release --features "$features" -p paulistrings --example phase_breakdown) 2>&1 \
+      | tee -a "$log_file" || { log "error: build of side ${side} (working tree) failed"; exit 1; }
     src="${target_dir}/release/examples/phase_breakdown"
   else
     wt="${wt_root}/${name}-${side}-$$"
     mkdir -p "$wt_root"
     log "build[${side}]: detached worktree at ${sha} -> ${wt}"
-    if ! (git worktree add --detach "$wt" "$sha") 2>&1 | tee -a "$log_file"; then
-      log "error: git worktree add failed for side ${side} (${rev}) — aborting"
-      exit 1
-    fi
+    (git worktree add --detach "$wt" "$sha") 2>&1 | tee -a "$log_file" \
+      || { log "error: git worktree add failed for side ${side} (${rev})"; exit 1; }
     worktrees+=("$wt")
     if [[ ! -f "$wt/Cargo.lock" && -f Cargo.lock ]]; then
       cp Cargo.lock "$wt/Cargo.lock"
       log "  seeded Cargo.lock from the working tree (the rev predates the committed lock)"
     fi
-    # Subshell cd rather than --manifest-path so the *checked-out* rev's
-    # rust-toolchain.toml selects the compiler, and so the build lands in
-    # the worktree's own target dir.
-    if ! (cd "$wt" && cargo build --offline --release --features "$features" \
-      -p paulistrings --example phase_breakdown) 2>&1 | tee -a "$log_file"; then
-      log "error: build of side ${side} (${rev} @ ${sha}) failed — aborting"
-      exit 1
-    fi
-    # With CARGO_TARGET_DIR set cargo ignores the worktree's own target dir.
+    # cd rather than --manifest-path, so the checked-out rev's rust-toolchain.toml picks the compiler.
+    (cd "$wt" && cargo build --offline --release --features "$features" -p paulistrings --example phase_breakdown) 2>&1 \
+      | tee -a "$log_file" || { log "error: build of side ${side} (${rev} @ ${sha}) failed"; exit 1; }
     src="${CARGO_TARGET_DIR:-$wt/target}/release/examples/phase_breakdown"
   fi
-
-  if [[ ! -x "$src" ]]; then
-    log "error: expected binary '${src}' after building side ${side} — aborting"
-    exit 1
-  fi
+  [[ -x "$src" ]] || { log "error: expected binary '${src}' after building side ${side}"; exit 1; }
   cp "$src" "$dest"
   log "  archived: ${dest}"
   built_bin="$dest"
 }
 
-log "=== build phase ==="
-build_side a "$a_rev" "$a_dirty" "$a_sha"
-bin_a="$built_bin"
-build_side b "$b_rev" "$b_dirty" "$b_sha"
-bin_b="$built_bin"
+# archive_prebuilt <a|b> <path> <sha>: copies a caller's binary next to the sidecars, so the record says exactly what ran.
+archive_prebuilt() {
+  local dest="$out_dir/${name}-$1-$(git rev-parse --short "$3")-prebuilt"
+  cp "$2" "$dest"
+  log "build[$1]: prebuilt $2, archived: ${dest}"
+  built_bin="$dest"
+}
 
-if [[ $keep_worktrees -eq 0 ]]; then
-  cleanup_worktrees
-  worktrees=()
-  log "  temporary worktrees removed (pass --keep-worktrees to keep them)"
-elif [[ ${#worktrees[@]} -gt 0 ]]; then
-  log "  temporary worktrees kept: ${worktrees[*]}"
+log "=== build phase ==="
+if [[ -n "$bin_a_given" ]]; then archive_prebuilt a "$bin_a_given" "$a_sha"; else build_side a "$a_rev" "$a_dirty" "$a_sha"; fi
+bin_a="$built_bin"
+if [[ -n "$bin_b_given" ]]; then
+  archive_prebuilt b "$bin_b_given" "$b_sha"
+  bin_b="$built_bin"
+elif [[ $same_tree -eq 1 && -z "$bin_a_given" ]]; then
+  bin_b="$bin_a"
+  log "build[b]: same tree as side A, reusing ${bin_a}"
 else
-  log "  no temporary worktrees were created (both sides built from the working tree)"
+  build_side b "$b_rev" "$b_dirty" "$b_sha"
+  bin_b="$built_bin"
 fi
+cleanup_worktrees
+[[ $keep_worktrees -eq 0 ]] && worktrees=()
 log ""
 
-# Both binaries now exist, so nothing after this point rebuilds anything --
-# that is the whole point: the two builds cannot interleave with the runs.
-
-# ---------------------------------------------------------------------------
-# Run phase
-# ---------------------------------------------------------------------------
-
-# The report pairs runs by order of appearance per cell, so a stale sidecar
-# would silently shift the pairing. Rotate instead of appending.
+# The report pairs runs by order of appearance per cell, so a stale sidecar would shift the pairing: rotate it aside.
 stamp=$(date +%Y%m%dT%H%M%S)
 for sidecar in "$sidecar_a" "$sidecar_b"; do
   if [[ -e "$sidecar" ]]; then
@@ -437,11 +289,33 @@ for sidecar in "$sidecar_a" "$sidecar_b"; do
   fi
 done
 
+# merge_ranks <run-sidecar> <side-sidecar>: appends one row per cell from <run-sidecar>.rank<N>, then removes the rank files.
+merge_ranks() {
+  python3 - "$1" "$2" <<'PY' 2>&1 | tee -a "$log_file"
+import glob, json, re, sys
+run, out = sys.argv[1], sys.argv[2]
+paths = sorted(glob.glob(run + ".rank*"), key=lambda p: int(re.sub(r".*\.rank", "", p)))
+ranks = [[json.loads(line) for line in open(p) if line.strip()] for p in paths]
+if not ranks:
+    sys.exit(f"  no {run}.rank<N> sidecars: was --mpi in the probe args?")
+if len({len(rows) for rows in ranks}) != 1:
+    print(f"  warning: ranks wrote {[len(rows) for rows in ranks]} rows; merging the first {min(map(len, ranks))}")
+with open(out, "a") as sink:
+    for cell in zip(*ranks):
+        row = dict(cell[0])
+        for key, value in row.items():
+            if (key.endswith("_ns") or key == "vmhwm_kb") and isinstance(value, (int, float)):
+                row[key] = max(r.get(key, value) for r in cell)
+        sink.write(json.dumps(row) + "\n")
+print(f"  merged {len(ranks)} ranks x {min(map(len, ranks))} rows into {out}")
+PY
+  local status=${PIPESTATUS[0]}
+  rm -f "$1".rank*
+  return "$status"
+}
+
 run_side() {
   local side=$1 bin=$2 sidecar=$3 pair=$4
-  # Each side gets exactly its own probe args -- probe_args_a for A,
-  # probe_args_b for B (equal to A's unless --probe-b was given) -- never a
-  # shared/injected array, preserving the verbatim-passthrough promise.
   local -a args
   if [[ "$side" == "a" ]]; then
     args=(${probe_args_a[@]+"${probe_args_a[@]}"})
@@ -449,10 +323,18 @@ run_side() {
     args=(${probe_args_b[@]+"${probe_args_b[@]}"})
   fi
   log "--- pair ${pair}: side ${side} ($(basename "$bin")) ---"
-  if ! ("$bin" ${args[@]+"${args[@]}"} --json-out "$sidecar") \
-    2>&1 | tee -a "$log_file"; then
-    log "  (side ${side} run in pair ${pair} exited nonzero — continuing; the"
-    log "   report pairs up to the minimum run count per cell)"
+  if [[ -z "$launch" ]]; then
+    ("$bin" "${args[@]}" --json-out "$sidecar") 2>&1 | tee -a "$log_file" \
+      || log "  (side ${side} run in pair ${pair} exited nonzero; continuing)"
+  else
+    local run_sidecar="${sidecar%.probe.jsonl}.run.jsonl"
+    rm -f "$run_sidecar".rank*
+    if ("${launch_args[@]}" "$bin" "${args[@]}" --json-out "$run_sidecar") 2>&1 | tee -a "$log_file"; then
+      merge_ranks "$run_sidecar" "$sidecar" || log "  (merging side ${side}'s ranks in pair ${pair} failed; continuing)"
+    else
+      log "  (side ${side} run in pair ${pair} exited nonzero; continuing)"
+      rm -f "$run_sidecar".rank*
+    fi
   fi
 }
 
@@ -470,28 +352,18 @@ for ((p = 1; p <= pairs; p++)); do
 done
 log ""
 
-# ---------------------------------------------------------------------------
-# Report phase
-# ---------------------------------------------------------------------------
-
 log "=== report ==="
 label_b="B=${b_rev}"
-pair_on_note=""
 report_extra_args=()
 if [[ $probe_b_given -eq 1 ]]; then
-  # A and B deliberately ran different probe args (typically --partitions),
-  # so pairing on the full (layer, threads, partitions) key would treat
-  # every cell as "only in A" / "only in B" instead of comparing them.
+  # A and B ran different probe args (typically --partitions), so the full cell key would never match.
   label_b="B=${b_rev} (--probe-b: ${probe_b})"
   report_extra_args=(--pair-on layer,threads)
-  pair_on_note=" --pair-on layer,threads"
 fi
-if ! (python3 scripts/ab-report.py "$sidecar_a" "$sidecar_b" --all-phases \
-  --label-a "A=${a_rev}" --label-b "$label_b" \
-  ${report_extra_args[@]+"${report_extra_args[@]}"}) 2>&1 | tee -a "$log_file"; then
-  log "  (ab-report.py exited nonzero — the sidecars are intact, re-run it by hand:"
-  log "   python3 scripts/ab-report.py '${sidecar_a}' '${sidecar_b}' --all-phases${pair_on_note})"
-fi
+(python3 scripts/ab-report.py "$sidecar_a" "$sidecar_b" --all-phases \
+  --label-a "A=${a_rev}" --label-b "$label_b" ${report_extra_args[@]+"${report_extra_args[@]}"}) 2>&1 \
+  | tee -a "$log_file" \
+  || log "  (ab-report.py exited nonzero; the sidecars are intact, re-run it by hand: python3 scripts/ab-report.py '${sidecar_a}' '${sidecar_b}' --all-phases ${report_extra_args[*]:-})"
 
 log ""
 log "load at end: $(cut -d' ' -f1-3 /proc/loadavg)"

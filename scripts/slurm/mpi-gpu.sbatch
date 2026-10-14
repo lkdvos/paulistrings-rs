@@ -30,30 +30,20 @@
 #   WIRE_TIMEOUT_S           PAULISTRINGS_WIRE_TIMEOUT_S for the differential net (default 60)
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
+. scripts/slurm/common.sh
 . scripts/slurm/bounded.sh
 
 module purge
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"
-SHARED_RUST=${SHARED_RUST:-$HOME/.local/rust-shared}
-export RUSTUP_HOME="$SHARED_RUST/rustup" CARGO_HOME="$SHARED_RUST/cargo"
-export PATH="$CARGO_HOME/bin:$PATH"
-command -v cargo >/dev/null && cargo --version >/dev/null 2>&1 || {
-    echo "cargo not usable on this node (SHARED_RUST=$SHARED_RUST); run scripts/slurm/setup-shared-toolchain.sh on a networked host first" >&2
-    exit 3
-}
+use_shared_rust
 # Every rank execs the binary, so the build lives on the shared filesystem, not node-local /tmp.
 export CARGO_TARGET_DIR="${PAULISTRINGS_BUILD_ROOT:-$HOME/.cache/paulistrings-build}/job-${SLURM_JOB_ID:-local}"
-mkdir -p "$CARGO_TARGET_DIR"
-unset RUST_LOG RAYON_NUM_THREADS
+REMOVE_TARGET_DIR=1
 PS_REV=${PS_REV:-$(git rev-parse HEAD)}
-repo=$PWD
-src="$CARGO_TARGET_DIR/src"
-git worktree add --detach "$src" "$PS_REV" >/dev/null
-trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null; rm -rf "$CARGO_TARGET_DIR"' EXIT
-cd "$src"
-. scripts/jcc-rustflags.sh
-if [ -n "$JCC_RUSTFLAGS" ]; then export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"; fi
+checkout_rev "$PS_REV" "$CARGO_TARGET_DIR/src"
+cd "$CARGO_TARGET_DIR/src"
+. scripts/jcc-rustflags.sh   # research/FINDINGS.md §JCC branch padding, opt-in
 
 nodes=${SLURM_JOB_NUM_NODES:-1}
 ranks=${SLURM_NTASKS:-1}
@@ -75,13 +65,7 @@ bounded 300 srun --ntasks-per-node=1 bash -c '
     ip -br addr
 '
 
-bin=$(cargo test --offline --release --features cuda,mpi,test-utils -p paulistrings --test mpi_ranks --no-run \
-      --message-format=json \
-      | python3 -c 'import json,sys
-for l in sys.stdin:
-    try: r=json.loads(l)
-    except ValueError: continue
-    if r.get("reason")=="compiler-artifact" and r["target"]["name"]=="mpi_ranks" and r.get("executable"): print(r["executable"])')
+bin=$(test_binary cuda,mpi,test-utils mpi_ranks)
 [ -n "$bin" ] || { echo "could not build the mpi_ranks test binary" >&2; exit 1; }
 echo "== mpi_ranks: $bin"
 
@@ -106,7 +90,7 @@ if [ "$failed" = 0 ] && [ "${PROBE:-1}" = "1" ]; then
     sidecar="$out/mpi-gpu-${SLURM_JOB_ID:-local}-r$ranks.jsonl"
     run_probe() {
         bounded "${PROBE_BOUND:-1500}" srun --mpi=pmix --cpu-bind=cores "$probe" --mpi --device auto \
-            --threads "$cpus" --format json --json-out "$sidecar" "$@" \
+            --threads "$cpus" --json-out "$sidecar" "$@" \
             || { failed=$?; echo "== probe $* FAILED (exit $failed)"; leftover_gpu_processes; }
     }
     echo "== probe: $ranks ranks, --n $n (replicated), layers $layers -> $sidecar.rank*"

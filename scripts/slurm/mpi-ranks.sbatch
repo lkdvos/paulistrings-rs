@@ -10,73 +10,49 @@
 # The MPI transport's multi-rank differential net (`crates/paulistrings/tests/mpi_ranks.rs`,
 # behind the `mpi` cargo feature) on a real multi-node allocation.
 #
-# One rank per NUMA domain, D = 1: the engine holds exactly one partition per process and takes
-# its placement from the launcher's affinity mask, so `--cpu-bind=ldoms` is what pins the run
-# (`Placement::Auto` then resolves to a single slot covering the domain). There is no
-# domains-per-rank hybrid; `PAULISTRINGS_DOMAINS` no longer exists.
+# One rank per NUMA domain: the engine holds one partition per process and takes its placement from the launcher's affinity mask, so `--cpu-bind=ldoms` pins the run.
+# The rank count must be a power of two (a partition is named by log2(P) GF(2) rows), so scripts/slurm/ranks.sh rounds `nodes × domains` down and says what it picked.
 #
-# The rank count must be a power of two — a partition is named by log2(P) GF(2) rows — so the
-# script rounds `nodes × domains` down and says what it picked.
+# Environment knobs (all optional): PROBE=0 runs the net alone; LAYERS (default cnot,su4,trotter), N (default 3000000), PROBE_ARGS; PS_REV as in ab-campaign.sbatch.
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
+. scripts/slurm/common.sh
 
 module purge
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"   # bindgen (rsmpi) at build time
-# Rust from the shared filesystem: ~/.cargo and ~/.rustup are symlinks into the workstation's
-# local /home, absent on cluster nodes. scripts/slurm/setup-shared-toolchain.sh populates this.
-SHARED_RUST=${SHARED_RUST:-$HOME/.local/rust-shared}
-export RUSTUP_HOME="$SHARED_RUST/rustup" CARGO_HOME="$SHARED_RUST/cargo"
-export PATH="$CARGO_HOME/bin:$PATH"
-command -v cargo >/dev/null && cargo --version >/dev/null 2>&1 || {
-    echo "cargo not usable on this node (SHARED_RUST=$SHARED_RUST); run scripts/slurm/setup-shared-toolchain.sh on a networked host first" >&2
-    exit 3
-}
-# Multi-node: every rank execs the binary from its cwd, so the build dir (and the worktree it runs
-# in) must be on the shared filesystem, not node-local /tmp (jobs 7008425/26 failed that way).
+use_shared_rust
+# Every rank execs the binary from its cwd, so the build and its checkout live on the shared filesystem, not node-local /tmp.
 export CARGO_TARGET_DIR="${PAULISTRINGS_BUILD_ROOT:-$HOME/.cache/paulistrings-build}/job-${SLURM_JOB_ID:-local}"
-mkdir -p "$CARGO_TARGET_DIR"
-unset RUST_LOG
-# Build a pinned commit in a private worktree, never the live checkout (see ab-campaign.sbatch).
+REMOVE_TARGET_DIR=1
 PS_REV=${PS_REV:-$(git rev-parse HEAD)}
-repo=$PWD
-src="$CARGO_TARGET_DIR/src"
-git worktree add --detach "$src" "$PS_REV" >/dev/null
-trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null; rm -rf "$CARGO_TARGET_DIR"' EXIT
-# The lock file is untracked; reuse the checkout's so the offline build resolves to the cached versions.
-cd "$src"
+checkout_rev "$PS_REV" "$CARGO_TARGET_DIR/src"
+out=$(results_dir)
+cd "$CARGO_TARGET_DIR/src"
+. scripts/jcc-rustflags.sh   # research/FINDINGS.md §JCC branch padding, opt-in
 echo "building rev $PS_REV ($(git log -1 --format=%s "$PS_REV"))"
 
 echo "== job ${SLURM_JOB_ID:-?} on $SLURM_JOB_NODELIST, $(date -Is)"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
 source scripts/slurm/ranks.sh
 
-# Build first with stderr visible (a failure here used to vanish into /dev/null), then query the path.
-cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run
-bin=$(cargo test --offline --release --features mpi -p paulistrings --test mpi_ranks --no-run \
-      --message-format=json \
-      | python3 -c 'import json,sys
-for l in sys.stdin:
-    try: r=json.loads(l)
-    except ValueError: continue
-    if r.get("reason")=="compiler-artifact" and r["target"]["name"]=="mpi_ranks" and r.get("executable"): print(r["executable"])')
+bin=$(test_binary mpi mpi_ranks)
 [ -n "$bin" ] || { echo "could not build the mpi_ranks test binary" >&2; exit 1; }
 echo "== binary: $bin"
 
 srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
      --cpu-bind=ldoms --mpi=pmix "$bin"
 
-# The capacity probe, same placement: per-rank phase breakdown and peak RSS including the
-# exchange transients (the metric phase 3 exists for). Each rank writes its own
-# `<path>.rank<N>` sidecar. Set PROBE=0 to run the differential net alone.
+# The capacity probe, same placement: per-rank phase breakdown and peak RSS including the exchange transients.
+# Each rank writes its own `<path>.rank<N>` sidecar.
 if [ "${PROBE:-1}" = "1" ]; then
     cargo build --offline --release --features phase-timing,mpi -p paulistrings \
         --example phase_breakdown >/dev/null
     probe="$CARGO_TARGET_DIR/release/examples/phase_breakdown"
-    out="$repo/benchmarks/results/mpi-${SLURM_JOB_ID:-local}.jsonl"
-    echo "== probe: $ranks ranks, D=1, $cpus_per_numa threads each -> $out.rank*"
+    sidecar="$out/mpi-ranks-${SLURM_JOB_ID:-local}.jsonl"
+    echo "== probe: $ranks ranks, $cpus_per_numa threads each -> $sidecar.rank*"
     srun --ntasks="$ranks" --ntasks-per-node="$per_node" --cpus-per-task="$cpus_per_numa" \
          --cpu-bind=ldoms --mpi=pmix "$probe" --mpi --threads "$cpus_per_numa" \
-         --layers "${LAYERS:-cnot,su4,trotter}" --n "${N:-3000000}" --format json \
-         --json-out "$out" ${PROBE_ARGS:-}
+         --layers "${LAYERS:-cnot,su4,trotter}" --n "${N:-3000000}" \
+         --json-out "$sidecar" ${PROBE_ARGS:-}
 fi

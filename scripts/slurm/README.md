@@ -13,8 +13,7 @@ The templates share `common.sh`: the shared toolchain, a private checkout of `PS
 
 ## Node choice
 
-Partition `ccq` (the user is at CCQ; `scc` is the Scientific Computing Core's). Snapshot of `sinfo -p ccq` on 2026-09-08: 43 idle **icelake** (2 × 32 cores, rocky9), 4 idle rome
-(2 × 64), 11 genoa (2 × 48, mostly allocated). The templates default to
+Partition `ccq` (the user is at CCQ; `scc` is the Scientific Computing Core's) has **icelake** (2 × 32 cores, rocky9, the most often idle), rome (2 × 64) and genoa (2 × 48) nodes; `sinfo -p ccq` shows what is free. The templates default to
 `--constraint=icelake&rocky9` for availability and because rocky9 matches the module stack the
 workstation uses; override with `sbatch --constraint='genoa&rocky9' ...` to get more NUMA domains per
 socket (P = 4 or 8 if the BIOS exposes NPS4). The scripts never hard-code CPU lists: `ab-campaign.sbatch`

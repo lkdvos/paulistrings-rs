@@ -15,8 +15,8 @@ renders whichever of the following exist (see the docstrings on each
     bandwidth.txt (same directory)     memory-bandwidth ceiling sections; an optional
                                         leading "# ceiling-map: ..." header (see
                                         scripts/bandwidth.sh) picks which section is the
-                                        roofline ceiling per thread count, else a
-                                        hard-coded ccqlin038-shaped table is used
+                                        roofline ceiling per thread count; without it
+                                        no % of ceiling is shown
 
 Output is written to ``<prefix>-report.html`` and its path printed on
 success. Exits 1 only when *none* of the input files exist.
@@ -40,9 +40,10 @@ from typing import Optional
 # Palette (fixed per phase name, consistent across every chart)
 # --------------------------------------------------------------------------
 
+# The probe's wall-clock phases (benchmarks/PROFILING.md contract (a)); the device sub-phases (compact, h2d, d2h, truncate, export_kernel) sit inside these and are never drawn.
 WALL_PHASES = [
     "rebucket", "prepare", "rescale", "span_plan", "permute",
-    "coset_loop", "unpermute", "recount", "finalize", "fallback",
+    "coset_loop", "unpermute", "recount", "finalize", "export", "exchange", "barrier",
 ]
 BUSY_PHASES = ["gather", "sort", "merge", "swap", "size", "clear"]
 
@@ -69,7 +70,9 @@ _SERIAL_COLORS = {
     "unpermute": "#86a0b3",
     "recount": "#93a7b8",
     "finalize": "#9fb0bd",
-    "fallback": "#acb9c2",
+    "export": "#a9b8c4",
+    "exchange": "#b3c0ca",
+    "barrier": "#bdc7cf",
     OTHER_SERIAL: "#c7ced4",
 }
 # Parallel family: saturated categorical hues (blue/orange/aqua/violet),
@@ -234,16 +237,9 @@ def dedupe_probe_rows(rows: list) -> list:
 
     ``<prefix>.probe.jsonl`` may contain multiple lines for the same
     (layer, threads, partitions) triple from appended re-runs (e.g. a
-    campaign resumed after a partial run). ``partitions`` defaults to ``1``
-    when absent -- a sidecar row from a probe predating the partitioned
-    engine, or any P=1 row -- so old and new sidecars key the same way and
-    a P=1 row never collides with a P=2 row for the same (layer, threads).
-    Newer lines carry extra fields (``rows_gathered``, ``partitions``, ...);
-    older lines lack them, which ``dict.get`` already treats as ``None`` —
-    no special-casing needed here beyond picking the last line. Order is
-    preserved: rows are emitted in the position of each key's last
-    occurrence, so unrelated groups keep their original relative order in
-    the file.
+    campaign resumed after a partial run). Order is preserved: rows are
+    emitted in the position of each key's last occurrence, so unrelated
+    groups keep their original relative order in the file.
     """
     last_idx: dict = {}
     for i, row in enumerate(rows):
@@ -314,10 +310,8 @@ def load_bandwidth(dir_path: Path, missing: list) -> tuple:
 
     ``sections`` is a list of (section_label, {kernel: best_gbps}).
     ``ceiling_map`` is the parsed ``# ceiling-map:`` header (see
-    ``parse_ceiling_map``) or ``None`` when the file has no such header —
-    callers fall back to the hard-coded ``_BW_SECTION_BY_THREADS`` /
-    ``_BW_SECTION_DEFAULT`` in that case, so older campaign dirs render the
-    same as before this map became data-driven.
+    ``parse_ceiling_map``) or ``None`` when the file has no such header, in
+    which case no ceiling is matched.
     """
     path = dir_path / "bandwidth.txt"
     if not path.exists():
@@ -361,39 +355,20 @@ def load_bandwidth(dir_path: Path, missing: list) -> tuple:
 # DRAM traffic model (% of bandwidth ceiling)
 # --------------------------------------------------------------------------
 
-# Fallback bandwidth.txt section chosen by thread count, used only when the
-# file has no ``# ceiling-map:`` header (see parse_ceiling_map) — i.e. older
-# campaign dirs, or a bandwidth.sh predating that header. Matched against the
-# "===" labels load_bandwidth() parses; this hard-codes ccqlin038's topology,
-# which is exactly the hidden coupling the header line exists to remove.
-_BW_SECTION_BY_THREADS = [
-    (1, "1 core, node0 local"),
-    (8, "node0, 8 physical"),
-    (16, "both sockets, 16 physical"),
-]
-_BW_SECTION_DEFAULT = "both sockets, 32 threads"
-
-
-def bandwidth_section_label(threads: int, ceiling_map: Optional[dict] = None) -> str:
+def bandwidth_section_label(threads: int, ceiling_map: Optional[dict] = None) -> Optional[str]:
     """Which bandwidth.txt section is the roofline ceiling for ``threads``.
 
-    When ``ceiling_map`` is given (parsed from a bandwidth.txt
-    ``# ceiling-map:`` header — see ``parse_ceiling_map``), it entirely
-    replaces the hard-coded table below: numeric keys are matched the same
-    way (smallest key >= threads), falling back to its own ``"default"``
-    entry. Absent a map (old campaign dirs, or bandwidth.txt with no
-    header), the hard-coded ccqlin038-shaped table is used, unchanged.
+    ``ceiling_map`` is the parsed ``# ceiling-map:`` header (see
+    ``parse_ceiling_map``): the smallest numeric key >= threads wins, else its
+    ``"default"`` entry; None without a map.
     """
-    if ceiling_map:
-        numeric_keys = sorted(k for k in ceiling_map if isinstance(k, int))
-        for max_t in numeric_keys:
-            if threads <= max_t:
-                return ceiling_map[max_t]
-        return ceiling_map.get("default", _BW_SECTION_DEFAULT)
-    for max_t, label in _BW_SECTION_BY_THREADS:
+    if not ceiling_map:
+        return None
+    numeric_keys = sorted(k for k in ceiling_map if isinstance(k, int))
+    for max_t in numeric_keys:
         if threads <= max_t:
-            return label
-    return _BW_SECTION_DEFAULT
+            return ceiling_map[max_t]
+    return ceiling_map.get("default")
 
 
 def triad_ceiling_gbps(bandwidth_sections: list, threads: int, ceiling_map: Optional[dict] = None):
@@ -430,7 +405,7 @@ def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict]
     coset-loop nor the in-place-rescale traffic shape matches this row).
 
     When the row carries a ``bytes_exported`` field (the partitioned engine,
-    P > 1; absent on a pre-partitioning probe or at P=1), ``2 x
+    zero at P=1), ``2 x
     bytes_exported`` is added to the modeled bytes/layer: the exporting
     partition writes its exported rows once, and the importing partition(s)
     read them once, so it is priced the same as any other write+read leg of
@@ -446,54 +421,29 @@ def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict]
     T = dram_traffic_bytes_per_term(qubits)
     terms_in = row.get("terms_in", 0) or 0
     terms_out = row.get("terms_out", 0) or 0
-    rows_gathered = row.get("rows_gathered")  # None on pre-v0.4 probe lines
+    rows_gathered = row.get("rows_gathered")
     coset_loop_ns = row.get("coset_loop_ns", 0) or 0
     rescale_ns = row.get("rescale_ns", 0) or 0
     threads = row.get("threads", 1) or 1
 
     if coset_loop_ns > 0 and rows_gathered is not None and rows_gathered > 0:
-        rows_sorted = row.get("rows_sorted")
-        rows_id = row.get("rows_id")  # None before v0.6 G1d
-        if rows_sorted is not None:
-            # v0.5 model: no tag byte; a gathered row is written by gather and
-            # read by merge (2T); the sorted subset is additionally read and
-            # rewritten by the sort (2T more). From v0.6 G1d (`rows_id`
-            # present), a dense identity row materializes only its 16-byte
-            # coefficient — its keys are borrowed from the source bucket in
-            # place (modeled coset-cache-resident) — so those rows are priced
-            # at 2×16 instead of 2×T.
-            id_borrowed = rows_id or 0
-            bytes_per_layer = (
-                (terms_in / layers) * T
-                + 2 * ((rows_gathered - id_borrowed) / layers) * T
-                + 2 * (id_borrowed / layers) * 16
-                + 2 * (rows_sorted / layers) * T
-                + (terms_out / layers) * T
-            )
-            id_note = (
-                f" + 2×({id_borrowed}/{layers})×16 [coeff-only id rows, keys borrowed]"
-                if rows_id is not None
-                else ""
-            )
-            formula = (
-                f"({terms_in}/{layers})×{T} [gather in] + "
-                f"2×({rows_gathered - id_borrowed}/{layers})×{T} [gather w + merge r]"
-                f"{id_note} + "
-                f"2×({rows_sorted}/{layers})×{T} [sort r/w] + "
-                f"({terms_out}/{layers})×{T} [merge out]"
-            )
-        else:
-            # pre-v0.5 probe lines: tag byte + every row through the sort.
-            bytes_per_layer = (
-                (terms_in / layers) * T
-                + 4 * (rows_gathered / layers) * (T + 1)
-                + (terms_out / layers) * T
-            )
-            formula = (
-                f"({terms_in}/{layers})×{T} [gather in] + "
-                f"4×({rows_gathered}/{layers})×({T}+1) [tag r/w + sort r/w] + "
-                f"({terms_out}/{layers})×{T} [merge out]"
-            )
+        rows_sorted = row.get("rows_sorted", 0) or 0
+        # A dense identity row materializes only its 16-byte coefficient; its keys are borrowed from the source bucket in place.
+        id_borrowed = row.get("rows_id", 0) or 0
+        bytes_per_layer = (
+            (terms_in / layers) * T
+            + 2 * ((rows_gathered - id_borrowed) / layers) * T
+            + 2 * (id_borrowed / layers) * 16
+            + 2 * (rows_sorted / layers) * T
+            + (terms_out / layers) * T
+        )
+        formula = (
+            f"({terms_in}/{layers})×{T} [gather in] + "
+            f"2×({rows_gathered - id_borrowed}/{layers})×{T} [gather w + merge r] + "
+            f"2×({id_borrowed}/{layers})×16 [coeff-only id rows, keys borrowed] + "
+            f"2×({rows_sorted}/{layers})×{T} [sort r/w] + "
+            f"({terms_out}/{layers})×{T} [merge out]"
+        )
     elif rescale_ns > 0 and coset_loop_ns == 0:
         bytes_per_layer = 2 * (terms_in / layers) * T
         formula = f"2×({terms_in}/{layers})×{T} [in-place r/w]"
@@ -502,7 +452,7 @@ def dram_metric(row: dict, bandwidth_sections: list, ceiling_map: Optional[dict]
 
     # bytes_exported (partitioned engine, P > 1) prices the exported rows the
     # same way gather/sort/merge already price a row that's written once and
-    # read once: 2x. Absent on a pre-partitioning probe or a P=1 cell.
+    # read once: 2x.
     bytes_exported = row.get("bytes_exported")
     if bytes_exported:
         bytes_per_layer += 2 * (bytes_exported / layers)
@@ -848,9 +798,7 @@ def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_m
         )
 
     for layer in sorted(groups):
-        # Sort by (partitions, threads): partitions defaults to 1 (a
-        # pre-partitioning probe row, or a P=1 row), so a group with no
-        # partitioned rows sorts exactly as before.
+        # Sort by (partitions, threads).
         rows = sorted(
             groups[layer],
             key=lambda r: (r.get("partitions", 1) or 1, r.get("threads", 0)),

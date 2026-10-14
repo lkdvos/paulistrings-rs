@@ -23,6 +23,9 @@ benchmarks/python/jl_performance/**/tasks/
 # Rendered docs site (mdbook build-dir); the source is docs/book/src.
 docs/book/site/
 
+# The pres worktree checked out inside the repo.
+/pres/
+
 .DS_Store
 .idea/
 .vscode/

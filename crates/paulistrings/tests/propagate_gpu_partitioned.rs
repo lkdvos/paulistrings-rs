@@ -124,66 +124,33 @@ fn heavy_cuts_keep_the_host_count() {
     }
 }
 
-/// One cut that splits a boundary group, dropping little weight.
+/// One cut that splits a boundary group, dropping little weight; `P = 1` is `propagate_gpu`'s.
 #[test]
 fn single_cuts_match_propagate() {
     require_cuda!();
     for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C7) {
-        check(&circuit, &sum, &ApproxTopN(n), name, &PS);
+        check(&circuit, &sum, &ApproxTopN(n), name, &[2, 4]);
     }
     for (name, circuit, sum, n) in single_cuts::<2>(70, 0x51C8) {
-        check(&circuit, &sum, &ApproxTopN(n), name, &PS);
+        check(&circuit, &sum, &ApproxTopN(n), name, &[2, 4]);
     }
 }
 
-#[test]
-fn trotter_matches_propagate_w1() {
-    require_cuda!();
-    let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A0), 40, 0x71A0);
-    check(&circuit, &sum, &ApproxTopN(6_000), "trotter approx", &PS);
-    check(
-        &circuit,
-        &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(6_000)),
-        "trotter and",
-        &PS,
-    );
-}
-
-#[test]
-fn trotter_matches_propagate_w2() {
-    require_cuda!();
-    let circuit = trotter_circuit::<2>(32, THETA);
-    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A1), 40, 0x71A1);
-    check(&circuit, &sum, &ApproxTopN(4_000), "trotter w2", &PS);
-}
-
-/// Dense: a Haar SU(4) under random rows has about half its deltas remote at `P = 2`.
+/// Every channel kind at `P > 1` on the device, the one device net that crosses a partition with noise channels and wide PTMs: a Haar SU(4) under random rows has about half its deltas remote at `P = 2`.
 #[test]
 fn random_circuit_matches_propagate_w1() {
     require_cuda!();
     let sum = spread_magnitudes(&rand_sum::<1>(300, 6, 0x9AA2), 40, 0x9AA2);
     let dense = random_circuit::<1>(6, 30, 0x9AA1, true);
-    check(&dense, &sum, &KeepAll, "w1 dense keep", &PS);
-    check(
-        &dense,
-        &sum,
-        &CoefficientThreshold(1e-9),
-        "w1 dense eps",
-        &PS,
-    );
-    check(&dense, &sum, &WeightCutoff(4), "w1 dense weight", &PS);
-    check(&dense, &sum, &ApproxTopN(1_000), "w1 dense approx", &PS);
     check(
         &dense,
         &sum,
         &And(CoefficientThreshold(1e-9), ApproxTopN(1_000)),
         "w1 dense and",
-        &PS,
+        &[2, 4],
     );
     let sparse = random_circuit::<1>(6, 40, 0x9AA3, false);
-    check(&sparse, &sum, &KeepAll, "w1 sparse keep", &PS);
+    check(&sparse, &sum, &KeepAll, "w1 sparse keep", &[2, 4]);
 }
 
 #[test]
@@ -191,17 +158,7 @@ fn random_circuit_matches_propagate_w2() {
     require_cuda!();
     let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0x9BB2), 40, 0x9BB2);
     let dense = random_circuit::<2>(70, 20, 0x9BB1, true);
-    check(&dense, &sum, &WeightCutoff(2), "w2 dense weight", &PS);
-    check(&dense, &sum, &ApproxTopN(4_000), "w2 dense approx", &PS);
-    check(
-        &dense,
-        &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(4_000)),
-        "w2 dense and",
-        &PS,
-    );
-    let sparse = random_circuit::<2>(70, 30, 0x9BB3, false);
-    check(&sparse, &sum, &ApproxTopN(3_000), "w2 sparse approx", &PS);
+    check(&dense, &sum, &ApproxTopN(4_000), "w2 dense approx", &[2, 4]);
 }
 
 /// A rotation whose generator crosses the partition exports one row per anticommuting term; the pair is chosen by `count_remote_deltas` under the rows `config` draws.

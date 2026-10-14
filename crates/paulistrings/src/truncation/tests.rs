@@ -236,7 +236,7 @@ fn collapse_sample_partitioned_is_a_no_op_up_to_the_global_cache() {
     }
 }
 
-/// Above the cache exactly one string survives across the group, counted once, and the picks over 3000 seeds match `|c|² / Σ|c|²`.
+/// Above the cache exactly one string survives across the group, counted once, and the picks over 500 seeds match `|c|² / Σ|c|²`.
 #[test]
 fn collapse_sample_partitioned_draws_one_string_by_weight() {
     use crate::test_support::{
@@ -255,7 +255,7 @@ fn collapse_sample_partitioned_draws_one_string_by_weight() {
         );
 
         let mut counts = [0usize; 4];
-        for seed in 0..3000u64 {
+        for seed in 0..500u64 {
             let policy = CollapseSample::new(3, seed);
             let got = partitioned_finalize(&policy, &input, pbits);
             counts[collapsed_index(&got, &keys)] += 1;

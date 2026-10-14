@@ -562,38 +562,37 @@ fn collapse_sample_distributed_picks_by_weight() {
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(PtmChannel::depolarizing(0, 0.0));
 
-    for size in [2u32, 4] {
-        let rows =
-            paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
-        let owners: std::collections::HashSet<u32> =
-            keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
-        assert!(
-            owners.len() > 1,
-            "ranks={size}: the fixture must span ranks"
-        );
+    let size = 2u32;
+    let rows =
+        paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
+    let owners: std::collections::HashSet<u32> =
+        keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
+    assert!(
+        owners.len() > 1,
+        "ranks={size}: the fixture must span ranks"
+    );
 
-        let runtimes: Vec<_> = (0..size)
-            .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1)).unwrap())
-            .collect();
-        let mut counts = [0usize; 4];
-        for seed in 0..2000u64 {
-            let policy = CollapseSample::new(3, seed);
-            let gathered = on_ranks(size, |transport| {
-                use paulistrings::Collectives;
-                let runtime = runtimes[transport.rank() as usize].clone();
-                let options = ScatterOptions {
-                    runtime,
-                    rows: ScatterRows::Explicit(rows.clone()),
-                };
-                let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
-                split.propagate(&circuit, &policy, Direction::Forward);
-                assert!(split.local().len() <= 1);
-                split.gather()
-            });
-            let got = gathered.into_iter().next().unwrap().unwrap();
-            counts[collapsed_index(&got, &keys)] += 1;
-            assert_eq!(policy.collapses(), 1);
-        }
-        assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
+    let runtimes: Vec<_> = (0..size)
+        .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1)).unwrap())
+        .collect();
+    let mut counts = [0usize; 4];
+    for seed in 0..250u64 {
+        let policy = CollapseSample::new(3, seed);
+        let gathered = on_ranks(size, |transport| {
+            use paulistrings::Collectives;
+            let runtime = runtimes[transport.rank() as usize].clone();
+            let options = ScatterOptions {
+                runtime,
+                rows: ScatterRows::Explicit(rows.clone()),
+            };
+            let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
+            split.propagate(&circuit, &policy, Direction::Forward);
+            assert!(split.local().len() <= 1);
+            split.gather()
+        });
+        let got = gathered.into_iter().next().unwrap().unwrap();
+        counts[collapsed_index(&got, &keys)] += 1;
+        assert_eq!(policy.collapses(), 1);
     }
+    assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
 }

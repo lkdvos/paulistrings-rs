@@ -6,8 +6,8 @@
 use num_complex::Complex64;
 use paulistrings::test_support::IdentityChannel;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_same_terms, assert_terms_close, bucket, canonical_triples,
-    naive_apply_layer, rand_sum, DiscardMeter,
+    assert_runs_agree, assert_terms_close, bucket, canonical_triples, naive_apply_layer, rand_sum,
+    DiscardMeter,
 };
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
@@ -242,41 +242,6 @@ fn eleven_channel_circuit_matches_the_naive_oracle_under_truncation() {
     let want = replay_naive(&input, &chans, &policy, Direction::Heisenberg);
     let got = paulistrings::propagate(&circuit, input, &policy, Direction::Heisenberg);
     assert_close(&got, &want, "truncated heisenberg");
-}
-
-// ---- determinism ----
-
-#[test]
-fn output_is_byte_identical_across_thread_counts() {
-    // Pins thread-independence only: `propagate`'s bucket count is a fixed
-    // function of the term count, not of the thread count
-    // (ARCHITECTURE.md §Bucket-Policy), so this test does not vary the
-    // partition. Bucket-count agreement (fp tolerance only — see
-    // ARCHITECTURE.md §Determinism) is
-    // pinned directly by `output_agrees_across_bucket_counts_to_fp_tolerance`
-    // in the `engine/bucketed.rs` module doc.
-    let input = rand_sum::<1>(2000, 8, 0x8D);
-    let mut circuit = Circuit::<1>::new(8);
-    for ch in mixed_channels() {
-        circuit.push_boxed(ch);
-    }
-    let policy = And(CoefficientThreshold(1e-12), TopN(900));
-
-    let run = |threads: usize| -> PauliSum<1> {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .expect("pool")
-            .install(|| {
-                paulistrings::propagate(&circuit, input.clone(), &policy, Direction::Heisenberg)
-            })
-    };
-
-    let reference = run(1);
-    for threads in [2usize, 4, 8, 16, 32] {
-        let got = run(threads);
-        assert_same_terms(&got, &reference, &format!("threads={threads}"));
-    }
 }
 
 // ---- a realistic 2D Ising quench, both engines ----

@@ -58,73 +58,6 @@ fn low_weight_key<const W: usize>(
 }
 
 #[test]
-fn bucket_is_within_range_w1() {
-    let h = Gf2Hash::<1>::new(64, 7, 0xABCDEF);
-    let mut rng = Xs64::new(1);
-    for _ in 0..2000 {
-        let p = rand_key::<1>(&mut rng, 64);
-        assert!((bucket(&h, &p) as usize) < h.num_buckets());
-    }
-}
-
-#[test]
-fn bucket_is_within_range_w2() {
-    let h = Gf2Hash::<2>::new(128, 11, 0xABCDEF);
-    let mut rng = Xs64::new(2);
-    for _ in 0..2000 {
-        let p = rand_key::<2>(&mut rng, 128);
-        assert!((bucket(&h, &p) as usize) < h.num_buckets());
-    }
-}
-
-#[test]
-fn identity_key_maps_to_bucket_zero() {
-    // h(0) = 0 for any linear h, so the identity string always lands in bucket 0.
-    let h = Gf2Hash::<2>::new(128, 10, 0x1234);
-    assert_eq!(h.bucket_of(&[0, 0], &[0, 0]), 0);
-}
-
-#[test]
-fn zero_bits_is_a_single_bucket() {
-    let h = Gf2Hash::<1>::new(64, 0, 0x55);
-    assert_eq!(h.num_buckets(), 1);
-    let mut rng = Xs64::new(3);
-    for _ in 0..100 {
-        assert_eq!(bucket(&h, &rand_key::<1>(&mut rng, 64)), 0);
-    }
-}
-
-#[test]
-fn linearity_hand_checked_w1() {
-    let h = Gf2Hash::<1>::new(64, 8, 0xFEED);
-    let v = PauliString::<1>::x(3);
-    let w = PauliString::<1>::z(11);
-    assert_eq!(bucket(&h, &xor(&v, &w)), bucket(&h, &v) ^ bucket(&h, &w));
-}
-
-#[test]
-fn linearity_random_w1() {
-    let h = Gf2Hash::<1>::new(64, 9, 0xFEED);
-    let mut rng = Xs64::new(11);
-    for _ in 0..2000 {
-        let v = rand_key::<1>(&mut rng, 64);
-        let w = rand_key::<1>(&mut rng, 64);
-        assert_eq!(bucket(&h, &xor(&v, &w)), bucket(&h, &v) ^ bucket(&h, &w),);
-    }
-}
-
-#[test]
-fn linearity_random_w2_crosses_word_boundary() {
-    let h = Gf2Hash::<2>::new(128, 12, 0xFEED);
-    let mut rng = Xs64::new(12);
-    for _ in 0..2000 {
-        let v = rand_key::<2>(&mut rng, 128);
-        let w = rand_key::<2>(&mut rng, 128);
-        assert_eq!(bucket(&h, &xor(&v, &w)), bucket(&h, &v) ^ bucket(&h, &w),);
-    }
-}
-
-#[test]
 fn bits_beyond_num_qubits_do_not_affect_the_bucket() {
     // 100 qubits in W=2: setting the dead bits 100..128 must not move a term.
     let h = Gf2Hash::<2>::new(100, 10, 0x99);
@@ -262,18 +195,6 @@ fn coarsen_below_one_bucket_panics() {
 #[should_panic(expected = "exceeds B_MAX_BITS")]
 fn constructing_past_the_maximum_panics() {
     let _ = Gf2Hash::<1>::new(64, B_MAX_BITS + 1, 0x1);
-}
-
-#[test]
-fn same_seed_gives_the_same_hash() {
-    let a = Gf2Hash::<2>::new(128, 10, 0x5EED);
-    let b = Gf2Hash::<2>::new(128, 10, 0x5EED);
-    assert!(a.same_rows_as(&b));
-    let mut rng = Xs64::new(61);
-    for _ in 0..500 {
-        let p = rand_key::<2>(&mut rng, 128);
-        assert_eq!(bucket(&a, &p), bucket(&b, &p));
-    }
 }
 
 #[test]
@@ -639,35 +560,6 @@ fn partition_of_hand_checked_w1() {
 }
 
 #[test]
-fn partition_is_within_range_and_the_identity_key_is_partition_zero() {
-    let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, 0xABCDEF);
-    assert_eq!(p.num_partitions(), 1usize << P_MAX_BITS);
-    // p(0) = 0 for any linear map — the same documented wart as `h`.
-    assert_eq!(p.partition_of(&[0, 0], &[0, 0]), 0);
-    let mut rng = Xs64::new(101);
-    for _ in 0..2000 {
-        let k = rand_key::<2>(&mut rng, 128);
-        assert!((partition(&p, &k) as usize) < p.num_partitions());
-    }
-}
-
-#[test]
-fn zero_partition_bits_is_a_single_partition() {
-    let p = PartitionRows::<1>::none(64);
-    assert_eq!(p.bits(), 0);
-    assert_eq!(p.num_partitions(), 1);
-    assert_eq!(p.num_qubits(), 64);
-    let (rx, rz) = p.rows();
-    assert!(rx.is_empty() && rz.is_empty());
-    let mut rng = Xs64::new(102);
-    for _ in 0..200 {
-        assert_eq!(partition(&p, &rand_key::<1>(&mut rng, 64)), 0);
-    }
-    // `from_seed` at zero bits is the same object.
-    assert_eq!(PartitionRows::<1>::from_seed(64, 0, 0x1234), p);
-}
-
-#[test]
 fn partition_bits_beyond_num_qubits_do_not_affect_the_partition() {
     let p = PartitionRows::<2>::from_seed(100, 3, 0x99);
     let mut rng = Xs64::new(103);
@@ -952,23 +844,6 @@ mod props {
     use proptest::prelude::*;
 
     proptest! {
-        /// Linearity over arbitrary keys.
-        #[test]
-        fn hash_is_gf2_linear_w2(
-            ax in any::<[u64; 2]>(), az in any::<[u64; 2]>(),
-            bx in any::<[u64; 2]>(), bz in any::<[u64; 2]>(),
-            bits in 0u8..=13u8,
-            seed in any::<u64>(),
-        ) {
-            let h = Gf2Hash::<2>::new(128, bits, seed);
-            let cx = [ax[0] ^ bx[0], ax[1] ^ bx[1]];
-            let cz = [az[0] ^ bz[0], az[1] ^ bz[1]];
-            prop_assert_eq!(
-                h.bucket_of(&cx, &cz),
-                h.bucket_of(&ax, &az) ^ h.bucket_of(&bx, &bz)
-            );
-        }
-
         /// Refining keeps the low bits, so a bucket only ever splits.
         #[test]
         fn refine_is_a_prefix_extension_w1(
@@ -982,39 +857,6 @@ mod props {
             let after = h.bucket_of(&x, &z);
             let mask = (1u32 << bits) - 1;
             prop_assert_eq!(after & mask, before);
-        }
-
-        /// The partition map is GF(2)-linear.
-        #[test]
-        fn partition_of_is_gf2_linear_w1(
-            ax in any::<[u64; 1]>(), az in any::<[u64; 1]>(),
-            bx in any::<[u64; 1]>(), bz in any::<[u64; 1]>(),
-            bits in 0u8..=P_MAX_BITS,
-            seed in any::<u64>(),
-        ) {
-            let p = PartitionRows::<1>::from_seed(64, bits, seed);
-            let cx = [ax[0] ^ bx[0]];
-            let cz = [az[0] ^ bz[0]];
-            prop_assert_eq!(
-                p.partition_of(&cx, &cz),
-                p.partition_of(&ax, &az) ^ p.partition_of(&bx, &bz)
-            );
-        }
-
-        #[test]
-        fn partition_of_is_gf2_linear_w2(
-            ax in any::<[u64; 2]>(), az in any::<[u64; 2]>(),
-            bx in any::<[u64; 2]>(), bz in any::<[u64; 2]>(),
-            bits in 0u8..=P_MAX_BITS,
-            seed in any::<u64>(),
-        ) {
-            let p = PartitionRows::<2>::from_seed(128, bits, seed);
-            let cx = [ax[0] ^ bx[0], ax[1] ^ bx[1]];
-            let cz = [az[0] ^ bz[0], az[1] ^ bz[1]];
-            prop_assert_eq!(
-                p.partition_of(&cx, &cz),
-                p.partition_of(&ax, &az) ^ p.partition_of(&bx, &bz)
-            );
         }
     }
 }

@@ -44,7 +44,6 @@ src="$CARGO_TARGET_DIR/src"
 git worktree add --detach "$src" "$PS_REV" >/dev/null
 trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null; rm -rf "$CARGO_TARGET_DIR"' EXIT
 # The lock file is untracked; reuse the checkout's so the offline build resolves to the cached versions.
-[ -f "$repo/Cargo.lock" ] && cp "$repo/Cargo.lock" "$src/Cargo.lock"
 cd "$src"
 echo "building rev $PS_REV ($(git log -1 --format=%s "$PS_REV"))"
 

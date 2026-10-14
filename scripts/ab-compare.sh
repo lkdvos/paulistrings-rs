@@ -44,9 +44,9 @@
 #     measurements.
 #   - Each side builds in its own tree (a detached `git worktree` for a rev,
 #     the working tree for `.`), so the two builds cannot evict each other
-#     from a shared target dir mid-campaign. The working tree's Cargo.lock,
-#     if present, is copied into each worktree so the two sides differ only
-#     in source, not in resolved dependency versions.
+#     from a shared target dir mid-campaign. A rev without a committed
+#     Cargo.lock gets the working tree's, so the two sides differ only in
+#     source, not in resolved dependency versions.
 #
 # Never invokes any Slurm command.
 
@@ -385,9 +385,9 @@ build_side() {
       exit 1
     fi
     worktrees+=("$wt")
-    if [[ -f Cargo.lock ]]; then
+    if [[ ! -f "$wt/Cargo.lock" && -f Cargo.lock ]]; then
       cp Cargo.lock "$wt/Cargo.lock"
-      log "  seeded Cargo.lock from the working tree (both sides resolve the same deps)"
+      log "  seeded Cargo.lock from the working tree (the rev predates the committed lock)"
     fi
     # Subshell cd rather than --manifest-path so the *checked-out* rev's
     # rust-toolchain.toml selects the compiler, and so the build lands in

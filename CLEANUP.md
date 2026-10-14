@@ -64,7 +64,7 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 20 | GPU: drivers | driver, rank, rank/affinity | pending |
 | 21 | Organisation revisit | — | pending |
 | 22 | Test infrastructure | test_support, tests/, in-source tests | done (D64, D65) |
-| 23 | Benches and examples | benches/, examples/ (phase_breakdown 3k lines) | pending |
+| 23 | Benches and examples | benches/, examples/ (phase_breakdown 3k lines) | decided (D66) |
 
 ## Decisions
 
@@ -247,6 +247,7 @@ Not yet measured: code A/B against `89bdcca` (D8).
 - **D65** Chunk 22, second pass (user: aggressive): apply the mutation audit (`scratchpad/chunk22/audit2.md`, 106 mutants): delete `ptm/clifford` tests, shrink `noise`/`unitary`/`merge`/`coset`/`plan`/`test_support` self-tests, delete the thread-count bitwise test and `layer_fingerprints_are_stable`, demote `partitioned_output_is_byte_identical_across_pool_sizes` to tolerance, collapse-sample seeds 3000 → 500 (distributed 250), delete 5 `in_process` tests and add elapsed bounds to two timeout tests, trim storage (45), bucketed, hash (13), builtin (13), prepared, stabilizer (12) tests; first re-run the six mutants (M7, M10, B1, B3, L4, PR7) whose only outside catchers were the oracle sweeps D64 shrank. Add tests for the six suite-wide gaps (collapse pass index, stabilizer pivot sign, rescale exact zeros, TopN NaN, odd-run `merge_partitions`, comparison-bound constants).
   As applied: `c18f784`..`531bedc`, 22 commits, +215/−3711. 153 mutants (not 106): 133 caught at HEAD, 142 after, none lost; the six D64-affected mutants are still caught by the shrunk oracle cases. Gap tests added for S5, SB1, B4, PT1, TS2/5/6, TR6 (+ I7 via elapsed bound). Lib 657 → 482 tests, 3.3 → 1.8 s; `cargo test --workspace` 17.9 → 16.3 s. Coverage 94.39 → 94.38%: `in_process.rs:460,474` (size-1 early returns) lost with `a_group_of_one_is_a_no_op`. Storage 44 deleted (not 45), prepared 12 (`emitting_entries` test kept, its function is cfg(cuda|test)). Finding, not fixed: `TopN(2)` on {3, NaN, 2, 1} keeps nothing (NaN becomes the select boundary; within the doc's "fewer only if NaN" but likely unintended). Surviving: 4 equivalent, T1 (policy-legal), I2/I8/I9/I10 (latency), ST2, SB4.
   Follow-up (user: any zero-cost NaN behaviour; coverage line and remaining gaps not wanted): TopN sorts a NaN below every number (fallbacks only on the unordered comparison path), `top_n_never_keeps_a_nan_coefficient` pins {3, NaN, 2, 1} → {3, 2} and {NaN, NaN, 1} → {1}.
+- **D66** Chunk 23 (benches, probe, tooling; inventory `scratchpad/chunk23/inventory.md`): (1) `scripts/slurm/common.sh` shared preamble with an offline crate-cache pre-check (`cargo fetch --offline --locked`), job-id-tagged result names, `ab-compare.sh` builds each side once, `SMOKE=1` for `ab-campaign.sbatch`; (2) fix `CARGO_TARGET_DIR` in `criterion-report.py`/`perf-stat.sh`/`profile.sh`, idempotent JCC flags, `perf-stat` pass C under pipefail, `profile.sh` dwarf JCC flags; (3) split `phase_breakdown.rs` into `examples/phase_breakdown/` modules and trim (delete `--format tsv`, `--truncation-dispatch` with D42 recorded in FINDINGS, `--occupancy-at` and the bucket/hash knobs; reuse `test_support`; one result constructor and timing helper; `serde_json`), PROFILING.md contracts fixed; (4) delete superseded `jl_performance` records (`post-optimization-auto/`, root `4768fe4`, `su4-curve/`, `deep-kicked-ising/`), drop `engine=` wording; (5) `scripts/smoke-tooling.sh`; (6) `perf-viz.py` phase list; (7) paired MPI A/B via `ab-compare.sh --launch`; (8) history comments and dead branches out of scripts; (9) `pauli_ops.rs` on `test_support`; (10) small fixes (`run_b7 --out-dir`, benchmarks README, membench cudarc pin, `PARTITION_CPUS`, `.gitignore`); commit `Cargo.lock`; keep `ole-*` while Fig. 21 is open.
 
 ## Possible improvements
 
@@ -278,4 +279,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–22 done (D64, D65). Next: 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.
+Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–22 done (D64, D65); 23 decided (D66), being applied. Next after 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.

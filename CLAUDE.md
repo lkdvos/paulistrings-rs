@@ -50,7 +50,7 @@ MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # debug build; 
 ```
 
 Benchmark `--release` only (`lto = "fat"`, `codegen-units = 1`).
-The measurement probe, which also drives the partitioned engine (`--partition-cpus` from `scripts/host-topology.sh`):
+The measurement probe, which also drives the partitioned engine (`--partition-cpus` takes one cpulist per partition, as `numactl -H` prints them):
 
 ```bash
 cargo run --release --features phase-timing --example phase_breakdown -- \

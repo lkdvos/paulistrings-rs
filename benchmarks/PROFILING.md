@@ -214,7 +214,7 @@ The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads(
 A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with`.
 
 - **`--threads` is the TOTAL thread count** at every `P`: each partition's pool gets `threads / P` workers. A `--threads` value not divisible by `--partitions` is a startup error, and so is `P > threads`.
-- `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` — the same string `host-topology.sh`'s `PARTITION_CPUS` holds.
+- `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` (`numactl -H` lists each node's CPUs).
 - `--bind-memory 0|1` (default 1) is `PartitionConfig::bind_memory`; `--partition-seed <u64>` fixes the GF(2) partition rows instead of deriving them from the sum's hash seed.
 - `P = 1` runs the unpartitioned engine — the same code path, policy value and output as before the partition axis existed.
 - Layers `rotation_local` and `rotation_remote` are a `ZZ` rotation on `(0, q)` with `q` the smallest qubit whose layer has, respectively, no remote delta and at least one, under that cell's partition rows. Both collapse to `rotation_zz` at `P = 1`; the chosen pair goes to stderr and into the sidecar's `gen_qubits`.
@@ -329,7 +329,7 @@ The reference host (ccqlin038: 2 sockets, node0 physical CPUs 0-7 / HT 16-23, no
 
 An unrecognized host gets only the no-op `default` placement plus an uncalibrated `BANDWIDTH_RUNS`/`CEILING_MAP` and a stderr warning; add a case arm in `host-topology.sh` to calibrate a new host.
 
-**Partitioned cells run under no placement prefix.** The partitioned engine pins its own worker threads via `--partition-cpus "<list>;<list>"` (`host-topology.sh`'s `PARTITION_CPUS` map, ccqlin038: `node2x8="0-7;8-15"`, `node2x16="0-7,16-23;8-15,24-31"`), so wrapping a P>1 run in a `PLACEMENT_PREFIX` entry fights that pinning: `numactl --membind` forces every page onto one node regardless of which partition touches it, and `--cpunodebind`/`taskset` shrink the CPU mask the engine's own `Auto` placement reads.
+**Partitioned cells run under no placement prefix.** The partitioned engine pins its own worker threads via `--partition-cpus "<list>;<list>"` (ccqlin038: `"0-7;8-15"` for 8 physical cores per socket, `"0-7,16-23;8-15,24-31"` with their hyperthreads), so wrapping a P>1 run in a `PLACEMENT_PREFIX` entry fights that pinning: `numactl --membind` forces every page onto one node regardless of which partition touches it, and `--cpunodebind`/`taskset` shrink the CPU mask the engine's own `Auto` placement reads.
 The one legitimate combination is P=1 under the existing `node0`/`phys8` placements, used as the one-socket reference point.
 
 **P=1 vs P=2, same binary (a runtime-knob A/B):**

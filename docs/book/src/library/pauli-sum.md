@@ -5,19 +5,21 @@
 | Signature | Builds |
 |---|---|
 | `PauliSum(num_qubits)` | the empty sum |
+| `PauliSum(num_qubits, terms)` | a [`PauliTerms`](pauli-terms.md) bound to `num_qubits` qubits |
 | `PauliSum.from_strings(terms, *, num_qubits=None)` | from a `{pauli_string: coefficient}` dict; each key is `num_qubits` characters of `I/X/Y/Z`, index `i` addresses qubit `i` |
-| `PauliSum.from_strings(labels, coefficients, *, num_qubits=None)` | the same, from two equal-length sequences instead of a dict; a label repeated in `labels` accumulates rather than raising |
-| `PauliSum.from_arrays(x, z, coefficients, num_qubits)` | from raw symplectic arrays — the inverse of `x_array`/`z_array`/`coefficients_array` |
+| `PauliSum.from_strings(labels, coefficients, *, num_qubits=None)` | the same, from two equal-length sequences; a repeated label accumulates |
+| `PauliSum.from_arrays(x, z, coefficients, num_qubits)` | from raw symplectic arrays, the inverse of `x_array`/`z_array`/`coefficients_array` |
 
-`num_qubits` is inferred from the first label's length when omitted from either `from_strings` form; an empty `terms`/`labels` with no explicit `num_qubits` is a `ValueError`, since there is nothing to infer it from.
-`from_strings` and `from_arrays` both use the crate's Hermitian convention: a coefficient multiplies the literal Pauli string, and `Y` carries no phase of its own.
-Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are dropped.
+`num_qubits` is inferred from the first label's length when omitted from either `from_strings` form; an empty `terms`/`labels` with no explicit `num_qubits` is a `ValueError`.
+Every constructor uses the Hermitian convention: a coefficient multiplies the literal Pauli string, and `Y` carries no phase of its own.
+Repeated strings sum their coefficients, and exact-zero coefficients are dropped.
+A `PauliTerms` site at or beyond `num_qubits` is a `ValueError`.
 
 `from_arrays` parameters:
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `x`, `z` | `uint64` array, shape `(n_terms, w)` | symplectic key words, `1 <= w <= ` the compile-time width tier `num_qubits` picks; narrower than the tier is zero-padded |
+| `x`, `z` | `uint64` array, shape `(n_terms, w)` | symplectic key words, `1 <= w <= ` the width tier `num_qubits` picks; narrower than the tier is zero-padded |
 | `coefficients` | 1-D array, length `n_terms` | `complex128` or a real-float dtype |
 | `num_qubits` | `int` | a set bit at or beyond this qubit is a `ValueError` |
 
@@ -26,7 +28,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 | Call | Returns |
 |---|---|
 | `.num_qubits` | qubit count |
-| `.width` | active compile-time width tier (words per term) |
+| `.width` | active width tier (words per term) |
 | `len(sum)` | term count |
 | `.num_buckets` | current bucket count (grow-only, reflects the last `propagate`/`rebucket`) |
 | `.coefficients()` | coefficient column as a list of Python `complex` |
@@ -36,7 +38,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 | `str(sum)`, `repr(sum)` | `coefficient*label` for the first few terms, `+`-joined, `... (N more terms)` past that; `0` for the empty sum |
 
 All four array/list accessors return the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`), consistently across calls.
-`str`/`repr` show that same order's *prefix*, never sorted by coefficient magnitude — a magnitude sort would cost `O(len log len)` just to print a preview, on a type whose whole point is staying cheap at a huge term count.
+`str`/`repr` show a prefix of that order, not the largest terms.
 
 ## Arithmetic
 
@@ -48,7 +50,7 @@ All four array/list accessors return the sum's canonical order (partition-bucket
 
 Both operands of `+`/`-` must have the same `num_qubits`; anything else is a `ValueError`.
 Terms whose coefficients cancel exactly are dropped, as is every term when `c` is exactly zero.
-`*` is scalar-only: multiplying two sums is a full operator product, which this library does not implement.
+`*` is scalar-only: the product of two sums is not implemented.
 
 ## Saving, loading, importing
 

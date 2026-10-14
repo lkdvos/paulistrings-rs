@@ -1,6 +1,8 @@
 //! Python `Circuit` class. See ARCHITECTURE.md §Python-Bindings.
 
 use crate::channel_spec::{ChannelSpec, PyChannel};
+use crate::sparse::{expand_sites, extract_sites};
+use crate::terms::{PauliTerms, Term};
 use paulistrings::Circuit as CoreCircuit;
 use pyo3::exceptions::{PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -42,6 +44,10 @@ impl CircuitImpl {
     }
 }
 
+/// An ordered list of channels on `num_qubits` qubits.
+///
+/// Single-qubit gate and noise methods take one qubit or a sequence of qubits, one channel each; `pauli_rotation` takes one site tuple or a sequence of them.
+/// A broadcast call pushes all of its channels or none.
 #[pyclass(module = "paulistrings._paulistrings", name = "Circuit")]
 pub struct Circuit {
     pub(crate) inner: CircuitImpl,
@@ -56,6 +62,42 @@ impl Circuit {
         self.inner.push_spec(&spec)?;
         self.specs.push(spec);
         Ok(())
+    }
+
+    /// Push every spec or none: all qubit indices are checked before the first push, so a bad index in a broadcast leaves the circuit untouched.
+    fn push_all(&mut self, specs: Vec<ChannelSpec>) -> PyResult<()> {
+        let n = self.inner.num_qubits();
+        if let Some(q) = specs
+            .iter()
+            .map(ChannelSpec::max_qubit)
+            .find(|&q| q as usize >= n)
+        {
+            return Err(PyValueError::new_err(format!(
+                "qubit index {q} is out of range for a {n}-qubit circuit"
+            )));
+        }
+        for spec in specs {
+            self.push(spec)?;
+        }
+        Ok(())
+    }
+
+    /// One single-qubit channel per site `qubit` names, an int or a sequence of ints; all or none are pushed.
+    fn push_each(
+        &mut self,
+        qubit: &Bound<'_, PyAny>,
+        make: impl Fn(u32) -> PyResult<ChannelSpec>,
+    ) -> PyResult<()> {
+        let specs = expand_sites(extract_sites(qubit)?, 1)
+            .into_iter()
+            .map(|s| match s.as_slice() {
+                [q] => make(*q),
+                _ => Err(PyValueError::new_err(format!(
+                    "expected one qubit per gate, got {s:?}"
+                ))),
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        self.push_all(specs)
     }
 
     /// An empty circuit of the same width as `self`.
@@ -195,29 +237,29 @@ impl Circuit {
         self.push(channel.spec.clone())
     }
 
-    fn h(&mut self, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::H { qubit })
+    fn h(&mut self, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::H { qubit }))
     }
 
-    fn s(&mut self, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::S { qubit })
+    fn s(&mut self, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::S { qubit }))
     }
 
     /// `S^dagger`; see `gates.sdg`.
-    fn sdg(&mut self, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::Sdg { qubit })
+    fn sdg(&mut self, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::Sdg { qubit }))
     }
 
-    fn x(&mut self, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::X { qubit })
+    fn x(&mut self, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::X { qubit }))
     }
 
-    fn y(&mut self, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::Y { qubit })
+    fn y(&mut self, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::Y { qubit }))
     }
 
-    fn z(&mut self, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::Z { qubit })
+    fn z(&mut self, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::Z { qubit }))
     }
 
     fn cnot(&mut self, control: u32, target: u32) -> PyResult<()> {
@@ -232,64 +274,68 @@ impl Circuit {
         self.push(crate::gates::swap_spec(q0, q1)?)
     }
 
-    fn rz(&mut self, theta: f64, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::Rz { theta, qubit })
+    fn rz(&mut self, theta: f64, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::Rz { theta, qubit }))
     }
 
-    fn rx(&mut self, theta: f64, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::Rx { theta, qubit })
+    fn rx(&mut self, theta: f64, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::Rx { theta, qubit }))
     }
 
-    fn ry(&mut self, theta: f64, qubit: u32) -> PyResult<()> {
-        self.push(ChannelSpec::Ry { theta, qubit })
+    fn ry(&mut self, theta: f64, qubit: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubit, |qubit| Ok(ChannelSpec::Ry { theta, qubit }))
     }
 
-    /// A rotation `exp(-i·θ·P/2)` about a Pauli string of any weight; see
-    /// `gates.pauli_rotation` for the argument convention.
-    fn pauli_rotation(&mut self, pauli: &str, qubits: Vec<u32>, theta: f64) -> PyResult<()> {
-        let spec = crate::gates::pauli_rotation_spec(pauli, &qubits, theta)?;
-        self.push(spec)
+    /// A rotation `exp(-i·θ·P/2)` per site tuple in `qubits`; see `gates.pauli_rotation` for the argument convention.
+    fn pauli_rotation(
+        &mut self,
+        pauli: &str,
+        qubits: &Bound<'_, PyAny>,
+        theta: f64,
+    ) -> PyResult<()> {
+        let specs = expand_sites(extract_sites(qubits)?, pauli.chars().count())
+            .iter()
+            .map(|sites| crate::gates::pauli_rotation_spec(pauli, sites, theta))
+            .collect::<PyResult<Vec<_>>>()?;
+        self.push_all(specs)
     }
 
-    fn depolarize(&mut self, p: f64, qubits: Vec<u32>) -> PyResult<()> {
-        for qubit in qubits {
-            self.push(ChannelSpec::Depolarize { p, qubit })?;
-        }
-        Ok(())
+    fn depolarize(&mut self, p: f64, qubits: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubits, |qubit| Ok(ChannelSpec::Depolarize { p, qubit }))
     }
 
-    fn dephase(&mut self, p: f64, qubits: Vec<u32>) -> PyResult<()> {
-        for qubit in qubits {
-            self.push(ChannelSpec::Dephase { p, qubit })?;
-        }
-        Ok(())
+    fn dephase(&mut self, p: f64, qubits: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubits, |qubit| Ok(ChannelSpec::Dephase { p, qubit }))
     }
 
-    fn amplitude_damping(&mut self, gamma: f64, qubits: Vec<u32>) -> PyResult<()> {
-        for qubit in qubits {
-            self.push(ChannelSpec::AmplitudeDamping { gamma, qubit })?;
-        }
-        Ok(())
+    fn amplitude_damping(&mut self, gamma: f64, qubits: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.push_each(qubits, |qubit| {
+            Ok(ChannelSpec::AmplitudeDamping { gamma, qubit })
+        })
     }
 
     /// A general single-qubit Pauli channel on each of `qubits`; see
     /// `noise.pauli_channel` for the semantics.
-    fn pauli_channel(&mut self, px: f64, py: f64, pz: f64, qubits: Vec<u32>) -> PyResult<()> {
-        for qubit in qubits {
-            let spec = crate::noise::pauli_channel_spec(px, py, pz, qubit)?;
-            self.push(spec)?;
-        }
-        Ok(())
+    fn pauli_channel(
+        &mut self,
+        px: f64,
+        py: f64,
+        pz: f64,
+        qubits: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.push_each(qubits, |qubit| {
+            crate::noise::pauli_channel_spec(px, py, pz, qubit)
+        })
     }
 
     /// Uniform two-qubit depolarizing noise on each `(q0, q1)` pair; see
     /// `noise.depolarize2` for the semantics.
     fn depolarize2(&mut self, p: f64, pairs: Vec<(u32, u32)>) -> PyResult<()> {
-        for (q0, q1) in pairs {
-            let spec = crate::noise::depolarize2_spec(p, q0, q1)?;
-            self.push(spec)?;
-        }
-        Ok(())
+        let specs = pairs
+            .into_iter()
+            .map(|(q0, q1)| crate::noise::depolarize2_spec(p, q0, q1))
+            .collect::<PyResult<Vec<_>>>()?;
+        self.push_all(specs)
     }
 
     fn unitary_1q(
@@ -309,5 +355,50 @@ impl Circuit {
     ) -> PyResult<()> {
         let ch = crate::gates::unitary_2q_spec(q0, q1, matrix)?;
         self.push(ch)
+    }
+
+    /// Append one Trotter step of `exp(-i·H·dt)` for `H = Σ_k h_k Q_k` given as `terms`.
+    ///
+    /// `order=1` pushes one `pauli_rotation` per term, `theta = 2·h_k·dt`, in term order.
+    /// `order=2` pushes the symmetric product: every term but the last at `dt/2`, the last at `dt`, then the others in reverse at `dt/2`.
+    /// Every coefficient must be real: a term with an imaginary part is not Hermitian and its exponential is not unitary.
+    #[pyo3(signature = (terms, dt, order=1))]
+    fn trotter(&mut self, terms: &PauliTerms, dt: f64, order: u8) -> PyResult<()> {
+        let rotation = |t: &Term, step: f64| -> PyResult<ChannelSpec> {
+            let c = t.coeff();
+            if c.im != 0.0 {
+                return Err(PyValueError::new_err(format!(
+                    "Circuit.trotter: coefficient {c} has an imaginary part, so its exponential is not unitary"
+                )));
+            }
+            Ok(ChannelSpec::PauliRotationN {
+                theta: 2.0 * c.re * step,
+                paulis: t.paulis().to_vec(),
+            })
+        };
+        let specs = match (order, terms.terms().split_last()) {
+            (1 | 2, None) => Vec::new(),
+            (1, Some(_)) => terms
+                .terms()
+                .iter()
+                .map(|t| rotation(t, dt))
+                .collect::<PyResult<Vec<_>>>()?,
+            (2, Some((last, rest))) => {
+                let half = rest
+                    .iter()
+                    .map(|t| rotation(t, dt / 2.0))
+                    .collect::<PyResult<Vec<_>>>()?;
+                let mut specs = half.clone();
+                specs.push(rotation(last, dt)?);
+                specs.extend(half.into_iter().rev());
+                specs
+            }
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Circuit.trotter: order must be 1 or 2, got {order}"
+                )))
+            }
+        };
+        self.push_all(specs)
     }
 }

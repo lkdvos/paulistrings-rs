@@ -100,13 +100,12 @@ def test_convenience_methods_reject_an_out_of_range_qubit():
             call()
 
 
-def test_a_broadcast_noise_method_stops_at_the_bad_index():
-    # `depolarize(p, [0, 5])` pushes qubit 0, then rejects qubit 5. The partial
-    # push is documented behavior, not silence: the error names the index.
+def test_a_broadcast_noise_method_is_all_or_nothing():
+    # `depolarize(p, [0, 5])` rejects qubit 5 before pushing anything, so a bad index never leaves a half-built broadcast.
     c = Circuit(2)
     with pytest.raises(ValueError, match="out of range"):
         c.depolarize(0.1, [0, 5])
-    assert len(c) == 1
+    assert len(c) == 0
 
 
 def test_the_error_names_the_offending_index_and_the_width():

@@ -9,6 +9,9 @@ re-exports the high-level classes and exposes the ``gates``, ``noise``, and
 ``PauliString`` is one ``IXYZ`` string with no coefficient attached, and
 ``p(label)`` is the shorthand that builds one from its label.
 
+``pt(label, sites)`` builds a ``PauliTerms``: sparse terms with no qubit count, bound to a register by ``PauliSum(num_qubits, terms)`` or ``Circuit.trotter``.
+``lattices`` and ``models`` build common Hamiltonians from them, and ``trotter`` turns one into a circuit.
+
 ``PauliSum.propagate`` also runs the sum split across partitions: ``partitions=``
 places one pinned thread pool per NUMA domain in this process, ``comm=`` takes
 an ``mpi4py`` communicator and places one partition per rank. ``device=`` runs
@@ -28,23 +31,29 @@ from ._paulistrings import (
     PartitionStats,
     PauliString,
     PauliSum,
+    PauliTerms,
     PropagationStats,
     cuda_available,
     diagonal_echo,
     mpi_available,
     numa_nodes,
     p,
+    pt,
     reset_log_cache,
 )
 from . import gates, noise, truncation
 from . import interop
 from . import io
+from . import lattices, models
+from .evolution import trotter
 
 __all__ = [
     "Circuit",
     "PauliString",
     "PauliSum",
+    "PauliTerms",
     "p",
+    "pt",
     "PropagationStats",
     "PartitionStats",
     "DEFAULT_SMALL_SUM_THRESHOLD",
@@ -54,6 +63,9 @@ __all__ = [
     "truncation",
     "interop",
     "io",
+    "lattices",
+    "models",
+    "trotter",
     "mpi_available",
     "cuda_available",
     "numa_nodes",

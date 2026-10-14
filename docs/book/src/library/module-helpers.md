@@ -3,6 +3,9 @@
 | Call | Returns |
 |---|---|
 | `paulistrings.p(label)` | a [`PauliString`](pauli-string.md) from its `IXYZ` label, shorthand for `PauliString.from_label` |
+| `paulistrings.pt(label, sites)` | a [`PauliTerms`](pauli-terms.md), one term per site tuple |
+| `paulistrings.trotter(terms, dt, num_qubits, *, steps=1, order=1)` | a [`Circuit`](circuit.md#trotter-steps) of `steps` Trotter steps of `exp(-i*H*dt)` |
+| `paulistrings.lattices`, `paulistrings.models` | bond lists and standard Hamiltonians; see [PauliTerms](pauli-terms.md#lattices-and-models) |
 | `paulistrings.numa_nodes()` | `list[list[int]]`, the NUMA nodes this process may run on, one CPU-index list per node, ascending node order; intersected with the process's CPU affinity mask |
 | `paulistrings.mpi_available()` | `bool`, whether this build can run `PauliSum.propagate(comm=...)` (compiled with the `mpi` feature) |
 | `paulistrings.cuda_available()` | `bool`, whether this build can run `PauliSum.propagate(device=...)`: compiled with the `cuda` feature, `libcuda` and `libnvrtc` loadable, and a device visible |
@@ -11,7 +14,7 @@
 | `paulistrings.reset_log_cache()` | drops pyo3-log's cached per-logger effective level |
 | `paulistrings.diagonal_echo(hist, delta)` | `float`, the diagonal echo `sum_n w[n] cos(2 delta)**n / sum_n w[n]` of a [`PauliSum.anticommute_histogram`](measurement.md#anticommute_histogramsites-axisx-commnone) `w`; `nan` when it is all zero |
 
-## Logging gotcha
+## Logging
 
 `pyo3-log` caches each logger's effective level the first time it is consulted.
 Call `paulistrings.reset_log_cache()` after changing a Python log level mid-process (e.g. `logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)`), or the new level is not picked up.

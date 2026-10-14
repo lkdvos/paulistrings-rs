@@ -1,42 +1,85 @@
 # Circuits
 
+Once we have an operator, we need a circuit to propagate it through.
+A circuit is the ordered list of gates and noise channels applied to a register.
+This chapter shows how to build one gate by gate or from a Hamiltonian, how to combine circuits, which noise channels are available, and how to import circuits from stim, qiskit and task JSON.
+
 ## Building a circuit
 
-A `Circuit` is an ordered list of channels on a fixed register, and every method call on it pushes exactly one channel.
-`Circuit(n)` is the empty circuit; the named gates are `h`, `s`, `sdg`, `x`, `y`, `z`, `cnot`, `cz`, `swap`, the rotations `rx`, `ry`, `rz` and `pauli_rotation`, and the checked matrices `unitary_1q` and `unitary_2q`.
+A `Circuit` is an ordered list of channels on a fixed register.
+`Circuit(n)` is the empty circuit; the gates are `h`, `s`, `sdg`, `x`, `y`, `z`, `cnot`, `cz`, `swap`, the rotations `rx`, `ry`, `rz` and `pauli_rotation`, and the checked matrices `unitary_1q` and `unitary_2q`.
 
-Every rotation implements `exp(-i·θ·P/2)` for its generator `P`, the same convention as qiskit's `rz`.
-A Trotter step written as `exp(-i·s·P)`, with no `/2`, therefore needs `theta = 2*s`; getting this wrong halves every angle and the run still completes, just for a different Hamiltonian.
-`pauli_rotation(pauli, qubits, theta)` rotates about a Pauli string of any weight: `pauli[k]` acts on `qubits[k]`, and identity positions are left out rather than written as `I`, so `pauli_rotation("ZZ", [0, 1], theta)` is the two-qubit `ZZ` rotation.
+Every rotation implements $R_P(\theta) = \exp(-i\theta P/2)$ for its generator $P$, the same convention as qiskit's `rz`.
+`pauli_rotation(pauli, qubits, theta)` rotates about a Pauli string of any weight: `pauli[k]` acts on `qubits[k]`, and identity positions are left out rather than written as `I`.
+
+The single-qubit gates and the noise methods take one qubit or a list of qubits, and push one channel per qubit.
+`pauli_rotation` takes one tuple of sites or a list of tuples, and a one-letter label with a list of sites gives one rotation per site.
 
 ```python
-import math
 from paulistrings import Circuit
+from paulistrings.lattices import chain
 
-n, J, h, dt = 4, 1.0, 0.5, 0.05
-step = Circuit(n)
-for i in range(n - 1):
-    step.pauli_rotation("ZZ", [i, i + 1], theta=2 * -J * dt)   # exp(-i * (-J dt) * ZZ)
-for i in range(n):
-    step.rx(2 * -h * dt, i)                                     # exp(-i * (-h dt) * X)
+step = Circuit(4)
+step.pauli_rotation("ZZ", chain(4), 0.2)
+step.rx(0.3, range(4))
 print(len(step), step.gates[0])
 ```
 
 ```text
-7 {'name': 'pauli_rotation', 'qubits': [0, 1], 'pauli': 'ZZ', 'theta': -0.1}
+7 {'name': 'pauli_rotation', 'qubits': [0, 1], 'pauli': 'ZZ', 'theta': 0.2}
 ```
 
-`circuit.gates` lists the channels as plain dicts, the task-JSON gate vocabulary, and is the quickest way to check what was actually pushed.
-`unitary_1q(qubit, matrix)` and `unitary_2q(q0, q1, matrix)` take a `2x2` or `4x4` complex matrix, reject a non-unitary one with `ValueError`, and order the two-qubit tensor factors as `|q0 q1⟩`, `q0` more significant — so a CNOT matrix in the textbook basis is `unitary_2q(control, target, CNOT)`.
-The same gates exist as factories in the `gates` module, returning a channel for `circuit.append`, for building a channel once and pushing it onto several circuits; `circuit.append(gates.h(0))` is `circuit.h(0)`.
+`circuit.gates` lists the channels as plain dicts, which is the quickest way to check what was pushed.
+A call that names a qubit outside the register raises `ValueError` and pushes nothing:
 
-The full table, with per-gate caveats, is [Circuit](../library/circuit.md#gates); [C — Deep Trotter circuits](../examples/benchmarks/c-deep-trotter.md) is the same shape of step — `ZZ` rotations then `X` kicks — on a 127-qubit heavy-hex lattice, 5 to 20 steps deep.
+```python
+try:
+    step.depolarize(0.01, [0, 9])
+except ValueError as err:
+    print(err)
+print(len(step))
+```
 
-## Composition {#composition}
+```text
+qubit index 9 is out of range for a 4-qubit circuit
+7
+```
 
-Circuits compose by channel list.
+`unitary_1q(qubit, matrix)` and `unitary_2q(q0, q1, matrix)` take a `2x2` or `4x4` complex matrix, reject a non-unitary one with `ValueError`, and order the two-qubit tensor factors as $|q_0 q_1\rangle$, so a CNOT matrix in the textbook basis is `unitary_2q(control, target, CNOT)`.
+The `gates` and `noise` modules provide the same channels as factories for `circuit.append`, one qubit at a time: `circuit.append(gates.h(0))` is `circuit.h(0)`.
+The full table is in [Circuit](../library/circuit.md#gates).
+
+## Trotter steps {#trotter-steps}
+
+For a Hamiltonian $H = \sum_k h_k Q_k$ written as `PauliTerms` ([Sparse terms](operators.md#sparse-terms)), `trotter(H, dt, num_qubits)` returns one first-order Trotter step of $e^{-iH\,\delta t}$.
+It pushes a `pauli_rotation` about each $Q_k$ with angle $\theta = 2h_k\,\delta t$, in the order the terms were written.
+
+```python
+from paulistrings import pt, trotter
+
+L, J, h, dt = 4, 1.0, 0.5, 0.05
+H = -J * pt("ZZ", chain(L)) - h * pt("X", range(L))
+step = trotter(H, dt, L)
+print(len(step), len(trotter(H, dt, L, order=2)), step.gates[0])
+```
+
+```text
+7 13 {'name': 'pauli_rotation', 'qubits': [0, 1], 'pauli': 'ZZ', 'theta': -0.1}
+```
+
+The factor of 2 comes from the rotation convention, and the sign of $h_k$ goes into the angle, so the $ZZ$ term with $h_k = -J$ gets $\theta = -2J\,\delta t$.
+`order=2` gives the symmetric step: every term but the last at $\delta t/2$, the last at $\delta t$, then the others in reverse order at $\delta t/2$.
+`steps=k` repeats the step $k$ times, and `circuit.trotter(H, dt, order)` appends one step to an existing circuit.
+Every coefficient must be real.
+
+The error of a first-order step comes from the commutators $[Q_j, Q_k]$, so terms that all commute give an exact step.
+Otherwise $\delta t$ is a second approximation next to the truncation, and a result has to be converged in both ([Validating a result](propagation/validation.md)).
+
+## Composition and layers {#composition}
+
+What if you need to compose circuits?
 `a + b` is a new circuit with `a`'s channels then `b`'s, `a.extend(b)` appends in place, both require equal `num_qubits`, and `len`, indexing and slicing work on the channel list.
-`circuit.adjoint()` is a new circuit with the channel order reversed and every gate replaced by its dagger: rotations negate `theta`, `s` becomes `sdg` and back, matrices are conjugate-transposed, and the self-adjoint Cliffords are unchanged.
+`circuit.adjoint()` reverses the channel order and replaces every gate by its dagger: rotations negate `theta`, `s` becomes `sdg` and back, matrices are conjugate-transposed, and the self-adjoint Cliffords are unchanged.
 
 ```python
 front = Circuit(2)
@@ -55,18 +98,16 @@ print([g["name"] for g in whole.adjoint().gates], whole.adjoint().gates[0]["thet
 ['rz', 'sdg', 'h'] -0.3
 ```
 
-The adjoint is what turns one direction into the other: propagating through `c` in the Heisenberg picture agrees, to floating-point tolerance, with propagating through `c.adjoint()` in the forward picture.
-It exists only for unitary circuits — a noise channel has no adjoint in the time-reversal sense, so `adjoint()` on a circuit containing one raises `ValueError` naming the channel; take the adjoint of the unitary part and add the noise to the reversed circuit explicitly.
-How push order and direction interact is [Push order](propagation/direction.md#push-order); the composition table is under [Circuit](../library/circuit.md#composition).
+Propagating through `c` in the Heisenberg picture agrees, to floating-point tolerance, with propagating through `c.adjoint()` in the forward picture.
+A noise channel has no adjoint, so `adjoint()` on a circuit containing one raises `ValueError` naming the channel.
+How push order and direction interact is [given here](propagation/direction.md#push-order).
 
-## One gate, one truncation point {#one-gate-one-channel}
-
-Throughout this Manual, a **layer** is one applied channel — one gate, or one noise channel on one qubit or pair — never a brickwork layer of parallel gates.
-Truncation runs after every layer in that sense, so `len(circuit)` is the number of truncation points a propagation will pass, and the per-layer records in `PropagationStats` have one entry per channel.
-
-Two consequences follow.
-Fusing two gates into one `unitary_2q` changes the answer, because it removes a truncation point between them; every circuit in the example suite is built one gate per push for that reason, and it is what makes a per-layer comparison against another engine meaningful at all.
-And a broadcast call is still one channel per target: `depolarize(p, [0, 1])` pushes two channels, not one bundled one.
+<a id="one-gate-one-channel"></a>
+Every channel in the list is one gate, or one noise channel on one qubit or pair.
+We call each applied channel a layer; this is not a brickwork layer of parallel gates.
+Truncation runs after every layer, so `len(circuit)` is the number of truncation points a propagation passes, and `PropagationStats` has one entry per channel.
+For the same reason, fusing two gates into one `unitary_2q` changes the answer, since it removes the truncation point between them.
+A broadcast call or a Trotter step still adds one channel per target or term:
 
 ```python
 noisy = Circuit(3)
@@ -79,11 +120,11 @@ print(len(noisy))
 4
 ```
 
-Why a truncation point between gates matters, and why noise makes a fixed threshold bite harder rather than softer, is [A gate is a truncation point](propagation/truncation.md#a-gate-is-a-truncation-point).
+Why a truncation point between gates matters is explained in [A gate is a truncation point](propagation/truncation.md#a-gate-is-a-truncation-point).
 
 ## Noise channels {#noise-channels}
 
-Noise is pushed like a gate, one channel per qubit in the list, with the `noise` module offering the same channels as factories for `append`.
+Noise is pushed like a gate, one channel per qubit in the list.
 
 ```python
 from paulistrings import noise
@@ -104,21 +145,17 @@ print(len(circuit))
 8
 ```
 
-In the Pauli basis a Pauli channel is a coefficient rescale, not a fan-out: `depolarize(p)` multiplies every non-identity Pauli on its qubit by `1 - 4p/3`, and `dephase(p)` leaves `Z` alone and scales `X` and `Y` by `1 - 2p`.
-`pauli_channel(p/3, p/3, p/3, q)` is `depolarize(p, q)` and `pauli_channel(0, 0, p, q)` is `dephase(p, q)`.
-`amplitude_damping` is the one channel here that is not a Pauli channel: it moves `Z` partly onto the identity, so it changes the key set, and it is not self-adjoint, which is why its Heisenberg and forward results differ in more than a sign.
-
-Every noise channel is non-unitary, so a circuit that carries one has no `adjoint()`.
-The rescale is why noise makes a simulation cheaper rather than dearer under a coefficient threshold, the effect [B2](../examples/showcases/b2-noisy-verification.md) measures; the semantics table is [Circuit](../library/circuit.md#noise-channels).
+In the Pauli basis a Pauli channel rescales coefficients: `depolarize(p)` multiplies every non-identity Pauli on its qubit by $1 - 4p/3$, and `dephase(p)` leaves $Z$ alone and scales $X$ and $Y$ by $1 - 2p$.
+`pauli_channel(p/3, p/3, p/3, q)` is `depolarize(p, q)`, and `pauli_channel(0, 0, p, q)` is `dephase(p, q)`.
+`amplitude_damping` is not a Pauli channel: it moves $Z$ partly onto the identity, and its Heisenberg and forward results differ.
+The semantics table is in [Circuit](../library/circuit.md#noise-channels).
 
 ## Importing circuits {#importing-circuits}
 
-Three importers in the `interop` module build a `Circuit` from an outside description.
-Each maps what it can onto the gate vocabulary above and raises `ValueError` naming the instruction on anything it cannot; nothing is ever skipped silently.
-`circuit_from_stim` and `circuit_from_qiskit` import `stim`/`qiskit` lazily on first call — install the `examples` or `bench` extra from [Installation](../installation.md) to use them.
+Three importers in the `interop` module build a `Circuit` from an outside description, and raise `ValueError` naming any instruction they cannot map.
+`circuit_from_stim` and `circuit_from_qiskit` need the `examples` or `bench` extra from [Installation](../installation.md).
 
-`circuit_from_stim` takes a stim circuit object, stim program text, or a path to a `.stim` file, expands `REPEAT` blocks, and returns `(circuit, observable)`, where the observable comes from `OBSERVABLE_INCLUDE` instructions with Pauli targets or is `None`.
-Measurements, resets, detectors and sweep or record targets are errors.
+`circuit_from_stim` takes a stim circuit, program text, or a path to a `.stim` file, expands `REPEAT` blocks, and returns `(circuit, observable)`, where the observable comes from `OBSERVABLE_INCLUDE` instructions or is `None`.
 
 ```python
 import stim
@@ -134,8 +171,7 @@ print(len(circuit), [g["name"] for g in circuit.gates], observable.coefficients(
 4 ['h', 'cnot', 'depolarize', 'depolarize'] [(1+0j)]
 ```
 
-`circuit_from_qiskit` maps the named gates `h s sdg x y z cx cz swap rz rx ry` directly, `rzz`/`rxx`/`ryy` to `pauli_rotation`, and anything else with a one- or two-qubit unitary through the checked `unitary_1q`/`unitary_2q` path, reordering the two-qubit basis from qiskit's little-endian convention for you.
-Measurements, resets, conditioned instructions and gates on more than two qubits are errors; qubit indices come from `find_bit`, so multi-register circuits import correctly.
+`circuit_from_qiskit` maps `h s sdg x y z cx cz swap rz rx ry` directly, `rzz`/`rxx`/`ryy` to `pauli_rotation`, and any other one- or two-qubit gate through `unitary_1q`/`unitary_2q`, converting qiskit's little-endian two-qubit basis.
 
 ```python
 from qiskit import QuantumCircuit
@@ -152,7 +188,7 @@ print([g["name"] for g in interop.circuit_from_qiskit(qc).gates])
 ['h', 'cnot', 'pauli_rotation', 'unitary_1q']
 ```
 
-`circuit_from_json` builds from the frozen task-JSON schema's `"circuit"` object, the interchange format shared with the cross-engine comparison, and `load_task` reads a whole task file — circuit, observable, truncation policy and direction — into one object.
+`circuit_from_json` builds from the task-JSON schema's `"circuit"` object, and `load_task` reads a whole task file (circuit, observable, truncation policy and direction):
 
 ```python
 task = interop.load_task({
@@ -170,20 +206,16 @@ print(len(task.circuit), len(task.observable), task.direction)
 2 1 heisenberg
 ```
 
-Unknown keys, unknown gate names and a missing `run.direction` are errors.
-Importer signatures are under [Circuit](../library/circuit.md#importing-a-circuit); the stim importer's sibling, `stabilizers_from_stim`, reads a Clifford circuit's *output state* rather than its gates and belongs to [Stabilizer states](measurements.md#stabilizer-states).
+Importer signatures are in [Circuit](../library/circuit.md#importing-a-circuit).
 
-## Hard edge: support on more than two qubits
+## Support on more than two qubits
 
-The engine applies a channel through a lookup on its support, and that support is capped at two qubits: a channel acting on three or more makes `propagate` **panic**, with no fallback path.
-`pauli_rotation` is the one exemption and accepts a generator of any weight, so a `ZZZ` or weight-ten rotation is fine.
-
-From Python the constructors keep you inside the edge: every named gate and noise method is one- or two-qubit, `unitary_2q` is the widest matrix accepted, and the importers reject a three-qubit instruction with `ValueError` before it reaches a circuit.
-The edge is therefore what a three-qubit gate becomes when you need one: a decomposition into one- and two-qubit gates, each its own truncation point, or a Pauli rotation if it is one.
+The engine applies a channel through a lookup on its support, capped at two qubits.
+`pauli_rotation` is the exception and accepts a generator of any weight.
 
 ## See it in use
 
-- [B2 — Noisy circuit verification](../examples/showcases/b2-noisy-verification.md) — a depolarizing channel on every qubit a gate just touched, at 127 qubits, then the same run with each of the other channels swapped in, and the collapse in term count that follows.
-- [B5 — Hybrid depth reduction](../examples/showcases/b5-operator-backpropagation.md#running-it) — a circuit split into a front and a tail, the tail's propagated observable written to a task JSON and read back with `load_task`.
-- [A — Clifford point](../examples/benchmarks/a-clifford.md) — the same recorded gate list handed to the engine and, as schema-v1 task JSON, to `PauliPropagation.jl`, for a term-for-term parity check.
-- [C — Deep Trotter circuits](../examples/benchmarks/c-deep-trotter.md) — a kicked-Ising Trotter step on 127 qubits, one rotation per push, 5 420 channels at 20 steps.
+- [B2 — Noisy circuit verification](../examples/showcases/b2-noisy-verification.md): depolarizing noise on a 127-qubit circuit.
+- [B5 — Hybrid depth reduction](../examples/showcases/b5-operator-backpropagation.md#running-it): a circuit split into a front and a tail, the tail read back with `load_task`.
+- [A — Clifford point](../examples/benchmarks/a-clifford.md): one gate list run here and in `PauliPropagation.jl`.
+- [C — Deep Trotter circuits](../examples/benchmarks/c-deep-trotter.md): a kicked-Ising step on 127 qubits.

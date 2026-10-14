@@ -1,21 +1,25 @@
 # Operators
 
 The primary objects of this library are operators acting on $L$ qubits.
-For a single qubit, the identity along with the Pauli matrices forms an orthonormal basis.
-Therefore, we can generate any multi-qubit operator as a linear combination of so-called **Pauli strings**.
-These are strings of length $L$ containing the letters $\{I, X, Y, Z\}$, such that all possible strings carry all possible basis elements. 
+Any such operator can be expanded in the Pauli basis as
+
+$$
+O = \sum_{i=1}^N c_i P_i,
+$$
+
+where every $P_i$ is a Pauli string, a string of $L$ letters from $\{I, X, Y, Z\}$, and every $c_i$ is a complex coefficient.
+A generic operator has $4^L$ coefficients, but many operators of interest are sparse, and only the $N \ll 4^L$ nonzero terms are stored.
 
 ## Pauli strings
 
-A single Pauli string $P$ is stored in the so-called symplectic encoding.
-This means that for each qubit, we store two separate bits that dictate what operator is used.
-Concretely, for bits $(x,z) \in \mathbb{F}_2^2$, we encode the operator in a Hermitian convention as:
+A single Pauli string is stored in the symplectic encoding.
+For each qubit we store two bits $(x, z) \in \mathbb{F}_2^2$, which record the presence of an $X$ and a $Z$ factor, in a Hermitian convention:
 
 $$
 P(x, z) = i^{xz} X^x Z^z.
 $$
 
-In particular, this gives $X = (1, 0)$, $Z = (0, 1)$, and $Y = iXZ = i(1, 1)$, equivalently $XZ = -iY$.
+In particular, $P(1, 0) = X$, $P(0, 1) = Z$ and $P(1, 1) = iXZ = Y$, since $XZ = -iY$.
 
 A string on $L$ qubits is stored in $2L$ bits, collected in the symplectic vector $\boldsymbol{p} = (\boldsymbol{p}_x \,\vert\, \boldsymbol{p}_z) \in \mathbb{F}_2^{2L}$ with $x$- and $z$-parts $\boldsymbol{p}_x, \boldsymbol{p}_z \in \mathbb{F}_2^L$, and
 
@@ -25,7 +29,9 @@ P(\boldsymbol{p}) = i^{N_Y(\boldsymbol{p})} \bigotimes_{j=0}^{L-1} X^{p_{x,j}} Z
 N_Y(\boldsymbol{p}) = |\boldsymbol{p}_x \wedge \boldsymbol{p}_z|.
 $$
 
-Here $\wedge$ is the bitwise AND and $|\boldsymbol{v}|$ is the Hamming weight of a bitvector $\boldsymbol{v}$, the number of its nonzero bits, so $N_Y(\boldsymbol{p})$ counts the $Y$ factors of the string. `All arithmetic on bits and bitvectors is over $\mathbb{F}_2$, with $\oplus$ denoting addition (XOR).
+Here $\wedge$ is the bitwise AND and $|\boldsymbol{v}|$ is the Hamming weight of a bitvector $\boldsymbol{v}$, the number of its nonzero bits, so $N_Y(\boldsymbol{p})$ counts the $Y$ factors of the string.
+Pauli strings are denoted by uppercase letters $P, Q$ and their symplectic vectors by the corresponding bold lowercase letters $\boldsymbol{p}, \boldsymbol{q}$.
+All arithmetic on bits and bitvectors is over $\mathbb{F}_2$, with $\oplus$ denoting addition (XOR).
 The weight of a string is the number of sites on which it acts nontrivially,
 
 $$
@@ -33,42 +39,28 @@ w(\boldsymbol{p}) = |\boldsymbol{p}_x \vee \boldsymbol{p}_z|,
 $$
 
 with $\vee$ the bitwise OR.
-
-The convention used here is that sites are numbered from $0$: site $j$ is character $j$ of a label and qubit index $j$ of every method.
+Sites are numbered from $0$: site $j$ is character $j$ of a label and qubit index $j$ of every method.
 
 ### The `PauliString` type
 
-A single Pauli string is its own type, `PauliString`, that is, the object the symplectic encoding above describes, before any coefficient is attached to it.
-It is immutable and carries `num_qubits`, a `weight` (the number of non-identity factors, the same quantity [`truncation.weight`](propagation/truncation.md#choosing-a-policy) caps), and a `label` (the `IXYZ` string).
-`str(p)` and `repr(p)` both print the label directly.
+`PauliString` is a single Pauli string, with no coefficient attached.
+It is immutable and carries `num_qubits`, its `label`, and its `weight`, the quantity [`truncation.weight`](propagation/truncation.md#choosing-a-policy) caps.
 
 ```python
 from paulistrings import PauliString, p
 
-identity = PauliString.identity(3)
-x0 = PauliString.x(0, 3)
-y1 = PauliString.y(1, 3)
-z2 = PauliString.z(2, 3)
-
-print(identity, identity.weight)
-print(x0, y1, z2)
-print(p("XYZ") == x0.mul(y1)[1].mul(z2)[1])
+print(PauliString.identity(3), PauliString.x(0, 3), PauliString.y(1, 3), PauliString.z(2, 3))
+print(p("XYZ"), p("XYZ").weight)
 ```
 
 ```text
-III 0
-XII IYI IIZ
-True
+III XII IYI IIZ
+XYZ 3
 ```
 
-`identity`, `x`, `y`, `z` and `from_label` are the five constructors on the class itself; `num_qubits` is a plain positional argument, not a required keyword, and each single-site constructor takes the qubit index first.
-`p(label)` is a shorthand for `PauliString.from_label(label)`, for the common case of writing one down by hand.
-Two strings compare equal when their labels and `num_qubits` agree.
-The constructor, accessor and operation tables are in [PauliString](../library/pauli-string.md).
-
-### Single string operations
-
-Four operations on bare Pauli strings are closed-form from the symplectic encoding: whether two strings (anti-)commute, their product, and their (anti-)commutator.
+`p(label)` is short for `PauliString.from_label(label)`.
+Two strings compare equal when their labels agree.
+The constructors and accessors are listed in [PauliString](../library/pauli-string.md).
 
 ### Multiplication
 
@@ -96,7 +88,8 @@ print(phase, product)
 (1+0j) YYI
 ```
 
-It is a good exercise for anyone new to Pauli strings to manually check this output.  Regarding package notation for multiplication: operator `*` between two strings raises a `TypeError`; `*` scales by a number, and `mul` is the product.
+It is a good exercise for anyone new to Pauli strings to check this output by hand.
+The operator `*` between two strings raises a `TypeError`: `*` scales by a number, and `mul` is the product.
 
 ### Commutation
 
@@ -178,10 +171,11 @@ Unitary conjugation preserves $\lVert O \rVert_2$; one can use this to [validate
 ### Storage and construction {#the-paulisum-type}
 
 The `PauliSum` type stores the expansion as three columns, one row per term: the $x$-parts $\boldsymbol{p}_x$, the $z$-parts $\boldsymbol{p}_z$, and the coefficients $c_i$.
+No string appears twice.
 Combining two sums therefore requires the union of their strings with the coefficients of equal strings added, a reduce-by-key operation called the *deduplication step*, after which terms whose coefficient is exactly zero are dropped.
 Every constructor and every addition of sums ends with this step.
 
-How does one create a Pauli sum?
+A sum can be written as on paper:
 
 ```python
 from paulistrings import PauliSum, p
@@ -199,7 +193,6 @@ print(PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0
 A string times a number is a one-term sum, and `+` adds sums.
 Each `+` builds a new sum, so assembling $N$ terms one at a time costs $O(N^2)$.
 `PauliSum.from_strings` takes all terms at once, as a dict from label to coefficient or as two equal-length sequences of labels and coefficients, in which a repeated label accumulates.
-`num_qubits` is inferred from the first label when it is not given.
 
 ### Arithmetic {#combining-sums}
 
@@ -217,8 +210,35 @@ print(2.0 * (a + b))
 -2*ZZII + -2*IZZI
 ```
 
-Of course, both operands must have the same `num_qubits`.
-Note, the product of two sums is not implemented, and `*` between two `PauliSum` objects raises `TypeError`.
+Both operands must have the same `num_qubits`.
+The product of two sums is not implemented, and `*` between two `PauliSum` objects raises `TypeError`.
+
+### Sparse terms {#sparse-terms}
+
+Writing every label in full is tedious when $L$ is large.
+`pt(label, sites)` names only the sites a string acts on, `label[k]` on `sites[k]`, and returns a `PauliTerms`: an ordered list of terms with no qubit count.
+`PauliSum(L, terms)` binds the terms to $L$ qubits.
+
+```python
+from paulistrings import pt
+
+terms = -1.0 * pt("ZZ", [(0, 1), (1, 2)]) - 0.5 * pt("X", range(3))
+print(len(terms), terms)
+print(PauliSum(3, terms))
+print(PauliSum(2, pt("X", 0) + pt("X", 0)))
+```
+
+```text
+5 -1*Z0Z1 + -1*Z1Z2 + -0.5*X0 + -0.5*X1 + ... (1 more term)
+-1*ZZI + -1*IZZ + -0.5*XII + -0.5*IXI + ... (1 more term)
+2*XI
+```
+
+`sites` is a single site (`pt("X", 3)`), one tuple (`pt("ZZ", (0, 1))`), or a list of tuples (`pt("ZZ", bonds)`), giving one term per tuple.
+With a one-letter label, a list of sites gives one term per site, as in `pt("X", range(3))`.
+A `PauliTerms` supports `+`, `-`, scaling by a number and `sum()`, and keeps the terms in the order they were written, repeats included.
+The repeats are merged only when the terms are bound, as in the last line.
+The order matters when the terms define a Trotter circuit ([Trotter steps](circuits.md#trotter-steps)).
 
 ### A Hamiltonian
 
@@ -228,19 +248,14 @@ $$
 H = -J \sum_{j=0}^{L-2} Z_j Z_{j+1} - h \sum_{j=0}^{L-1} X_j,
 $$
 
-is a sum of $2L - 1$ strings:
+is written with `pt` and the bond list of the chain:
 
 ```python
-L, J, h = 4, 1.0, 0.5
-labels, coefficients = [], []
-for j in range(L - 1):
-    labels.append("I" * j + "ZZ" + "I" * (L - j - 2))
-    coefficients.append(-J)
-for j in range(L):
-    labels.append("I" * j + "X" + "I" * (L - j - 1))
-    coefficients.append(-h)
+from paulistrings.lattices import chain
 
-hamiltonian = PauliSum.from_strings(labels, coefficients)
+L, J, h = 4, 1.0, 0.5
+H = -J * pt("ZZ", chain(L)) - h * pt("X", range(L))
+hamiltonian = PauliSum(L, H)
 print(hamiltonian)
 ```
 
@@ -248,8 +263,11 @@ print(hamiltonian)
 -1*ZZII + -1*IZZI + -1*IIZZ + -0.5*XIII + ... (3 more terms)
 ```
 
-The same $H$ generates time evolution, where it enters as Pauli rotations rather than as a `PauliSum`.
-For $H = \sum_k h_k Q_k$, each Trotter factor is a rotation,
+`lattices.chain(L)` and `lattices.square(lx, ly)` return bond lists, with `periodic=True` for periodic boundaries.
+`models.transverse_ising(bonds, sites, J, h)` and `models.xxz(bonds, J, Jz)` build the corresponding `PauliTerms` directly.
+
+The same $H$ generates time evolution.
+For $H = \sum_k h_k Q_k$, each Trotter factor is a Pauli rotation,
 
 $$
 \exp(-i h_k\, \delta t\, Q_k) = R_{Q_k}(2 h_k\, \delta t),
@@ -257,8 +275,7 @@ $$
 R_Q(\theta) = \exp(-i \theta Q / 2),
 $$
 
-which is the convention of every rotation in [Circuits](circuits.md#building-a-circuit).
-For the Ising chain, $h_k = -J$ on the bonds and $h_k = -h$ on the fields, so the angles are $-2J\,\delta t$ and $-2h\,\delta t$.
+and `trotter(H, dt, L)` builds these rotations from the `PauliTerms`, so the angles never need to be computed by hand ([Trotter steps](circuits.md#trotter-steps)).
 
 ### Symplectic arrays {#symplectic-arrays}
 
@@ -283,7 +300,7 @@ uint64 (7, 1) complex128 (7,)
 7 True
 ```
 
-A label is recovered from the two bits of each site, using the encoding table above:
+A label is recovered from the two bits of each site, using the encoding above:
 
 ```python
 LETTER = np.array([["I", "Z"], ["X", "Y"]])  # LETTER[x bit, z bit]

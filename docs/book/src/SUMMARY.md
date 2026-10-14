@@ -37,6 +37,7 @@
 - [Library](library/index.md)
   - [PauliString](library/pauli-string.md)
   - [PauliSum](library/pauli-sum.md)
+  - [PauliTerms](library/pauli-terms.md)
   - [Circuit](library/circuit.md)
   - [propagate](library/propagate.md)
   - [Truncation policies](library/truncation.md)

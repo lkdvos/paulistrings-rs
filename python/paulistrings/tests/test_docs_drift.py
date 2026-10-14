@@ -81,7 +81,7 @@ def test_circuit_reference_lists_exactly_the_actual_gate_and_noise_surface():
     documented_noise_factories = {_factory_name(r[1]) for r in noise_rows if _factory_name(r[1])}
 
     # Composition/introspection surface documented in its own prose section, not these tables.
-    non_gate_methods = {"append", "extend", "adjoint", "num_qubits", "gates"}
+    non_gate_methods = {"append", "extend", "adjoint", "num_qubits", "gates", "trotter"}
     circuit_methods = {name for name in dir(Circuit) if not name.startswith("_") and name not in non_gate_methods}
     gate_factories = {name for name in dir(gates) if not name.startswith("_")}
     noise_factories = {name for name in dir(noise) if not name.startswith("_")}

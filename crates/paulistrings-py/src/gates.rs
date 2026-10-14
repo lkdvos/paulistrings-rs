@@ -1,6 +1,7 @@
 //! `paulistrings._paulistrings.gates` submodule: gate factories. See ARCHITECTURE.md §Python-Bindings.
 
-use crate::channel_spec::{Axis, ChannelSpec, PyChannel};
+use crate::channel_spec::{ChannelSpec, PyChannel};
+use crate::sparse::parse_sparse;
 use num_complex::Complex64;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
@@ -139,52 +140,13 @@ fn ry(theta: f64, qubit: u32) -> PyChannel {
     PyChannel::new(ChannelSpec::Ry { theta, qubit })
 }
 
-/// Shared by `gates.pauli_rotation` and `Circuit.pauli_rotation`. The compact form: `pauli[k]` is the Pauli acting on `qubits[k]`, identity everywhere else — full-length `IXYZ` strings are deliberately not accepted (unreadable at 127+ qubits, and a miscount would be silent).
+/// Shared by `gates.pauli_rotation` and `Circuit.pauli_rotation`: `pauli[k]` acts on `qubits[k]`, identity elsewhere.
 pub(crate) fn pauli_rotation_spec(
     pauli: &str,
     qubits: &[u32],
     theta: f64,
 ) -> PyResult<ChannelSpec> {
-    if pauli.chars().count() != qubits.len() {
-        return Err(PyValueError::new_err(format!(
-            "pauli_rotation: pauli and qubits must have the same length \
-             (got {} characters and {} qubits)",
-            pauli.chars().count(),
-            qubits.len(),
-        )));
-    }
-    if qubits.is_empty() {
-        return Err(PyValueError::new_err(
-            "pauli_rotation: pauli and qubits must be non-empty",
-        ));
-    }
-    let mut paulis = Vec::with_capacity(qubits.len());
-    for (ch, &qubit) in pauli.chars().zip(qubits.iter()) {
-        // 'I' is rejected: an identity position is expressed by leaving the qubit out, so allowing it would give two spellings of the same channel.
-        let axis = match ch {
-            'X' => Axis::X,
-            'Y' => Axis::Y,
-            'Z' => Axis::Z,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "pauli_rotation: unexpected Pauli character {other:?} \
-                     (expected X/Y/Z; identity positions are expressed by omission)"
-                )));
-            }
-        };
-        paulis.push((qubit, axis));
-    }
-    // Quadratic, but the generator is a handful of qubits and this runs once per circuit push, never per term. A repeated index would silently halve the generator's weight.
-    for i in 0..paulis.len() {
-        for j in (i + 1)..paulis.len() {
-            if paulis[i].0 == paulis[j].0 {
-                return Err(PyValueError::new_err(format!(
-                    "pauli_rotation: qubits must be distinct (index {} appears twice)",
-                    paulis[i].0
-                )));
-            }
-        }
-    }
+    let paulis = parse_sparse("pauli_rotation", pauli, qubits)?;
     Ok(ChannelSpec::PauliRotationN { theta, paulis })
 }
 

@@ -2,15 +2,21 @@
 
 ## Constructor
 
-`Circuit(num_qubits)` — an empty circuit.
+`Circuit(num_qubits)`, an empty circuit.
 
 ## Conventions
 
-**One gate per channel.** Every `Circuit` method pushes exactly one channel per qubit/pair — a broadcast call like `depolarize(p, [0, 1])` pushes two channels, not one bundled channel.
-Truncation runs after every channel, never after a bundle, so fusing gates changes the answer; build circuits one gate per call — see [Truncation](../manual/propagation/truncation.md).
+**Channels.** A channel is one gate, or one noise channel on one qubit or pair.
+Truncation runs after every channel, so fusing gates changes the answer; see [Truncation](../manual/propagation/truncation.md).
 
-**Rotation angle convention.** Every rotation method implements `U = exp(-i*theta*P/2)` for its generator `P`.
-A generator coefficient `s` in `exp(-i*s*P)` (no `/2`) needs `theta = 2*s`.
+**Broadcasting.** Methods that take `qubit` or `qubits` accept one qubit or a list of qubits, and push one channel per qubit.
+`pauli_rotation` takes one tuple of sites or a list of tuples, one rotation per tuple; with a one-letter `pauli`, a list of sites is one rotation per site.
+`depolarize2` takes a list of pairs, one channel per pair.
+A call that names a qubit outside the register raises `ValueError` and pushes nothing.
+The `gates.` and `noise.` factories take a single qubit, pair or tuple, and do not broadcast.
+
+**Rotation angle convention.** Every rotation implements `U = exp(-i*theta*P/2)` for its generator `P`.
+A generator coefficient `s` in `exp(-i*s*P)` needs `theta = 2*s`; `trotter` applies this itself.
 
 ## Gates
 
@@ -30,11 +36,11 @@ Each of these is a `Circuit` method, a `gates.<name>(...)` factory returning a `
 | `.rz(theta, qubit)` | `gates.rz(theta, qubit)` | 1 | `theta` | — |
 | `.rx(theta, qubit)` | `gates.rx(theta, qubit)` | 1 | `theta` | — |
 | `.ry(theta, qubit)` | `gates.ry(theta, qubit)` | 1 | `theta` | — |
-| `.pauli_rotation(pauli, qubits, theta)` | `gates.pauli_rotation(pauli, qubits, theta)` | any | `pauli[k]` acts on `qubits[k]`; identity positions are expressed by omission, not `I` | the one exemption from the two-qubit support panic below — any generator weight is accepted |
+| `.pauli_rotation(pauli, qubits, theta)` | `gates.pauli_rotation(pauli, qubits, theta)` | any | `pauli[k]` acts on `qubits[k]`; identity positions are left out, not written `I` | exempt from the two-qubit support panic below |
 | `.unitary_1q(qubit, matrix)` | `gates.unitary_1q(qubit, matrix)` | 1 | `2x2` complex, checked unitary | — |
 | `.unitary_2q(q0, q1, matrix)` | `gates.unitary_2q(q0, q1, matrix)` | 2 | `4x4` complex, checked unitary; `q0` is the more significant tensor factor (`\|q0 q1>`) | — |
 
-A channel with support on more than two qubits, other than `pauli_rotation`, makes `propagate` **panic**; there is no fallback path.
+A channel with support on more than two qubits, other than `pauli_rotation`, makes `propagate` panic; there is no fallback path.
 
 `circuit.append(gates.h(0))` is equivalent to `circuit.h(0)`.
 
@@ -42,7 +48,7 @@ A channel with support on more than two qubits, other than `pauli_rotation`, mak
 
 | `Circuit` method | `noise.` factory | Semantics | Caveats |
 |---|---|---|---|
-| `.depolarize(p, qubits)` | `noise.depolarize(p, qubit)` | one channel per qubit in `qubits` | non-unitary; see below |
+| `.depolarize(p, qubits)` | `noise.depolarize(p, qubit)` | one channel per qubit | non-unitary; see below |
 | `.dephase(p, qubits)` | `noise.dephase(p, qubit)` | one channel per qubit | non-unitary; see below |
 | `.amplitude_damping(gamma, qubits)` | `noise.amplitude_damping(gamma, qubit)` | one channel per qubit | non-unitary; see below |
 | `.pauli_channel(px, py, pz, qubits)` | `noise.pauli_channel(px, py, pz, qubit)` | `px + py + pz <= 1`; one channel per qubit | non-unitary; see below |
@@ -54,6 +60,18 @@ Coefficient rescale per channel: `depolarize(p)` scales every non-identity Pauli
 
 `pauli_channel(p/3, p/3, p/3, q)` is `depolarize(p, q)`; `pauli_channel(0, 0, p, q)` is `dephase(p, q)`.
 See [Noise channels](../manual/circuits.md#noise-channels) for a worked example.
+
+## Trotter steps
+
+| Call | Does |
+|---|---|
+| `circuit.trotter(terms, dt, order=1)` | appends one Trotter step of `exp(-i*H*dt)` for a [`PauliTerms`](pauli-terms.md) `H` |
+| `paulistrings.trotter(terms, dt, num_qubits, *, steps=1, order=1)` | a new circuit of `steps` such steps |
+
+For `H = sum_k h_k Q_k`, `order=1` pushes one `pauli_rotation` per term with `theta = 2*h_k*dt`, in term order.
+`order=2` pushes every term but the last at `dt/2`, the last at `dt`, then the others in reverse order at `dt/2`.
+Any other `order`, a coefficient with a nonzero imaginary part, or a site outside the register is a `ValueError`, and nothing is pushed.
+See [Trotter steps](../manual/circuits.md#trotter-steps) for a worked example.
 
 ## Composition
 

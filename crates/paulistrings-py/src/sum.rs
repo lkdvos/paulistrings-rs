@@ -446,6 +446,18 @@ fn build_from_arrays<const W: usize>(
     Ok(acc.finalize())
 }
 
+impl PauliSumImpl {
+    /// Bind width-free terms at `num_qubits`; repeated strings sum and exact zeros drop.
+    /// In `impl PauliSumImpl` because `for_num_qubits!` resolves `Self` where it is expanded.
+    pub fn from_terms(
+        num_qubits: usize,
+        terms: &crate::terms::PauliTerms,
+    ) -> PyResult<Option<Self>> {
+        terms.check_width(num_qubits, "PauliSum")?;
+        Ok(for_num_qubits!(num_qubits, |W| terms.accumulate::<W>(num_qubits)))
+    }
+}
+
 /// Extract a Python 1-D array of `complex128` or a real-float dtype
 /// (`float64`, cast to a zero-imaginary complex) into a `Vec<Complex64>`.
 fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
@@ -1933,7 +1945,7 @@ impl PauliSum {
 const PREVIEW_TERMS: usize = 4;
 
 /// `0.25` for a real coefficient, `(0.25+0.5j)` otherwise — dropping the `+0j` tail Python's own `complex.__repr__` always carries, since most coefficients in this library are real.
-fn format_coeff(c: Complex64) -> String {
+pub(crate) fn format_coeff(c: Complex64) -> String {
     if c.im == 0.0 {
         format!("{}", c.re)
     } else {
@@ -1983,14 +1995,18 @@ fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
 
 #[pymethods]
 impl PauliSum {
-    /// Empty Pauli sum on `num_qubits` qubits.
+    /// The empty sum on `num_qubits` qubits, or `terms` bound to that register.
+    /// Binding merges repeated strings and drops exact zeros; a term past `num_qubits` is a `ValueError`.
     #[new]
-    fn new(num_qubits: usize) -> PyResult<Self> {
-        PauliSumImpl::empty_for(num_qubits)
-            .map(Self::plain)
-            .ok_or_else(|| {
-                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-            })
+    #[pyo3(signature = (num_qubits, terms=None))]
+    fn new(num_qubits: usize, terms: Option<&crate::terms::PauliTerms>) -> PyResult<Self> {
+        let inner = match terms {
+            None => PauliSumImpl::empty_for(num_qubits),
+            Some(terms) => PauliSumImpl::from_terms(num_qubits, terms)?,
+        };
+        inner.map(Self::plain).ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
     }
 
     /// Build from a `{pauli_string: coefficient}` dict, or from `(labels, coefficients)` — two equal-length sequences.

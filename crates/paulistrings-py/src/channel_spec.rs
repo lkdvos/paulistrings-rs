@@ -13,26 +13,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-/// Which single-qubit Pauli a [`ChannelSpec::PauliRotationN`] generator carries at one qubit.
-/// Deliberately no `I`: identity positions are expressed by omitting the qubit, so every generator has exactly one spelling.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    X,
-    Y,
-    Z,
-}
-
-impl Axis {
-    /// The axis as its Pauli character, for the `"pauli"` field of a serialized
-    /// `pauli_rotation` gate.
-    fn as_char(self) -> char {
-        match self {
-            Self::X => 'X',
-            Self::Y => 'Y',
-            Self::Z => 'Z',
-        }
-    }
-}
+use crate::sparse::{sparse_key, Axis};
 
 /// An `N x N` complex matrix as the schema's JSON-native form: rows of `[re, im]` pairs.
 fn matrix_to_json<const N: usize>(m: &[[Complex64; N]; N]) -> Vec<Vec<Vec<f64>>> {
@@ -330,22 +311,8 @@ impl ChannelSpec {
                 let p = PauliString::<W>::y(*qubit);
                 circuit.push(PauliRotation::new(p, *theta));
             }
-            // Bit planes set directly rather than by multiplying single-qubit strings together: sites are pairwise distinct by construction, so no `mul_assign` phase can arise.
             Self::PauliRotationN { theta, paulis } => {
-                let mut gen = PauliString::<W>::identity();
-                for &(qubit, axis) in paulis {
-                    let word = qubit as usize / 64;
-                    let bit = 1u64 << (qubit % 64);
-                    match axis {
-                        Axis::X => gen.x[word] |= bit,
-                        Axis::Z => gen.z[word] |= bit,
-                        Axis::Y => {
-                            gen.x[word] |= bit;
-                            gen.z[word] |= bit;
-                        }
-                    }
-                }
-                circuit.push(PauliRotation::new(gen, *theta));
+                circuit.push(PauliRotation::new(sparse_key::<W>(paulis), *theta));
             }
             Self::Depolarize { p, qubit } => {
                 circuit.push(Depolarizing {

@@ -256,7 +256,17 @@ def test_length_mismatch_is_rejected():
     with pytest.raises(ValueError, match="same length"):
         gates.pauli_rotation("ZZ", [0], 0.1)
     with pytest.raises(ValueError, match="same length"):
-        Circuit(4).pauli_rotation("Z", [0, 1], 0.1)
+        gates.pauli_rotation("X", [0, 1], 0.1)
+    with pytest.raises(ValueError, match="same length"):
+        Circuit(2).pauli_rotation("ZZ", [0], 0.1)
+    with pytest.raises(ValueError, match="same length"):
+        Circuit(3).pauli_rotation("ZZ", [0, 1, 2], 0.1)
+
+
+def test_a_one_letter_label_broadcasts_over_a_flat_site_list():
+    c = Circuit(2)
+    c.pauli_rotation("X", [0, 1], 0.1)
+    assert [g["qubits"] for g in c.gates] == [[0], [1]]
 
 
 def test_empty_generator_is_rejected():

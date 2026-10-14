@@ -1,6 +1,7 @@
 //! Python `PauliString` class with width-monomorphized backing storage. See
 //! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
 
+use crate::sparse::{sparse_key, Axis};
 use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl};
 use num_complex::Complex64;
 use paulistrings::pauli_string::PauliString as CorePauliString;
@@ -21,14 +22,6 @@ pub enum PauliStringImpl {
     W16(CorePauliString<16>),
 }
 
-/// Which single-site constructor a `PauliString.x/y/z` call wants, chosen before the width is known.
-#[derive(Clone, Copy)]
-enum Axis {
-    X,
-    Y,
-    Z,
-}
-
 /// Which product a binary method reports the coefficient of.
 #[derive(Clone, Copy)]
 enum Bracket {
@@ -45,11 +38,7 @@ impl PauliStringImpl {
 
     /// Single-site `X`/`Y`/`Z`. Caller has already checked `qubit < num_qubits`.
     fn single(axis: Axis, qubit: usize, num_qubits: usize) -> Option<Self> {
-        for_num_qubits!(num_qubits, |W| match axis {
-            Axis::X => CorePauliString::<W>::x(qubit as u32),
-            Axis::Y => CorePauliString::<W>::y(qubit as u32),
-            Axis::Z => CorePauliString::<W>::z(qubit as u32),
-        })
+        for_num_qubits!(num_qubits, |W| sparse_key::<W>(&[(qubit as u32, axis)]))
     }
 
     /// Parse an `IXYZ` label, one character per qubit, through the same parser `PauliSum.from_strings` uses.

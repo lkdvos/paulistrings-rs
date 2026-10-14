@@ -20,7 +20,9 @@ mod gpu;
 mod mpi;
 mod noise;
 mod pauli_string;
+mod sparse;
 mod sum;
+mod terms;
 mod truncation;
 mod truncation_spec;
 
@@ -104,6 +106,17 @@ fn p(label: &str) -> PyResult<pauli_string::PauliString> {
     pauli_string::PauliString::parse(label)
 }
 
+/// A `PauliTerms` with one coefficient-1 term per site tuple, `label[k]` on `sites[k]`.
+///
+/// ```python
+/// pt("ZZ", [(0, 1), (1, 2)])   # two terms
+/// pt("X", range(4))            # four terms
+/// ```
+#[pyfunction]
+fn pt(label: &str, sites: &Bound<'_, PyAny>) -> PyResult<terms::PauliTerms> {
+    terms::PauliTerms::broadcast(label, sites)
+}
+
 #[pymodule]
 fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Route the core crate's `log` records to Python's `logging`. Fails only if some other logger is already installed, which is not an import error.
@@ -115,6 +128,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(p, m)?)?;
+    m.add_function(wrap_pyfunction!(pt, m)?)?;
     m.add_function(wrap_pyfunction!(diagonal_echo, m)?)?;
 
     // Re-exported from the core so the Python default cannot drift from the Rust one.
@@ -125,6 +139,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<pauli_string::PauliString>()?;
     m.add_class::<sum::PauliSum>()?;
+    m.add_class::<terms::PauliTerms>()?;
     m.add_class::<sum::PropagationStats>()?;
     m.add_class::<sum::PartitionStats>()?;
     #[cfg(feature = "cuda")]

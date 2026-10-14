@@ -1,10 +1,11 @@
 //! The layer menu: each cell's circuit and input sum.
 
 use num_complex::Complex64;
-use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
-use paulistrings::{
-    BuildAccumulator, Circuit, PauliRotation, PauliString, PauliSum, PtmChannel, TruncationPolicy,
+use paulistrings::test_support::{
+    haar_su4_matrix, heavy_hex_127_edges, low_weight_sum, rand_sum, sqrt_swap_matrix,
+    trotter_circuit, zz_rotation,
 };
+use paulistrings::{BuildAccumulator, Circuit, PauliRotation, PauliString, PauliSum, PtmChannel};
 
 use crate::cli::{Config, Initial, TruncSpec};
 
@@ -99,65 +100,20 @@ pub(crate) fn default_layers() -> Vec<LayerKind> {
     ]
 }
 
-/// A weight-2 `ZZ` rotation, verbatim from `benches/pauli_ops.rs::zz_rotation`.
-pub(crate) fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    gen.z[q0 / 64] |= 1u64 << (q0 % 64);
-    gen.z[q1 / 64] |= 1u64 << (q1 % 64);
-    PauliRotation::new(gen, theta)
-}
-
-/// sqrt(SWAP) on `(q0, q1)`, verbatim from `benches/pauli_ops.rs::sqrt_swap`.
-pub(crate) fn sqrt_swap(q0: usize, q1: usize) -> PtmChannel {
-    let h = Complex64::new(0.5, 0.5);
-    let hc = Complex64::new(0.5, -0.5);
-    let one = Complex64::new(1.0, 0.0);
-    let zero = Complex64::new(0.0, 0.0);
-    PtmChannel::unitary_2q(
-        q0,
-        q1,
-        [
-            [one, zero, zero, zero],
-            [zero, h, hc, zero],
-            [zero, hc, h, zero],
-            [zero, zero, zero, one],
-        ],
-    )
-}
-
 /// One fixed Haar-random SU(4) block on `(q0, q1)`, the probe's stand-in for the general matrix-gate path.
 ///
-/// Unlike [`sqrt_swap`], a generic SU(4) keeps a dense PTM under repeated application rather than cycling.
+/// Unlike `sqrt(SWAP)`, a generic SU(4) keeps a dense PTM under repeated application rather than cycling.
 pub(crate) fn haar_su4_block(q0: usize, q1: usize) -> PtmChannel {
     PtmChannel::unitary_2q(q0, q1, haar_su4_matrix())
 }
 
-/// Qubit count of the fixed [`trotter_circuit`] chain.
+/// Qubit count of the fixed `trotter` chain.
 pub(crate) const TROTTER_QUBITS: usize = 32;
 
 /// Safety cap on `trotter`'s own input size, overriding `--n`: 64 distinct generators under no
 /// truncation grow combinatorially rather than closing to a bounded key set, so an uncapped `--n`
 /// would try to materialize far too many terms.
 pub(crate) const TROTTER_MAX_N: usize = 100;
-
-/// The 64-channel TFIM Trotter step: 32 `ZZ` bond rotations (periodic boundary) then 32
-/// transverse-field `X` rotations, fixed at [`TROTTER_QUBITS`] qubits regardless of `--qubits`.
-pub(crate) fn trotter_circuit<const W: usize>() -> Circuit<W> {
-    let num_qubits = TROTTER_QUBITS;
-    let theta = 0.1;
-    let mut circuit = Circuit::<W>::new(num_qubits);
-    for q in 0..num_qubits {
-        circuit.push(zz_rotation::<W>(q, (q + 1) % num_qubits, 2.0 * theta));
-    }
-    for q in 0..num_qubits {
-        let gen = PauliString::<W>::x(q);
-        circuit.push(PauliRotation::new(gen, 2.0 * theta));
-    }
-    circuit
-}
 
 /// Qubits in the heavy-hex lattice [`heavy_hex_127_edges`] describes.
 pub(crate) const HEAVY_HEX_QUBITS: usize = 127;
@@ -173,11 +129,6 @@ pub(crate) fn chain_edges(num_qubits: usize) -> Vec<(usize, usize)> {
     (0..num_qubits.saturating_sub(1))
         .map(|i| (i, i + 1))
         .collect()
-}
-
-/// The 127-qubit heavy-hex coupling map, from `test_support`.
-pub(crate) fn heavy_hex_127_edges() -> Vec<(usize, usize)> {
-    paulistrings::test_support::heavy_hex_127_edges()
 }
 
 /// Greedy first-fit edge coloring in sorted edge order; a color is a set of disjoint-support
@@ -257,18 +208,6 @@ pub(crate) fn z_observable<const W: usize>(num_qubits: usize, q: usize) -> Pauli
     acc.finalize()
 }
 
-/// A truncation policy that never drops anything.
-pub(crate) struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-/// [`AlwaysKeep`] for a partitioned cell.
-pub(crate) struct AlwaysKeepPartitioned;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeepPartitioned {
-    fn finalizes_layer(&self) -> bool {
-        false
-    }
-}
-
 /// Builds a cell's circuit. `gen_qubits` is the `(q0, q1)` pair the `rotation_*` layers rotate about.
 pub(crate) fn build_circuit<const W: usize>(
     layer: LayerKind,
@@ -296,7 +235,7 @@ pub(crate) fn build_circuit<const W: usize>(
         LayerKind::Gu2q => {
             let mut c = Circuit::<W>::new(qubits);
             for _ in 0..reps {
-                c.push(sqrt_swap(0, 1));
+                c.push(PtmChannel::unitary_2q(0, 1, sqrt_swap_matrix()));
             }
             c
         }
@@ -315,7 +254,7 @@ pub(crate) fn build_circuit<const W: usize>(
             }
             c
         }
-        LayerKind::Trotter => trotter_circuit::<W>(),
+        LayerKind::Trotter => trotter_circuit::<W>(TROTTER_QUBITS, 0.1),
         LayerKind::TfimStep => tfim_step_circuit::<W>(qubits, reps),
         LayerKind::HeavyHexStep => heavy_hex_step_circuit::<W>(qubits, reps),
     }

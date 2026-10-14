@@ -1,12 +1,12 @@
 //! Partition-row choice: the generator scan, the `cut` rows, and the hash re-seed.
 
 use paulistrings::test_support::{
-    circuit_generators, count_remote_deltas, with_hash, GeneratorWeight, B_MAX_BITS,
+    circuit_generators, count_remote_deltas, with_hash, zz_rotation, GeneratorWeight, B_MAX_BITS,
 };
 use paulistrings::{Circuit, Gf2Hash, PartitionRows, PauliSum};
 
 use crate::cli::{Config, PartitionRowSpec};
-use crate::workloads::{build_circuit, haar_su4_block, zz_rotation, LayerKind};
+use crate::workloads::{build_circuit, haar_su4_block, LayerKind};
 
 /// The `(q0, q1)` a `rotation_local` / `rotation_remote` cell rotates about: the smallest `q1 > 0`
 /// whose one-channel `ZZ(0, q1)` layer has no remote delta (`local`), respectively at least one

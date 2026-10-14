@@ -17,6 +17,7 @@ mod output;
 mod rows;
 mod workloads;
 
+use paulistrings::test_support::KeepAll;
 use paulistrings::{ApproxTopN, CoefficientThreshold, TopN, TruncationPolicy};
 
 #[cfg(feature = "mpi")]
@@ -32,7 +33,6 @@ use device::run_cell_mpi_gpu;
 #[cfg(feature = "cuda")]
 use device::{builtin_truncation, resolve_devices, run_cell_gpu};
 use output::{json_line, print_cell_line, print_json, print_table};
-use workloads::{AlwaysKeep, AlwaysKeepPartitioned};
 
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
 /// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
@@ -40,7 +40,7 @@ use workloads::{AlwaysKeep, AlwaysKeepPartitioned};
 /// [`parse_args`]).
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
-        TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
+        TruncSpec::Keep => run_cells::<W, _, _>(cfg, &KeepAll, Some(&KeepAll)),
         TruncSpec::Coefficient(t) => run_cells::<W, _, _>(
             cfg,
             &CoefficientThreshold(t),

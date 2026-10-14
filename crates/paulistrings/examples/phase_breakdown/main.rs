@@ -89,36 +89,29 @@ where
         return;
     }
 
+    let partitioned_policy = || {
+        partitioned_policy.expect("parse_args rejects topn, the one spec with no partitioned form")
+    };
     for &layer in &cfg.layers {
         for &partitions in &cfg.partitions {
             for &threads in &cfg.threads {
                 #[cfg(feature = "mpi")]
-                let cell = if cfg.mpi {
-                    let policy = partitioned_policy.expect(
-                        "an --mpi cell without a partitioned policy — parse_args rejects the one \
-                         spec (topn) that has none",
-                    );
-                    run_cell_mpi::<W, PP>(layer, threads, cfg, policy)
-                } else if partitions > 1 {
-                    let policy = partitioned_policy.expect(
-                        "a partitioned cell without a partitioned policy — parse_args rejects \
-                         the one spec (topn) that has none",
-                    );
-                    run_cell_partitioned::<W, PP>(layer, threads, partitions, cfg, policy)
-                } else {
-                    run_cell::<W, P>(layer, threads, cfg, policy)
-                };
-                #[cfg(not(feature = "mpi"))]
+                if cfg.mpi {
+                    let cell = run_cell_mpi::<W, PP>(layer, threads, cfg, partitioned_policy());
+                    emit_cell(cfg, &cell, sidecar.as_mut());
+                    continue;
+                }
                 let cell = if partitions > 1 {
-                    let policy = partitioned_policy.expect(
-                        "a partitioned cell without a partitioned policy — parse_args rejects \
-                         the one spec (topn) that has none",
-                    );
-                    run_cell_partitioned::<W, PP>(layer, threads, partitions, cfg, policy)
+                    run_cell_partitioned::<W, PP>(
+                        layer,
+                        threads,
+                        partitions,
+                        cfg,
+                        partitioned_policy(),
+                    )
                 } else {
                     run_cell::<W, P>(layer, threads, cfg, policy)
                 };
-
                 emit_cell(cfg, &cell, sidecar.as_mut());
             }
         }

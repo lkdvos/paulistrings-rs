@@ -47,7 +47,6 @@ from ._runs_agree import (
     spread,
 )
 
-
 pytestmark = pytest.mark.skipif(
     sys.platform != "linux" or len(os.sched_getaffinity(0)) < 2,
     reason="partitioned placement needs Linux CPU affinity and at least two CPUs",

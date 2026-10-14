@@ -2,6 +2,7 @@
 
 use paulistrings::test_support::{BITS_AGREE_EVERY, TIMER_READ_OVERHEAD_NS};
 use paulistrings::PhaseStats;
+use serde_json::{json, Value};
 
 use crate::cells::{CellResult, DeviceCellStats};
 
@@ -229,16 +230,9 @@ pub(crate) fn print_json(cell: &CellResult) {
     println!("{}", json_line(cell));
 }
 
-/// `[a, b, c]` for a JSON array of integers, `[]` when empty.
-pub(crate) fn json_u64_array<T: std::fmt::Display>(values: &[T]) -> String {
-    let items: Vec<String> = values.iter().map(T::to_string).collect();
-    format!("[{}]", items.join(","))
-}
-
-/// `[a, b, c]` for a JSON array of floats at six decimals, `[]` when empty.
-pub(crate) fn json_f64_array(values: &[f64]) -> String {
-    let items: Vec<String> = values.iter().map(|v| format!("{v:.6}")).collect();
-    format!("[{}]", items.join(","))
+/// `x` at six decimals, the precision the sidecar's float fields carry.
+fn six_decimals(x: f64) -> f64 {
+    (x * 1e6).round() / 1e6
 }
 
 /// One cell as a single JSON line, shared by `--format json` (stdout) and `--json-out` (sidecar).
@@ -247,122 +241,90 @@ pub(crate) fn json_f64_array(values: &[f64]) -> String {
 /// `benchmarks/PROFILING.md`.
 pub(crate) fn json_line(cell: &CellResult) -> String {
     let s = &cell.stats;
-    let empty = Vec::new();
-    let terms_in = cell
-        .partitioned
-        .as_ref()
-        .map_or(&empty, |p| &p.terms_in)
-        .as_slice();
-    let empty_ns = Vec::new();
-    let coset_loop_ns = cell
-        .partitioned
-        .as_ref()
-        .map_or(&empty_ns, |p| &p.coset_loop_ns)
-        .as_slice();
-    let partition_fields =
-        format!(
-        ",\"partitions\":{},\"partition_cpus\":\"{}\",\"pin_memory\":{},\"gen_qubits\":[{},{}],\
-         \"local_layers\":{},\"remote_layers\":{},\"collectives\":{},\"rows_exported\":{},\
-         \"bytes_exported\":{},\
-         \"partition_terms_in\":{},\"partition_imbalance\":{:.6},\"export_ns\":{},\
-         \"exchange_ns\":{},\"barrier_ns\":{},\"partition_coset_loop_ns\":{},\
-         \"append_ns\":{},\"chunk_wait_ns\":{},\"initial\":\"{}\",\"partition_rows\":\"{}\",\
-         \"partition_imbalance_by_layer\":{},\"terms_by_layer\":{},\
-         \"rows_remote_gens\":{},\"rows_remote_weight\":{:.1}",
-        cell.partitions,
-        cell.partition_cpus,
-        u8::from(cell.pin_memory),
-        cell.gen_qubits.0,
-        cell.gen_qubits.1,
-        cell.partitioned.as_ref().map_or(0, |p| p.local_layers),
-        cell.partitioned.as_ref().map_or(0, |p| p.remote_layers),
-        cell.partitioned.as_ref().map_or(0, |p| p.collectives),
-        cell.partitioned.as_ref().map_or(0, |p| p.rows_exported),
-        cell.partitioned.as_ref().map_or(0, |p| p.bytes_exported),
-        json_u64_array(terms_in),
-        cell.partitioned.as_ref().map_or(1.0, |p| p.imbalance),
-        s.export_ns,
-        s.exchange_ns,
-        s.collective_ns,
-        json_u64_array(coset_loop_ns),
-        s.append_ns,
-        s.chunk_wait_ns,
-        cell.initial,
-        cell.partition_rows,
-        json_f64_array(cell.partitioned.as_ref().map_or(&[][..], |p| &p.imbalance_by_layer)),
-        json_u64_array(
-            cell.partitioned
-                .as_ref()
-                .map_or(&[][..], |p| &p.terms_by_layer)
-        ),
-        cell.row_stats.remote_gens,
-        cell.row_stats.remote_weight,
-    );
-    let core = format!(
-        "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
-         \"qubits\":{},\"seed\":{},\"hash_seed\":{},\
-         \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
-         \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
-         \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
-         \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
-         \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
-         \"vmhwm_kb\":{},\
-         \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{},\"truncate_ns\":{},\"export_kernel_ns\":{}",
-        cell.layer,
-        cell.truncation,
-        cell.threads,
-        cell.n,
-        cell.reps,
-        cell.qubits,
-        cell.seed,
-        cell.hash_seed,
-        cell.wall_ns,
-        s.rebucket_ns,
-        s.prepare_ns,
-        s.rescale_ns,
-        s.span_plan_ns,
-        s.permute_ns,
-        s.coset_loop_ns,
-        s.unpermute_ns,
-        s.recount_ns,
-        s.finalize_ns,
-        s.swap_ns,
-        s.size_ns,
-        s.gather_ns,
-        s.sort_ns,
-        s.merge_ns,
-        s.clear_ns,
-        s.layers,
-        s.cosets,
-        s.runs,
-        s.rows_gathered,
-        s.rows_sorted,
-        s.rows_id,
-        s.terms_in,
-        s.terms_out,
-        cell.vmrss_kb,
-        cell.vmhwm_kb,
-        s.compact_ns,
-        s.h2d_ns,
-        s.d2h_ns,
-        s.truncate_ns,
-        s.export_kernel_ns,
-    );
-    let mpi_fields = match cell.mpi {
-        Some((rank, ranks)) => format!(",\"rank\":{rank},\"ranks\":{ranks}"),
-        None => String::new(),
-    };
-    // Absent on a host row, like `rank`.
-    let device_fields = match &cell.device {
-        Some(d) => format!(
-            ",\"device\":[{}],\"upload_ns\":{},\"download_ns\":{}",
-            device_csv(d),
-            d.upload_ns,
-            d.download_ns,
-        ),
-        None => String::new(),
-    };
-    format!("{core}{partition_fields}{mpi_fields}{device_fields}}}")
+    let p = cell.partitioned.as_ref();
+    let mut row = json!({
+        "layer": cell.layer,
+        "truncation": cell.truncation,
+        "threads": cell.threads,
+        "n": cell.n,
+        "reps": cell.reps,
+        "qubits": cell.qubits,
+        "seed": cell.seed,
+        "hash_seed": cell.hash_seed,
+        "wall_ns": cell.wall_ns,
+        "rebucket_ns": s.rebucket_ns,
+        "prepare_ns": s.prepare_ns,
+        "rescale_ns": s.rescale_ns,
+        "span_plan_ns": s.span_plan_ns,
+        "permute_ns": s.permute_ns,
+        "coset_loop_ns": s.coset_loop_ns,
+        "unpermute_ns": s.unpermute_ns,
+        "recount_ns": s.recount_ns,
+        "finalize_ns": s.finalize_ns,
+        "swap_ns": s.swap_ns,
+        "size_ns": s.size_ns,
+        "gather_ns": s.gather_ns,
+        "sort_ns": s.sort_ns,
+        "merge_ns": s.merge_ns,
+        "clear_ns": s.clear_ns,
+        "layers": s.layers,
+        "cosets": s.cosets,
+        "runs": s.runs,
+        "rows_gathered": s.rows_gathered,
+        "rows_sorted": s.rows_sorted,
+        "rows_id": s.rows_id,
+        "terms_in": s.terms_in,
+        "terms_out": s.terms_out,
+        "vmrss_kb": cell.vmrss_kb,
+        "vmhwm_kb": cell.vmhwm_kb,
+        "compact_ns": s.compact_ns,
+        "h2d_ns": s.h2d_ns,
+        "d2h_ns": s.d2h_ns,
+        "truncate_ns": s.truncate_ns,
+        "export_kernel_ns": s.export_kernel_ns,
+    });
+    // Two literals: one this long overflows `json!`'s macro recursion limit.
+    let partition_fields = json!({
+        "partitions": cell.partitions,
+        "partition_cpus": cell.partition_cpus,
+        "pin_memory": u8::from(cell.pin_memory),
+        "gen_qubits": [cell.gen_qubits.0, cell.gen_qubits.1],
+        "local_layers": p.map_or(0, |p| p.local_layers),
+        "remote_layers": p.map_or(0, |p| p.remote_layers),
+        "collectives": p.map_or(0, |p| p.collectives),
+        "rows_exported": p.map_or(0, |p| p.rows_exported),
+        "bytes_exported": p.map_or(0, |p| p.bytes_exported),
+        "partition_terms_in": p.map_or(&[][..], |p| &p.terms_in),
+        "partition_imbalance": six_decimals(p.map_or(1.0, |p| p.imbalance)),
+        "export_ns": s.export_ns,
+        "exchange_ns": s.exchange_ns,
+        "barrier_ns": s.collective_ns,
+        "partition_coset_loop_ns": p.map_or(&[][..], |p| &p.coset_loop_ns),
+        "append_ns": s.append_ns,
+        "chunk_wait_ns": s.chunk_wait_ns,
+        "initial": cell.initial,
+        "partition_rows": cell.partition_rows,
+        "partition_imbalance_by_layer": p.map_or(Vec::new(), |p| {
+            p.imbalance_by_layer.iter().copied().map(six_decimals).collect()
+        }),
+        "terms_by_layer": p.map_or(&[][..], |p| &p.terms_by_layer),
+        "rows_remote_gens": cell.row_stats.remote_gens,
+        "rows_remote_weight": (cell.row_stats.remote_weight * 10.0).round() / 10.0,
+    });
+    if let (Value::Object(row), Value::Object(fields)) = (&mut row, partition_fields) {
+        row.extend(fields);
+    }
+    // Absent on a host row and on a non-`--mpi` row, rather than null.
+    if let Some((rank, ranks)) = cell.mpi {
+        row["rank"] = json!(rank);
+        row["ranks"] = json!(ranks);
+    }
+    if let Some(d) = &cell.device {
+        row["device"] = json!(d.devices);
+        row["upload_ns"] = json!(d.upload_ns);
+        row["download_ns"] = json!(d.download_ns);
+    }
+    row.to_string()
 }
 
 /// A device row's ordinals, comma-joined.

@@ -2,7 +2,7 @@
 """Summarize and diff Criterion 0.5 benchmark output for paulistrings-rs.
 
 Criterion 0.5 lays out one directory per benchmark under
-``target/criterion/``, at a nesting depth that varies with how the bench was
+``$CARGO_TARGET_DIR/criterion/`` (default ``target/``), at a nesting depth that varies with how the bench was
 grouped:
 
     target/criterion/<group>/<bench-id>/new/estimates.json
@@ -42,12 +42,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CRITERION_DIR = REPO_ROOT / "target" / "criterion"
+# Cargo resolves a relative CARGO_TARGET_DIR against its cwd, which is the repo root for every caller.
+CRITERION_DIR = REPO_ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "criterion"
 
 
 def _read_json(path: Path) -> Optional[dict]:

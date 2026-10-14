@@ -188,7 +188,7 @@ Thread-scaling groups rely on a naming contract: a `BenchmarkId` of `<group>/<th
 Without a ceiling-map header, `perf-viz.py` falls back to a hard-coded ccqlin038-shaped thread-count → section table.
 
 **(e) The campaign results directory** (`benchmarks/results/<date>-<host>/`). Per campaign name:
-`<name>.txt`, `<name>.json`, `<name>-probe.json` (the probe's JSONL sidecar, despite the `.json` extension), one `<name>-scaling-<placement>.json` per `scaling:` placement, and `<name>-report.html`.
+`<name>.txt`, `<name>.json`, `<name>.probe.jsonl` (the probe's sidecar), one `<name>-scaling-<placement>.json` per `scaling:` placement, and `<name>-report.html`.
 `bandwidth.txt` and `flamegraph-<name>-<shortcommit>[-dirty].html` (+ `.meta.txt`) live directly in the dated directory, shared across every campaign there.
 A/B runs add `<name>-ab.log`, `<name>-{a,b}.probe.jsonl`, and the archived binaries `<name>-{a,b}-<sha|worktree>[-dirty]`.
 

@@ -10,7 +10,7 @@ renders whichever of the following exist (see the docstrings on each
 
     <prefix>.txt                       campaign log (provenance header only)
     <prefix>.json                      criterion snapshot (criterion-report.py format)
-    <prefix>-probe.json                one JSON object per line, engine phase timings
+    <prefix>.probe.jsonl               one JSON object per line, engine phase timings
     <prefix>-scaling-<placement>.json  criterion snapshot, thread-scaling groups
     bandwidth.txt (same directory)     memory-bandwidth ceiling sections; an optional
                                         leading "# ceiling-map: ..." header (see
@@ -205,7 +205,7 @@ def load_criterion_json(path: Path, missing: list) -> Optional[dict]:
 
 
 def load_probe(path: Path, missing: list, malformed: dict) -> list:
-    """Load <prefix>-probe.json: one JSON object per line."""
+    """Load <prefix>.probe.jsonl: one JSON object per line."""
     if not path.exists():
         missing.append(path.name)
         return []
@@ -232,7 +232,7 @@ def load_probe(path: Path, missing: list, malformed: dict) -> list:
 def dedupe_probe_rows(rows: list) -> list:
     """Keep only the LAST line for each (layer, threads, partitions) key.
 
-    ``<prefix>-probe.json`` may contain multiple lines for the same
+    ``<prefix>.probe.jsonl`` may contain multiple lines for the same
     (layer, threads, partitions) triple from appended re-runs (e.g. a
     campaign resumed after a partial run). ``partitions`` defaults to ``1``
     when absent -- a sidecar row from a probe predating the partitioned
@@ -815,7 +815,7 @@ def _phase_cell_svg(row: dict, group_max_cpu_ms: float, uid: str) -> str:
 
 def render_phase_breakdown(probe_rows: list, bandwidth_sections: list, ceiling_map: Optional[dict] = None) -> str:
     if not probe_rows:
-        return '<p class="note">No probe sidecar (.-probe.json) found — phase breakdown unavailable.</p>'
+        return '<p class="note">No probe sidecar (.probe.jsonl) found — phase breakdown unavailable.</p>'
 
     groups: dict = {}
     for row in probe_rows:
@@ -1414,7 +1414,7 @@ def build_report(prefix: Path, compare_path: Optional[Path]) -> str:
 
     txt_path = prefix.with_name(prefix.name + ".txt")
     json_path = prefix.with_name(prefix.name + ".json")
-    probe_path = prefix.with_name(prefix.name + "-probe.json")
+    probe_path = prefix.with_name(prefix.name + ".probe.jsonl")
 
     prov = load_provenance(txt_path, missing, malformed)
     if prov is not None:

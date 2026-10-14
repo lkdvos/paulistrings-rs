@@ -1,44 +1,12 @@
 #!/usr/bin/env bash
-# Reusable measurement-campaign harness for paulistrings-rs.
-#
-# Usage: scripts/bench-campaign.sh <campaign-name> <item>...
-#
-# Writes benchmarks/results/<date>-<hostname>/<campaign-name>.txt: a
-# provenance header (commit, rustc version, thread count, governor, cpu,
-# load) followed by one "=== <item> ===" section per item, each containing
-# the invoked tool's combined stdout+stderr. Never touches Slurm.
-#
-# Design notes (see --help for the item menu):
-#   - A failing item is logged and the campaign continues; the script only
-#     aborts outright on a malformed item (unknown type, unknown scaling
-#     placement) since that's a caller mistake, not a flaky measurement.
-#   - Re-running the same campaign name on the same day/host appends to the
-#     existing file behind a rerun divider, rather than overwriting it.
-#   - `criterion:<filter>` re-snapshots target/criterion into
-#     <campaign-name>.json via `criterion-report.py snapshot --merge` after
-#     every such item, scoped with the same --filter. --merge means running
-#     more than one criterion: item in one campaign accumulates into the
-#     same JSON (each item's entries win for their own keys) instead of the
-#     later snapshot overwriting the earlier one.
-#   - `probe:<args>` and `perf-stat:<args>` are split into an argv array via
-#     `eval "args_arr=( ${item_rest} )"` rather than plain unquoted word
-#     splitting, so a quoted arg (e.g. probe:'--layers "a,b"') survives
-#     intact. This is a deliberate `eval` on a string that only ever comes
-#     from this script's own trusted argv (the campaign items an operator
-#     types on the command line, not external/untrusted input) -- treat it
-#     the same as any other shell-quoting trust boundary and don't route
-#     unreviewed input through it.
+# A dated measurement campaign: one `=== <item> ===` section per item in benchmarks/results/<date>-<host>/<name>.txt, then the perf-viz.py report (see --help).
+# A failing item is logged and the campaign continues; a malformed item aborts.
+# `probe:` and `perf-stat:` arguments go through `eval` into an argv array, so quoting inside them survives; the items come from this script's own command line only.
+# Never invokes any Slurm command.
 
 set -euo pipefail
 
-# The JCC-erratum padding is deliberately not in .cargo/config.toml — it is a
-# ~1% tax on every part without the erratum, which is all of `ccq`. Measurement
-# builds opt in, so the reference host cannot silently lose 9-13% mid-campaign.
-# Append: an exported RUSTFLAGS replaces the config's rustflags wholesale.
-# See scripts/jcc-rustflags.sh and research/HARDWARE.md.
-. "$(dirname "$0")/jcc-rustflags.sh"
-export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"
-
+. "$(dirname "$0")/jcc-rustflags.sh"   # research/FINDINGS.md §JCC branch padding, opt-in
 
 cd "$(dirname "$0")/.."
 
@@ -48,49 +16,30 @@ Usage: scripts/bench-campaign.sh <campaign-name> <item>...
 
 Items (parsed on the first ':'):
   criterion:<filter>
-      cargo bench --offline -p paulistrings --bench pauli_ops -- "<filter>"
-      then snapshots target/criterion into
-      benchmarks/results/<date>-<host>/<campaign-name>.json via
-      scripts/criterion-report.py snapshot --merge --filter "<filter>"
-      (--merge accumulates across multiple criterion: items in one
-      campaign instead of the later one overwriting the earlier).
+      cargo bench --offline -p paulistrings --bench pauli_ops -- "<filter>",
+      then merges a snapshot of $CARGO_TARGET_DIR/criterion (default target/)
+      into <name>.json via scripts/criterion-report.py snapshot --merge.
 
   probe:<args>
       cargo run --offline --release --features phase-timing \
-        --example phase_breakdown -- <args>
-      <args> is split into an argv array via `eval "args_arr=( ${args} )"`,
-      so ordinary shell quoting inside <args> is honored -- pass it as a
-      single shell word, e.g. probe:"--width 2 --n 1000000" or
-      probe:'--layers "a,b" --n 1000000' or probe:'--partitions 1,2 --n 1000000'.
-      `partitions` (default 1) becomes part of the probe sidecar's per-cell
-      key (layer, threads, partitions) -- see benchmarks/PROFILING.md.
+        --example phase_breakdown -- <args> --json-out <name>.probe.jsonl
+      Pass <args> as one shell word; quoting inside it is honoured, e.g.
+      probe:'--layers cnot,su4 --n 1000000' or probe:'--partitions 1,2 --n 1000000'.
 
   perf-stat:<args>
-      scripts/perf-stat.sh <args>  (split into argv the same way as
-      probe:<args>)
-      Prints a skip message instead of failing if the script doesn't exist
-      yet.
+      scripts/perf-stat.sh <args> (split like probe:<args>).
 
   scaling:<placement>
-      Runs `cargo bench --offline -p paulistrings --bench pauli_ops -- \
-      thread_scaling_bucketed` under a CPU-placement prefix looked up from
-      PLACEMENT_PREFIX in scripts/host-topology.sh (keyed on this host's
-      `hostname -s`). <placement> must be a key in that map -- an unknown
-      placement aborts with the valid list. On the reference host
-      (ccqlin038) the keys are:
-        default  -- no prefix
-        node0    -- numactl --cpunodebind=0 --membind=0
-        phys16   -- taskset -c 0-15
-        smt16    -- taskset -c 0-7,16-23 numactl --membind=0
-        phys8    -- taskset -c 0-7 numactl --membind=0
-      An unrecognized host only has `default` -- add an entry to
-      scripts/host-topology.sh to calibrate placements for it.
+      cargo bench ... -- thread_scaling_bucketed under the command prefix
+      PLACEMENT_PREFIX[<placement>] from scripts/host-topology.sh, snapshot
+      into <name>-scaling-<placement>.json. An unknown placement aborts with
+      the valid list; an uncalibrated host has only `default`.
 
   bandwidth
-      scripts/bandwidth.sh, if present; otherwise a skip message.
+      scripts/bandwidth.sh.
 
-Output: benchmarks/results/$(date +%F)-$(hostname -s)/<campaign-name>.txt
-(appended, with a rerun divider, if it already exists).
+Output: benchmarks/results/<date>-<host>/<name>.txt (a rerun appends behind a
+divider), plus <name>-report.html from scripts/perf-viz.py.
 
 Never invokes any Slurm command.
 EOF
@@ -169,33 +118,22 @@ for item in "${items[@]}"; do
       ;;
 
     probe)
-      # Split item_rest into an argv array via eval rather than unquoted
-      # word-splitting, so quoted args survive. item_rest only ever comes
-      # from this script's own argv (an operator-typed campaign item), so
-      # this eval is over trusted input -- see the header comment.
       args_arr=()
       eval "args_arr=( ${item_rest} )"
-      # Every probe cell also lands as a JSON line in the campaign's probe
-      # sidecar, which perf-viz.py renders at the end of the run.
       if ! (cargo run --offline --release --features phase-timing \
         --example phase_breakdown -- "${args_arr[@]}" \
-        --json-out "$out_dir/${campaign_name}-probe.json") 2>&1 | tee -a "$out_file"; then
+        --json-out "$out_dir/${campaign_name}.probe.jsonl") 2>&1 | tee -a "$out_file"; then
         echo "  (phase_breakdown probe exited nonzero — continuing campaign)" \
           | tee -a "$out_file"
       fi
       ;;
 
     perf-stat)
-      # See the probe: item above -- same eval-into-array rationale.
       args_arr=()
       eval "args_arr=( ${item_rest} )"
-      if [[ ! -x scripts/perf-stat.sh ]]; then
-        echo "  skip: scripts/perf-stat.sh not present yet" | tee -a "$out_file"
-      else
-        if ! (scripts/perf-stat.sh "${args_arr[@]}") 2>&1 | tee -a "$out_file"; then
-          echo "  (perf-stat.sh exited nonzero — continuing campaign)" \
-            | tee -a "$out_file"
-        fi
+      if ! (scripts/perf-stat.sh "${args_arr[@]}") 2>&1 | tee -a "$out_file"; then
+        echo "  (perf-stat.sh exited nonzero — continuing campaign)" \
+          | tee -a "$out_file"
       fi
       ;;
 
@@ -224,12 +162,8 @@ for item in "${items[@]}"; do
       ;;
 
     bandwidth)
-      if [[ ! -x scripts/bandwidth.sh ]]; then
-        echo "  skip: scripts/bandwidth.sh not present yet" | tee -a "$out_file"
-      else
-        if ! (scripts/bandwidth.sh) 2>&1 | tee -a "$out_file"; then
-          echo "  (bandwidth.sh exited nonzero — continuing campaign)" | tee -a "$out_file"
-        fi
+      if ! (scripts/bandwidth.sh) 2>&1 | tee -a "$out_file"; then
+        echo "  (bandwidth.sh exited nonzero — continuing campaign)" | tee -a "$out_file"
       fi
       ;;
 
@@ -246,12 +180,8 @@ done
   echo "load at end: $(cut -d' ' -f1-3 /proc/loadavg)"
 } >>"$out_file"
 
-# Render the campaign's HTML report from whatever JSON/txt this run (and
-# earlier runs of the same campaign name) left in $out_dir.
-if [[ -x scripts/perf-viz.py || -f scripts/perf-viz.py ]]; then
-  if python3 scripts/perf-viz.py "$out_dir/$campaign_name"; then
-    echo "report: $out_dir/${campaign_name}-report.html"
-  else
-    echo "  (perf-viz.py failed — campaign data is intact, re-run it by hand)" >&2
-  fi
+if python3 scripts/perf-viz.py "$out_dir/$campaign_name"; then
+  echo "report: $out_dir/${campaign_name}-report.html"
+else
+  echo "  (perf-viz.py failed — campaign data is intact, re-run it by hand)" >&2
 fi

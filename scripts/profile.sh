@@ -6,12 +6,13 @@
 # access needed), and drops a standalone interactive HTML plus a sidecar
 # `.meta.txt` describing exactly what was profiled.
 set -euo pipefail
-. "$(dirname "${BASH_SOURCE[0]}")/jcc-rustflags.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/jcc-rustflags.sh"   # research/FINDINGS.md §JCC branch padding, opt-in
 
 cd "$(dirname "$0")/.."
 
 PROFILE_MODE=${PROFILE_MODE:-dwarf}
 FREQ=${FREQ:-397}
+TARGET_DIR=${CARGO_TARGET_DIR:-target}
 
 usage() {
   cat <<'EOF'
@@ -20,13 +21,13 @@ Usage:
       Profile the `phase_breakdown` example. Builds it first with:
         cargo build --offline --profile profiling --features phase-timing \
           -p paulistrings --example phase_breakdown
-      then perf-records ./target/profiling/examples/phase_breakdown with the
-      given args.
+      then perf-records $CARGO_TARGET_DIR/profiling/examples/phase_breakdown
+      (default target/) with the given args.
 
   scripts/profile.sh bench <criterion-filter> [seconds]
       Profile a criterion bench via --profile-time. Builds the bench binary
       first with `cargo bench --offline -p paulistrings --bench pauli_ops
-      --no-run`, locates the freshest target/release/deps/pauli_ops-* binary,
+      --no-run`, locates the freshest <target>/release/deps/pauli_ops-* binary,
       and perf-records it directly (not through cargo, for clean attribution)
       as: <bin> --bench --profile-time <seconds> "<criterion-filter>".
       seconds defaults to 10.
@@ -42,15 +43,12 @@ Env knobs:
                           has line-tables-only debug info) and resolves
                           LTO-inlined frames.
                           fp: perf record --call-graph fp. For `probe`/`bench`
-                          this exports RUSTFLAGS="-Cforce-frame-pointers=yes"
-                          plus $JCC_RUSTFLAGS from scripts/jcc-rustflags.sh, so
-                          a profiling build matches what the campaigns measure
-                          before the cargo build/bench step, which forces a
-                          full rebuild (frame-pointer codegen differs from the
-                          cached profiling/release artifacts). For `bin` it
-                          only changes the perf record flag — you are
-                          responsible for having built the binary with frame
-                          pointers.
+                          this adds -Cforce-frame-pointers=yes to RUSTFLAGS,
+                          which forces a full rebuild. For `bin` it only
+                          changes the perf record flag, so build that binary
+                          with frame pointers yourself.
+                          Both modes build with the JCC flags of
+                          scripts/jcc-rustflags.sh, as the campaigns do.
   FREQ=<hz>               Sampling frequency for `perf record -F` (default: 397).
 
 Output:
@@ -110,12 +108,12 @@ NAME=""
 case $MODE in
   probe)
     if [[ $PROFILE_MODE == "fp" ]]; then
-      export RUSTFLAGS="-Cforce-frame-pointers=yes${JCC_RUSTFLAGS:+ $JCC_RUSTFLAGS}"
+      export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Cforce-frame-pointers=yes"
     fi
     echo "==> building phase_breakdown (profiling profile, phase-timing feature)" >&2
     cargo build --offline --profile profiling --features phase-timing \
       -p paulistrings --example phase_breakdown
-    BIN="./target/profiling/examples/phase_breakdown"
+    BIN="$TARGET_DIR/profiling/examples/phase_breakdown"
     ARGS=("$@")
     # Name by the distinguishing probe options (--layers/--threads), not the
     # first arg — several cells profiled back to back must not overwrite each
@@ -142,20 +140,20 @@ case $MODE in
     SECONDS_ARG=${2:-10}
 
     if [[ $PROFILE_MODE == "fp" ]]; then
-      export RUSTFLAGS="-Cforce-frame-pointers=yes${JCC_RUSTFLAGS:+ $JCC_RUSTFLAGS}"
+      export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Cforce-frame-pointers=yes"
     fi
     echo "==> building pauli_ops bench (--no-run)" >&2
     cargo bench --offline -p paulistrings --bench pauli_ops --no-run
 
     BENCH_BIN=""
-    for f in $(ls -t target/release/deps/pauli_ops-* 2>/dev/null); do
+    for f in $(ls -t "$TARGET_DIR"/release/deps/pauli_ops-* 2>/dev/null); do
       [[ $f == *.d ]] && continue
       [[ -f $f && -x $f ]] || continue
       BENCH_BIN=$f
       break
     done
     if [[ -z $BENCH_BIN ]]; then
-      echo "error: no pauli_ops bench executable found under target/release/deps/" >&2
+      echo "error: no pauli_ops bench executable found under $TARGET_DIR/release/deps/" >&2
       exit 1
     fi
 

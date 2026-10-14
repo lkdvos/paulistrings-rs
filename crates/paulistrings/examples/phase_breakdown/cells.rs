@@ -16,8 +16,6 @@ use crate::workloads::{build_base_sum, build_circuit, LayerKind};
 pub(crate) struct CellResult {
     pub(crate) layer: &'static str,
     pub(crate) truncation: String,
-    /// `--truncation-dispatch`, or `builtin` for a device cell, which always runs a [`BuiltinTruncation`].
-    pub(crate) truncation_dispatch: &'static str,
     pub(crate) threads: usize,
     pub(crate) n: usize,
     pub(crate) reps: usize,
@@ -261,7 +259,6 @@ where
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
-        truncation_dispatch: cfg.truncation_dispatch.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,
@@ -389,7 +386,6 @@ where
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
-        truncation_dispatch: cfg.truncation_dispatch.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,
@@ -516,7 +512,6 @@ where
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
-        truncation_dispatch: cfg.truncation_dispatch.label(),
         threads,
         n: steady_n,
         reps: cfg.reps,

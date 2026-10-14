@@ -84,7 +84,7 @@ Both sides being the working tree, or both resolving to the same clean commit, i
 The tools communicate through file formats, not each other's code — a format change in one silently breaks a consumer elsewhere unless the coupling is written down.
 
 **(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from `phase_breakdown/output.rs`'s `json_line` — verify against `PhaseStats` in
-`crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `truncation`, `truncation_dispatch` (`"generic"` or `"builtin"`, from `--truncation-dispatch`; always `"builtin"` for a device cell), `threads`,
+`crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `truncation`, `threads`,
 `n`, `reps`, `qubits`, `seed`, `hash_seed`, `bucket_bits`, `wall_ns`; the wall-clock phases
 `rebucket_ns`, `prepare_ns`, `rescale_ns`,
 `span_plan_ns`, `permute_ns`, `coset_loop_ns`, `unpermute_ns`, `recount_ns`, `finalize_ns`; the worker
@@ -222,7 +222,6 @@ A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pool
 - `--partition-rows random|cut` (default `random`) chooses the rows: `random` is `PartitionRows::from_seed`; `cut` is `PartitionRows::cut` over `P` contiguous qubit blocks, chosen by an exact DP over the layer's own graph to cross as few two-qubit generators as possible at ±25% size balance. Both report `rows_remote_gens` / `rows_remote_weight` in the sidecar.
 - Layers `tfim_step` (a 1D open chain of `--qubits` qubits) and `heavyhex_step` (the fixed 127-qubit Eagle r3 lattice, `--qubits >= 127`) are the rotation-only kicked-Ising Trotter steps the row policies exist for: `--reps` is the step count, both default to `--initial z0`, and both need a truncation policy to converge (`coeff:1.220703125e-4` is `2^-13`).
 - `--truncation topn:<N>` is refused for a partitioned cell: partitioned exact `TopN` is not yet supported. `atopn:<N>`, `coeff:<t>` and `keep` all run.
-- `--truncation-dispatch generic|builtin` (default `generic`) runs the host policy either as its own type, monomorphized into the merge, or as the equivalent `BuiltinTruncation`, matched per term; a same-binary knob A/B is `scripts/ab-compare.sh <name> --a . --b . --probe '<args>' --probe-b '<args> --truncation-dispatch builtin'`, or `KNOB_B="--truncation-dispatch builtin"` in `scripts/slurm/ab-campaign.sbatch`.
 
 ### The rank axis
 

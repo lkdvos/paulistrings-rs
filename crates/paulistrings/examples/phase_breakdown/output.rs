@@ -303,7 +303,7 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
         cell.row_stats.remote_weight,
     );
     let core = format!(
-        "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"truncation_dispatch\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
+        "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
          \"qubits\":{},\"seed\":{},\"hash_seed\":{},\"bucket_bits\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
@@ -314,7 +314,6 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
          \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{},\"truncate_ns\":{},\"export_kernel_ns\":{}",
         cell.layer,
         cell.truncation,
-        cell.truncation_dispatch,
         cell.threads,
         cell.n,
         cell.reps,

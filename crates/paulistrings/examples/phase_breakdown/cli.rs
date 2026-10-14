@@ -92,13 +92,6 @@ Options:
                                             histogram boundary instead of a
                                             selection. Also keeps exactly N,
                                             but not the N largest.
-  --truncation-dispatch <generic|builtin>
-                           How the host runs --truncation (default generic):
-                           generic is the policy's own type, monomorphized
-                           into the merge; builtin is the same policy as a
-                           BuiltinTruncation, matched per term. A runtime
-                           knob for a same-binary A/B; device cells always
-                           run builtin.
   --partitions <csv>       Comma-separated partition counts, each a power of
                             two (default: 1). P > 1 runs the cell through the
                             partitioned engine; P = 1 runs the unpartitioned
@@ -170,32 +163,6 @@ Options:
 pub(crate) enum Format {
     Table,
     Json,
-}
-
-/// `--truncation-dispatch`: the policy's own type, or the same policy as a [`BuiltinTruncation`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TruncationDispatch {
-    Generic,
-    Builtin,
-}
-
-impl TruncationDispatch {
-    pub(crate) fn parse(s: &str) -> Result<Self, String> {
-        match s.trim() {
-            "generic" => Ok(Self::Generic),
-            "builtin" => Ok(Self::Builtin),
-            other => Err(format!(
-                "--truncation-dispatch expects generic or builtin, got '{other}'"
-            )),
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Generic => "generic",
-            Self::Builtin => "builtin",
-        }
-    }
 }
 
 /// Which [`TruncationPolicy`] every cell runs under, kept as a spec so `run` dispatches it into one monomorphization per variant.
@@ -418,7 +385,6 @@ pub(crate) struct Config {
     pub(crate) reps: usize,
     pub(crate) seed: u64,
     pub(crate) truncation: TruncSpec,
-    pub(crate) truncation_dispatch: TruncationDispatch,
     pub(crate) format: Format,
     /// Sidecar file that gets one JSON line appended per cell, regardless of `--format`.
     pub(crate) json_out: Option<String>,
@@ -505,7 +471,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut min_buckets: usize = DEFAULT_MIN_BUCKETS;
     let mut occupancy_at: Option<usize> = None;
     let mut truncation = TruncSpec::Keep;
-    let mut truncation_dispatch = TruncationDispatch::Generic;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
     let mut partitions: Vec<usize> = vec![1];
@@ -558,7 +523,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--min-buckets" => min_buckets = parse_usize(value, "--min-buckets")?,
             "--occupancy-at" => occupancy_at = Some(parse_usize(value, "--occupancy-at")?),
             "--truncation" => truncation = TruncSpec::parse(value)?,
-            "--truncation-dispatch" => truncation_dispatch = TruncationDispatch::parse(value)?,
             "--partitions" => partitions = parse_csv_usize(value, "--partitions")?,
             "--partition-cpus" => partition_cpus = PartitionCpus::parse(value)?,
             "--bind-memory" => {
@@ -777,7 +741,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         reps,
         seed,
         truncation,
-        truncation_dispatch,
         format,
         json_out,
     })

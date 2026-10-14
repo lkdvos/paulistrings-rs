@@ -17,7 +17,7 @@ mod output;
 mod rows;
 mod workloads;
 
-use paulistrings::{ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, TruncationPolicy};
+use paulistrings::{ApproxTopN, CoefficientThreshold, TopN, TruncationPolicy};
 
 #[cfg(feature = "mpi")]
 use cells::run_cell_mpi;
@@ -26,36 +26,19 @@ use cells::{run_cell, run_cell_partitioned, CellResult};
 use cli::DEVICE_USAGE;
 #[cfg(feature = "mpi")]
 use cli::MPI_USAGE;
-use cli::{parse_args, Config, Format, TruncSpec, TruncationDispatch, USAGE};
+use cli::{parse_args, Config, Format, TruncSpec, USAGE};
 #[cfg(all(feature = "cuda", feature = "mpi"))]
 use device::run_cell_mpi_gpu;
 #[cfg(feature = "cuda")]
-use device::{resolve_devices, run_cell_gpu};
+use device::{builtin_truncation, resolve_devices, run_cell_gpu};
 use output::{json_line, print_cell_line, print_json, print_table};
 use workloads::{AlwaysKeep, AlwaysKeepPartitioned};
 
-/// `--truncation` as a [`BuiltinTruncation`], the form the device drivers and `--truncation-dispatch builtin` take.
-fn builtin_truncation(spec: TruncSpec) -> BuiltinTruncation {
-    match spec {
-        TruncSpec::Keep => BuiltinTruncation::Keep,
-        TruncSpec::Coefficient(t) => BuiltinTruncation::Coefficient(t),
-        TruncSpec::TopN(n) => BuiltinTruncation::TopN(n),
-        TruncSpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(n),
-    }
-}
-
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
-/// `keep_term` inlines into the merge the way a real caller's does, or under
-/// `--truncation-dispatch builtin` into the one [`BuiltinTruncation`] instance. Each spec supplies
-/// two policy values: the unpartitioned one and its partitioned form (`topn` has none, already
-/// rejected by [`parse_args`]).
+/// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
+/// values: the unpartitioned one and its partitioned form (`topn` has none, already rejected by
+/// [`parse_args`]).
 fn run<const W: usize>(cfg: &Config) {
-    if cfg.truncation_dispatch == TruncationDispatch::Builtin {
-        let policy = builtin_truncation(cfg.truncation);
-        let partitioned = policy.supports_partitioned().then_some(&policy);
-        run_cells::<W, _, _>(cfg, &policy, partitioned);
-        return;
-    }
     match cfg.truncation {
         TruncSpec::Keep => run_cells::<W, _, _>(cfg, &AlwaysKeep, Some(&AlwaysKeepPartitioned)),
         TruncSpec::Coefficient(t) => run_cells::<W, _, _>(

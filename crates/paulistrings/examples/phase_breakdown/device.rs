@@ -10,9 +10,19 @@ use paulistrings::{
 use crate::cells::{
     fold_partition_stats, read_proc_status_kb, summarize_partitions, CellResult, DeviceCellStats,
 };
-use crate::cli::{check_device_partitions, Config, DeviceSpec, Initial, TruncationDispatch};
+use crate::cli::{check_device_partitions, Config, DeviceSpec, Initial, TruncSpec};
 use crate::rows::{choose_generator, choose_partition_rows, RowChoiceStats};
 use crate::workloads::{build_base_sum, build_circuit, LayerKind};
+
+/// `--truncation` as a [`BuiltinTruncation`], the form the device drivers take.
+pub(crate) fn builtin_truncation(spec: TruncSpec) -> BuiltinTruncation {
+    match spec {
+        TruncSpec::Keep => BuiltinTruncation::Keep,
+        TruncSpec::Coefficient(t) => BuiltinTruncation::Coefficient(t),
+        TruncSpec::TopN(n) => BuiltinTruncation::TopN(n),
+        TruncSpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(n),
+    }
+}
 
 /// One device cell, `--gpu-partitions` partitions on each of `devices` (one device at one partition is `GpuPartitionedSum::from_host`'s shape): [`run_cell_partitioned`] with `GpuPartitionedSum`.
 #[cfg(feature = "cuda")]
@@ -135,7 +145,6 @@ pub(crate) fn device_cell(
     CellResult {
         layer: layer.name(),
         truncation: cfg.truncation.label(),
-        truncation_dispatch: TruncationDispatch::Builtin.label(),
         threads,
         n: run.n,
         reps: cfg.reps,

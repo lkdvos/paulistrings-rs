@@ -75,6 +75,11 @@ Idea: walk contiguous chunks carrying the previous key in registers, halving key
 Rejected: `su4` at 1.41e7 **+4.18% (5/5)**; chaining the gathers loses more memory-level parallelism than halving them saves.
 Redundant key gathers are still the fused kernel's largest known cost; a fix must keep the gathers independent.
 
+### One `BuiltinTruncation` enum for host truncation
+
+Idea: run every host policy as the `BuiltinTruncation` enum, matched per term, instead of one monomorphized engine per policy.
+Rejected: **10–14% slower** wall on `cnot` and `rotation_zz`, merge **+31–37%** (job 7228665); the host keeps the generic policies, onto which Python lowers its policy trees (`ARCHITECTURE.md §Python-Bindings`).
+
 ## Shipped
 
 ### Direct-apply path for small sums

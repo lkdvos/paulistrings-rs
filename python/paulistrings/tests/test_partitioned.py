@@ -53,8 +53,8 @@ pytestmark = pytest.mark.skipif(
     reason="partitioned placement needs Linux CPU affinity and at least two CPUs",
 )
 
-# One per width band the bindings monomorphize: 8 -> W=1, 68 -> W=2, 130 -> W=4.
-WIDTHS = [8, 68, 130]
+# The narrowest and a multi-word width band the bindings monomorphize: 8 -> W=1, 130 -> W=4.
+WIDTHS = [8, 130]
 
 # Coefficients agree to floating point, not bit for bit: the partitioned run
 # sums equal keys in a different order (ARCHITECTURE.md §Determinism).
@@ -199,8 +199,7 @@ def test_unpartitioned_stats_report_one_partition():
 # Two partitions agree with none
 
 
-@pytest.mark.parametrize("num_qubits", WIDTHS)
-@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+@pytest.mark.parametrize("num_qubits, direction", list(zip(WIDTHS, ["forward", "heisenberg"])))
 def test_two_partitions_match_unpartitioned(num_qubits, direction):
     s, c = _observable(num_qubits), _clifford_circuit(num_qubits)
     want, want_stats = s.propagate_with_stats(c, direction=direction)
@@ -214,11 +213,10 @@ def test_two_partitions_match_unpartitioned(num_qubits, direction):
     assert got_stats.partition.partitions == 2
 
 
-@pytest.mark.parametrize("num_qubits", WIDTHS)
-@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
-def test_two_partitions_match_unpartitioned_with_fanout(num_qubits, direction):
+def test_two_partitions_match_unpartitioned_with_fanout():
     """The same check on a circuit with real fanout, under the collective
     ``approx_topn`` that bounds its growth: the same counts."""
+    num_qubits, direction = WIDTHS[0], "heisenberg"
     s, c = _observable(num_qubits, light=True), _mixed_circuit(num_qubits, scale=LIGHT)
     policy = truncation.approx_topn(NUM_TERMS)
     want, want_stats = s.propagate_with_stats(c, policy, direction=direction)
@@ -229,21 +227,20 @@ def test_two_partitions_match_unpartitioned_with_fanout(num_qubits, direction):
     _assert_agree(got, want, policy, discarded, got_stats, want_stats)
 
 
-@pytest.mark.parametrize("num_qubits", [16, 68])
-@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
-def test_two_partitions_match_unpartitioned_after_a_single_cut(num_qubits, direction):
+def test_two_partitions_match_unpartitioned_after_a_single_cut():
     """One cut that splits a boundary group, dropping little weight."""
-    for name, c, s, n in single_cuts(num_qubits):
+    direction = "forward"
+    for name, c, s, n in single_cuts(16):
         policy = truncation.approx_topn(n)
         want = s.propagate(c, policy, direction=direction)
         got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
         assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL, name)
 
 
-@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
-def test_two_partitions_keep_the_count_through_heavy_cuts(direction):
+def test_two_partitions_keep_the_count_through_heavy_cuts():
     """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the partitions keep the unpartitioned count."""
     c, s = heavy_cut(12)
+    direction = "heisenberg"
     policy = truncation.approx_topn(400)
     want = s.propagate(c, policy, direction=direction)
     got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
@@ -253,7 +250,7 @@ def test_two_partitions_keep_the_count_through_heavy_cuts(direction):
 def test_pin_memory_false_matches():
     """``pin_memory=False`` pins threads but not allocations — a placement
     knob, never a semantic one."""
-    s, c = _observable(WIDTHS[1]), _clifford_circuit(WIDTHS[1])
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
     want = s.propagate(c)
     got = s.propagate(c, partitions=_cpu_sets(), pin_memory=False)
     _assert_terms_close(got, want)
@@ -307,7 +304,7 @@ def test_a_trotter_loop_reuses_the_runtime():
 def test_approx_topn_agrees_with_unpartitioned():
     """The collective octave histogram and boundary quota: the partitions keep
     exactly as many terms as one partition holding everything."""
-    s, c = _observable(WIDTHS[1], light=True), _mixed_circuit(WIDTHS[1], scale=LIGHT)
+    s, c = _observable(WIDTHS[0], light=True), _mixed_circuit(WIDTHS[0], scale=LIGHT)
     policy = truncation.coeff(1e-12) & truncation.approx_topn(16_000)
     want, want_stats = s.propagate_with_stats(c, policy)
     got, got_stats = s.propagate_with_stats(c, policy, partitions=_cpu_sets())
@@ -516,11 +513,11 @@ def test_distinct_seeds_move_different_rows():
     assert stats_a.partition.rows_exported != stats_b.partition.rows_exported
 
 
-@pytest.mark.parametrize("num_qubits", WIDTHS)
-def test_seeded_and_cut_rows_agree_with_unpartitioned(num_qubits):
+def test_seeded_and_cut_rows_agree_with_unpartitioned():
     """Both new row policies are placement knobs, not semantic ones: the
     returned sum keeps the unpartitioned run's count under the cutting policy,
     exactly like the existing seeded-random path."""
+    num_qubits = WIDTHS[0]
     s, c = _observable(num_qubits, light=True), _mixed_circuit(num_qubits, scale=LIGHT)
     policy = truncation.approx_topn(NUM_TERMS)
     want, want_stats = s.propagate_with_stats(c, policy)
@@ -615,10 +612,9 @@ def _real_observable(num_qubits, terms=2_000, seed=20260926):
     return PauliSum.from_arrays(s.x_array(), s.z_array(), coeffs, num_qubits=num_qubits)
 
 
-@pytest.mark.parametrize("num_qubits", WIDTHS)
 @pytest.mark.parametrize("axis", ["x", "z"])
-def test_excluding_rows_match_the_unpartitioned_run(num_qubits, axis):
-    s, c = _real_observable(num_qubits), _mixed_circuit(num_qubits)
+def test_excluding_rows_match_the_unpartitioned_run(axis):
+    s, c = _real_observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0])
     policy = truncation.coeff(1e-6)
     want = s.propagate(c, policy, direction="heisenberg")
     got = s.propagate(

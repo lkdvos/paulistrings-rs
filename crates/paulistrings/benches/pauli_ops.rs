@@ -12,40 +12,21 @@ use criterion::{
 };
 use num_complex::Complex64;
 use paulistrings::test_support::{apply_layer_bucketed, coarsen, prepare, refine, with_hash};
+use paulistrings::test_support::{
+    low_weight_sum, rand_pauli, rand_sum_unmasked, sqrt_swap_matrix, tie_heavy_sum_unmasked,
+    trotter_circuit, zz_rotation, KeepAll, Xs64,
+};
 use paulistrings::test_support::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use paulistrings::BuildAccumulator;
-use paulistrings::Circuit;
 use paulistrings::Gf2Hash;
 use paulistrings::LayerScratch;
 use paulistrings::PauliString;
 use paulistrings::PauliSum;
+use paulistrings::TruncationPolicy;
 use paulistrings::{propagate, Direction};
 use paulistrings::{Channel, PauliRotation, PtmChannel};
-// `rand_sum_unmasked` / `tie_heavy_sum_unmasked` are a different draw order from `rand_sum`;
-// the committed criterion baselines are pinned to them specifically.
-use paulistrings::test_support::{
-    low_weight_sum, rand_pauli, rand_sum_unmasked, tie_heavy_sum_unmasked, Xs64,
-};
-use paulistrings::TruncationPolicy;
 use std::hint::black_box;
 use std::time::Duration;
-
-/// A truncation policy that never drops anything.
-struct AlwaysKeep;
-impl<const W: usize> TruncationPolicy<W> for AlwaysKeep {}
-
-/// A weight-2 `ZZ` rotation on qubits `(q0, q1)`, the bond term of a transverse-field Ising
-/// Trotter step. Fanout is data-dependent (1 or 2), so on random input the realized fanout is
-/// ~1.5 and the merge phase has duplicates to combine.
-fn zz_rotation<const W: usize>(q0: usize, q1: usize, theta: f64) -> PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
-    gen.z[q0 / 64] |= 1u64 << (q0 % 64);
-    gen.z[q1 / 64] |= 1u64 << (q1 % 64);
-    PauliRotation::new(gen, theta)
-}
 
 /// A Pauli generator of weight 4 on `qubits`, for a rotation whose support exceeds
 /// `MAX_LOCAL_SUPPORT`: the delta set is still `{0, gen}`, but the `i^k` phase is computed
@@ -66,25 +47,6 @@ fn wide_rotation<const W: usize>(qubits: [usize; 4], theta: f64) -> PauliRotatio
         }
     }
     PauliRotation::new(gen, theta)
-}
-
-/// sqrt(SWAP) on `(q0, q1)`, a fixed non-Clifford two-qubit unitary: the prepared delta set is
-/// wide (up to 16), the maximum bucket fan-in the engine ever sees.
-fn sqrt_swap(q0: usize, q1: usize) -> PtmChannel {
-    let h = Complex64::new(0.5, 0.5);
-    let hc = Complex64::new(0.5, -0.5);
-    let one = Complex64::new(1.0, 0.0);
-    let zero = Complex64::new(0.0, 0.0);
-    PtmChannel::unitary_2q(
-        q0,
-        q1,
-        [
-            [one, zero, zero, zero],
-            [zero, h, hc, zero],
-            [zero, hc, h, zero],
-            [zero, zero, zero, one],
-        ],
-    )
 }
 
 /// `PauliString::mul_assign`, the inner hot loop of rotation/general-unitary channels (Cliffords avoid it via lookup tables).
@@ -157,19 +119,7 @@ fn bench_propagate_trotter(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
 
     let num_qubits = 32usize;
-    let theta = 0.1;
-
-    let mut circuit = Circuit::<1>::new(num_qubits);
-    for q in 0..num_qubits {
-        let q0 = q;
-        let q1 = (q + 1) % num_qubits;
-        circuit.push(zz_rotation::<1>(q0, q1, 2.0 * theta));
-    }
-    for q in 0..num_qubits {
-        let qq = q;
-        let gen = PauliString::<1>::x(qq);
-        circuit.push(PauliRotation::new(gen, 2.0 * theta));
-    }
+    let circuit = trotter_circuit::<1>(num_qubits, 0.1);
 
     // Kept small: no truncation means the sum can grow combinatorially, so `n` is the starting size.
     for &n in &[1_000usize, 10_000usize] {
@@ -180,7 +130,7 @@ fn bench_propagate_trotter(c: &mut Criterion) {
                 black_box(propagate(
                     black_box(&circuit),
                     input.clone(),
-                    &AlwaysKeep,
+                    &KeepAll,
                     Direction::Heisenberg,
                 ))
             })
@@ -209,7 +159,7 @@ fn bucketed_layer_case<const W: usize, C>(
 ) where
     C: Channel<W> + ?Sized,
 {
-    let policy = AlwaysKeep;
+    let policy = KeepAll;
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits_for(input.len()), 0xBEEF);
     let mut sum = with_hash(input.clone(), hash);
     let prep = prepare(ch, sum.hash(), false).expect("channel could not be prepared");
@@ -242,7 +192,7 @@ fn bench_apply_layer_bucketed(c: &mut Criterion) {
     let cnot = PtmChannel::cnot(0, 1);
     let depol = PtmChannel::depolarizing(0, 0.05);
     let rot = zz_rotation::<2>(0, 1, 0.1);
-    let gu2q = sqrt_swap(0, 1);
+    let gu2q = PtmChannel::unitary_2q(0, 1, sqrt_swap_matrix());
     let rot_w4 = wide_rotation::<2>([0, 1, 2, 3], 0.1);
 
     for &n in &[10_000usize, 1_000_000usize] {
@@ -278,7 +228,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
     let n = 1_000_000usize;
     let mut input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x74_12_EA_D5_u64);
     let rot = zz_rotation::<2>(0, 1, 0.1);
-    let policy = AlwaysKeep;
+    let policy = KeepAll;
 
     // Warm `input` to the fixed point once so every thread count clones the same steady state.
     {
@@ -328,8 +278,8 @@ fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
 
     let n = 1_000_000usize;
     let mut input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x74_12_EA_D5_u64);
-    let gu2q = sqrt_swap(0, 1);
-    let policy = AlwaysKeep;
+    let gu2q = PtmChannel::unitary_2q(0, 1, sqrt_swap_matrix());
+    let policy = KeepAll;
 
     // Warm `input` to the fixed point once so every thread count clones the same steady state.
     {
@@ -495,7 +445,7 @@ fn bench_bucket_size_sweep(c: &mut Criterion) {
     let n = 1_000_000usize;
     let input: PauliSum<2> = rand_sum_unmasked::<2>(n, 128, 0x5_1EE0);
     let rot = zz_rotation::<2>(0, 1, 0.1);
-    let policy = AlwaysKeep;
+    let policy = KeepAll;
     group.throughput(Throughput::Elements(input.len() as u64));
 
     // bits chosen directly so the sweep is over bucket size, not over policy.

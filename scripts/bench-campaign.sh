@@ -21,7 +21,7 @@ Items (parsed on the first ':'):
       into <name>.json via scripts/criterion-report.py snapshot --merge.
 
   probe:<args>
-      cargo run --offline --release --features phase-timing \
+      cargo run --offline --release --features phase-timing -p paulistrings \
         --example phase_breakdown -- <args> --json-out <name>.probe.jsonl
       Pass <args> as one shell word; quoting inside it is honoured, e.g.
       probe:'--layers cnot,su4 --n 1000000' or probe:'--partitions 1,2 --n 1000000'.
@@ -120,7 +120,7 @@ for item in "${items[@]}"; do
     probe)
       args_arr=()
       eval "args_arr=( ${item_rest} )"
-      if ! (cargo run --offline --release --features phase-timing \
+      if ! (cargo run --offline --release --features phase-timing -p paulistrings \
         --example phase_breakdown -- "${args_arr[@]}" \
         --json-out "$out_dir/${campaign_name}.probe.jsonl") 2>&1 | tee -a "$out_file"; then
         echo "  (phase_breakdown probe exited nonzero — continuing campaign)" \

@@ -63,7 +63,7 @@ Comment density (production code, all `//` lines including docs): root 26%, buck
 | 19 | GPU: wire | wire, wire/peer, nccl | pending |
 | 20 | GPU: drivers | driver, rank, rank/affinity | pending |
 | 21 | Organisation revisit | — | pending |
-| 22 | Test infrastructure | test_support, tests/, in-source tests | decided (D64) |
+| 22 | Test infrastructure | test_support, tests/, in-source tests | done (D64, D65) |
 | 23 | Benches and examples | benches/, examples/ (phase_breakdown 3k lines) | pending |
 
 ## Decisions
@@ -246,6 +246,7 @@ Not yet measured: code A/B against `89bdcca` (D8).
   As applied: `066e486`..`9e55524`, 11 commits, +3161/−3327. Default `cargo test -p paulistrings` 28 s → 18.5 s; cuda suite about 15 min → 110 s / 106 s (two runs, wire-failure test green in both); pytest 71 s → 27 s. Oracle sweeps deleted, not moved: the small cases reach every line the sweeps did, so the ignored tier is empty (rule in CLAUDE.md). Per-rank-caps test now `(2, [MAX, 128])`, `(4, [MAX, 512, 256, 128])`; `propagate_with.rs` uses 40k terms (30k does not outgrow the input's buckets); device trotter tests gone (rotations at P > 1 stay via `a_rotation_crossing_the_partition_agrees`, `heavy_cuts`). Coverage: cuda 599 missed lines before and after; default one timing-dependent line (`in_process.rs:198`, hit 3/6 runs unchanged). MPI build not re-run.
 - **D65** Chunk 22, second pass (user: aggressive): apply the mutation audit (`scratchpad/chunk22/audit2.md`, 106 mutants): delete `ptm/clifford` tests, shrink `noise`/`unitary`/`merge`/`coset`/`plan`/`test_support` self-tests, delete the thread-count bitwise test and `layer_fingerprints_are_stable`, demote `partitioned_output_is_byte_identical_across_pool_sizes` to tolerance, collapse-sample seeds 3000 → 500 (distributed 250), delete 5 `in_process` tests and add elapsed bounds to two timeout tests, trim storage (45), bucketed, hash (13), builtin (13), prepared, stabilizer (12) tests; first re-run the six mutants (M7, M10, B1, B3, L4, PR7) whose only outside catchers were the oracle sweeps D64 shrank. Add tests for the six suite-wide gaps (collapse pass index, stabilizer pivot sign, rescale exact zeros, TopN NaN, odd-run `merge_partitions`, comparison-bound constants).
   As applied: `c18f784`..`531bedc`, 22 commits, +215/−3711. 153 mutants (not 106): 133 caught at HEAD, 142 after, none lost; the six D64-affected mutants are still caught by the shrunk oracle cases. Gap tests added for S5, SB1, B4, PT1, TS2/5/6, TR6 (+ I7 via elapsed bound). Lib 657 → 482 tests, 3.3 → 1.8 s; `cargo test --workspace` 17.9 → 16.3 s. Coverage 94.39 → 94.38%: `in_process.rs:460,474` (size-1 early returns) lost with `a_group_of_one_is_a_no_op`. Storage 44 deleted (not 45), prepared 12 (`emitting_entries` test kept, its function is cfg(cuda|test)). Finding, not fixed: `TopN(2)` on {3, NaN, 2, 1} keeps nothing (NaN becomes the select boundary; within the doc's "fewer only if NaN" but likely unintended). Surviving: 4 equivalent, T1 (policy-legal), I2/I8/I9/I10 (latency), ST2, SB4.
+  Follow-up (user: any zero-cost NaN behaviour; coverage line and remaining gaps not wanted): TopN sorts a NaN below every number (fallbacks only on the unordered comparison path), `top_n_never_keeps_a_nan_coefficient` pins {3, NaN, 2, 1} → {3, 2} and {NaN, NaN, 1} → {1}.
 
 ## Possible improvements
 
@@ -277,4 +278,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–21 done; 22 decided (D64), being applied, second audit of the keep-as-is tests running. Next: 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.
+Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–22 done (D64, D65). Next: 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.

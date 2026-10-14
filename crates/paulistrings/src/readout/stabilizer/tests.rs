@@ -361,6 +361,15 @@ fn an_empty_sum_contracts_to_zero() {
     assert!(sum.expectation_stabilizer(&stab).norm() < 1e-15);
 }
 
+/// `-XX` pivots the elimination of `+YY`: `(-XX)(+YY) = -(XX·YY) = +ZZ`, so the state is `(|00⟩ - |11⟩)/√2` with `⟨XX⟩ = -1`, `⟨YY⟩ = ⟨ZZ⟩ = +1`.
+#[test]
+fn a_minus_pivot_carries_its_sign_through_the_elimination() {
+    let stabilizer = state::<1>(2, &["-XX", "+YY"]);
+    assert_eq!(expect(&stabilizer, "XX"), -1.0);
+    assert_eq!(expect(&stabilizer, "YY"), 1.0);
+    assert_eq!(expect(&stabilizer, "ZZ"), 1.0);
+}
+
 /// All `2ⁿ` group elements as `key -> sign`, by multiplying out every subset of the generators; usable only at `n ≲ 12`.
 fn brute_force_group<const W: usize>(
     gens: &[(PauliString<W>, bool)],

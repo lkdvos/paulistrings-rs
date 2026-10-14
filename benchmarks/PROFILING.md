@@ -3,7 +3,7 @@
 Operational reference for the performance-measurement framework: how to run a measurement campaign, read its output, and decide what it means.
 See `benchmarks/README.md` for the three benchmark surfaces; this doc is about the tools underneath the Rust microbenchmark surface.
 
-Two protocols share the same probe (`examples/phase_breakdown.rs`) and `phase-timing` instrumentation, differing only in how runs are scheduled and compared.
+Two protocols share the same probe (`examples/phase_breakdown/`) and `phase-timing` instrumentation, differing only in how runs are scheduled and compared.
 **Campaigns** (`bench-campaign.sh`) run once and log everything to a dated results directory — good for exploring, and for effects large enough to clear this host's single-shot noise floor.
 **Interleaved A/B** (`ab-compare.sh`) builds two binaries and alternates them adjacent in time — the only protocol that can resolve effects the campaign noise floor would otherwise swallow.
 
@@ -83,7 +83,7 @@ Both sides being the working tree, or both resolving to the same clean commit, i
 
 The tools communicate through file formats, not each other's code — a format change in one silently breaks a consumer elsewhere unless the coupling is written down.
 
-**(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from `phase_breakdown.rs`'s `json_line` — verify against `PhaseStats` in
+**(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from `phase_breakdown/output.rs`'s `json_line` — verify against `PhaseStats` in
 `crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `truncation`, `truncation_dispatch` (`"generic"` or `"builtin"`, from `--truncation-dispatch`; always `"builtin"` for a device cell), `threads`,
 `n`, `reps`, `qubits`, `seed`, `hash_seed`, `bucket_bits`, `wall_ns`; the wall-clock phases
 `rebucket_ns`, `prepare_ns`, `rescale_ns`,
@@ -178,7 +178,7 @@ Two details of how the probe fills those fields:
   other transport call). There is no barrier in the engine.
 - The wall-clock phases of a partitioned row are the **maximum over partitions** (the group's critical
   path), the busy-time phases and every counter are **sums** over partitions, and `layers` is the
-  driver's layer count rather than a sum — the fold lives in `phase_breakdown.rs::fold_partition_stats`.
+  driver's layer count rather than a sum — the fold lives in `phase_breakdown/cells.rs::fold_partition_stats`.
 
 **(b) The probe's stdout `cell` line.** Every cell prints one `cell layer=<name> threads=<n> n=<n> layers=<n> wall_ms=<f> trunc=<spec>` line, in every `--format`; the partitioned engine appends ` partitions=<P>` after `trunc=`.
 `perf-stat.sh`'s awk greps this literal shape (`n=` and `layers=` field prefixes) to compute cycles/string, scanning every field for those two prefixes rather than assuming a fixed field count.

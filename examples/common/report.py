@@ -64,7 +64,7 @@ the provenance headers `scripts/bench-campaign.sh` writes into
 - ``absolute_error`` — ``abs(expectation_value - oracle_value)``, or ``None`` when
   no oracle was available for this run.
 - ``peak_memory_kb`` — peak resident set size in KiB (``/proc/self/status``
-  ``VmHWM``, the same source `phase_breakdown.rs` samples), or ``None``.
+  ``VmHWM``, the same source `phase_breakdown/cells.rs` samples), or ``None``.
 - ``provenance`` — the ``Provenance`` block above.
 - ``extra`` — free-form ``{key: value}`` for parameters specific to one benchmark
   (e.g. ``theta_h``, ``jz``, a Trotter step count) that don't warrant a dedicated

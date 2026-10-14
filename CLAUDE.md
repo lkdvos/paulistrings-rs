@@ -143,7 +143,7 @@ A heavier cut compares term counts alone (`test_support::assert_runs_agree_count
 - A direction-consistent phase delta is not an effect if the total is flat; let instruction count settle it.
 - Re-derive, never inherit, any constant tuned by wall-clock A/B on an unpadded build (`research/FINDINGS.md §Rule: suspect any constant tuned by wall-clock A/B before 2026-09-10`).
 - A partitioned cell (`P > 1`) runs under no `numactl`/`taskset` prefix; the engine's own pinning is the only one in effect. P=1 vs P=2 is a runtime-knob A/B: `scripts/ab-compare.sh --probe-b '<args with --partitions 2>'`.
-- The probe's sub-phases (`append_ns`, `chunk_wait_ns`) are contained in their parent phase, never summed into a total; contract (a) in `benchmarks/PROFILING.md` is what to update when `phase_breakdown.rs::json_line` or `PhaseStats` changes.
+- The probe's sub-phases (`append_ns`, `chunk_wait_ns`) are contained in their parent phase, never summed into a total; contract (a) in `benchmarks/PROFILING.md` is what to update when `examples/phase_breakdown/output.rs::json_line` or `PhaseStats` changes.
 - Every benchmarking script must source `scripts/jcc-rustflags.sh` (JCC erratum padding, opt-in per CPU); an exported `RUSTFLAGS` replaces `.cargo/config.toml`'s list wholesale.
 - Roofline denominators come from `crates/membench` via `scripts/bandwidth.sh` (`--device` for a GPU) against `research/HARDWARE.md`.
 - Record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number.

@@ -64,6 +64,7 @@ harness = false
 
 [[example]]
 name = "phase_breakdown"
+path = "examples/phase_breakdown/main.rs"
 required-features = ["phase-timing"]
 
 # `harness = false`: the cases are collective, so they must run one at a time in the same order on every rank.

@@ -336,7 +336,7 @@ def _status_kb(name: str) -> float | None:
 def peak_memory_kb() -> float | None:
     """`VmHWM` in KiB — peak RSS over the **whole process lifetime**.
 
-    The same source `crates/paulistrings/examples/phase_breakdown.rs` samples.
+    The same source `crates/paulistrings/examples/phase_breakdown/cells.rs` samples.
     It is monotone: it never falls when memory is released, so it is a per-run
     figure only in a process that has done exactly one run. See the module
     docstring's memory-accounting note.

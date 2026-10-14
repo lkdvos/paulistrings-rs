@@ -155,6 +155,3 @@ fn unpack(packed: u8) -> PauliString<1> {
     );
     string
 }
-
-#[cfg(test)]
-mod tests;

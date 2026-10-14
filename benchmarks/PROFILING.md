@@ -99,23 +99,21 @@ The partitioned engine (`--partitions <csv>`, default `1`) adds: `partitions` (i
 (string, the `--partition-cpus` argument echoed back — `"auto"`, `"unpinned"`, or the `"<list>;<list>"`
 lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, the `(q0, q1)` a
 `rotation_*` layer rotated about — `[0, 1]` for every other layer), `local_layers`, `remote_layers`,
-`rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry per partition),
+`collectives` (collective calls over the timed call, the exchanges excluded), `rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry per partition),
 `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
 (list, one entry per partition).
 
-Six further keys carry the workload and row-policy axes the two Trotter-step
-layers (`tfim_step`, `heavyhex_step`) brought with them, and are written on every row:
+Six further keys carry the workload and row-policy axes, and are written on every row:
 `initial` (string, `"random"` or `"z0"` — the cell's input sum, whose default is per layer, so
 read it rather than assuming the run's flag), `partition_rows` (string, `"random"` / `"cut"`),
 `rows_remote_gens` (int) and `rows_remote_weight` (float) — the distinct key-delta
-masks those rows leave remote and the number of *layers* carrying one, the same scale for all
-three policies — and the two per-layer series `partition_imbalance_by_layer` (list of floats, one
+masks those rows leave remote and the number of *layers* carrying one — and the two per-layer series `partition_imbalance_by_layer` (list of floats, one
 `max/mean` of the partitions' input term counts per layer, in application order) and
 `terms_by_layer` (list of ints, the group's total terms in per layer). The cell-level
 `partition_imbalance` sums the layers before dividing and so hides the mixing dynamics; the series
 is what shows them, and `terms_by_layer` is the growth curve to read it against. Both are long —
 a four-step heavy-hex cell is 1084 layers — and both are empty on an unpartitioned row.
-`hash_seed` on a partitioned row is the seed actually used, which a `cut`/`select`
+`hash_seed` on a partitioned row is the seed actually used, which a `cut`
 cell may have re-drawn to keep its rows independent of `H`'s (it says so on stderr); that also
 moves the coset dimension, so do not compare such a cell's phase timings against a differently
 seeded one.
@@ -156,11 +154,8 @@ loop** (`ARCHITECTURE.md` §Partitioning): the rows arrive while the layer runs,
 what the loop failed to hide. Read the pair together — a remote layer whose `chunk_wait_ns / threads`
 is close to `exchange_ns` hid nothing, and one where it is near zero is compute-bound.
 
-**Every consumer of this sidecar must read every one of these — old and
-new alike — with `row.get(key, default)`, never a bare index/key lookup**: a sidecar written before the
-partitioned engine landed has none of them, and `partitions` defaults to `1` in that case (an
-unpartitioned probe run is P=1, not absent data). `ab-report.py` and `perf-viz.py` both follow this rule;
-match it in any new consumer.
+**Every consumer reads the keys a row may lack with `row.get(key, default)`, never a bare lookup**: `rank`/`ranks` and the device keys are absent from other rows, and `partitions` defaults to `1`.
+`ab-report.py` and `perf-viz.py` both follow this rule; match it in any new consumer.
 
 Two details of how the probe fills those fields:
 
@@ -178,7 +173,8 @@ Two details of how the probe fills those fields:
   path), the busy-time phases and every counter are **sums** over partitions, and `layers` is the
   driver's layer count rather than a sum — the fold lives in `phase_breakdown/cells.rs::fold_partition_stats`.
 
-**(b) The probe's stdout `cell` line.** Every cell prints one `cell layer=<name> threads=<n> n=<n> layers=<n> wall_ms=<f> trunc=<spec>` line, in every `--format`; the partitioned engine appends ` partitions=<P>` after `trunc=`.
+**(b) The probe's stdout `cell` line.** Every cell prints one `cell layer=<name> threads=<n> n=<n> layers=<n> wall_ms=<f> trunc=<spec> partitions=<P>` line, in every `--format`.
+An `--mpi` cell appends ` rank=<r>/<R> vmhwm_kb=<kB>`, and a device cell then ` device=<ordinals>`, comma-joined.
 `perf-stat.sh`'s awk greps this literal shape (`n=` and `layers=` field prefixes) to compute cycles/string, scanning every field for those two prefixes rather than assuming a fixed field count.
 Change the line's fields or order, fix `perf-stat.sh`'s awk in the same change.
 
@@ -217,7 +213,7 @@ A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pool
 - **`--threads` is the TOTAL thread count** at every `P`: each partition's pool gets `threads / P` workers. A `--threads` value not divisible by `--partitions` is a startup error, and so is `P > threads`.
 - `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` (`numactl -H` lists each node's CPUs).
 - `--bind-memory 0|1` (default 1) is `PartitionConfig::bind_memory`; `--partition-seed <u64>` fixes the GF(2) partition rows instead of deriving them from the sum's hash seed.
-- `P = 1` runs the unpartitioned engine — the same code path, policy value and output as before the partition axis existed.
+- `P = 1` runs the unpartitioned engine.
 - Layers `rotation_local` and `rotation_remote` are a `ZZ` rotation on `(0, q)` with `q` the smallest qubit whose layer has, respectively, no remote delta and at least one, under that cell's partition rows. Both collapse to `rotation_zz` at `P = 1`; the chosen pair goes to stderr and into the sidecar's `gen_qubits`.
 - `--partition-rows random|cut` (default `random`) chooses the rows: `random` is `PartitionRows::from_seed`; `cut` is `PartitionRows::cut` over `P` contiguous qubit blocks, chosen by an exact DP over the layer's own graph to cross as few two-qubit generators as possible at ±25% size balance. Both report `rows_remote_gens` / `rows_remote_weight` in the sidecar.
 - Layers `tfim_step` (a 1D open chain of `--qubits` qubits) and `heavyhex_step` (the fixed 127-qubit Eagle r3 lattice, `--qubits >= 127`) are the rotation-only kicked-Ising Trotter steps the row policies exist for: `--reps` is the step count, both default to `--initial z0`, and both need a truncation policy to converge (`coeff:1.220703125e-4` is `2^-13`).

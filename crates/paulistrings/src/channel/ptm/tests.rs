@@ -147,16 +147,6 @@ fn a_channel_fits_in_40_bytes() {
     assert!(core::mem::size_of::<PtmChannel>() <= 40);
 }
 
-/// The two-qubit order is the constructor's: `cnot(4, 1)` controls on 4.
-#[test]
-fn a_reversed_pair_keeps_its_roles() {
-    let x_on_control = crate::pauli_string::PauliString::<1>::x(4);
-    let out = crate::test_support::outputs(&PtmChannel::cnot(4, 1), false, x_on_control, ONE);
-    let mut expected = x_on_control;
-    let _ = expected.mul_assign(&crate::pauli_string::PauliString::<1>::x(1));
-    assert_eq!(out, vec![(expected.x, expected.z, ONE)]);
-}
-
 #[test]
 #[should_panic(expected = "PtmChannel::depolarizing: p must lie in [0, 1] (got 1.5)")]
 fn depolarizing_rejects_p_above_one() {

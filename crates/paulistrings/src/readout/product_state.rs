@@ -111,3 +111,6 @@ impl<const W: usize> PauliSum<W> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

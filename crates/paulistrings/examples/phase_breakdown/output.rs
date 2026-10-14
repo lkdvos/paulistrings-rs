@@ -130,10 +130,6 @@ pub(crate) fn print_table(cell: &CellResult) {
         "  VmRSS = {} kB   VmHWM = {} kB",
         cell.vmrss_kb, cell.vmhwm_kb
     );
-    println!(
-        "  target_bucket_len  = {}   min_buckets = {}",
-        cell.target_bucket_len, cell.min_buckets
-    );
     print_partition_block(cell);
     if let Some(d) = &cell.device {
         println!(
@@ -304,13 +300,13 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
     );
     let core = format!(
         "{{\"layer\":\"{}\",\"truncation\":\"{}\",\"threads\":{},\"n\":{},\"reps\":{},\
-         \"qubits\":{},\"seed\":{},\"hash_seed\":{},\"bucket_bits\":{},\
+         \"qubits\":{},\"seed\":{},\"hash_seed\":{},\
          \"wall_ns\":{},\"rebucket_ns\":{},\"prepare_ns\":{},\"rescale_ns\":{},\
          \"span_plan_ns\":{},\"permute_ns\":{},\"coset_loop_ns\":{},\"unpermute_ns\":{},\
          \"recount_ns\":{},\"finalize_ns\":{},\"swap_ns\":{},\"size_ns\":{},\
          \"gather_ns\":{},\"sort_ns\":{},\"merge_ns\":{},\"clear_ns\":{},\"layers\":{},\
          \"cosets\":{},\"runs\":{},\"rows_gathered\":{},\"rows_sorted\":{},\"rows_id\":{},\"terms_in\":{},\"terms_out\":{},\"vmrss_kb\":{},\
-         \"vmhwm_kb\":{},\"target_bucket_len\":{},\"min_buckets\":{},\
+         \"vmhwm_kb\":{},\
          \"compact_ns\":{},\"h2d_ns\":{},\"d2h_ns\":{},\"truncate_ns\":{},\"export_kernel_ns\":{}",
         cell.layer,
         cell.truncation,
@@ -320,7 +316,6 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
         cell.qubits,
         cell.seed,
         cell.hash_seed,
-        cell.bucket_bits,
         cell.wall_ns,
         s.rebucket_ns,
         s.prepare_ns,
@@ -347,8 +342,6 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
         s.terms_out,
         cell.vmrss_kb,
         cell.vmhwm_kb,
-        cell.target_bucket_len,
-        cell.min_buckets,
         s.compact_ns,
         s.h2d_ns,
         s.d2h_ns,
@@ -369,16 +362,7 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
         ),
         None => String::new(),
     };
-    // Absent (not null) when --occupancy-at wasn't passed, so existing consumers see no new keys.
-    let occupancy_fields = match &cell.occupancy {
-        Some(o) => format!(
-            ",\"occupancy_step\":{},\"num_buckets\":{},\"empty_buckets\":{},\
-             \"occupancy_median\":{},\"occupancy_p95\":{},\"occupancy_max\":{}",
-            o.step, o.num_buckets, o.empty_buckets, o.median, o.p95, o.max,
-        ),
-        None => String::new(),
-    };
-    format!("{core}{partition_fields}{mpi_fields}{device_fields}{occupancy_fields}}}")
+    format!("{core}{partition_fields}{mpi_fields}{device_fields}}}")
 }
 
 /// A device row's ordinals, comma-joined.

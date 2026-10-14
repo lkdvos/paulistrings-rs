@@ -1,7 +1,7 @@
 //! Partition-row choice: the generator scan, the `cut` rows, and the hash re-seed.
 
 use paulistrings::test_support::{
-    circuit_generators, count_remote_deltas, refine, with_hash, GeneratorWeight, B_MAX_BITS,
+    circuit_generators, count_remote_deltas, with_hash, GeneratorWeight, B_MAX_BITS,
 };
 use paulistrings::{Circuit, Gf2Hash, PartitionRows, PauliSum};
 
@@ -238,8 +238,7 @@ pub(crate) fn choose_partition_rows<const W: usize>(
 }
 
 /// Re-seed the sum's hash until `rows` is independent of the rows `H` will have at
-/// [`INDEPENDENCE_PROBE_BITS`], or until the tries run out. Re-hashing rescatters the sum at
-/// zero bucket bits, so `--bucket-bits`'s pre-refinement is re-applied afterwards.
+/// [`INDEPENDENCE_PROBE_BITS`], or until the tries run out.
 pub(crate) fn reseed_hash_until_independent<const W: usize>(
     cfg: &Config,
     base: PauliSum<W>,
@@ -277,11 +276,7 @@ pub(crate) fn reseed_hash_until_independent<const W: usize>(
             cfg.partition_rows.label(),
             layer.name(),
         );
-        let mut base = with_hash(base, Gf2Hash::<W>::new(num_qubits, 0, candidate));
-        while base.hash().bits() < cfg.bucket_bits {
-            refine(&mut base);
-        }
-        return base;
+        return with_hash(base, Gf2Hash::<W>::new(num_qubits, 0, candidate));
     }
     eprintln!(
         "phase_breakdown: warning: the {} rows for {} at P={partitions} are dependent on H's \

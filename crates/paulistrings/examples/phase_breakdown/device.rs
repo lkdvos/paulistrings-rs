@@ -76,13 +76,23 @@ pub(crate) fn run_cell_gpu<const W: usize>(
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
     split
-        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(
+            &circuit,
+            policy,
+            Direction::Forward,
+            PropagateOptions::default(),
+        )
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     let n = split.len();
     let started = Instant::now();
     split
-        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(
+            &circuit,
+            policy,
+            Direction::Forward,
+            PropagateOptions::default(),
+        )
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");
@@ -120,15 +130,6 @@ pub(crate) struct DeviceRun {
     pub(crate) device: DeviceCellStats,
 }
 
-/// The bucket schedule a device cell propagates under.
-#[cfg(feature = "cuda")]
-pub(crate) fn device_options(cfg: &Config) -> PropagateOptions {
-    PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-    }
-}
-
 /// A device cell's row.
 #[cfg(feature = "cuda")]
 pub(crate) fn device_cell(
@@ -151,9 +152,6 @@ pub(crate) fn device_cell(
         qubits: cfg.qubits,
         seed: cfg.seed,
         hash_seed: run.hash_seed,
-        bucket_bits: cfg.bucket_bits,
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
         wall_ns: run.wall_ns,
         stats,
         vmrss_kb,
@@ -170,7 +168,6 @@ pub(crate) fn device_cell(
         row_stats: run.row_stats,
         partitioned: Some(summary),
         mpi: run.mpi,
-        occupancy: None,
         device: Some(run.device),
     }
 }
@@ -255,13 +252,23 @@ pub(crate) fn run_cell_mpi_gpu<const W: usize>(
     let upload_ns = started.elapsed().as_nanos() as u64;
     split.enable_trace();
     split
-        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(
+            &circuit,
+            policy,
+            Direction::Forward,
+            PropagateOptions::default(),
+        )
         .unwrap_or_else(|e| fail("warm-up", e));
     let _ = (split.take_trace(), split.take_stats());
     split.transport().barrier();
     let started = Instant::now();
     split
-        .propagate_with(&circuit, policy, Direction::Forward, device_options(cfg))
+        .propagate_with(
+            &circuit,
+            policy,
+            Direction::Forward,
+            PropagateOptions::default(),
+        )
         .unwrap_or_else(|e| fail("timed call", e));
     let wall_ns = started.elapsed().as_nanos() as u64;
     let trace = split.take_trace().expect("tracing was enabled");

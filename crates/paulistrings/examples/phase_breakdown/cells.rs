@@ -2,11 +2,10 @@
 
 use std::time::Instant;
 
-use paulistrings::test_support::bucket_len;
 use paulistrings::{
     propagate_with, Direction, LayerScratch, PartitionConfig, PartitionPhaseStats,
-    PartitionRuntime, PartitionTrace, PartitionedSum, PauliSum, PhaseStats, PropagateOptions,
-    ScatterOptions, ScatterRows, TruncationPolicy,
+    PartitionRuntime, PartitionTrace, PartitionedSum, PhaseStats, PropagateOptions, ScatterOptions,
+    ScatterRows, TruncationPolicy,
 };
 
 use crate::cli::{Config, Initial};
@@ -22,9 +21,6 @@ pub(crate) struct CellResult {
     pub(crate) qubits: usize,
     pub(crate) seed: u64,
     pub(crate) hash_seed: u64,
-    pub(crate) bucket_bits: u8,
-    pub(crate) target_bucket_len: usize,
-    pub(crate) min_buckets: usize,
     pub(crate) wall_ns: u64,
     /// The cell's phase breakdown; for a partitioned cell, [`fold_partition_stats`]'s cell-level view.
     pub(crate) stats: PhaseStats,
@@ -48,8 +44,6 @@ pub(crate) struct CellResult {
     pub(crate) partitioned: Option<PartitionCellStats>,
     /// `(rank, ranks)` for a `--mpi` cell; every field above is then this rank's own.
     pub(crate) mpi: Option<(u32, u32)>,
-    /// Bucket occupancy sampled at `--occupancy-at`, `None` unless the flag was passed.
-    pub(crate) occupancy: Option<Occupancy>,
     /// The CUDA device a `--device` cell ran on, with the untimed initial upload and final download it paid outside `wall_ns`.
     pub(crate) device: Option<DeviceCellStats>,
 }
@@ -63,47 +57,6 @@ pub(crate) struct DeviceCellStats {
     pub(crate) upload_ns: u64,
     /// The gather of the timed call's output.
     pub(crate) download_ns: u64,
-}
-
-/// A bucket-occupancy snapshot: how term counts spread across buckets at one rep.
-pub(crate) struct Occupancy {
-    /// The rep index this was sampled after (echoes `--occupancy-at`).
-    pub(crate) step: usize,
-    pub(crate) num_buckets: usize,
-    pub(crate) empty_buckets: usize,
-    /// Median/p95/max computed over non-empty buckets only: an empty bucket is idle capacity,
-    /// not a small piece of work, and folding it in would understate the occupied buckets' skew.
-    pub(crate) median: usize,
-    pub(crate) p95: usize,
-    pub(crate) max: usize,
-}
-
-/// Reads `sum`'s bucket-length histogram and reduces it to [`Occupancy`].
-pub(crate) fn occupancy_histogram<const W: usize>(sum: &PauliSum<W>, step: usize) -> Occupancy {
-    let num_buckets = sum.num_buckets();
-    let mut nonempty: Vec<usize> = (0..num_buckets)
-        .map(|b| bucket_len(sum, b))
-        .filter(|&len| len > 0)
-        .collect();
-    nonempty.sort_unstable();
-    let empty_buckets = num_buckets - nonempty.len();
-    Occupancy {
-        step,
-        num_buckets,
-        empty_buckets,
-        median: percentile(&nonempty, 0.5),
-        p95: percentile(&nonempty, 0.95),
-        max: nonempty.last().copied().unwrap_or(0),
-    }
-}
-
-/// Nearest-rank percentile of a sorted, non-empty-filtered slice; `0` when it's empty.
-pub(crate) fn percentile(sorted: &[usize], p: f64) -> usize {
-    if sorted.is_empty() {
-        return 0;
-    }
-    let idx = (((sorted.len() - 1) as f64) * p).round() as usize;
-    sorted[idx.min(sorted.len() - 1)]
 }
 
 /// The partition-axis numbers of one cell, from the timed call's
@@ -164,6 +117,7 @@ where
     P: TruncationPolicy<W>,
 {
     let base = build_base_sum::<W>(layer, cfg);
+    let base_hash_seed = base.hash().seed();
     // Nothing is remote without partitions, so `rotation_local`/`rotation_remote` are `rotation_zz` here.
     let gen_qubits = (0, 1);
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
@@ -173,85 +127,37 @@ where
         .build()
         .expect("failed to build a rayon thread pool");
 
-    // `rebucket` is grow-only, so this only means anything if the warm-up never grew past it.
-    let options = PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-    };
+    let options = PropagateOptions::default();
 
-    if cfg.occupancy_at.is_some() && layer == LayerKind::Trotter {
-        eprintln!(
-            "phase_breakdown: warning: --occupancy-at is not supported for `trotter` (its \
-             circuit ignores --reps); no occupancy sample will be taken for this cell."
-        );
-    }
-    let sample_by_step = cfg.occupancy_at.is_some() && layer != LayerKind::Trotter;
-
-    let (steady_n, wall_ns, stats, occupancy) = pool.install(|| {
+    let (steady_n, wall_ns, stats) = pool.install(|| {
         let mut scratch = LayerScratch::<W>::new();
 
-        if sample_by_step {
-            // Sampling occupancy at rep `k` needs the sum as it actually stood after k reps of
-            // a genuine `cfg.reps`-rep trajectory from `base`. The warm-up-then-repeat scheme
-            // below measures a periodic layer's steady state by applying its circuit twice, which
-            // is fine when repeating the same gate is idempotent-ish (a dense random input stays
-            // in the same statistical shape) — but a Trotter-step layer's z0 input is a growing
-            // light cone with no such periodicity, so "warm up over cfg.reps reps, then apply
-            // another cfg.reps reps" runs the dynamics to depth 2 * cfg.reps, silently doubling
-            // the step index's meaning. This branch runs the one real cfg.reps-deep trajectory
-            // instead, so rep `cfg.occupancy_at` is actually rep `cfg.occupancy_at`.
-            let one_rep = build_circuit::<W>(layer, cfg.qubits, 1, gen_qubits);
-            let mut sum = base.clone();
-            let mut wall_ns = 0u64;
-            let mut stats = PhaseStats::default();
-            let mut occupancy = None;
-            for step in 0..cfg.reps {
-                let start = Instant::now();
-                sum = propagate_with(
-                    &one_rep,
-                    sum,
-                    policy,
-                    Direction::Forward,
-                    &mut scratch,
-                    options,
-                );
-                wall_ns += start.elapsed().as_nanos() as u64;
-                stats.add(&scratch.take_stats().per_partition[0]);
-                if Some(step) == cfg.occupancy_at {
-                    occupancy = Some(occupancy_histogram(&sum, step));
-                }
-            }
-            let steady_n = sum.len();
-            std::hint::black_box(&sum);
-            (steady_n, wall_ns, stats, occupancy)
-        } else {
-            // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
-            let warmed = propagate_with(
-                &circuit,
-                base.clone(),
-                policy,
-                Direction::Forward,
-                &mut scratch,
-                options,
-            );
-            let _ = scratch.take_stats(); // discard warm-up counters
+        // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
+        let warmed = propagate_with(
+            &circuit,
+            base.clone(),
+            policy,
+            Direction::Forward,
+            &mut scratch,
+            options,
+        );
+        let _ = scratch.take_stats(); // discard warm-up counters
 
-            let steady_n = warmed.len();
-            let start = Instant::now();
-            let output = propagate_with(
-                &circuit,
-                warmed,
-                policy,
-                Direction::Forward,
-                &mut scratch,
-                options,
-            );
-            let wall_ns = start.elapsed().as_nanos() as u64;
-            let stats = scratch.take_stats().per_partition[0];
-            std::hint::black_box(&output);
+        let steady_n = warmed.len();
+        let start = Instant::now();
+        let output = propagate_with(
+            &circuit,
+            warmed,
+            policy,
+            Direction::Forward,
+            &mut scratch,
+            options,
+        );
+        let wall_ns = start.elapsed().as_nanos() as u64;
+        let stats = scratch.take_stats().per_partition[0];
+        std::hint::black_box(&output);
 
-            (steady_n, wall_ns, stats, None)
-        }
+        (steady_n, wall_ns, stats)
     });
 
     let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
@@ -264,10 +170,7 @@ where
         reps: cfg.reps,
         qubits: cfg.qubits,
         seed: cfg.seed,
-        hash_seed: cfg.hash_seed,
-        bucket_bits: cfg.bucket_bits,
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
+        hash_seed: base_hash_seed,
         wall_ns,
         stats,
         vmrss_kb,
@@ -285,7 +188,6 @@ where
         // No split, so no partition numbers on this row.
         partitioned: None,
         mpi: None,
-        occupancy,
         device: None,
     }
 }
@@ -351,10 +253,7 @@ where
     }
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
-    let options = PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-    };
+    let options = PropagateOptions::default();
 
     let split_hash_seed = base.hash().seed();
     let mut split = PartitionedSum::scatter_with(
@@ -393,9 +292,6 @@ where
         seed: cfg.seed,
         // The seed actually used, which `choose_partition_rows` may have re-drawn.
         hash_seed: split_hash_seed,
-        bucket_bits: cfg.bucket_bits,
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
         wall_ns,
         stats,
         vmrss_kb,
@@ -412,8 +308,6 @@ where
         row_stats,
         partitioned: Some(summary),
         mpi: None,
-        // Occupancy sampling is unimplemented for the partitioned path; scoped to P = 1 for now.
-        occupancy: None,
         device: None,
     }
 }
@@ -476,10 +370,7 @@ where
     }
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
-    let options = PropagateOptions {
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
-    };
+    let options = PropagateOptions::default();
 
     let transport = MpiTransport::from_communicator(&world);
     let split_hash_seed = base.hash().seed();
@@ -519,9 +410,6 @@ where
         seed: cfg.seed,
         // The seed actually used, which `choose_partition_rows` may have re-drawn.
         hash_seed: split_hash_seed,
-        bucket_bits: cfg.bucket_bits,
-        target_bucket_len: cfg.target_bucket_len,
-        min_buckets: cfg.min_buckets,
         wall_ns,
         stats,
         vmrss_kb,
@@ -538,7 +426,6 @@ where
         row_stats,
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
-        occupancy: None,
         device: None,
     }
 }

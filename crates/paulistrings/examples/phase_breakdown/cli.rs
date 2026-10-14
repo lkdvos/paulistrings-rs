@@ -1,8 +1,5 @@
 //! Command-line options and their cross-flag validation.
 
-use paulistrings::test_support::{
-    B_MAX_BITS, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
-};
 use paulistrings::{CpuSet, Placement};
 
 use crate::workloads::{default_layers, LayerKind, HEAVY_HEX_QUBITS};
@@ -37,44 +34,6 @@ Options:
                             large --n has been measured driving it to tens
                             of GB of RSS.
   --seed <u64|0xHEX>       RNG seed for the input sum (default: 0xC0FFEE)
-  --hash-seed <u64|0xHEX>  Seed for the partitioning hash H (default: the
-                            library's DEFAULT_HASH_SEED). Changing it re-draws
-                            H's rows, which changes the rank of the layer's
-                            bucket-delta span and therefore the coset
-                            dimension `r` — see
-                            research/FINDINGS.md.
-  --bucket-bits <u8>       Pre-refine the input sum to this many bucket bits
-                            (B = 2^bits) before propagating. 0 (default)
-                            leaves the sum as built, i.e. the engine's own
-                            `desired_bits` policy alone decides B. Because
-                            `rebucket` is grow-only, a value above what the
-                            policy would pick sticks for the whole run: this
-                            is the knob that measures what raising
-                            `desired_bits`'s parallelism floor would buy,
-                            without changing the policy.
-  --target-bucket-len <n>  Terms per bucket the engine's per-layer partition
-                            targets (default: 1024, the library default).
-  --min-buckets <n>        Floor on the per-layer bucket count once the sum is
-                            worth splitting (default: 128, the library
-                            default; must be >= 16).
-                            NOTE: --bucket-bits pre-refines the *input* sum
-                            and, `rebucket` being grow-only, can only ADD
-                            buckets. These two change the engine's own
-                            per-layer policy and are the only way to get
-                            FEWER. Both have to move together: above the
-                            floor, raising --target-bucket-len alone is inert.
-  --occupancy-at <rep>     0-based rep index to sample bucket occupancy at (diagnostic, opt-in;
-                            absent by default). Runs ONE real cfg.reps-deep trajectory from the
-                            cell's built initial sum, one propagate_with call
-                            per rep (no untimed warm-up pass first: warm-up-then-repeat would
-                            silently run the dynamics to depth 2 * --reps, which is fine for a
-                            periodic single-gate layer but wrong for a growing Trotter-step
-                            trajectory, since it would decouple the sampled step index from the
-                            requested one). wall_ns/stats sum over that one trajectory via
-                            PhaseStats::add. After the named rep, records num_buckets(), an
-                            explicit empty-bucket count, and median/p95/max bucket_len() over
-                            non-empty buckets, into the JSON sidecar. Not supported for `trotter`
-                            (its circuit ignores --reps). Must be less than --reps.
   --truncation <spec>      Truncation policy for every cell, one of:
                               keep          no truncation (default)
                               coeff:<t>     CoefficientThreshold(t): a
@@ -347,16 +306,6 @@ impl PartitionRowSpec {
 pub(crate) struct Config {
     pub(crate) n: usize,
     pub(crate) qubits: usize,
-    /// Seed for the partitioning hash `H`. See `--hash-seed`.
-    pub(crate) hash_seed: u64,
-    /// Bucket bits to pre-refine the input sum to; 0 = leave it to the engine's own policy.
-    pub(crate) bucket_bits: u8,
-    /// Engine's per-layer target terms per bucket. See `--target-bucket-len`.
-    pub(crate) target_bucket_len: usize,
-    /// Engine's per-layer bucket-count floor. See `--min-buckets`.
-    pub(crate) min_buckets: usize,
-    /// Rep index (0-based) to sample bucket occupancy at. See `--occupancy-at`.
-    pub(crate) occupancy_at: Option<usize>,
     /// TOTAL thread counts; a partitioned cell splits one of these over its partitions.
     pub(crate) threads: Vec<usize>,
     /// Partition counts to sweep. See `--partitions`.
@@ -465,11 +414,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut layers: Vec<LayerKind> = default_layers();
     let mut reps: usize = 8;
     let mut seed: u64 = 0xC0FFEE;
-    let mut hash_seed: u64 = DEFAULT_HASH_SEED;
-    let mut bucket_bits: u8 = 0;
-    let mut target_bucket_len: usize = DEFAULT_TARGET_BUCKET_LEN;
-    let mut min_buckets: usize = DEFAULT_MIN_BUCKETS;
-    let mut occupancy_at: Option<usize> = None;
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
@@ -509,19 +453,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--layers" => layers = parse_csv_layers(value)?,
             "--reps" => reps = parse_usize(value, "--reps")?,
             "--seed" => seed = parse_seed(value)?,
-            "--hash-seed" => hash_seed = parse_seed(value)?,
-            "--bucket-bits" => {
-                let b = parse_usize(value, "--bucket-bits")?;
-                if b > B_MAX_BITS as usize {
-                    return Err(format!(
-                        "--bucket-bits must be at most B_MAX_BITS ({B_MAX_BITS}), got {b}"
-                    ));
-                }
-                bucket_bits = b as u8;
-            }
-            "--target-bucket-len" => target_bucket_len = parse_usize(value, "--target-bucket-len")?,
-            "--min-buckets" => min_buckets = parse_usize(value, "--min-buckets")?,
-            "--occupancy-at" => occupancy_at = Some(parse_usize(value, "--occupancy-at")?),
             "--truncation" => truncation = TruncSpec::parse(value)?,
             "--partitions" => partitions = parse_csv_usize(value, "--partitions")?,
             "--partition-cpus" => partition_cpus = PartitionCpus::parse(value)?,
@@ -568,27 +499,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     if reps == 0 {
         return Err("--reps must be at least 1".to_string());
     }
-    if target_bucket_len == 0 {
-        return Err("--target-bucket-len must be at least 1".to_string());
-    }
-    // `desired_bits`'s "worth splitting" gate is non-monotone below 16.
-    if min_buckets < 16 {
-        return Err(format!(
-            "--min-buckets must be at least 16, got {min_buckets}"
-        ));
-    }
     if partitions.is_empty() {
         return Err("--partitions must list at least one partition count".to_string());
     }
-    if let Some(step) = occupancy_at {
-        if step >= reps {
-            return Err(format!(
-                "--occupancy-at {step} must be less than --reps ({reps}): it names a 0-based rep \
-                 index to sample after"
-            ));
-        }
-    }
-
     // The two Trotter-step workloads run on a lattice of their own.
     if layers.contains(&LayerKind::HeavyHexStep) && qubits < HEAVY_HEX_QUBITS {
         return Err(format!(
@@ -715,18 +628,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
                  a split sum has no collective form); use --truncation atopn:{topn}"
             ));
         }
-        if occupancy_at.is_some() {
-            return Err("--occupancy-at is not supported for a device cell".to_string());
-        }
     }
     Ok(Config {
         n,
         qubits,
-        hash_seed,
-        bucket_bits,
-        target_bucket_len,
-        min_buckets,
-        occupancy_at,
         threads,
         partitions,
         mpi,

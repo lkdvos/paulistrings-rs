@@ -1,12 +1,9 @@
 //! The layer menu: each cell's circuit and input sum.
 
 use num_complex::Complex64;
-use paulistrings::test_support::{
-    haar_su4_matrix, low_weight_sum, rand_sum, refine, with_hash, DEFAULT_HASH_SEED,
-};
+use paulistrings::test_support::{haar_su4_matrix, low_weight_sum, rand_sum};
 use paulistrings::{
-    BuildAccumulator, Circuit, Gf2Hash, PauliRotation, PauliString, PauliSum, PtmChannel,
-    TruncationPolicy,
+    BuildAccumulator, Circuit, PauliRotation, PauliString, PauliSum, PtmChannel, TruncationPolicy,
 };
 
 use crate::cli::{Config, Initial, TruncSpec};
@@ -324,9 +321,9 @@ pub(crate) fn build_circuit<const W: usize>(
     }
 }
 
-/// The cell's input sum, before any propagation: the seeded generator the layer asks for,
-/// re-hashed and pre-refined per `--hash-seed` / `--bucket-bits`. Shared by the unpartitioned
-/// and the partitioned path, so a `P = 1` and a `P = 2` cell propagate the same terms.
+/// The cell's input sum, before any propagation: the seeded generator the layer asks for.
+/// Shared by the unpartitioned and the partitioned path, so a `P = 1` and a `P = 2` cell
+/// propagate the same terms.
 pub(crate) fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W> {
     if layer.is_trotter_step() && cfg.truncation == TruncSpec::Keep {
         eprintln!(
@@ -341,7 +338,7 @@ pub(crate) fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> 
     // `trotter` is 64 distinct generators, unlike the other layers' one generator repeated, so a
     // dense input can blow up combinatorially. It gets a low-weight input sized to its own fixed
     // qubit count instead of `--qubits`, and its own `--n` cap (see `TROTTER_MAX_N`).
-    let base = match layer {
+    match layer {
         LayerKind::Trotter => {
             if cfg.n > TROTTER_MAX_N {
                 eprintln!(
@@ -359,17 +356,5 @@ pub(crate) fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> 
             Initial::Random => rand_sum::<W>(cfg.n, cfg.qubits, cfg.seed),
             Initial::Z0 => z_observable::<W>(cfg.qubits, cfg.qubits / 2),
         },
-    };
-    // `--hash-seed` re-draws H's rows, which changes the coset dimension `r` (research/FINDINGS.md).
-    // `with_hash` rescatters at zero bucket bits; `--bucket-bits` then refines.
-    let mut base = if cfg.hash_seed == DEFAULT_HASH_SEED {
-        base
-    } else {
-        let nq = base.num_qubits();
-        with_hash(base, Gf2Hash::<W>::new(nq, 0, cfg.hash_seed))
-    };
-    while base.hash().bits() < cfg.bucket_bits {
-        refine(&mut base);
     }
-    base
 }

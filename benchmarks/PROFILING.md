@@ -85,12 +85,12 @@ The tools communicate through file formats, not each other's code — a format c
 
 **(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from `phase_breakdown/output.rs`'s `json_line` — verify against `PhaseStats` in
 `crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `truncation`, `threads`,
-`n`, `reps`, `qubits`, `seed`, `hash_seed`, `bucket_bits`, `wall_ns`; the wall-clock phases
+`n`, `reps`, `qubits`, `seed`, `hash_seed`, `wall_ns`; the wall-clock phases
 `rebucket_ns`, `prepare_ns`, `rescale_ns`,
 `span_plan_ns`, `permute_ns`, `coset_loop_ns`, `unpermute_ns`, `recount_ns`, `finalize_ns`; the worker
 busy-time phases `swap_ns`, `size_ns`, `gather_ns`, `sort_ns`, `merge_ns`, `clear_ns`; and the counters
 `layers`, `cosets`, `runs`, `rows_gathered`, `rows_sorted`, `rows_id`, `terms_in`, `terms_out`, `vmrss_kb`,
-`vmhwm_kb`, `target_bucket_len`, `min_buckets`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
+`vmhwm_kb`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
 requested `--n` — see Phase timing below. `perf-viz.py` keeps only the *last* line per
 `(layer, threads, partitions)` key, so an appended re-run overwrites the earlier one in the rendered
 report.
@@ -256,7 +256,7 @@ cargo build --release --features phase-timing,cuda --example phase_breakdown
 target/release/examples/phase_breakdown --device 0 --n 4000000 --reps 5 --layers rotation_zz,cnot,gu2q,su4 --json-out out.jsonl
 ```
 
-- **`--threads` is not swept**: one cell per layer, `--threads[0]` echoed into the row. `--partitions` must stay at `1` (device partitions come from `--gpu-partitions`), `topn:<N>` is refused except on one ordinal at one partition, `--occupancy-at` is unsupported, and `rotation_remote` needs more than one device partition (several ordinals, or `--gpu-partitions > 1`), or `--mpi` at more than one rank.
+- **`--threads` is not swept**: one cell per layer, `--threads[0]` echoed into the row. `--partitions` must stay at `1` (device partitions come from `--gpu-partitions`), `topn:<N>` is refused except on one ordinal at one partition, and `rotation_remote` needs more than one device partition (several ordinals, or `--gpu-partitions > 1`), or `--mpi` at more than one rank.
 - **`--device <csv|auto>`** takes a list: several ordinals (or `auto`, every visible device) run the cell through `GpuPartitionedSum` with `Placement::Devices { devices, per_device: <--gpu-partitions> }`, one partition per device by default. Under `--mpi` it takes one ordinal or `auto`, the rank's device by CPU locality (`gpu::local_device_for_comm`), and each rank runs its partition through `MpiGpuSum`.
 - **`--gpu-partitions <n>`** runs the cell as `n` virtual partitions on each device through `GpuPartitionedSum` (`Placement::Devices { devices: [d], per_device: n }`), the partition rows chosen exactly as for a host `--partitions` cell (`--partition-rows`, `--partition-seed`). A remote layer exports through the export kernels, exchanges over the in-process peer wire (ARCHITECTURE.md §Partitioning) and merges the received rows in the fused layer at the agreed bucket count, the blocks staying in device memory: `export_ns` is the export (`export_kernel_ns` its kernels), `exchange_ns` the skeleton exchange, the vote and every chunk's wire group, the receiver's fingerprint pass included, and `h2d_ns`/`d2h_ns` carry only the CSR offsets (kilobytes). `chunk_wait_ns` stays zero, as for a host `--partitions` cell. A device sender merges each partner's rows by key before the exchange (ARCHITECTURE.md §Partitioning), so `rows_exported`/`bytes_exported` count the merged rows and `export_ns` includes the merge; `GpuLayerOptions::premerge` off restores the unmerged export. P=1 (`--device` alone) against `--gpu-partitions 2` is a runtime-knob A/B like the host's: `scripts/ab-compare.sh --probe-b '<args with --gpu-partitions 2>'`, paired on `(layer, threads)`.
 - **The host phase names carry the kernel family that replaces them**, as the table in contract (a) lists: `gather_ns` the count and segment sizes, `merge_ns` the fused layer — the sort is inside it, so `sort_ns` stays `0` — `compact_ns` compaction, `rescale_ns` the rescale, `rebucket_ns` the device refines, and the device-only `truncate_ns` and `export_kernel_ns` inside `finalize_ns` and `export_ns`.

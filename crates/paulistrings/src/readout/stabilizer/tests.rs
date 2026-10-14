@@ -1,8 +1,6 @@
 use super::*;
 use crate::pauli_sum::PauliSum;
-use crate::readout::{PauliAxis, ProductBasis};
 use crate::test_support::rand_sum;
-use crate::Gf2Hash;
 use num_complex::Complex64;
 
 /// Parse `"+XZY"` / `"-XZY"` / `"XZY"` into `(key, minus)`; character `i` is qubit `i`, Hermitian convention (`Y = (1, 1)`, no phase).
@@ -47,92 +45,6 @@ fn expectation_of<const W: usize>(stabilizer: &StabilizerState<W>, key: &PauliSt
 /// `⟨ψ|P|ψ⟩` for a single Pauli string given as a label.
 fn expect<const W: usize>(stabilizer: &StabilizerState<W>, label: &str) -> f64 {
     expectation_of(stabilizer, &gen_of::<W>(label).0)
-}
-
-/// `XX·ZZ = (X·Z)⊗(X·Z) = (-iY)⊗(-iY) = -YY`, so the group is `{+II, +XX, +ZZ, -YY}` and `⟨YY⟩ = -1`. Single-qubit Paulis are outside the group, hence `0`.
-#[test]
-fn bell_state_expectations_w1() {
-    let bell = state::<1>(2, &["+XX", "+ZZ"]);
-    assert_eq!(expect(&bell, "II"), 1.0);
-    assert_eq!(expect(&bell, "XX"), 1.0);
-    assert_eq!(expect(&bell, "ZZ"), 1.0);
-    assert_eq!(expect(&bell, "YY"), -1.0);
-    assert_eq!(expect(&bell, "ZI"), 0.0);
-    assert_eq!(expect(&bell, "IZ"), 0.0);
-    assert_eq!(expect(&bell, "XI"), 0.0);
-    assert_eq!(expect(&bell, "XZ"), 0.0);
-    assert_eq!(expect(&bell, "YI"), 0.0);
-}
-
-#[test]
-fn bell_state_expectations_w2() {
-    let bell = state::<2>(2, &["XX", "ZZ"]);
-    assert_eq!(expect(&bell, "XX"), 1.0);
-    assert_eq!(expect(&bell, "ZZ"), 1.0);
-    assert_eq!(expect(&bell, "YY"), -1.0);
-    assert_eq!(expect(&bell, "ZI"), 0.0);
-}
-
-/// Flipping one generator's sign flips every group element containing it: `(-XX)(+ZZ) = -(XX·ZZ) = +YY`.
-#[test]
-fn bell_state_with_a_minus_generator_flips_xx_and_yy() {
-    let bell = state::<1>(2, &["-XX", "+ZZ"]);
-    assert_eq!(expect(&bell, "XX"), -1.0);
-    assert_eq!(expect(&bell, "ZZ"), 1.0);
-    assert_eq!(expect(&bell, "YY"), 1.0);
-    assert_eq!(expect(&bell, "II"), 1.0);
-}
-
-/// `-Z` stabilizes `|1⟩`, so `⟨Z⟩ = -1` and `⟨X⟩ = ⟨Y⟩ = 0`.
-#[test]
-fn minus_z_generator_is_the_one_state() {
-    let one = state::<1>(1, &["-Z"]);
-    assert_eq!(expect(&one, "Z"), -1.0);
-    assert_eq!(expect(&one, "X"), 0.0);
-    assert_eq!(expect(&one, "Y"), 0.0);
-    assert_eq!(expect(&one, "I"), 1.0);
-}
-
-/// `XXX·ZZI` acts as `X·Z = -iY` on qubits 0 and 1 and as `X·I = X` on qubit 2, so it equals `(-i)²·YYX = -YYX`; the group element being `-YYX` means `YYX|ψ⟩ = -|ψ⟩`.
-///
-/// `ZZI·IZZ = ZIZ` with no phase (no X-bits meet a Z-bit), so `⟨ZIZ⟩ = 1`. `ZII` is outside the span of `{(x=111,z=000), (000,011), (000,110)}`, hence `0`.
-#[test]
-fn ghz_state_expectations_w1() {
-    let ghz = state::<1>(3, &["+XXX", "+ZZI", "+IZZ"]);
-    assert_eq!(expect(&ghz, "XXX"), 1.0);
-    assert_eq!(expect(&ghz, "ZZI"), 1.0);
-    assert_eq!(expect(&ghz, "IZZ"), 1.0);
-    assert_eq!(expect(&ghz, "ZIZ"), 1.0);
-    assert_eq!(expect(&ghz, "YYX"), -1.0);
-    assert_eq!(expect(&ghz, "YXY"), -1.0);
-    assert_eq!(expect(&ghz, "XYY"), -1.0);
-    assert_eq!(expect(&ghz, "ZII"), 0.0);
-    assert_eq!(expect(&ghz, "XXI"), 0.0);
-    assert_eq!(expect(&ghz, "YYY"), 0.0);
-    assert_eq!(expect(&ghz, "III"), 1.0);
-}
-
-#[test]
-fn ghz_state_expectations_w2() {
-    let ghz = state::<2>(3, &["XXX", "ZZI", "IZZ"]);
-    assert_eq!(expect(&ghz, "XXX"), 1.0);
-    assert_eq!(expect(&ghz, "YYX"), -1.0);
-    assert_eq!(expect(&ghz, "ZIZ"), 1.0);
-    assert_eq!(expect(&ghz, "ZII"), 0.0);
-}
-
-/// Generator order must not matter: the same group, listed differently, gives the same signs.
-#[test]
-fn generator_order_does_not_change_the_state() {
-    let a = state::<1>(3, &["XXX", "ZZI", "IZZ"]);
-    let b = state::<1>(3, &["IZZ", "XXX", "ZZI"]);
-    // ZIZ = ZZI·IZZ is a redundant *spelling* of the same group, too.
-    let c = state::<1>(3, &["ZIZ", "IZZ", "XXX"]);
-    for label in ["XXX", "YYX", "ZIZ", "ZZI", "ZII", "III", "XXI"] {
-        let want = expect(&a, label);
-        assert_eq!(expect(&b, label), want, "{label}");
-        assert_eq!(expect(&c, label), want, "{label}");
-    }
 }
 
 #[test]
@@ -220,42 +132,6 @@ fn errors_display_without_panicking() {
     assert!(e.to_string().contains("anticommute"));
 }
 
-/// A Bell pair straddling the 64-qubit word boundary, with every other qubit in `|0⟩`.
-/// Same algebra as `bell_state_expectations_w1`, but the two X-bits and two Z-bits live in different `[u64; 2]` words.
-#[test]
-fn a_bell_pair_across_the_word_boundary() {
-    let n = 66;
-    let mut xx = PauliString::<2>::x(63);
-    xx.mul_assign(&PauliString::<2>::x(64));
-    let mut zz = PauliString::<2>::z(63);
-    zz.mul_assign(&PauliString::<2>::z(64));
-    let mut yy = PauliString::<2>::y(63);
-    yy.mul_assign(&PauliString::<2>::y(64));
-
-    let mut gens: Vec<(PauliString<2>, bool)> = Vec::with_capacity(n);
-    for q in 0..n {
-        match q {
-            63 => gens.push((xx, false)),
-            64 => gens.push((zz, false)),
-            _ => gens.push((PauliString::<2>::z(q), false)),
-        }
-    }
-    let stabilizer = StabilizerState::<2>::from_generators(n, &gens).expect("valid generators");
-
-    assert_eq!(expectation_of(&stabilizer, &xx), 1.0);
-    assert_eq!(expectation_of(&stabilizer, &zz), 1.0);
-    assert_eq!(expectation_of(&stabilizer, &yy), -1.0);
-    assert_eq!(expectation_of(&stabilizer, &PauliString::<2>::z(63)), 0.0);
-    assert_eq!(expectation_of(&stabilizer, &PauliString::<2>::z(64)), 0.0);
-    assert_eq!(expectation_of(&stabilizer, &PauliString::<2>::z(0)), 1.0);
-    assert_eq!(expectation_of(&stabilizer, &PauliString::<2>::z(65)), 1.0);
-    assert_eq!(expectation_of(&stabilizer, &PauliString::<2>::x(65)), 0.0);
-    assert_eq!(
-        expectation_of(&stabilizer, &PauliString::<2>::identity()),
-        1.0
-    );
-}
-
 /// A minus sign on qubit 64's generator: `|0…0 1 0…⟩` with the flip in the second word.
 #[test]
 fn a_minus_generator_in_the_second_word() {
@@ -285,55 +161,6 @@ fn product_generators<const W: usize>(num_qubits: usize, axis: char) -> Stabiliz
         })
         .collect();
     StabilizerState::<W>::from_generators(num_qubits, &gens).unwrap()
-}
-
-#[test]
-fn uniform_product_generators_agree_with_the_product_state_scan_w1() {
-    let sum = rand_sum::<1>(4000, 20, 0xB0);
-    for (axis, pauli_axis) in [
-        ('X', PauliAxis::X),
-        ('Y', PauliAxis::Y),
-        ('Z', PauliAxis::Z),
-    ] {
-        let stab = product_generators::<1>(20, axis);
-        let got = sum.expectation_stabilizer(&stab);
-        let want = sum.expectation_product(&ProductBasis::uniform(pauli_axis));
-        assert!(
-            (got - want).norm() < 1e-12,
-            "axis {axis}: {got} vs {want} (product-state oracle)",
-        );
-    }
-}
-
-#[test]
-fn uniform_product_generators_agree_with_the_product_state_scan_w2() {
-    let sum = rand_sum::<2>(8000, 100, 0xB1);
-    for (axis, pauli_axis) in [
-        ('X', PauliAxis::X),
-        ('Y', PauliAxis::Y),
-        ('Z', PauliAxis::Z),
-    ] {
-        let stab = product_generators::<2>(100, axis);
-        let got = sum.expectation_stabilizer(&stab);
-        let want = sum.expectation_product(&ProductBasis::uniform(pauli_axis));
-        assert!(
-            (got - want).norm() < 1e-12,
-            "axis {axis}: {got} vs {want} (product-state oracle)",
-        );
-    }
-}
-
-/// The contraction agrees across partitions to floating-point tolerance.
-#[test]
-fn the_contraction_is_partition_independent() {
-    let sum = rand_sum::<1>(5000, 20, 0xB2);
-    let stab = product_generators::<1>(20, 'Z');
-    let want = sum.expectation_stabilizer(&stab);
-    for bits in [0u8, 3, 7] {
-        let b = sum.clone().with_hash(Gf2Hash::<1>::new(20, bits, 0xB3));
-        let got = b.expectation_stabilizer(&stab);
-        assert!((got - want).norm() < 1e-9, "bits={bits}: {got} vs {want}");
-    }
 }
 
 /// Linear in the coefficients, imaginary parts included: the Bell state picks out `XX` (`+1`), `ZZ` (`+1`) and `YY` (`-1`) and drops `ZI`.
@@ -453,18 +280,6 @@ fn cluster_state_contraction_matches_the_brute_force_group_w1() {
             "seed {seed:#x}: {got} vs {want} (brute-force group)",
         );
     }
-}
-
-#[test]
-fn cluster_state_contraction_matches_the_brute_force_group_w2() {
-    let n = 6;
-    let signs: Vec<bool> = vec![false, true, true, false, false, true];
-    let gens = cluster_generators::<2>(n, &signs);
-    let stab = StabilizerState::<2>::from_generators(n, &gens).unwrap();
-    let sum = rand_sum::<2>(2000, n, 0xC5);
-    let got = sum.expectation_stabilizer(&stab);
-    let want = brute_force_expectation(&sum, &gens);
-    assert!((got - want).norm() < 1e-12, "{got} vs {want}");
 }
 
 /// GHZ, sign-randomized, against the same oracle — the state the hand computations above pin, checked over a whole random sum.

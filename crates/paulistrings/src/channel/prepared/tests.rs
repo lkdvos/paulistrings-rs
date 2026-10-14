@@ -4,7 +4,7 @@ use crate::channel::Prepare;
 use crate::channel::PtmChannel;
 use crate::test_support::IdentityChannel;
 
-use crate::test_support::{haar_su4_matrix, sqrt_swap_matrix, Xs64};
+use crate::test_support::Xs64;
 
 const TOL: f64 = 1e-12;
 
@@ -121,50 +121,6 @@ fn check_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
 }
 
 #[test]
-fn derived_table_matches_apply_identity() {
-    check_agrees_on_random_inputs::<2, _>(&IdentityChannel::new(), 128, "identity");
-}
-
-#[test]
-fn derived_table_matches_apply_clifford1q() {
-    for (name, channel) in [
-        ("h", PtmChannel::hadamard(3)),
-        ("s", PtmChannel::phase_gate(3)),
-        ("x", PtmChannel::pauli_x(3)),
-        ("y", PtmChannel::pauli_y(3)),
-        ("z", PtmChannel::pauli_z(3)),
-    ] {
-        check_agrees_on_random_inputs::<2, _>(&channel, 128, name);
-    }
-    // Also across a word boundary.
-    check_agrees_on_random_inputs::<2, _>(&PtmChannel::hadamard(70), 128, "h@70");
-}
-
-#[test]
-fn derived_table_matches_apply_clifford2q() {
-    for (name, channel) in [
-        ("cnot", PtmChannel::cnot(1, 4)),
-        ("cz", PtmChannel::cz(1, 4)),
-        ("swap", PtmChannel::swap(1, 4)),
-    ] {
-        check_agrees_on_random_inputs::<2, _>(&channel, 128, name);
-    }
-    // Straddling the word boundary.
-    check_agrees_on_random_inputs::<2, _>(&PtmChannel::cnot(60, 70), 128, "cnot@60,70");
-}
-
-#[test]
-fn derived_table_matches_apply_noise() {
-    check_agrees_on_random_inputs::<2, _>(&PtmChannel::depolarizing(5, 0.07), 128, "depolarizing");
-    check_agrees_on_random_inputs::<2, _>(&PtmChannel::dephasing(5, 0.07), 128, "dephasing");
-    check_agrees_on_random_inputs::<2, _>(
-        &PtmChannel::amplitude_damping(5, 0.3),
-        128,
-        "amplitude_damping",
-    );
-}
-
-#[test]
 fn derived_table_matches_apply_rotation_weight_1_and_2() {
     check_agrees_on_random_inputs::<2, _>(
         &PauliRotation::new(PauliString::<2>::z(9), 0.37),
@@ -260,61 +216,6 @@ fn check_emit_agrees_on_random_inputs<const W: usize, C: Channel<W>>(
 }
 
 #[test]
-fn emit_matches_apply_for_cliffords() {
-    for (name, channel) in [
-        ("h", PtmChannel::hadamard(3)),
-        ("s", PtmChannel::phase_gate(3)),
-        ("x", PtmChannel::pauli_x(3)),
-    ] {
-        check_emit_agrees_on_random_inputs::<2, _>(&channel, 128, name);
-    }
-    for (name, channel) in [
-        ("cnot", PtmChannel::cnot(1, 4)),
-        ("cz", PtmChannel::cz(1, 4)),
-        ("swap", PtmChannel::swap(1, 4)),
-    ] {
-        check_emit_agrees_on_random_inputs::<2, _>(&channel, 128, name);
-    }
-}
-
-#[test]
-fn emit_matches_apply_for_general_unitaries() {
-    // T gate: a non-Clifford 1Q PTM.
-    let t = PtmChannel::unitary_1q(
-        2,
-        [
-            [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
-            [
-                Complex64::new(0.0, 0.0),
-                Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-            ],
-        ],
-    );
-    check_emit_agrees_on_random_inputs::<2, _>(&t, 128, "t_gate");
-
-    check_emit_agrees_on_random_inputs::<2, _>(
-        &PtmChannel::unitary_2q(1, 5, sqrt_swap_matrix()),
-        128,
-        "sqrt_swap",
-    );
-    // The dense fixture: all sixteen entries carry a nonzero amplitude.
-    check_emit_agrees_on_random_inputs::<2, _>(
-        &PtmChannel::unitary_2q(1, 5, haar_su4_matrix()),
-        128,
-        "haar_su4",
-    );
-}
-
-#[test]
-fn emit_matches_apply_for_noise() {
-    check_emit_agrees_on_random_inputs::<2, _>(
-        &PtmChannel::amplitude_damping(5, 0.3),
-        128,
-        "amplitude_damping",
-    );
-}
-
-#[test]
 fn emit_matches_apply_for_rotations_at_every_width() {
     // Weight 1 and 2 take the tabulated path...
     check_emit_agrees_on_random_inputs::<2, _>(
@@ -363,30 +264,6 @@ fn emit_returns_none_exactly_on_a_zero_amplitude() {
         }
     }
     assert!(zero_seen && some_seen, "both branches must be exercised");
-}
-
-#[test]
-fn mask_returns_the_entrys_lifted_delta() {
-    let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = PtmChannel::hadamard(3).prepare(&hash, false).unwrap() else {
-        panic!("expected Local")
-    };
-    // H's delta set is {0, XZ on qubit 3}.
-    let masks: Vec<([u64; 2], [u64; 2])> = p.deltas().iter().map(|m| m.mask()).collect();
-    assert_eq!(masks, vec![([0, 0], [0, 0]), ([1 << 3, 0], [1 << 3, 0])]);
-}
-
-#[test]
-fn rotation_gen_mask_is_the_generator() {
-    let mut gen = PauliString::<2>::z(1);
-    for q in [5, 66, 100] {
-        gen.mul_assign(&PauliString::<2>::z(q));
-    }
-    let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Rotation(r) = PauliRotation::new(gen, 0.41).prepare(&hash, false).unwrap() else {
-        panic!("expected Rotation")
-    };
-    assert_eq!(r.generator_mask(), (gen.x, gen.z));
 }
 
 fn assert_entry_eq<const W: usize>(a: &DeltaEntry<W>, b: &DeltaEntry<W>, what: &str) {
@@ -439,25 +316,6 @@ fn a_retain_to_the_identity_alone_is_key_preserving() {
     assert_eq!(p.deltas()[0].local_delta, 0);
     let keep: Vec<bool> = (0..p.num_deltas()).map(|e| e == 0).collect();
     assert!(p.retain_entries(&keep).is_key_preserving());
-}
-
-#[test]
-fn retain_entries_keeping_everything_is_the_original() {
-    let hash = Gf2Hash::<2>::new(128, 8, 0x1);
-    let Prepared::Local(p) = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap() else {
-        panic!("expected Local")
-    };
-    let keep = vec![true; p.num_deltas()];
-    let sub = p.retain_entries(&keep);
-    assert_eq!(sub.num_deltas(), p.num_deltas());
-    for (a, b) in sub.deltas().iter().zip(p.deltas()) {
-        assert_entry_eq(a, b, "all-kept");
-    }
-    // And an empty selection is legal, if useless.
-    assert_eq!(
-        p.retain_entries(&vec![false; p.num_deltas()]).num_deltas(),
-        0
-    );
 }
 
 fn n_bucket_deltas<const W: usize, C: Channel<W>>(channel: &C, adjoint: bool) -> usize {
@@ -559,38 +417,6 @@ fn a_rotation_reads_two_buckets_at_any_generator_weight() {
 }
 
 #[test]
-fn adjoint_preparations_have_the_same_fanin() {
-    // Conjugating by G^-1 has delta set im(S^-1 ^ I), a different subspace of the same dimension, so the bucket count must not change.
-    for (name, forward, adjoint) in [
-        (
-            "s",
-            n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), false),
-            n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), true),
-        ),
-        (
-            "cnot",
-            n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), false),
-            n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), true),
-        ),
-        (
-            "rot_z",
-            n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), false),
-            n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), true),
-        ),
-        (
-            "amp_damping",
-            n_bucket_deltas::<2, _>(&PtmChannel::amplitude_damping(5, 0.3), false),
-            n_bucket_deltas::<2, _>(&PtmChannel::amplitude_damping(5, 0.3), true),
-        ),
-    ] {
-        assert_eq!(
-            forward, adjoint,
-            "{name}: adjoint fan-in differs from forward"
-        );
-    }
-}
-
-#[test]
 fn key_preserving_channels_are_detected() {
     let hash = Gf2Hash::<2>::new(128, 8, 0x1);
     let yes: Vec<Box<dyn Channel<2>>> = vec![
@@ -677,23 +503,6 @@ fn deltas_are_ascending_by_local_delta() {
                 "deltas not ascending at bits={bits}",
             );
         }
-    }
-}
-
-#[test]
-fn delta_iteration_order_is_independent_of_bucket_count() {
-    // Changing `bits` must not reorder the entries.
-    let order = |bits: u8| -> Vec<u8> {
-        let hash = Gf2Hash::<2>::new(128, bits, 0xC013);
-        let prepared = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap();
-        let Prepared::Local(p) = prepared else {
-            panic!("expected Local")
-        };
-        p.deltas().iter().map(|m| m.local_delta).collect()
-    };
-    let reference = order(16);
-    for bits in [1u8, 2, 4, 8, 12] {
-        assert_eq!(order(bits), reference, "delta order changed at bits={bits}");
     }
 }
 

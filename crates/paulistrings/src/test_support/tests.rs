@@ -169,6 +169,35 @@ mod runs_agree {
         assert_runs_agree_count_only(TopN(15), 10.0, &got, &want, "heavy");
     }
 
+    /// `want = {k0: 1, k1: 0.5}` against `got = {k0: 1, k2: 0.5}`: `1 − cos = 0.25 / 1.25 = 0.2`, and the bound `2Δ²/1.25` reaches it at `Δ = √0.125`, below the sign-flip limit `Δ < 1`.
+    fn swapped_small_term() -> (PauliSum<1>, PauliSum<1>) {
+        (sum_of(&[(0, 1.0), (2, 0.5)]), sum_of(&[(0, 1.0), (1, 0.5)]))
+    }
+
+    #[test]
+    fn a_distance_just_inside_the_bound_passes() {
+        let (got, want) = swapped_small_term();
+        let discarded = 1.01 * 0.125f64.sqrt();
+        assert_runs_agree(TopN(2), discarded, &got, &want, 0.0, "inside");
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds")]
+    fn a_distance_just_outside_the_bound_fails() {
+        let (got, want) = swapped_small_term();
+        let discarded = 0.99 * 0.125f64.sqrt();
+        assert_runs_agree(TopN(2), discarded, &got, &want, 0.0, "outside");
+    }
+
+    #[test]
+    #[should_panic(expected = "non-finite")]
+    fn a_count_only_check_rejects_a_nan() {
+        let (want, _) = want();
+        let mut terms: Vec<_> = input()[..15].to_vec();
+        terms[14].1 = f64::NAN;
+        assert_runs_agree_count_only(TopN(15), 10.0, &sum_of(&terms), &want, "nan");
+    }
+
     #[test]
     #[should_panic(expected = "light enough")]
     fn a_light_cut_is_refused_by_the_count_only_check() {

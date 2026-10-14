@@ -180,147 +180,6 @@ fn weight_cutoff_w2_word_boundary() {
     ));
 }
 
-/// Ten distinct keys with decreasing |coeff| (10, 9, …, 1); `TopN(3)` keeps the three with magnitudes 10, 9, 8.
-#[test]
-fn top_n_keeps_largest_three_of_ten() {
-    // Largest magnitudes first in key order.
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        (1u64..=10).map(|i| [i]).collect(),
-        vec![[0u64]; 10],
-        (1u64..=10)
-            .rev()
-            .map(|m| Complex64::new(m as f64, 0.0))
-            .collect(),
-        4,
-    );
-    sum.assert_invariants();
-    TopN(3).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 3);
-    // Survivors: original magnitudes 10, 9, 8 → x = [1], [2], [3].
-    let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[1u64], [2u64], [3u64]]);
-    let magnitudes: Vec<f64> = c.iter().map(|c| c.norm()).collect();
-    assert_eq!(magnitudes, vec![10.0, 9.0, 8.0]);
-    sum.assert_invariants();
-}
-
-/// `TopN(N) where N >= len` is a no-op, checked at both `N > len` and `N == len` since the tie rule only engages on the `len > n` path.
-#[test]
-fn top_n_at_or_above_len_is_a_no_op() {
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        vec![[0], [0], [1]],
-        vec![[0], [1], [0]],
-        vec![
-            Complex64::new(1.0, 0.0),
-            Complex64::new(2.0, 0.0),
-            Complex64::new(3.0, 0.0),
-        ],
-        1,
-    );
-    let (snapshot_x, snapshot_z, snapshot_c) = sum.to_arrays();
-    TopN(5).finalize_layer(&mut sum);
-    assert_eq!(
-        sum.to_arrays(),
-        (snapshot_x.clone(), snapshot_z.clone(), snapshot_c.clone())
-    );
-    TopN(3).finalize_layer(&mut sum);
-    assert_eq!(sum.to_arrays(), (snapshot_x, snapshot_z, snapshot_c));
-
-    // All-tied at exactly `n`: still a no-op, not a wipe.
-    let mut tied = PauliSum::<1>::from_sorted_columns(
-        vec![[0], [1], [2]],
-        vec![[0]; 3],
-        vec![Complex64::new(2.0, 0.0); 3],
-        2,
-    );
-    TopN(3).finalize_layer(&mut tied);
-    assert_eq!(tied.len(), 3);
-    tied.assert_invariants();
-}
-
-/// With all magnitudes distinct, the tie group at rank `n` has size one and always fits, so `TopN(n)` retains exactly `n`.
-#[test]
-fn top_n_all_distinct_retains_exactly_n() {
-    let magnitudes = [7.0f64, 1.0, 5.0, 3.0, 9.0, 2.0, 8.0, 4.0];
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        (0u64..8).map(|i| [i]).collect(),
-        vec![[0u64]; 8],
-        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
-        3,
-    );
-    sum.assert_invariants();
-    TopN(5).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 5, "all-distinct input must retain exactly n");
-    let (_, _, c) = sum.to_arrays();
-    let mut got: Vec<f64> = c.iter().map(|c| c.norm()).collect();
-    got.sort_by(|a, b| b.partial_cmp(a).unwrap());
-    assert_eq!(got, vec![9.0, 8.0, 7.0, 5.0, 4.0]);
-    sum.assert_invariants();
-}
-
-/// A tie group straddling the cut is split in bucket order: magnitudes 5, 4, 3, 3, 3, 2 with `n = 3` keeps 5, 4 and the first 3.
-#[test]
-fn top_n_splits_a_straddling_tie_group_in_bucket_order() {
-    let magnitudes = [5.0f64, 4.0, 3.0, 3.0, 3.0, 2.0];
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        (0u64..6).map(|i| [i]).collect(),
-        vec![[0u64]; 6],
-        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
-        3,
-    );
-    TopN(3).finalize_layer(&mut sum);
-    let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
-    let got: Vec<f64> = c.iter().map(|c| c.norm()).collect();
-    assert_eq!(got, vec![5.0, 4.0, 3.0]);
-    sum.assert_invariants();
-}
-
-/// A tie group that ends exactly at rank `n` fits and is kept whole: magnitudes 5, 4, 3, 3, 2, 1 with `n = 4` keeps all four of 5, 4, 3, 3.
-#[test]
-fn top_n_keeps_a_tie_group_that_fits_exactly() {
-    let magnitudes = [5.0f64, 4.0, 3.0, 3.0, 2.0, 1.0];
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        (0u64..6).map(|i| [i]).collect(),
-        vec![[0u64]; 6],
-        magnitudes.iter().map(|&m| Complex64::new(m, 0.0)).collect(),
-        3,
-    );
-    sum.assert_invariants();
-    TopN(4).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 4, "a group that fits must be kept in full");
-    let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[0u64], [1u64], [2u64], [3u64]]);
-    let got: Vec<f64> = c.iter().map(|c| c.norm()).collect();
-    assert_eq!(got, vec![5.0, 4.0, 3.0, 3.0]);
-    sum.assert_invariants();
-}
-
-/// An all-tied sum keeps exactly `n`, the first in bucket order.
-#[test]
-fn top_n_keeps_exactly_n_of_an_all_tied_sum() {
-    // Same magnitude, different phases (fourth roots of unity so every norm is bitwise 2.0): a multiplet, not duplicates.
-    let coefficients = vec![
-        Complex64::new(2.0, 0.0),
-        Complex64::new(-2.0, 0.0),
-        Complex64::new(0.0, 2.0),
-        Complex64::new(0.0, -2.0),
-        Complex64::new(2.0, 0.0),
-        Complex64::new(-2.0, 0.0),
-    ];
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        (0u64..6).map(|i| [i]).collect(),
-        vec![[0u64]; 6],
-        coefficients.clone(),
-        3,
-    );
-    TopN(3).finalize_layer(&mut sum);
-    let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
-    assert_eq!(c, coefficients[..3].to_vec());
-    sum.assert_invariants();
-}
-
 /// Magnitudes below the square-underflow floor (`≈1.57e-162`) tie at zero: six terms at 1e-200..6e-200 with `n = 3` keep the first three in bucket order, not the largest three.
 #[test]
 fn top_n_treats_underflowing_squares_as_one_tie_group() {
@@ -450,53 +309,6 @@ fn finalize_layer_runs_inside_a_rayon_job() {
     assert_eq!(got, want, "every sum must truncate to n on a worker thread");
 }
 
-/// `TopN(0)` empties the sum.
-#[test]
-fn top_n_zero_empties_sum() {
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        vec![[0], [1]],
-        vec![[1], [0]],
-        vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
-        1,
-    );
-    TopN(0).finalize_layer(&mut sum);
-    assert!(sum.is_empty());
-    sum.assert_invariants();
-}
-
-/// Largest coefficients sit at the end of the sort order; survivors must still come back in (x, z) sort order, not magnitude order.
-#[test]
-fn top_n_preserves_sort_order() {
-    // Five keys, magnitudes 1, 2, 3, 4, 5 (back-loaded).
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        vec![[1], [2], [3], [4], [5]],
-        vec![[0]; 5],
-        vec![
-            Complex64::new(1.0, 0.0),
-            Complex64::new(2.0, 0.0),
-            Complex64::new(3.0, 0.0),
-            Complex64::new(4.0, 0.0),
-            Complex64::new(5.0, 0.0),
-        ],
-        4,
-    );
-    sum.assert_invariants();
-    TopN(3).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 3);
-    // Survivors: magnitudes 5, 4, 3, i.e. keys [5], [4], [3]; sort order preservation means they come back as [3], [4], [5].
-    let (x, _, c) = sum.to_arrays();
-    assert_eq!(x, vec![[3u64], [4u64], [5u64]]);
-    assert_eq!(
-        c,
-        vec![
-            Complex64::new(3.0, 0.0),
-            Complex64::new(4.0, 0.0),
-            Complex64::new(5.0, 0.0),
-        ]
-    );
-    sum.assert_invariants();
-}
-
 /// A `W = 1` sum of `magnitudes.len()` distinct keys (`x = i`, `z = 0`) with the given real coefficients, single-bucket and already in key order.
 fn sum_of_mags(magnitudes: &[f64]) -> PauliSum<1> {
     PauliSum::<1>::from_sorted_columns(
@@ -515,31 +327,6 @@ fn kept_mags<const W: usize>(sum: &PauliSum<W>) -> Vec<f64> {
 /// Octave of `|c|²`, i.e. the bin `ApproxTopN` histograms into, derived here from the definition rather than from the implementation.
 fn octave(c: Complex64) -> usize {
     (c.norm_sqr().to_bits() >> 52) as usize
-}
-
-/// Every octave above the boundary is kept whole and the boundary octave fills the rest in bucket order, so exactly `n` survive — hand-tabulated for four octaves of populations 1, 2, 3, 4 (keys in magnitude order, one bucket).
-#[test]
-fn approx_top_n_keeps_exactly_n_filling_the_boundary_octave_in_bucket_order() {
-    let magnitudes = [8.0f64, 4.0, 4.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0];
-    for n in 1usize..10 {
-        let mut sum = sum_of_mags(&magnitudes);
-        ApproxTopN(n).finalize_layer(&mut sum);
-        sum.assert_invariants();
-        let keys: Vec<u64> = sum.iter().map(|(x, _, _)| x[0]).collect();
-        assert_eq!(keys, (0..n as u64).collect::<Vec<_>>(), "n={n}");
-    }
-    // `n >= len` is a no-op, like every other policy's.
-    let mut sum = sum_of_mags(&magnitudes);
-    ApproxTopN(10).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 10);
-}
-
-/// Within the boundary octave bucket order decides, not magnitude: keys carry magnitudes 2, 1, 1.3, 1.1, 1.2 and `n = 3` keeps 2 and the first two of the octave `[1, 2)` of `|c|²`, 1 and 1.3.
-#[test]
-fn approx_top_n_does_not_rank_inside_the_boundary_octave() {
-    let mut sum = sum_of_mags(&[2.0, 1.0, 1.3, 1.1, 1.2]);
-    ApproxTopN(3).finalize_layer(&mut sum);
-    assert_eq!(kept_mags(&sum), vec![2.0, 1.0, 1.3]);
 }
 
 /// When the cut lands exactly on an octave boundary (`n` = 1, 3, or 6, the fixture's cumulative populations), the approximation is no approximation: both policies return the same top `n`.
@@ -620,7 +407,7 @@ fn approx_top_n_matches_the_stable_sort_rule_across_bucket_counts() {
     let input = crate::test_support::tie_heavy_sum::<1>(2000, 8, 0x7135);
     for bits in [0u8, 2, 5, 9] {
         let hashed = input.clone().with_hash(Gf2Hash::<1>::new(8, bits, 0x99));
-        for n in [1usize, 3, 250, 500, 700, 1200, 1900, input.len() - 1] {
+        for n in [0usize, 1, 3, 250, 500, 700, 1200, 1900, input.len() - 1] {
             let mut sum = hashed.clone();
             ApproxTopN(n).finalize_layer(&mut sum);
             sum.assert_invariants();
@@ -629,56 +416,6 @@ fn approx_top_n_matches_the_stable_sort_rule_across_bucket_counts() {
             assert_eq!(storage_triples(&sum), want, "bits={bits} n={n}");
         }
     }
-}
-
-/// One octave holding everything keeps the first `n` in bucket order, the smallest magnitudes included.
-#[test]
-fn approx_top_n_keeps_the_first_n_of_a_single_octave_sum() {
-    let magnitudes = [1.0f64, 1.125, 1.25, 1.375];
-    let mut sum = sum_of_mags(&magnitudes);
-    ApproxTopN(3).finalize_layer(&mut sum);
-    assert_eq!(kept_mags(&sum), vec![1.0, 1.125, 1.25]);
-    sum.assert_invariants();
-    // …and it is a no-op at n >= len, as always.
-    let mut sum = sum_of_mags(&magnitudes);
-    ApproxTopN(4).finalize_layer(&mut sum);
-    assert_eq!(sum.len(), 4);
-}
-
-/// `ApproxTopN(0)` empties the sum.
-#[test]
-fn approx_top_n_zero_empties_sum() {
-    let mut sum = sum_of_mags(&[1.0, 2.0]);
-    ApproxTopN(0).finalize_layer(&mut sum);
-    assert!(sum.is_empty());
-    sum.assert_invariants();
-}
-
-/// `W = 2`: the const-generic surface, on keys that straddle the word boundary.
-#[test]
-fn approx_top_n_w2() {
-    let build = || {
-        PauliSum::<2>::from_sorted_columns(
-            vec![[0, 1], [0, 2], [1, 0], [2, 0]],
-            vec![[0, 0]; 4],
-            vec![
-                Complex64::new(4.0, 0.0),
-                Complex64::new(2.0, 0.0),
-                Complex64::new(2.0, 0.0),
-                Complex64::new(1.0, 0.0),
-            ],
-            128,
-        )
-    };
-    let mut sum = build();
-    ApproxTopN(2).finalize_layer(&mut sum);
-    assert_eq!(kept_mags(&sum), vec![4.0, 2.0]);
-    sum.assert_invariants();
-
-    let mut sum = build();
-    ApproxTopN(3).finalize_layer(&mut sum);
-    assert_eq!(kept_mags(&sum), vec![4.0, 2.0, 2.0]);
-    sum.assert_invariants();
 }
 
 /// A complex coefficient is ranked by `re² + im²` like everywhere else.

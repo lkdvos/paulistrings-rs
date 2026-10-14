@@ -57,7 +57,7 @@ impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
 /// Retain the `n` terms of largest coefficient magnitude.
 ///
 /// With `t` the `n`-th largest magnitude, every term above `t` is kept, plus as many terms at exactly `t` as fit in `n`, the first in bucket order; which tied terms survive is not a semantic promise.
-/// A sum of more than `n` terms keeps exactly `n` (fewer only if coefficients are NaN), and `n == 0` clears.
+/// A sum of more than `n` terms keeps exactly `n`, and `n == 0` clears; a NaN coefficient is never kept, so a sum with fewer than `n` other terms keeps those.
 /// Magnitudes are compared squared, so those below about `1.6e-162` tie at zero.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TopN(
@@ -100,8 +100,10 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
             });
         }
 
+        // A NaN sorts below every number, so it becomes the boundary only when fewer than `n` terms are finite.
         magnitudes.select_nth_unstable_by(n - 1, |a, b| {
-            b.partial_cmp(a).unwrap_or(core::cmp::Ordering::Equal)
+            b.partial_cmp(a)
+                .unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))
         });
         let boundary = magnitudes[n - 1];
         // Everything above the pivot sits before it after the selection.
@@ -118,8 +120,9 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
                 if m.is_nan() {
                     core::cmp::Ordering::Less
                 } else {
+                    // Unordered only against a NaN boundary, which every finite term is above.
                     m.partial_cmp(&boundary)
-                        .unwrap_or(core::cmp::Ordering::Less)
+                        .unwrap_or(core::cmp::Ordering::Greater)
                 }
             },
             n - above,

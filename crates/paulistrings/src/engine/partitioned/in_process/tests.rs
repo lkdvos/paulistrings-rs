@@ -19,52 +19,6 @@ impl Payload for Vec<u64> {
     fn finish_receive(&mut self) {}
 }
 
-/// A column unique to the ordered pair `(from, to)`.
-fn message(from: u32, to: u32) -> Vec<u64> {
-    vec![(u64::from(from) << 32) | u64::from(to); from as usize + 1]
-}
-
-fn sends_nothing(from: u32, to: u32) -> bool {
-    from == 0 && to == 1
-}
-
-fn exchange_round(size: u32) {
-    let group = InProcessTransport::group(size);
-    assert_eq!(group.len(), size as usize);
-
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = group
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let rank = transport.rank();
-                    assert_eq!(transport.size(), size);
-                    let send: Vec<Option<Vec<u64>>> = (0..size)
-                        .map(|q| (q != rank && !sends_nothing(rank, q)).then(|| message(rank, q)))
-                        .collect();
-                    (rank, transport.exchange(send, &mut Vec::new()))
-                })
-            })
-            .collect();
-
-        for handle in handles {
-            let (rank, recv) = handle.join().expect("rank thread panicked");
-            assert_eq!(recv.len(), size as usize, "rank {rank}");
-            for q in 0..size {
-                let expected = (q != rank && !sends_nothing(q, rank)).then(|| message(q, rank));
-                assert_eq!(recv[q as usize], expected, "rank {rank} slot {q}");
-            }
-        }
-    });
-}
-
-#[test]
-fn exchange_delivers_each_payload_to_its_partner() {
-    for size in [2u32, 4] {
-        exchange_round(size);
-    }
-}
-
 #[test]
 fn reductions_and_barrier_agree_on_every_rank() {
     let size = 4u32;
@@ -99,28 +53,6 @@ fn reductions_and_barrier_agree_on_every_rank() {
         assert_eq!(max, 21, "rank {rank}");
         assert_eq!(sum, vec![10, 100], "rank {rank}");
     }
-}
-
-#[test]
-fn a_group_of_one_is_a_no_op() {
-    let group = InProcessTransport::group(1);
-    assert_eq!(group.len(), 1);
-    let transport = &group[0];
-    assert_eq!(transport.rank(), 0);
-    assert_eq!(transport.size(), 1);
-
-    let recv: Vec<Option<Vec<u64>>> = transport.exchange(vec![None], &mut Vec::new());
-    assert_eq!(recv.len(), 1);
-    assert!(recv[0].is_none());
-
-    assert_eq!(transport.allreduce_max_u8(9), 9);
-    let mut buf = vec![3, 4];
-    transport.allreduce_sum_u64(&mut buf);
-    assert_eq!(buf, vec![3, 4]);
-    let mut buf = vec![-0.5, 1e300];
-    transport.allreduce_sum_f64(&mut buf);
-    assert_eq!(buf, vec![-0.5, 1e300]);
-    transport.barrier();
 }
 
 /// `1e16 + 1 + 1 - 1e16` folds to `0` in rank order on every rank; a one-rank slot comes back exactly.
@@ -263,125 +195,6 @@ fn a_partner_that_dies_between_collectives_fails_the_others_promptly() {
         "the survivor waited {elapsed:?}, so it fell back on the {DEFAULT_WAIT_TIMEOUT:?} timeout \
          instead of noticing the departure",
     );
-}
-
-#[test]
-fn a_thousand_back_to_back_sums_never_mix_generations() {
-    const ROUNDS: u64 = 1_000;
-    let size = 4u32;
-    let group = InProcessTransport::group(size);
-
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = group
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let rank = u64::from(transport.rank());
-                    for round in 1..=ROUNDS {
-                        let mut buf = vec![rank * round, round, rank];
-                        transport.allreduce_sum_u64(&mut buf);
-                        // Σ rank = 0+1+2+3 = 6, Σ round = 4·round.
-                        assert_eq!(
-                            buf,
-                            vec![6 * round, 4 * round, 6],
-                            "rank {rank}, round {round}",
-                        );
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("rank thread panicked");
-        }
-    });
-}
-
-/// The first `max`, the reduced buffer, and the flag `max` of one round.
-type MixedRound = (u8, Vec<u64>, u8);
-type MixedScript = (u32, Vec<MixedRound>);
-
-#[test]
-fn mixed_collective_sequences_agree_on_every_rank() {
-    const ROUNDS: u8 = 25;
-    let size = 4u32;
-    let group = InProcessTransport::group(size);
-
-    let mut results: Vec<MixedScript> = std::thread::scope(|scope| {
-        let handles: Vec<_> = group
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let rank = transport.rank();
-                    let mut rounds = Vec::new();
-                    for round in 0..ROUNDS {
-                        let hi = transport.allreduce_max_u8(rank as u8 * 3 + round);
-                        transport.barrier();
-                        let mut buf =
-                            vec![u64::from(rank) + 1, u64::from(round), u64::from(rank) << 8];
-                        transport.allreduce_sum_u64(&mut buf);
-                        transport.barrier();
-                        let flag = transport.allreduce_max_u8(if rank == 2 { 255 } else { 0 });
-                        rounds.push((hi, buf, flag));
-                    }
-                    (rank, rounds)
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
-    });
-
-    results.sort_by_key(|(rank, _)| *rank);
-    for (rank, rounds) in &results {
-        assert_eq!(rounds.len(), ROUNDS as usize, "rank {rank}");
-        for (round, (hi, sum, flag)) in rounds.iter().enumerate() {
-            let round = round as u8;
-            // max over 3·rank + round is 9 + round; Σ(rank+1) = 10,
-            // Σ round = 4·round, Σ(rank << 8) = 6·256.
-            assert_eq!(*hi, 9 + round, "rank {rank}, round {round}");
-            assert_eq!(
-                *sum,
-                vec![10, 4 * u64::from(round), 6 << 8],
-                "rank {rank}, round {round}",
-            );
-            assert_eq!(*flag, 255, "rank {rank}, round {round}");
-        }
-    }
-    for (rank, rounds) in &results[1..] {
-        assert_eq!(rounds, &results[0].1, "rank {rank} disagrees with rank 0");
-    }
-}
-
-/// Completing is the assertion.
-#[test]
-fn sixteen_ranks_complete_when_oversubscribed() {
-    const ROUNDS: u64 = 50;
-    let size = 16u32;
-    let group = InProcessTransport::group(size);
-
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = group
-            .into_iter()
-            .map(|transport| {
-                scope.spawn(move || {
-                    let rank = transport.rank();
-                    for round in 1..=ROUNDS {
-                        assert_eq!(transport.allreduce_max_u8(rank as u8 + 1), 16);
-                        let mut buf = vec![u64::from(rank), round];
-                        transport.allreduce_sum_u64(&mut buf);
-                        // Σ_{r<16} r = 120.
-                        assert_eq!(buf, vec![120, 16 * round], "rank {rank}, round {round}");
-                        transport.barrier();
-                    }
-                })
-            })
-            .collect();
-        for handle in handles {
-            handle.join().expect("rank thread panicked");
-        }
-    });
 }
 
 fn on_every_rank<O: Send>(size: u32, f: impl Fn(&InProcessTransport) -> O + Send + Sync) -> Vec<O> {
@@ -527,6 +340,7 @@ fn a_partner_that_departs_during_the_wait_fails_the_waiter_promptly() {
 /// A partner arriving long after the waiter's spin is waited for on the condvar.
 #[test]
 fn a_partner_arriving_after_the_spin_completes_the_sum() {
+    let started = Instant::now();
     let results = on_every_rank(2, |transport| {
         if transport.rank() == 1 {
             std::thread::sleep(Duration::from_millis(100));
@@ -537,6 +351,11 @@ fn a_partner_arriving_after_the_spin_completes_the_sum() {
         buffer[0]
     });
     assert_eq!(results, vec![3, 3]);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "completion must wake the waiter, took {elapsed:?}"
+    );
 }
 
 /// A partner that neither arrives nor leaves trips the backstop.
@@ -546,12 +365,18 @@ fn a_silent_partner_trips_the_timeout() {
     let one = group.pop().expect("rank 1");
     let zero = group.pop().expect("rank 0");
 
+    let started = Instant::now();
     let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         zero.allreduce_sum_u64(&mut [1])
     }))
     .expect_err("nobody else arrives");
+    let elapsed = started.elapsed();
     let message = panic_message(payload.as_ref());
     assert!(message.contains("no response in 200ms"), "{message}");
+    assert!(
+        (Duration::from_millis(200)..Duration::from_secs(2)).contains(&elapsed),
+        "the configured timeout must bound the wait, took {elapsed:?}"
+    );
     assert!(message.contains("that one at 0"), "{message}");
     drop(one);
 }

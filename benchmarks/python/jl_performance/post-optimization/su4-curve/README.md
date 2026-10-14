@@ -1,11 +1,11 @@
-# SU(4) brickwork curve, default engine — data directory
+# SU(4) brickwork curve — data directory
 
 The reading of these numbers is one level up, in [`../README.md`](../README.md) §"SU(4) brickwork". This
 directory holds the sweep itself, run as its own driver invocation, so everything here is driver-written and both
 `peak_terms` and the memory numbers are measured rather than joined.
 
 Haar-random SU(4) brickwork, n = 36, depth 6, seed 20260831, 105 channels, `Z_18` against `z+`, Heisenberg. Five
-`abba` pairs per configuration, `engine="sorted"`.
+`abba` pairs per configuration.
 
 | `min_abs_coeff` | peak terms | rust s | jl s | ratio | pairs | verdict |
 |---|---|---|---|---|---|---|

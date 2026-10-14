@@ -2,7 +2,7 @@
 
 Handoff item B5; see `examples/README.md`
 §6 Part B for the adapted specification and
-`research/FINDINGS.md` §A3/§A5 for the
+`research/FINDINGS.md` §Python API extensions for the
 `paulistrings.io` / `paulistrings.interop` surface this script exercises.
 
 The idea: split a circuit at layer `k` from the end. Instead of running the

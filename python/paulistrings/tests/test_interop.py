@@ -1,6 +1,6 @@
 """``paulistrings.interop`` — stim / qiskit importers and the task-JSON schema.
 
-Design source: ``research/FINDINGS.md`` §A5.
+Design source: ``research/FINDINGS.md`` §Python API extensions.
 The stim and qiskit sections ``pytest.importorskip`` their backend so CI
 (numpy-only) stays green; the task-JSON section has no optional dependency
 and always runs.

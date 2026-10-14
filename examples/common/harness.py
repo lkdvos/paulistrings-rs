@@ -401,8 +401,7 @@ def assert_single_threaded() -> None:
         "resizes it, so the variable must be in the environment before anything in "
         "the process propagates. Export it before the interpreter starts:\n"
         "    RAYON_NUM_THREADS=1 python <script>\n"
-        "(measured thread behaviour: this module's docstring, correcting "
-        "research/FINDINGS.md §A7)"
+        "(measured thread behaviour: this module's docstring)"
     )
 
 

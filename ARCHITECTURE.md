@@ -392,7 +392,7 @@ Equal-key summation order is unspecified and free to change between versions, co
 
 What *is* reproducible, as a property of the current implementation rather than a promise: at a fixed bucket count and hash seed, output is bitwise identical across thread counts and repeat runs, because cosets are write-disjoint and work within one is sequential.
 The same holds per partition across pool sizes, and a `P = 1` partitioned run is bitwise `propagate`; across partition counts the bar is tolerance, as it is across bucket counts (§Partitioning).
-Tests that pin exact output bits (the fingerprint net, the thread-count byte-identity tests) are **convenience tripwires** for unintended perturbation: when one trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit, with a one-line note.
+Tests that pin exact output bits (the `P = 1` byte-identity tests) are **convenience tripwires** for unintended perturbation: when one trips under a change that is correct to tolerance, regenerate its literals or demote it to `assert_terms_close` in the same commit, with a one-line note.
 Do not design, constrain, or reject an optimization to keep output bits stable.
 
 ## Truncation

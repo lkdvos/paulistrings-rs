@@ -196,7 +196,7 @@ A/B runs add `<name>-ab.log`, `<name>-{a,b}.probe.jsonl`, and the archived binar
 
 The `phase-timing` Cargo feature (`crates/paulistrings/src/engine/stats.rs`) gates a per-phase counter breakdown of the propagation engine.
 It is measurement-only and never in the default feature set — the default build carries no timing code and no stats fields at all.
-The same bitwise-identity tests (fingerprint net, thread-count/bucket-count/seed determinism) run with the feature enabled in CI, as the acceptance test that instrumentation doesn't perturb output.
+The test suite runs with the feature enabled in CI, as the acceptance test that instrumentation doesn't perturb output.
 
 Every driver drains its counters with `take_stats()` as a `PartitionPhaseStats`, one `PhaseStats` per partition (a plain `propagate_with` through a `LayerScratch` holds one).
 Two clock domains are deliberately mixed in one `PhaseStats`:

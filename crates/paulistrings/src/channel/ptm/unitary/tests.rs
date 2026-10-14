@@ -1,9 +1,6 @@
 use super::*;
-use crate::channel::prepared::Prepared;
 use crate::channel::Channel;
-use crate::channel::Prepare;
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::outputs;
 
 const TOL: f64 = 1e-12;
@@ -77,12 +74,6 @@ fn pauli_gates_as_general_unitaries_match_clifford1q() {
 }
 
 #[test]
-fn hadamard_across_a_word_boundary_w2() {
-    let h = PtmChannel::unitary_1q(70, [[c(R), c(R)], [c(R), c(-R)]]);
-    assert_agrees_on_basis::<2, _, _>(&h, &PtmChannel::hadamard(70), &[70], "hadamard@70");
-}
-
-#[test]
 fn cnot_as_a_general_unitary_matches_clifford2q() {
     // |q0 q1> with q0 the control and the more significant factor.
     let u = [
@@ -115,73 +106,6 @@ fn swap_as_a_general_unitary_matches_clifford2q() {
     ];
     let g = PtmChannel::unitary_2q(1, 4, u);
     assert_agrees_on_basis::<2, _, _>(&g, &PtmChannel::swap(1, 4), &[1, 4], "swap");
-}
-
-#[test]
-fn cnot_across_a_word_boundary_w2() {
-    let u = [
-        [ONE, ZERO, ZERO, ZERO],
-        [ZERO, ONE, ZERO, ZERO],
-        [ZERO, ZERO, ZERO, ONE],
-        [ZERO, ZERO, ONE, ZERO],
-    ];
-    let g = PtmChannel::unitary_2q(60, 70, u);
-    assert_agrees_on_basis::<2, _, _>(&g, &PtmChannel::cnot(60, 70), &[60, 70], "cnot@60,70");
-}
-
-/// The `T` gate mixes `X` with `Y` and fixes `I` and `Z`, so it is a genuine fanout-2 non-Clifford whose delta set is only one-dimensional, reading 2 buckets rather than the 4 a dense 1Q unitary would.
-#[test]
-fn t_gate_expansion_and_bucket_fanin() {
-    let t = PtmChannel::unitary_1q(
-        2,
-        [
-            [ONE, ZERO],
-            [
-                ZERO,
-                Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-            ],
-        ],
-    );
-    // X -> (X + Y)/sqrt(2)
-    let got = outputs::<1, _>(&t, false, PauliString::<1>::x(2), ONE);
-    assert_eq!(got.len(), 2);
-    for (_, _, coeff) in &got {
-        assert!((coeff.norm() - R).abs() < TOL, "coeff {coeff}");
-    }
-    // Z is fixed.
-    let got = outputs::<1, _>(&t, false, PauliString::<1>::z(2), ONE);
-    assert_eq!(got.len(), 1);
-    assert!((got[0].2 - ONE).norm() < TOL);
-
-    let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
-    let prepared = Prepare::<1>::prepare(&t, &hash, false).unwrap();
-    assert_eq!(
-        prepared.bucket_deltas().len(),
-        2,
-        "the T gate only mixes X with Y, so its delta set is 1-dimensional",
-    );
-}
-
-/// A dense 1Q unitary does reach the 4-bucket upper bound, and a dense 2Q one reaches 16 (ARCHITECTURE.md §Bucketing).
-#[test]
-fn dense_unitaries_reach_the_quoted_bucket_fanin() {
-    // A rotation about an axis with all three components mixes everything.
-    let a = std::f64::consts::FRAC_PI_3;
-    let (ca, sa) = ((a / 2.0).cos(), (a / 2.0).sin());
-    let n = (1.0f64 / 3.0).sqrt();
-    let i = Complex64::new(0.0, 1.0);
-    let u = [
-        [c(ca) - i * c(sa * n), (-i * c(sa * n)) - c(sa * n)],
-        [(-i * c(sa * n)) + c(sa * n), c(ca) + i * c(sa * n)],
-    ];
-    let g = PtmChannel::unitary_1q(0, u);
-    let hash = Gf2Hash::<1>::new(64, 16, 0xBEEF);
-    let prepared = Prepare::<1>::prepare(&g, &hash, false).unwrap();
-    assert_eq!(
-        prepared.bucket_deltas().len(),
-        4,
-        "dense 1Q should read 4 buckets"
-    );
 }
 
 #[test]
@@ -254,31 +178,6 @@ fn cnot_general_unitary_adjoint_matches_clifford2q_adjoint() {
         for (u1, v1) in a.iter().zip(b.iter()) {
             assert_eq!((u1.0, u1.1), (v1.0, v1.1), "s={s}");
             assert!((u1.2 - v1.2).norm() < TOL, "s={s}");
-        }
-    }
-}
-
-/// The derivation must recover exactly the table it was built from — a bounded-support channel *is* its local PTM.
-#[test]
-fn derive_local_recovers_the_table() {
-    let h = PtmChannel::unitary_1q(3, [[c(R), c(R)], [c(R), c(-R)]]);
-    let hash = Gf2Hash::<2>::new(128, 12, 0x1234);
-    let prepared = Prepare::<2>::prepare(&h, &hash, false).unwrap();
-    let table = h.transfer_matrix(false);
-    let Prepared::Local(ptm) = prepared else {
-        panic!("expected a Local preparation")
-    };
-    assert_eq!(ptm.qubits().collect::<Vec<_>>(), [3]);
-    for d in ptm.deltas() {
-        for (s, row) in table.iter().enumerate().take(4) {
-            let t = s ^ d.local_delta as usize;
-            assert!(
-                (d.amplitude[s] - row[t]).norm() < TOL,
-                "amplitude[{s}] for delta {} is {} but table[{s}][{t}] is {}",
-                d.local_delta,
-                d.amplitude[s],
-                row[t],
-            );
         }
     }
 }

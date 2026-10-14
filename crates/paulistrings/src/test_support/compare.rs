@@ -296,7 +296,7 @@ pub fn assert_runs_agree_count_only<const W: usize>(
     );
 }
 
-/// [`trotter_steps`] at angle `0.4` over [`tie_heavy_sum`] of `terms`: under a `TopN`/`ApproxTopN` well below `terms`, every layer cuts through a tie group or an octave, too heavily for [`assert_runs_agree`].
+/// `trotter_steps` at angle `0.4` over [`tie_heavy_sum`] of `terms`: under a `TopN`/`ApproxTopN` well below `terms`, every layer cuts through a tie group or an octave, too heavily for [`assert_runs_agree`].
 pub fn heavy_cut<const W: usize>(
     num_qubits: usize,
     steps: usize,

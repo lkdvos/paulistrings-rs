@@ -59,7 +59,7 @@ pub fn haar_su4_matrix() -> [[Complex64; 4]; 4] {
 ///
 /// One pivot slot per bit position, so each vector is either absorbed by an existing pivot or becomes a new one — the same reduced-basis subtlety `engine::coset::Gf2Span::new` handles by back-substituting.
 /// `Gf2Span::dimension()` is exactly this rank applied to a prepared channel's `bucket_deltas()`, the coset dimension the engine gets for a layer (research/FINDINGS.md).
-pub fn gf2_rank(vs: &[u32]) -> usize {
+fn gf2_rank(vs: &[u32]) -> usize {
     let mut pivot = [0u32; 32];
     let mut r = 0usize;
     for &v in vs {
@@ -218,7 +218,7 @@ pub fn trotter_circuit<const W: usize>(num_qubits: usize, theta: f64) -> crate::
 }
 
 /// `steps` repetitions of [`trotter_circuit`].
-pub fn trotter_steps<const W: usize>(
+pub(super) fn trotter_steps<const W: usize>(
     num_qubits: usize,
     theta: f64,
     steps: usize,
@@ -239,7 +239,7 @@ pub fn trotter_steps<const W: usize>(
     circuit
 }
 
-/// Three [`trotter_steps`] on eight qubits at a large angle, enough to grow [`z0_sum`] past a cache of 6 several times.
+/// Three `trotter_steps` on eight qubits at a large angle, enough to grow [`z0_sum`] past a cache of 6 several times.
 pub fn collapsing_circuit() -> crate::Circuit<1> {
     trotter_steps(8, 0.3, 3)
 }

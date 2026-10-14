@@ -119,7 +119,7 @@ pub fn rand_sum_unmasked<const W: usize>(n: usize, num_qubits: usize, seed: u64)
 ///
 /// The realistic occupancy regime (physical Hamiltonians are low-weight); [`rand_pauli`] is the dense opposite extreme, and both get benched since bucketing behaves very differently on the two.
 /// Index-bounded by construction (`q` drawn `mod num_qubits`), so unlike [`rand_pauli`] it needs no masking pass.
-pub fn low_weight_pauli<const W: usize>(
+fn low_weight_pauli<const W: usize>(
     rng: &mut Xs64,
     num_qubits: usize,
     weight: usize,
@@ -145,7 +145,7 @@ pub fn low_weight_pauli<const W: usize>(
     p
 }
 
-/// As [`rand_sum_unmasked`], but with low-weight keys from [`low_weight_pauli`]; collisions are far more likely, so realized length can be noticeably below `n`.
+/// As [`rand_sum_unmasked`], but with low-weight keys from `low_weight_pauli`; collisions are far more likely, so realized length can be noticeably below `n`.
 pub fn low_weight_sum<const W: usize>(
     n: usize,
     num_qubits: usize,
@@ -156,35 +156,6 @@ pub fn low_weight_sum<const W: usize>(
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for _ in 0..n {
         let p = low_weight_pauli::<W>(&mut rng, num_qubits, weight);
-        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
-        acc.add_term(p, Complex64::new(re, im));
-    }
-    acc.finalize()
-}
-
-/// `n` random terms whose support lies inside `qubits`, each of those an independent uniform `I/X/Y/Z`, with complex coefficients.
-/// A small window forces many keys to share everything but a few bits, which is what class-structured estimators need to be exercised.
-pub fn rand_sum_on<const W: usize>(
-    n: usize,
-    num_qubits: usize,
-    qubits: &[usize],
-    seed: u64,
-) -> PauliSum<W> {
-    let mut rng = Xs64::new(seed);
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
-    for _ in 0..n {
-        let mut p = PauliString::<W>::identity();
-        for &q in qubits {
-            let r = rng.next_u64();
-            let (word, bit) = (q / 64, 1u64 << (q % 64));
-            if r & 1 == 1 {
-                p.x[word] |= bit;
-            }
-            if r & 2 == 2 {
-                p.z[word] |= bit;
-            }
-        }
         let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         let im = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
         acc.add_term(p, Complex64::new(re, im));

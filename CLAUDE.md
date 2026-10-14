@@ -43,6 +43,7 @@ Point `UV_CACHE_DIR` at local disk (`/home/$USER/.cache/uv`, `UV_LINK_MODE=copy`
 ```bash
 scripts/setup.sh                                                 # once: uv sync plus the examples extra
 cargo test --workspace                                           # must be green at every commit
+cargo test -p paulistrings -- --ignored                          # the opt-in exhaustive tier
 cargo clippy --workspace --all-targets -- -D warnings
 uv run pytest python/paulistrings/tests
 MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # debug build; every uv command on that venv must then set it
@@ -119,7 +120,7 @@ Development is test-driven: red (the smallest failing test that pins the behavio
 - The partitioned engine's nets are `tests/propagate_partitioned.rs` and `engine/partitioned/layer/tests.rs`, all under `Placement::Unpinned`.
 - The distributed nets are `tests/propagate_distributed.rs` (`InProcessTransport`, default `cargo test`) and `tests/mpi_ranks.rs` (`MpiTransport` under `mpirun`, `harness = false`, collective cases in one order on every rank).
 - The CUDA nets are `tests/propagate_gpu.rs` and `tests/propagate_gpu_partitioned.rs` (every device test opens with `test_support::require_cuda!()`) and `python/paulistrings/tests/test_cuda.py` (skips unless `cuda_available()`); `PAULISTRINGS_GPU_TEST_DEVICES` (csv of ordinals, default `0`) points the partitioned net at real devices.
-- No `#[ignore]`d tests; benchmarks follow tests.
+- No `#[ignore]`d tests outside the opt-in exhaustive tier: `#[ignore = "exhaustive: <reason>"]`, run by `cargo test -- --ignored`, never a substitute for a default-run test of the same behaviour; benchmarks follow tests.
 - Commit logical units and check in with the user at feature boundaries.
 
 ## Determinism policy

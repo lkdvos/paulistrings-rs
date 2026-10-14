@@ -50,6 +50,7 @@ MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # debug build; 
 ```
 
 Benchmark `--release` only (`lto = "fat"`, `codegen-units = 1`).
+After changing a script, the probe or a Slurm template, `scripts/smoke-tooling.sh` runs every measurement tool once at smoke size and skips what the host lacks.
 The measurement probe, which also drives the partitioned engine (`--partition-cpus` takes one cpulist per partition, as `numactl -H` prints them):
 
 ```bash

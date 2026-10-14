@@ -1,4 +1,4 @@
-//! What a cell prints: the `cell` line, the table, and the JSON and TSV rows.
+//! What a cell prints: the `cell` line, the table, and the JSON row.
 
 use paulistrings::test_support::{BITS_AGREE_EVERY, TIMER_READ_OVERHEAD_NS};
 use paulistrings::PhaseStats;
@@ -210,7 +210,7 @@ pub(crate) fn print_partition_block(cell: &CellResult) {
         "    coset_loop ms per partition = [{}]",
         coset_ms.join(", ")
     );
-    // The human format prints the per-layer series' shape; the full arrays are in the JSON/TSV row.
+    // The human format prints the per-layer series' shape; the full arrays are in the JSON row.
     if let (Some(first), Some(last)) = (p.imbalance_by_layer.first(), p.imbalance_by_layer.last()) {
         let worst = p
             .imbalance_by_layer
@@ -243,18 +243,6 @@ pub(crate) fn json_u64_array<T: std::fmt::Display>(values: &[T]) -> String {
 pub(crate) fn json_f64_array(values: &[f64]) -> String {
     let items: Vec<String> = values.iter().map(|v| format!("{v:.6}")).collect();
     format!("[{}]", items.join(","))
-}
-
-/// `a|b|c` for the TSV spelling of the same array of floats.
-pub(crate) fn tsv_f64_array(values: &[f64]) -> String {
-    let items: Vec<String> = values.iter().map(|v| format!("{v:.6}")).collect();
-    items.join("|")
-}
-
-/// `a|b|c` — the TSV spelling of the same array, `` (empty) when empty.
-pub(crate) fn tsv_array<T: std::fmt::Display>(values: &[T]) -> String {
-    let items: Vec<String> = values.iter().map(T::to_string).collect();
-    items.join("|")
 }
 
 /// One cell as a single JSON line, shared by `--format json` (stdout) and `--json-out` (sidecar).
@@ -401,98 +389,4 @@ pub(crate) fn device_csv(d: &DeviceCellStats) -> String {
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",")
-}
-
-pub(crate) const TSV_HEADER: &str =
-    "layer\ttruncation\tthreads\tn\treps\tqubits\tseed\twall_ns\trebucket_ns\tprepare_ns\t\
-rescale_ns\tspan_plan_ns\tpermute_ns\tcoset_loop_ns\tunpermute_ns\trecount_ns\tfinalize_ns\t\
-swap_ns\tsize_ns\tgather_ns\tsort_ns\tmerge_ns\tclear_ns\tlayers\tcosets\truns\trows_gathered\trows_sorted\trows_id\t\
-terms_in\tterms_out\tvmrss_kb\tvmhwm_kb\ttarget_bucket_len\tmin_buckets\tpartitions\t\
-partition_cpus\tpin_memory\tgen_qubits\tlocal_layers\tremote_layers\tcollectives\t\
-rows_exported\t\
-bytes_exported\tpartition_terms_in\tpartition_imbalance\texport_ns\texchange_ns\tbarrier_ns\t\
-partition_coset_loop_ns\tappend_ns\tchunk_wait_ns\tinitial\tpartition_rows\t\
-partition_imbalance_by_layer\tterms_by_layer\trows_remote_gens\trows_remote_weight\t\
-compact_ns\th2d_ns\td2h_ns\tdevice\tupload_ns\tdownload_ns";
-
-pub(crate) fn print_tsv_row(cell: &CellResult) {
-    let s = &cell.stats;
-    let p = cell.partitioned.as_ref();
-    let empty: Vec<usize> = Vec::new();
-    let empty_ns: Vec<u64> = Vec::new();
-    println!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}|{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{}\t{}\t{}\t\
-         {}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\t{}\t{}\t{}\t{}\t{}",
-        cell.layer,
-        cell.truncation,
-        cell.threads,
-        cell.n,
-        cell.reps,
-        cell.qubits,
-        cell.seed,
-        cell.wall_ns,
-        s.rebucket_ns,
-        s.prepare_ns,
-        s.rescale_ns,
-        s.span_plan_ns,
-        s.permute_ns,
-        s.coset_loop_ns,
-        s.unpermute_ns,
-        s.recount_ns,
-        s.finalize_ns,
-        s.swap_ns,
-        s.size_ns,
-        s.gather_ns,
-        s.sort_ns,
-        s.merge_ns,
-        s.clear_ns,
-        s.layers,
-        s.cosets,
-        s.runs,
-        s.rows_gathered,
-        s.rows_sorted,
-        s.rows_id,
-        s.terms_in,
-        s.terms_out,
-        cell.vmrss_kb,
-        cell.vmhwm_kb,
-        cell.target_bucket_len,
-        cell.min_buckets,
-        cell.partitions,
-        cell.partition_cpus,
-        u8::from(cell.pin_memory),
-        cell.gen_qubits.0,
-        cell.gen_qubits.1,
-        p.map_or(0, |p| p.local_layers),
-        p.map_or(0, |p| p.remote_layers),
-        p.map_or(0, |p| p.collectives),
-        p.map_or(0, |p| p.rows_exported),
-        p.map_or(0, |p| p.bytes_exported),
-        tsv_array(p.map_or(&empty, |p| &p.terms_in)),
-        p.map_or(1.0, |p| p.imbalance),
-        s.export_ns,
-        s.exchange_ns,
-        // `barrier_ns` in every output format is the engine's `collective_ns`.
-        s.collective_ns,
-        tsv_array(p.map_or(&empty_ns, |p| &p.coset_loop_ns)),
-        s.append_ns,
-        s.chunk_wait_ns,
-        cell.initial,
-        cell.partition_rows,
-        tsv_f64_array(p.map_or(&[][..], |p| &p.imbalance_by_layer)),
-        tsv_array(p.map_or(&[][..], |p| &p.terms_by_layer)),
-        cell.row_stats.remote_gens,
-        cell.row_stats.remote_weight,
-        s.compact_ns,
-        s.h2d_ns,
-        s.d2h_ns,
-        // A TSV column cannot be absent: -1 is the host.
-        cell.device
-            .as_ref()
-            .map_or_else(|| "-1".to_string(), device_csv),
-        cell.device.as_ref().map_or(0, |d| d.upload_ns),
-        cell.device.as_ref().map_or(0, |d| d.download_ns),
-    );
 }

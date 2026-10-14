@@ -115,8 +115,7 @@ three policies — and the two per-layer series `partition_imbalance_by_layer` (
 `partition_imbalance` sums the layers before dividing and so hides the mixing dynamics; the series
 is what shows them, and `terms_by_layer` is the growth curve to read it against. Both are long —
 a four-step heavy-hex cell is 1084 layers — and both are empty on an unpartitioned row.
-`--format tsv` carries all six as trailing columns of the same names, the two series
-`|`-joined. `hash_seed` on a partitioned row is the seed actually used, which a `cut`/`select`
+`hash_seed` on a partitioned row is the seed actually used, which a `cut`/`select`
 cell may have re-drawn to keep its rows independent of `H`'s (it says so on stderr); that also
 moves the coset dimension, so do not compare such a cell's phase timings against a differently
 seeded one.
@@ -145,7 +144,6 @@ A device row fills the shared `PhaseStats` fields as follows, kernel times from 
 A device cell (`--device`, feature `cuda`) adds three more, and only there: `device` (a list of the ordinals the cell's partitions ran on, one entry per device: `[0]` for one device, `[0,1,2,3]` for `--device 0,1,2,3`, the rank's own `[d]` on an `--mpi` row), `upload_ns` (the scatter of the input, including the first-use NVRTC compile) and `download_ns` (the gather of the timed call's output; both are outside `wall_ns`).
 Every local device cell is a partitioned cell as well, one device alone at `partitions` `1`: `partitions` is the device count times `--gpu-partitions`, `partition_cpus` is the literal `"gpu"`, `pin_memory` is `0`, and every partitioned key above is written (`export_ns`, `exchange_ns`, `rows_exported`, `bytes_exported`, the per-partition lists).
 An `--mpi --device` row is a distributed cell and a device cell at once: `rank`/`ranks` as above, `partitions` `1`, `partition_cpus` `"gpu"`, `upload_ns` this rank's scatter and `download_ns` the collective gather.
-`--format tsv` carries all six as trailing columns, `device` comma-joined and `-1` on a host row.
 See The device axis below for what the host phase names mean on a device row.
 
 Two further keys are **sub-phases, contained in the phase above rather than additional to it**, so

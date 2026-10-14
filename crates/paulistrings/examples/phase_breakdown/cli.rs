@@ -160,7 +160,7 @@ Options:
                                       balanced under any row by construction)
                             --n is not a size under z0, and trotter ignores
                             this flag entirely (it keeps its low-weight input).
-  --format table|json|tsv  Output format (default: table)
+  --format table|json      Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE,
                            regardless of --format (input for scripts/perf-viz.py)
   -h, --help               Print this message
@@ -170,7 +170,6 @@ Options:
 pub(crate) enum Format {
     Table,
     Json,
-    Tsv,
 }
 
 /// `--truncation-dispatch`: the policy's own type, or the same policy as a [`BuiltinTruncation`].
@@ -489,10 +488,7 @@ pub(crate) fn parse_format(s: &str) -> Result<Format, String> {
     match s {
         "table" => Ok(Format::Table),
         "json" => Ok(Format::Json),
-        "tsv" => Ok(Format::Tsv),
-        other => Err(format!(
-            "--format expects one of table|json|tsv, got '{other}'"
-        )),
+        other => Err(format!("--format expects table or json, got '{other}'")),
     }
 }
 

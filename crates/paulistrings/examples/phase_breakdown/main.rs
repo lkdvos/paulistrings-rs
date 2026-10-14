@@ -31,7 +31,7 @@ use cli::{parse_args, Config, Format, TruncSpec, TruncationDispatch, USAGE};
 use device::run_cell_mpi_gpu;
 #[cfg(feature = "cuda")]
 use device::{resolve_devices, run_cell_gpu};
-use output::{json_line, print_cell_line, print_json, print_table, print_tsv_row, TSV_HEADER};
+use output::{json_line, print_cell_line, print_json, print_table};
 use workloads::{AlwaysKeep, AlwaysKeepPartitioned};
 
 /// `--truncation` as a [`BuiltinTruncation`], the form the device drivers and `--truncation-dispatch builtin` take.
@@ -73,10 +73,6 @@ where
     P: TruncationPolicy<W>,
     PP: TruncationPolicy<W>,
 {
-    if cfg.format == Format::Tsv {
-        println!("{TSV_HEADER}");
-    }
-
     let mut sidecar = cfg.json_out.as_ref().map(|path| {
         // Under `--mpi` every rank writes its own file, suffixed by rank, to avoid interleaving.
         let path = mpi_sidecar_path(path, cfg);
@@ -152,7 +148,6 @@ fn emit_cell(cfg: &Config, cell: &CellResult, sidecar: Option<&mut std::fs::File
     match cfg.format {
         Format::Table => print_table(cell),
         Format::Json => print_json(cell),
-        Format::Tsv => print_tsv_row(cell),
     }
     if let Some(f) = sidecar {
         use std::io::Write;

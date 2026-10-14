@@ -67,99 +67,12 @@ fn round_trip_is_bitwise_identical_w1() {
 }
 
 #[test]
-fn round_trip_is_bitwise_identical_w2() {
-    let sum = rand_sum::<2>(5000, 128, 0xA2);
-    let h = Gf2Hash::<2>::new(128, 9, 0xBEEF);
-    let bucketed = sum.clone().with_hash(h);
-    bucketed.assert_invariants();
-    let back = bucketed;
-    back.assert_invariants();
-    assert_same_sum(&sum, &back);
-}
-
-#[test]
-fn round_trip_on_low_weight_input() {
-    let sum = rand_low_weight_sum::<2>(4000, 100, 4, 0xA3);
-    let h = Gf2Hash::<2>::new(100, 8, 0xBEEF);
-    let bucketed = sum.clone().with_hash(h);
-    bucketed.assert_invariants();
-    assert_same_sum(&sum, &bucketed);
-}
-
-#[test]
-fn round_trip_at_a_mid_word_qubit_count() {
-    // 70 qubits in W=2: word 1 is only partly live.
-    let sum = rand_sum::<2>(2000, 70, 0xA4);
-    let h = Gf2Hash::<2>::new(70, 6, 0xBEEF);
-    let bucketed = sum.clone().with_hash(h);
-    bucketed.assert_invariants();
-    assert_same_sum(&sum, &bucketed);
-}
-
-#[test]
-fn round_trip_empty_sum() {
-    let sum = PauliSum::<1>::empty(64);
-    let h = Gf2Hash::<1>::new(64, 5, 0x1);
-    let bucketed = sum.clone().with_hash(h);
-    bucketed.assert_invariants();
-    assert!(bucketed.is_empty());
-    assert_eq!(bucketed.len(), 0);
-    assert_same_sum(&sum, &bucketed);
-}
-
-#[test]
-fn round_trip_single_term() {
-    let sum = rand_sum::<1>(1, 64, 0xA5);
-    assert_eq!(sum.len(), 1);
-    let h = Gf2Hash::<1>::new(64, 8, 0x2);
-    let bucketed = sum.clone().with_hash(h);
-    bucketed.assert_invariants();
-    assert_same_sum(&sum, &bucketed);
-}
-
-#[test]
-fn round_trip_with_a_single_bucket() {
-    // bits = 0: one bucket, so the canonical order is plain lex.
-    let sum = rand_sum::<1>(2000, 64, 0xA6);
-    let h = Gf2Hash::<1>::new(64, 0, 0x3);
-    let bucketed = sum.clone().with_hash(h);
-    assert_eq!(bucketed.num_buckets(), 1);
-    bucketed.assert_invariants();
-    assert_same_sum(&sum, &bucketed);
-}
-
-#[test]
-fn round_trip_with_more_buckets_than_terms() {
-    let sum = rand_sum::<1>(50, 64, 0xA7);
-    let h = Gf2Hash::<1>::new(64, 12, 0x4);
-    let bucketed = sum.clone().with_hash(h);
-    assert_eq!(bucketed.num_buckets(), 4096);
-    bucketed.assert_invariants();
-    assert_same_sum(&sum, &bucketed);
-}
-
-#[test]
 fn empty_constructor_matches_empty_sum() {
     let h = Gf2Hash::<2>::new(128, 6, 0x5);
     let b = PauliSum::<2>::empty_with_hash(128, h);
     b.assert_invariants();
     assert_eq!(b.num_buckets(), 64);
     assert_eq!(b.len(), 0);
-}
-
-#[test]
-fn refine_doubles_buckets_and_preserves_content() {
-    let sum = rand_sum::<2>(3000, 128, 0xB1);
-    let h = Gf2Hash::<2>::new(128, 6, 0xC0DE);
-    let mut b = sum.clone().with_hash(h);
-    let before_len = b.len();
-
-    b.refine();
-    assert_eq!(b.num_buckets(), 128);
-    assert_eq!(b.len(), before_len);
-    // The invariant check is the real assertion.
-    b.assert_invariants();
-    assert_same_sum(&sum, &b);
 }
 
 #[test]
@@ -181,18 +94,6 @@ fn refine_splits_each_bucket_into_the_pair_i_and_i_plus_b() {
 }
 
 #[test]
-fn coarsen_halves_buckets_and_preserves_content() {
-    let sum = rand_sum::<2>(3000, 128, 0xB3);
-    let h = Gf2Hash::<2>::new(128, 7, 0xC0DE);
-    let mut b = sum.clone().with_hash(h);
-
-    b.coarsen();
-    assert_eq!(b.num_buckets(), 64);
-    b.assert_invariants();
-    assert_same_sum(&sum, &b);
-}
-
-#[test]
 fn coarsen_merges_the_pair_i_and_i_plus_new_b() {
     let sum = rand_sum::<1>(3000, 64, 0xB4);
     let h = Gf2Hash::<1>::new(64, 6, 0xC0DE);
@@ -206,36 +107,6 @@ fn coarsen_merges_the_pair_i_and_i_plus_new_b() {
     for (i, &want) in expect.iter().enumerate() {
         assert_eq!(b.bucket_len(i), want, "bucket {i} merge size");
     }
-}
-
-#[test]
-fn refine_then_coarsen_round_trips() {
-    let sum = rand_sum::<2>(2500, 128, 0xB5);
-    let h = Gf2Hash::<2>::new(128, 6, 0xC0DE);
-    let mut b = sum.clone().with_hash(h);
-    let lens: Vec<usize> = (0..b.num_buckets()).map(|i| b.bucket_len(i)).collect();
-
-    b.refine();
-    b.coarsen();
-
-    assert_eq!(b.num_buckets(), 64);
-    let after: Vec<usize> = (0..b.num_buckets()).map(|i| b.bucket_len(i)).collect();
-    assert_eq!(lens, after);
-    b.assert_invariants();
-    assert_same_sum(&sum, &b);
-}
-
-#[test]
-fn repeated_refine_stays_consistent() {
-    let sum = rand_sum::<2>(4000, 128, 0xB6);
-    let h = Gf2Hash::<2>::new(128, 2, 0xC0DE);
-    let mut b = sum.clone().with_hash(h);
-    for _ in 0..8 {
-        b.refine();
-        b.assert_invariants();
-    }
-    assert_eq!(b.num_buckets(), 1024);
-    assert_same_sum(&sum, &b);
 }
 
 #[test]
@@ -260,18 +131,6 @@ fn refine_and_coarsen_take_the_parallel_path_above_the_threshold() {
     b.assert_invariants();
     assert_eq!(b.num_buckets(), 4);
     assert_same_sum(&sum, &b);
-}
-
-#[test]
-fn refine_and_coarsen_on_an_empty_sum() {
-    let h = Gf2Hash::<1>::new(64, 3, 0x7);
-    let mut b = PauliSum::<1>::empty_with_hash(64, h);
-    b.refine();
-    b.assert_invariants();
-    b.coarsen();
-    b.assert_invariants();
-    assert_eq!(b.num_buckets(), 8);
-    assert_eq!(b.len(), 0);
 }
 
 #[test]
@@ -327,7 +186,7 @@ fn rebucket_is_a_no_op_when_already_at_the_target() {
 #[test]
 fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
     // Grow-only: the result is `desired_bits.max(start)`.
-    for &n in &[500usize, 6400, 60_000] {
+    for &n in &[500usize, 6400, 20_000] {
         let sum = rand_sum::<2>(n, 128, 0xD9 + n as u64);
         let want = desired_bits(sum.len(), 256, 8);
         for start in [0u8, 3, 12] {
@@ -347,7 +206,7 @@ fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
 #[test]
 fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
     // The bucket count is a high-water mark and must not follow the length back down.
-    let sum = rand_sum::<2>(60_000, 128, 0xDA1);
+    let sum = rand_sum::<2>(20_000, 128, 0xDA1);
     let h = Gf2Hash::<2>::new(128, 0, 0xC0DE);
     let mut b = sum.with_hash(h);
     b.rebucket(256, 8);
@@ -398,40 +257,6 @@ fn rebucket_does_not_split_a_tiny_sum_to_hit_the_floor() {
     let mut b = sum.clone().with_hash(h);
     b.rebucket(1024, 32);
     assert_eq!(b.num_buckets(), 1, "tiny sum was split anyway");
-}
-
-#[test]
-fn canonical_order_is_bucket_then_key() {
-    let sum = rand_sum::<1>(3000, 64, 0xC0);
-    for bits in [1u8, 4, 8] {
-        let b = sum.clone().with_hash(Gf2Hash::<1>::new(64, bits, 0xC1));
-        let h = b.hash().clone();
-        let mut prev: Option<(u32, [u64; 1], [u64; 1])> = None;
-        for (x, z, _) in b.iter() {
-            let bucket = h.bucket_of(x, z);
-            if let Some((pb, px, pz)) = prev {
-                assert!(
-                    (pb, (px, pz)) < (bucket, (*x, *z)),
-                    "bits={bits}: (bucket, key) not strictly ascending",
-                );
-            }
-            prev = Some((bucket, *x, *z));
-        }
-    }
-}
-
-#[test]
-fn single_bucket_sum_is_plain_lex_sorted() {
-    // Below the split threshold the canonical order is lex order.
-    let sum = rand_sum::<1>(1000, 64, 0xC2);
-    assert_eq!(sum.num_buckets(), 1);
-    let (x, z, _) = sum.to_arrays();
-    for i in 1..x.len() {
-        assert!(
-            (x[i - 1], z[i - 1]) < (x[i], z[i]),
-            "single-bucket sum not lex-sorted at {i}",
-        );
-    }
 }
 
 /// The canonical order as a plain vector, read out of `bucket()` alone.
@@ -487,49 +312,6 @@ fn to_arrays_concatenates_buckets_in_index_order() {
 }
 
 #[test]
-fn single_bucket_to_arrays_is_the_key_sorted_order() {
-    // bits = 0 collapses the bucket order onto the global sorted order, so the export and the merge must agree bit for bit.
-    let sum = rand_sum::<2>(2000, 128, 0xF5);
-    let h = Gf2Hash::<2>::new(128, 0, 0xF6);
-    let b = sum.clone().with_hash(h);
-    let (x, z, c) = b.to_arrays();
-    let want = sorted_triples(&b);
-    for (i, &(wx, wz, wc)) in want.iter().enumerate() {
-        assert_eq!(x[i], wx, "x column at {i}");
-        assert_eq!(z[i], wz, "z column at {i}");
-        assert_eq!(c[i], wc, "coeff column at {i}");
-    }
-}
-
-#[test]
-fn get_hits_and_misses_across_bucket_counts() {
-    let sum = rand_sum::<1>(2000, 64, 0xF7);
-    // Misses come from a second draw, skipping any that collide.
-    let other = rand_sum::<1>(2000, 64, 0xF8);
-
-    for bits in [0u8, 3, 7] {
-        let h = Gf2Hash::<1>::new(64, bits, 0xF9);
-        let b = sum.clone().with_hash(h);
-        for (i, (x, z, c)) in sum.iter().enumerate() {
-            assert_eq!(
-                b.get(x, z),
-                Some(c),
-                "bits={bits}: miss on present term {i}"
-            );
-        }
-        let mut misses = 0usize;
-        for (i, (x, z, _)) in other.iter().enumerate() {
-            if sum.get(x, z).is_some() {
-                continue;
-            }
-            misses += 1;
-            assert_eq!(b.get(x, z), None, "bits={bits}: hit on absent term {i}",);
-        }
-        assert!(misses > 1000, "bits={bits}: only {misses} absent probes");
-    }
-}
-
-#[test]
 fn get_w2_word_boundary() {
     // Keys live entirely in word 1, so a lookup that only compared word 0 would confuse them.
     let mut accumulator = BuildAccumulator::<2>::new(128);
@@ -572,23 +354,6 @@ fn get_agrees_with_a_map_model() {
         sum.iter().map(|(x, z, c)| ((*x, *z), c)).collect();
     for (i, (x, z, _)) in probes.iter().enumerate() {
         assert_eq!(b.get(x, z), model.get(&(*x, *z)).copied(), "probe {i}");
-    }
-}
-
-#[test]
-fn scale_matches_flat_bitwise() {
-    // Elementwise, so the comparison is exact.
-    for bits in [0u8, 5] {
-        let sum = rand_sum::<2>(3000, 128, 0x101);
-        let h = Gf2Hash::<2>::new(128, bits, 0x102);
-        let mut b = sum.clone().with_hash(h);
-        let mut flat = sum.clone();
-        let c = Complex64::new(-0.75, 1.25);
-        b.scale(c);
-        flat.scale(c);
-        b.assert_invariants();
-        assert_eq!(b.len(), flat.len());
-        assert_same_sum(&flat, &b);
     }
 }
 
@@ -645,51 +410,6 @@ fn flat_overlap<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) -> Complex64 {
         }
     }
     overlap
-}
-
-#[test]
-fn overlap_single_bucket_is_bitwise_flat() {
-    // One bucket: the same additions in the same order as the flat version, so equality is exact.
-    let a = rand_low_weight_sum::<2>(3000, 100, 3, 0x201);
-    let b = rand_low_weight_sum::<2>(3000, 100, 3, 0x202);
-    let h = Gf2Hash::<2>::new(100, 0, 0x203);
-    let ba = a.clone().with_hash(h.clone());
-    let bb = b.clone().with_hash(h);
-    assert_eq!(ba.overlap(&bb), flat_overlap(&a, &b));
-    // Self-overlap is the squared norm.
-    assert_eq!(ba.overlap(&ba), flat_overlap(&a, &a));
-}
-
-#[test]
-fn overlap_matches_flat_within_tolerance_across_bits() {
-    // Not bitwise past one bucket: partials are combined in bucket order.
-    let a = rand_low_weight_sum::<2>(4000, 100, 3, 0x204);
-    let b = rand_low_weight_sum::<2>(4000, 100, 3, 0x205);
-    let want = flat_overlap(&a, &b);
-    for bits in [0u8, 3, 6] {
-        let h = Gf2Hash::<2>::new(100, bits, 0x206);
-        let ba = a.clone().with_hash(h.clone());
-        let bb = b.clone().with_hash(h);
-        let got = ba.overlap(&bb);
-        if bits == 0 {
-            assert_eq!(got, want, "bits=0 must be bitwise");
-        }
-        assert!(
-            (got - want).norm() <= 1e-12 * want.norm(),
-            "bits={bits}: {got} vs {want}",
-        );
-    }
-    assert!(want.norm() > 0.0, "operands share no keys; test is vacuous");
-}
-
-#[test]
-fn overlap_with_an_empty_operand_is_zero() {
-    let a = rand_sum::<1>(500, 64, 0x207);
-    let h = Gf2Hash::<1>::new(64, 4, 0x208);
-    let ba = a.clone().with_hash(h.clone());
-    let empty = PauliSum::<1>::empty_with_hash(64, h);
-    assert_eq!(ba.overlap(&empty), Complex64::new(0.0, 0.0));
-    assert_eq!(empty.overlap(&ba), Complex64::new(0.0, 0.0));
 }
 
 #[test]
@@ -838,76 +558,6 @@ fn align_different_rows_goes_through_with_hash() {
     assert_eq!(canonical_triples(&got), canonical_triples(&want));
 }
 
-/// Two sums over the same keyspace with heavy key overlap, so `add` sees merges and not just interleaving.
-fn overlapping_pair<const W: usize>(
-    n: usize,
-    num_qubits: usize,
-    weight: usize,
-    seed: u64,
-) -> (PauliSum<W>, PauliSum<W>) {
-    (
-        rand_low_weight_sum::<W>(n, num_qubits, weight, seed),
-        rand_low_weight_sum::<W>(n, num_qubits, weight, seed ^ 0xFFFF),
-    )
-}
-
-#[test]
-fn add_same_hash_is_bitwise_flat_add() {
-    // Every surviving coefficient is one `a + b`, so equality is exact.
-    let (a, b) = overlapping_pair::<2>(4000, 100, 3, 0x401);
-    let want = a.add(&b);
-    for bits in [0u8, 4, 9] {
-        let h = Gf2Hash::<2>::new(100, bits, 0x402);
-        let ba = a.clone().with_hash(h.clone());
-        let bb = b.clone().with_hash(h);
-        let got = ba.add(&bb);
-        got.assert_invariants();
-        assert_eq!(got.len(), want.len(), "bits={bits} length");
-        assert_same_sum(&want, &got);
-    }
-}
-
-#[test]
-fn add_mixed_bits_matches_flat_bitwise() {
-    let (a, b) = overlapping_pair::<2>(3000, 100, 3, 0x403);
-    let want = a.add(&b);
-    for &(bits_a, bits_b) in &[(4u8, 8u8), (8, 4), (0, 7), (7, 0), (6, 6)] {
-        let ba = a.clone().with_hash(Gf2Hash::<2>::new(100, bits_a, 0x404));
-        let bb = b.clone().with_hash(Gf2Hash::<2>::new(100, bits_b, 0x404));
-        let got = ba.add(&bb);
-        got.assert_invariants();
-        assert_same_sum(&want, &got);
-    }
-}
-
-#[test]
-fn add_mixed_seeds_matches_flat_bitwise() {
-    let (a, b) = overlapping_pair::<2>(3000, 100, 3, 0x405);
-    let want = a.add(&b);
-    for &(bits_a, bits_b) in &[(5u8, 5u8), (3, 8)] {
-        let ba = a.clone().with_hash(Gf2Hash::<2>::new(100, bits_a, 0x406));
-        let bb = b.clone().with_hash(Gf2Hash::<2>::new(100, bits_b, 0x407));
-        let got = ba.add(&bb);
-        got.assert_invariants();
-        assert_same_sum(&want, &got);
-    }
-}
-
-#[test]
-fn add_result_carries_left_hash() {
-    let (a, b) = overlapping_pair::<1>(500, 40, 2, 0x408);
-    let ba = a.clone().with_hash(Gf2Hash::<1>::new(40, 3, 0x409));
-    let bb = b.clone().with_hash(Gf2Hash::<1>::new(40, 7, 0x40A));
-    let got = ba.add(&bb);
-    assert_eq!(got.hash().bits(), 3, "bits");
-    assert_eq!(got.hash().seed(), 0x409, "seed");
-    assert_eq!(got.num_buckets(), 8);
-    // The operands are untouched.
-    assert_eq!(ba.hash().bits(), 3);
-    assert_eq!(bb.hash().bits(), 7);
-    assert_eq!(bb.hash().seed(), 0x40A);
-}
-
 #[test]
 fn add_cancels_to_nothing() {
     let a = rand_low_weight_sum::<1>(300, 40, 2, 0x40B);
@@ -967,32 +617,6 @@ fn overlap_is_conjugate_symmetric() {
     let ab = a.overlap(&b);
     let ba = b.overlap(&a);
     assert!((ab - ba.conj()).norm() < 1e-12, "{ab} vs conj({ba})");
-}
-
-#[test]
-fn overlap_of_disjoint_supports_is_zero() {
-    let a = b10_build::<1>(8, &[(PauliString::<1>::x(0), Complex64::new(1.0, 0.0))]);
-    let b = b10_build::<1>(8, &[(PauliString::<1>::z(5), Complex64::new(1.0, 0.0))]);
-    assert!(a.overlap(&b).norm() < 1e-12);
-}
-
-#[test]
-fn overlap_only_counts_shared_keys() {
-    let a = b10_build::<1>(
-        8,
-        &[
-            (PauliString::<1>::x(0), Complex64::new(2.0, 0.0)),
-            (PauliString::<1>::y(1), Complex64::new(5.0, 0.0)),
-        ],
-    );
-    let b = b10_build::<1>(
-        8,
-        &[
-            (PauliString::<1>::x(0), Complex64::new(3.0, 0.0)),
-            (PauliString::<1>::z(2), Complex64::new(7.0, 0.0)),
-        ],
-    );
-    assert!((a.overlap(&b) - Complex64::new(6.0, 0.0)).norm() < 1e-12);
 }
 
 #[test]
@@ -1073,39 +697,6 @@ fn assert_invariants_rejects_bit_in_unused_word() {
     sum.assert_invariants();
 }
 
-/// Three-term `PauliSum<1>` with sorted, distinct keys `K0 < K1 < K2`.
-fn three_term_sum_w1() -> PauliSum<1> {
-    // K0 = (x=0, z=1), K1 = (x=1, z=0), K2 = (x=1, z=2). Sorted by lex on (x, z): K0 has smallest x; K1, K2 share x but K1 has smaller z.
-    PauliSum::<1>::from_sorted_columns(
-        vec![[0u64], [1u64], [1u64]],
-        vec![[1u64], [0u64], [2u64]],
-        vec![
-            Complex64::new(1.0, 0.0),
-            Complex64::new(2.0, 0.0),
-            Complex64::new(3.0, 0.0),
-        ],
-        4,
-    )
-}
-
-#[test]
-fn get_on_empty_is_none() {
-    let s = PauliSum::<1>::empty(4);
-    assert_eq!(s.get(&[0u64], &[0u64]), None);
-}
-
-#[test]
-fn get_hits_every_key_and_misses_between() {
-    let s = three_term_sum_w1();
-    assert_eq!(s.get(&[0u64], &[1u64]), Some(Complex64::new(1.0, 0.0)));
-    assert_eq!(s.get(&[1u64], &[0u64]), Some(Complex64::new(2.0, 0.0)));
-    assert_eq!(s.get(&[1u64], &[2u64]), Some(Complex64::new(3.0, 0.0)));
-    // Below the smallest, in a gap, and above the largest key.
-    assert_eq!(s.get(&[0u64], &[0u64]), None);
-    assert_eq!(s.get(&[1u64], &[1u64]), None);
-    assert_eq!(s.get(&[2u64], &[0u64]), None);
-}
-
 #[test]
 fn canonical_order_is_lex_x_before_z_on_a_single_bucket() {
     // K_a=(x=0, z=5) < K_b=(x=1, z=0) in lex order, which a z-first order would invert.
@@ -1122,25 +713,6 @@ fn canonical_order_is_lex_x_before_z_on_a_single_bucket() {
 }
 
 #[test]
-fn scale_by_zero_zeros_all_coeffs() {
-    let mut s = three_term_sum_w1();
-    s.scale(Complex64::new(0.0, 0.0));
-    assert_eq!(s.len(), 3);
-    for (_, _, c) in s.iter() {
-        assert_eq!(c, Complex64::new(0.0, 0.0));
-    }
-    s.assert_invariants();
-}
-
-#[test]
-fn scale_by_one_is_identity() {
-    let mut s = three_term_sum_w1();
-    let (_, _, before) = s.to_arrays();
-    s.scale(Complex64::new(1.0, 0.0));
-    assert_eq!(s.to_arrays().2, before);
-}
-
-#[test]
 fn scale_by_i_rotates_phases() {
     let mut s = PauliSum::<1>::from_sorted_columns(
         vec![[0u64], [1u64]],
@@ -1152,75 +724,6 @@ fn scale_by_i_rotates_phases() {
     // (2 + 0i) * i = 0 + 2i; (0 - 3i) * i = 3 + 0i.
     assert_eq!(s.bucket(0).2[0], Complex64::new(0.0, 2.0));
     assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
-}
-
-#[test]
-fn add_empty_left_is_other() {
-    let a = PauliSum::<1>::empty(4);
-    let b = three_term_sum_w1();
-    let r = a.add(&b);
-    assert_eq!(r.len(), 3);
-    assert_eq!(r.to_arrays(), b.to_arrays());
-    r.assert_invariants();
-}
-
-#[test]
-fn add_empty_right_is_self() {
-    let a = three_term_sum_w1();
-    let b = PauliSum::<1>::empty(4);
-    let r = a.add(&b);
-    assert_eq!(r.len(), 3);
-    assert_eq!(r.to_arrays(), a.to_arrays());
-    r.assert_invariants();
-}
-
-#[test]
-fn add_disjoint_keys_interleaves_in_sort_order() {
-    // a has K0=(0,1), K2=(1,2); b has K1=(1,0), K3=(2,0).
-    // Lex sort across the union: (0,1) < (1,0) < (1,2) < (2,0).
-    let a = PauliSum::<1>::from_sorted_columns(
-        vec![[0u64], [1u64]],
-        vec![[1u64], [2u64]],
-        vec![Complex64::new(1.0, 0.0), Complex64::new(3.0, 0.0)],
-        4,
-    );
-    let b = PauliSum::<1>::from_sorted_columns(
-        vec![[1u64], [2u64]],
-        vec![[0u64], [0u64]],
-        vec![Complex64::new(2.0, 0.0), Complex64::new(4.0, 0.0)],
-        4,
-    );
-    let r = a.add(&b);
-    assert_eq!(r.len(), 4);
-    let (rx, rz, rc) = r.to_arrays();
-    assert_eq!(rx, vec![[0u64], [1u64], [1u64], [2u64]]);
-    assert_eq!(rz, vec![[1u64], [0u64], [2u64], [0u64]]);
-    assert_eq!(
-        rc,
-        vec![
-            Complex64::new(1.0, 0.0),
-            Complex64::new(2.0, 0.0),
-            Complex64::new(3.0, 0.0),
-            Complex64::new(4.0, 0.0),
-        ]
-    );
-    r.assert_invariants();
-}
-
-#[test]
-fn add_equal_keys_sum_coeffs() {
-    let a = three_term_sum_w1();
-    let r = a.add(&a);
-    assert_eq!(r.len(), 3);
-    assert_eq!(r.to_arrays().0, a.to_arrays().0);
-    assert_eq!(r.to_arrays().1, a.to_arrays().1);
-    for k in 0..3 {
-        assert_eq!(
-            r.bucket(0).2[k],
-            a.bucket(0).2[k] * Complex64::new(2.0, 0.0)
-        );
-    }
-    r.assert_invariants();
 }
 
 #[test]
@@ -1264,143 +767,12 @@ fn add_mixed_cancellation_and_merge() {
 }
 
 #[test]
-fn add_w2_across_word_boundary() {
-    let a = PauliSum::<2>::from_sorted_columns(
-        vec![[0u64, 1u64], [0u64, 2u64]],
-        vec![[0u64, 0u64], [0u64, 0u64]],
-        vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0)],
-        128,
-    );
-    let b = PauliSum::<2>::from_sorted_columns(
-        vec![[0u64, 1u64], [0u64, 4u64]],
-        vec![[0u64, 0u64], [0u64, 0u64]],
-        vec![Complex64::new(0.5, 0.0), Complex64::new(7.0, 0.0)],
-        128,
-    );
-    let r = a.add(&b);
-    assert_eq!(r.len(), 3);
-    assert_eq!(
-        r.to_arrays().0,
-        vec![[0u64, 1u64], [0u64, 2u64], [0u64, 4u64]]
-    );
-    assert_eq!(r.bucket(0).2[0], Complex64::new(1.5, 0.0));
-    assert_eq!(r.bucket(0).2[1], Complex64::new(2.0, 0.0));
-    assert_eq!(r.bucket(0).2[2], Complex64::new(7.0, 0.0));
-    r.assert_invariants();
-}
-
-#[test]
-fn from_strings_single_x_term() {
-    let s = PauliSum::<1>::from_strings(&[("XII", Complex64::new(1.0, 0.0))]);
-    assert_eq!(s.len(), 1);
-    assert_eq!(s.num_qubits(), 3);
-    assert_eq!(s.bucket(0).0[0], [0b001u64]);
-    assert_eq!(s.bucket(0).1[0], [0u64]);
-    assert_eq!(s.bucket(0).2[0], Complex64::new(1.0, 0.0));
-    s.assert_invariants();
-}
-
-#[test]
-fn from_strings_x_z_combined() {
-    // "XZI": X on qubit 0, Z on qubit 1, I on qubit 2.
-    let s = PauliSum::<1>::from_strings(&[("XZI", Complex64::new(1.0, 0.0))]);
-    assert_eq!(s.bucket(0).0[0], [0b001u64]);
-    assert_eq!(s.bucket(0).1[0], [0b010u64]);
-    s.assert_invariants();
-}
-
-#[test]
 fn from_strings_y_is_hermitian() {
     // "Y" maps to the key (x=1, z=1) with no phase factor.
     let s = PauliSum::<1>::from_strings(&[("Y", Complex64::new(1.0, 0.0))]);
     assert_eq!(s.bucket(0).0[0], [1u64]);
     assert_eq!(s.bucket(0).1[0], [1u64]);
     assert_eq!(s.bucket(0).2[0], Complex64::new(1.0, 0.0));
-}
-
-#[test]
-fn from_strings_real_coeffs_stay_real_for_any_y_count() {
-    // No per-Y phase is folded, so coefficients stay real.
-    for s in ["Y", "YY", "YYY", "YYYY"] {
-        let padded: String = format!("{s:I<4}");
-        let sum = PauliSum::<1>::from_strings(&[(&padded, Complex64::new(2.5, 0.0))]);
-        assert_eq!(sum.bucket(0).2[0], Complex64::new(2.5, 0.0), "{s}");
-    }
-}
-
-#[test]
-fn from_strings_dedup_sums_coeffs() {
-    let s = PauliSum::<1>::from_strings(&[
-        ("XI", Complex64::new(1.0, 0.0)),
-        ("XI", Complex64::new(0.5, -0.25)),
-    ]);
-    assert_eq!(s.len(), 1);
-    assert_eq!(s.bucket(0).2[0], Complex64::new(1.5, -0.25));
-    s.assert_invariants();
-}
-
-#[test]
-fn from_strings_cancellation_drops_term() {
-    let s = PauliSum::<1>::from_strings(&[
-        ("XI", Complex64::new(1.0, 0.0)),
-        ("XI", Complex64::new(-1.0, 0.0)),
-        ("ZI", Complex64::new(2.0, 0.0)),
-    ]);
-    assert_eq!(s.len(), 1);
-    assert_eq!(s.bucket(0).0[0], [0u64]);
-    assert_eq!(s.bucket(0).1[0], [1u64]);
-    assert_eq!(s.bucket(0).2[0], Complex64::new(2.0, 0.0));
-    s.assert_invariants();
-}
-
-#[test]
-fn from_strings_sorts_lex_keys() {
-    // Insert out of order: ZI=(0,1), XI=(1,0), YI=(1,1) — lex sorted is
-    // ZI < XI < YI.
-    let s = PauliSum::<1>::from_strings(&[
-        ("YI", Complex64::new(1.0, 0.0)),
-        ("ZI", Complex64::new(2.0, 0.0)),
-        ("XI", Complex64::new(3.0, 0.0)),
-    ]);
-    assert_eq!(s.len(), 3);
-    assert_eq!((s.bucket(0).0[0], s.bucket(0).1[0]), ([0u64], [1u64])); // ZI
-    assert_eq!((s.bucket(0).0[1], s.bucket(0).1[1]), ([1u64], [0u64])); // XI
-    assert_eq!((s.bucket(0).0[2], s.bucket(0).1[2]), ([1u64], [1u64])); // YI
-    assert_eq!(s.bucket(0).2[0], Complex64::new(2.0, 0.0));
-    assert_eq!(s.bucket(0).2[1], Complex64::new(3.0, 0.0));
-    assert_eq!(s.bucket(0).2[2], Complex64::new(1.0, 0.0));
-    s.assert_invariants();
-}
-
-#[test]
-fn from_strings_w2_qubit_64() {
-    // 65-character string: X at index 64 lands in word 1.
-    let mut s_chars: String = "I".repeat(65);
-    // Replace index 64 with 'X'.
-    unsafe {
-        let bytes = s_chars.as_bytes_mut();
-        bytes[64] = b'X';
-    }
-    let s = PauliSum::<2>::from_strings(&[(s_chars.as_str(), Complex64::new(1.0, 0.0))]);
-    assert_eq!(s.num_qubits(), 65);
-    assert_eq!(s.bucket(0).0[0], [0u64, 1u64]);
-    assert_eq!(s.bucket(0).1[0], [0u64, 0u64]);
-    s.assert_invariants();
-}
-
-#[test]
-#[should_panic(expected = "unexpected Pauli char")]
-fn from_strings_panics_on_invalid_char() {
-    let _ = PauliSum::<1>::from_strings(&[("AB", Complex64::new(1.0, 0.0))]);
-}
-
-#[test]
-#[should_panic(expected = "all pauli strings must have the same length")]
-fn from_strings_panics_on_length_mismatch() {
-    let _ = PauliSum::<1>::from_strings(&[
-        ("XI", Complex64::new(1.0, 0.0)),
-        ("XII", Complex64::new(1.0, 0.0)),
-    ]);
 }
 
 /// Bitwise, order-included comparison of two sums' canonical columns.

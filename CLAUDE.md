@@ -183,7 +183,7 @@ crates/paulistrings/      pure Rust core, no Python deps
                           engine/partitioned/{distributed,driver,exchange_block,export,in_process,
                           layer,mpi,runtime,sum,topology},
                           engine/gpu/* (behind `cuda`; `nccl` behind `cuda` and `mpi`),
-                          readout/{product_state,stabilizer}, test_support/{gpu,rows}
+                          readout/{product_state,stabilizer}, test_support/{circuits,compare,gpu,oracle,random,rows,transport}
   tests/ benches/ examples/ (the phase_breakdown probe)
 crates/paulistrings-py/   PyO3 bindings, cdylib `_paulistrings`, abi3-py39
 crates/membench/          STREAM-style bandwidth probe behind scripts/bandwidth.sh

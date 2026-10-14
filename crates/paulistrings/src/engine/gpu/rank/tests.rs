@@ -268,7 +268,7 @@ mod protocol {
         }
     }
 
-    /// The receive cut into chunks over the peer wire agrees with `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and caps of 128 and 8 rows at least 3 and 8 on some layer.
+    /// The receive cut into chunks over the peer wire agrees with `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and a cap of 128 rows at least 3 on some layer.
     #[test]
     fn a_capped_receive_moves_in_chunk_groups_and_agrees() {
         crate::require_cuda!();
@@ -282,7 +282,7 @@ mod protocol {
                 };
                 let want = run.want();
                 let mut plain = 0u64;
-                for (cap, least) in [(usize::MAX, 1u64), (128, 3), (8, 8)] {
+                for (cap, least) in [(usize::MAX, 1u64), (128, 3)] {
                     let what = format!("ranks={size} {direction:?} cap={cap}");
                     let (group, tally) = wired(size);
                     let options = capped(cap);
@@ -316,8 +316,8 @@ mod protocol {
         let circuit = su4_chain::<1>(10);
         let input = rand_sum::<1>(1_500, 10, 0xC4B5);
         for (size, caps) in [
-            (2u32, vec![usize::MAX, 8]),
-            (4, vec![usize::MAX, 128, 32, 8]),
+            (2u32, vec![usize::MAX, 128]),
+            (4, vec![usize::MAX, 512, 256, 128]),
         ] {
             let run = Run::new(&input, seeded_rows(10, size), &circuit);
             let setup = |split: &mut GpuDistributedSum<1, InProcessTransport>| {

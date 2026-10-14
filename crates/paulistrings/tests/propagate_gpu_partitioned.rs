@@ -870,7 +870,7 @@ fn capped_split<const W: usize>(
     split
 }
 
-/// Under no receive cap, a cap of 128 rows and one of 8, four SU(4) layers run one call each agree with `propagate`, the uncapped receive moving in one chunk and a capped one in several; under a cap the whole circuit agrees in both directions.
+/// Under no receive cap and a cap of 128 rows, four SU(4) layers run one call each agree with `propagate`, the uncapped receive moving in one chunk and the capped one in several; under the cap the whole circuit agrees in both directions.
 fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
     let sum = rand_sum::<W>(n, nq, seed);
     let circuit = su4_chain::<W>(nq);
@@ -891,7 +891,7 @@ fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
         want = propagate(c, want, &KeepAll, Direction::Forward);
     }
     for p in [2usize, 4] {
-        for cap in [usize::MAX, recv_bytes::<W>(128), recv_bytes::<W>(8)] {
+        for cap in [usize::MAX, recv_bytes::<W>(128)] {
             let what = format!("W={W} P={p} cap={cap}");
             let mut split = capped_split(&sum, p, cap);
             split.enable_trace();

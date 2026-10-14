@@ -540,6 +540,21 @@ fn collapse_sample_leaves_one_input_string_with_unit_coefficient() {
     }
 }
 
+/// The draw is keyed by the pass as well as the seed, so one seed's successive passes over the same sum do not all pick one string.
+#[test]
+fn collapse_sample_draws_afresh_on_every_pass() {
+    let keys = four_term_keys::<1>();
+    let policy = CollapseSample::new(3, 11);
+    let picks: std::collections::HashSet<usize> = (0..16)
+        .map(|_| {
+            let mut sum = weighted_four_term_sum::<1>(8);
+            policy.finalize_layer(&mut sum);
+            collapsed_index(&sum, &keys)
+        })
+        .collect();
+    assert!(picks.len() > 1, "16 passes of one seed all drew {picks:?}");
+}
+
 /// Picks over 500 seeds match `|c|² / Σ|c|²` with the fixture spread over four buckets.
 fn check_pick_frequencies<const W: usize>(bits: u8) {
     let keys = four_term_keys::<W>();

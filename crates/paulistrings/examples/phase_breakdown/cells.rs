@@ -107,6 +107,81 @@ pub(crate) fn parse_kb_field(s: &str) -> u64 {
         .unwrap_or(0)
 }
 
+impl CellResult {
+    /// A row echoing `cfg`, as an unpartitioned host cell measured nothing, for each driver to overwrite with what it measured.
+    ///
+    /// Samples `/proc/self/status`, so build it after the timed call.
+    pub(crate) fn new(layer: LayerKind, threads: usize, cfg: &Config) -> Self {
+        let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
+        Self {
+            layer: layer.name(),
+            truncation: cfg.truncation.label(),
+            threads,
+            n: 0,
+            reps: cfg.reps,
+            qubits: cfg.qubits,
+            seed: cfg.seed,
+            hash_seed: 0,
+            wall_ns: 0,
+            stats: PhaseStats::default(),
+            vmrss_kb,
+            vmhwm_kb,
+            partitions: 1,
+            partition_cpus: cfg.partition_cpus.label(),
+            pin_memory: cfg.bind_memory,
+            gen_qubits: (0, 1),
+            initial: cfg
+                .initial
+                .unwrap_or_else(|| Initial::default_for(layer))
+                .label(),
+            partition_rows: cfg.partition_rows.label(),
+            row_stats: RowChoiceStats::default(),
+            partitioned: None,
+            mpi: None,
+            device: None,
+        }
+    }
+}
+
+/// An untimed warm-up `call` that drives the input to its steady state, `after_warm_up` to drain its counters, then one timed `call`.
+///
+/// Returns what `after_warm_up` read and the timed call's wall time.
+pub(crate) fn warm_up_then_time<S, R>(
+    state: &mut S,
+    mut call: impl FnMut(&mut S),
+    after_warm_up: impl FnOnce(&mut S) -> R,
+) -> (R, u64) {
+    call(state);
+    let read = after_warm_up(state);
+    let started = Instant::now();
+    call(state);
+    (read, started.elapsed().as_nanos() as u64)
+}
+
+/// Says on stderr which pair a `rotation_local`/`rotation_remote`/`su4_local` cell landed on.
+pub(crate) fn note_generator(layer: LayerKind, gen_qubits: (usize, usize), group: &str) {
+    if !layer.picks_generator() {
+        return;
+    }
+    let gate = if layer == LayerKind::Su4Local {
+        "SU4"
+    } else {
+        "ZZ"
+    };
+    let class = if layer == LayerKind::RotationRemote {
+        "remote"
+    } else {
+        "local"
+    };
+    eprintln!(
+        "phase_breakdown: note: {} {group} acts on {gate}({}, {}), the smallest pair whose deltas \
+         are {class} under these partition rows.",
+        layer.name(),
+        gen_qubits.0,
+        gen_qubits.1,
+    );
+}
+
 pub(crate) fn run_cell<const W: usize, P>(
     layer: LayerKind,
     threads: usize,
@@ -117,84 +192,49 @@ where
     P: TruncationPolicy<W>,
 {
     let base = build_base_sum::<W>(layer, cfg);
-    let base_hash_seed = base.hash().seed();
+    let hash_seed = base.hash().seed();
     // Nothing is remote without partitions, so `rotation_local`/`rotation_remote` are `rotation_zz` here.
-    let gen_qubits = (0, 1);
-    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
-
+    let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, (0, 1));
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build()
         .expect("failed to build a rayon thread pool");
 
-    let options = PropagateOptions::default();
-
-    let (steady_n, wall_ns, stats) = pool.install(|| {
-        let mut scratch = LayerScratch::<W>::new();
-
-        // Untimed warm-up drives the input to its steady state, so the timed call measures that, not first-layer growth.
-        let warmed = propagate_with(
-            &circuit,
-            base.clone(),
-            policy,
-            Direction::Forward,
-            &mut scratch,
-            options,
+    let (n, wall_ns, stats) = pool.install(|| {
+        let mut state = (Some(base), LayerScratch::<W>::new());
+        let (n, wall_ns) = warm_up_then_time(
+            &mut state,
+            |(sum, scratch)| {
+                let input = sum.take().expect("the sum is put back after every call");
+                *sum = Some(propagate_with(
+                    &circuit,
+                    input,
+                    policy,
+                    Direction::Forward,
+                    scratch,
+                    PropagateOptions::default(),
+                ));
+            },
+            |(sum, scratch)| {
+                let _ = scratch.take_stats();
+                sum.as_ref().map_or(0, |sum| sum.len())
+            },
         );
-        let _ = scratch.take_stats(); // discard warm-up counters
-
-        let steady_n = warmed.len();
-        let start = Instant::now();
-        let output = propagate_with(
-            &circuit,
-            warmed,
-            policy,
-            Direction::Forward,
-            &mut scratch,
-            options,
-        );
-        let wall_ns = start.elapsed().as_nanos() as u64;
-        let stats = scratch.take_stats().per_partition[0];
-        std::hint::black_box(&output);
-
-        (steady_n, wall_ns, stats)
+        let (sum, mut scratch) = state;
+        std::hint::black_box(&sum);
+        (n, wall_ns, scratch.take_stats().per_partition[0])
     });
 
-    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
-
     CellResult {
-        layer: layer.name(),
-        truncation: cfg.truncation.label(),
-        threads,
-        n: steady_n,
-        reps: cfg.reps,
-        qubits: cfg.qubits,
-        seed: cfg.seed,
-        hash_seed: base_hash_seed,
+        n,
+        hash_seed,
         wall_ns,
         stats,
-        vmrss_kb,
-        vmhwm_kb,
-        partitions: 1,
-        partition_cpus: cfg.partition_cpus.label(),
-        pin_memory: cfg.bind_memory,
-        gen_qubits,
-        initial: cfg
-            .initial
-            .unwrap_or_else(|| Initial::default_for(layer))
-            .label(),
-        partition_rows: cfg.partition_rows.label(),
-        row_stats: RowChoiceStats::default(),
-        // No split, so no partition numbers on this row.
-        partitioned: None,
-        mpi: None,
-        device: None,
+        ..CellResult::new(layer, threads, cfg)
     }
 }
 
-/// One partitioned cell: scatter (untimed), warm up, drain, time one `propagate`, and read the
-/// trace and the per-partition counters. Mirrors [`run_cell`]'s shape; the two differ only in
-/// the engine underneath.
+/// One partitioned cell: [`run_cell`] through `PartitionedSum`, scattered outside the timed region.
 pub(crate) fn run_cell_partitioned<const W: usize, P>(
     layer: LayerKind,
     threads: usize,
@@ -232,30 +272,11 @@ where
     // Built here so the generator scan below sees exactly the split the run will use.
     let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, partitions);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
-    if layer.picks_generator() {
-        eprintln!(
-            "phase_breakdown: note: {} at P={partitions} acts on {}({}, {}) — the smallest \
-             pair whose deltas are {} under these partition rows.",
-            layer.name(),
-            if layer == LayerKind::Su4Local {
-                "SU4"
-            } else {
-                "ZZ"
-            },
-            gen_qubits.0,
-            gen_qubits.1,
-            if layer == LayerKind::RotationRemote {
-                "remote"
-            } else {
-                "local"
-            },
-        );
-    }
+    note_generator(layer, gen_qubits, &format!("at P={partitions}"));
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
-    let options = PropagateOptions::default();
-
-    let split_hash_seed = base.hash().seed();
+    // The seed actually used, which `choose_partition_rows` may have re-drawn.
+    let hash_seed = base.hash().seed();
     let mut split = PartitionedSum::scatter_with(
         base,
         ScatterOptions {
@@ -264,59 +285,61 @@ where
         },
     );
     split.enable_trace();
-
-    // Untimed warm-up, then its counters discarded — same contract as the unpartitioned cell.
-    split.propagate_with(&circuit, policy, Direction::Forward, options);
-    let _ = split.take_trace();
-    let _ = split.take_stats();
-
-    let steady_n = split.len();
-    let started = Instant::now();
-    split.propagate_with(&circuit, policy, Direction::Forward, options);
-    let wall_ns = started.elapsed().as_nanos() as u64;
+    let (n, wall_ns) = warm_up_then_time(
+        &mut split,
+        |split| {
+            split.propagate_with(
+                &circuit,
+                policy,
+                Direction::Forward,
+                PropagateOptions::default(),
+            )
+        },
+        |split| {
+            let _ = (split.take_trace(), split.take_stats());
+            split.len()
+        },
+    );
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
     std::hint::black_box(&split);
 
-    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
-    let stats = fold_partition_stats(&per_partition);
-    let summary = summarize_partitions(partitions, &trace, &per_partition, &stats);
-
+    let (stats, summary) = partition_stats(partitions, &trace, &per_partition);
     CellResult {
-        layer: layer.name(),
-        truncation: cfg.truncation.label(),
-        threads,
-        n: steady_n,
-        reps: cfg.reps,
-        qubits: cfg.qubits,
-        seed: cfg.seed,
-        // The seed actually used, which `choose_partition_rows` may have re-drawn.
-        hash_seed: split_hash_seed,
+        n,
+        hash_seed,
         wall_ns,
         stats,
-        vmrss_kb,
-        vmhwm_kb,
         partitions,
-        partition_cpus: cfg.partition_cpus.label(),
-        pin_memory: cfg.bind_memory,
         gen_qubits,
-        initial: cfg
-            .initial
-            .unwrap_or_else(|| Initial::default_for(layer))
-            .label(),
-        partition_rows: cfg.partition_rows.label(),
         row_stats,
         partitioned: Some(summary),
-        mpi: None,
-        device: None,
+        ..CellResult::new(layer, threads, cfg)
     }
 }
 
-/// One cell on the distributed driver: this process is one rank's partition, and the numbers it
-/// reports are its own. The MPI counterpart of [`run_cell_partitioned`] — same shape, but the
-/// runtime holds exactly one partition, placed by the launcher's affinity mask, over the world
-/// communicator. Collective: every rank runs the identical cell matrix in the identical order.
-/// The headline is `vmhwm_kb`, peak resident set per rank including the export/receive transients.
+/// This process's `(rank, ranks)` in `MPI_COMM_WORLD`, exiting unless the rank count is a power of two.
+#[cfg(feature = "mpi")]
+pub(crate) fn world_rank() -> (u32, u32) {
+    use paulistrings::mpi::rsmpi::topology::{Communicator, SimpleCommunicator};
+
+    let world = SimpleCommunicator::world();
+    let (rank, ranks) = (world.rank() as u32, world.size() as u32);
+    if !ranks.is_power_of_two() {
+        if rank == 0 {
+            eprintln!(
+                "phase_breakdown: --mpi needs a power-of-two rank count (a partition is named by \
+                 log2(P) GF(2) rows), got {ranks}",
+            );
+        }
+        std::process::exit(2);
+    }
+    (rank, ranks)
+}
+
+/// One cell on the distributed driver: [`run_cell_partitioned`] with this process as one rank's partition, placed by the launcher's affinity mask.
+///
+/// Collective: every rank runs the identical cell matrix in the identical order, and reports its own numbers.
 #[cfg(feature = "mpi")]
 pub(crate) fn run_cell_mpi<const W: usize, P>(
     layer: LayerKind,
@@ -329,21 +352,9 @@ where
 {
     use paulistrings::mpi::{rsmpi, MpiTransport};
     use paulistrings::{Collectives, DistributedSum};
-    use rsmpi::topology::{Communicator, SimpleCommunicator};
+    use rsmpi::topology::SimpleCommunicator;
 
-    let world = SimpleCommunicator::world();
-    let rank = world.rank() as u32;
-    let ranks = world.size() as u32;
-    if !ranks.is_power_of_two() {
-        if rank == 0 {
-            eprintln!(
-                "phase_breakdown: --mpi needs a power-of-two rank count (a partition is named by \
-                 log2(P) GF(2) rows), got {ranks}",
-            );
-        }
-        std::process::exit(2);
-    }
-
+    let (rank, ranks) = world_rank();
     let base = build_base_sum::<W>(layer, cfg);
 
     // D = 1: one partition over whatever CPUs the launcher left us.
@@ -360,74 +371,65 @@ where
     // Same inputs on every rank, so every rank derives the same rows with nothing agreed at run time.
     let (base, rows, row_stats) = choose_partition_rows::<W>(layer, cfg, base, ranks as usize);
     let gen_qubits = choose_generator::<W>(layer, cfg.qubits, &base, &rows);
-    if layer.picks_generator() && rank == 0 {
-        eprintln!(
-            "phase_breakdown: note: {} on {ranks} ranks acts on ({}, {}).",
-            layer.name(),
-            gen_qubits.0,
-            gen_qubits.1,
-        );
+    if rank == 0 {
+        note_generator(layer, gen_qubits, &format!("on {ranks} ranks"));
     }
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, gen_qubits);
 
-    let options = PropagateOptions::default();
-
+    let world = SimpleCommunicator::world();
     let transport = MpiTransport::from_communicator(&world);
-    let split_hash_seed = base.hash().seed();
+    let hash_seed = base.hash().seed();
     let scatter_options = ScatterOptions {
         runtime,
         rows: ScatterRows::Explicit(rows),
     };
     let mut split = DistributedSum::scatter_with(base, transport, scatter_options);
     split.enable_trace();
-
-    // Untimed warm-up, counters discarded; a barrier so the timed call starts together.
-    split.propagate_with(&circuit, policy, Direction::Forward, options);
-    let _ = split.take_trace();
-    let _ = split.take_stats();
-    split.transport().barrier();
-
-    let steady_n = split.local().len();
-    let started = Instant::now();
-    split.propagate_with(&circuit, policy, Direction::Forward, options);
-    let wall_ns = started.elapsed().as_nanos() as u64;
+    // The barrier makes the timed call start together on every rank.
+    let (n, wall_ns) = warm_up_then_time(
+        &mut split,
+        |split| {
+            split.propagate_with(
+                &circuit,
+                policy,
+                Direction::Forward,
+                PropagateOptions::default(),
+            )
+        },
+        |split| {
+            let _ = (split.take_trace(), split.take_stats());
+            split.transport().barrier();
+            split.local().len()
+        },
+    );
     let trace = split.take_trace().expect("tracing was enabled");
     let per_partition = split.take_stats();
     std::hint::black_box(&split);
 
-    let (vmrss_kb, vmhwm_kb) = read_proc_status_kb();
-    let stats = fold_partition_stats(&per_partition);
-    // One "partition" here: this rank.
-    let summary = summarize_partitions(1, &trace, &per_partition, &stats);
-
+    // One partition here: this rank.
+    let (stats, summary) = partition_stats(1, &trace, &per_partition);
     CellResult {
-        layer: layer.name(),
-        truncation: cfg.truncation.label(),
-        threads,
-        n: steady_n,
-        reps: cfg.reps,
-        qubits: cfg.qubits,
-        seed: cfg.seed,
-        // The seed actually used, which `choose_partition_rows` may have re-drawn.
-        hash_seed: split_hash_seed,
+        n,
+        hash_seed,
         wall_ns,
         stats,
-        vmrss_kb,
-        vmhwm_kb,
-        partitions: 1,
-        partition_cpus: cfg.partition_cpus.label(),
-        pin_memory: cfg.bind_memory,
         gen_qubits,
-        initial: cfg
-            .initial
-            .unwrap_or_else(|| Initial::default_for(layer))
-            .label(),
-        partition_rows: cfg.partition_rows.label(),
         row_stats,
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
-        device: None,
+        ..CellResult::new(layer, threads, cfg)
     }
+}
+
+/// [`fold_partition_stats`] and [`summarize_partitions`] of one timed call.
+pub(crate) fn partition_stats(
+    partitions: usize,
+    trace: &PartitionTrace,
+    per_partition: &PartitionPhaseStats,
+) -> (PhaseStats, PartitionCellStats) {
+    let stats = fold_partition_stats(per_partition);
+    let summary = summarize_partitions(partitions, trace, per_partition, &stats);
+    (stats, summary)
 }
 
 /// The cell-level [`PhaseStats`] of a partitioned run: wall-clock fields are the maximum over

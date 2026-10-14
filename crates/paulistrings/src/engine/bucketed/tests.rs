@@ -285,6 +285,33 @@ fn rescale_fast_path_still_applies_truncation() {
     }
 }
 
+/// At `p = 3/4` depolarizing scales X, Y and Z by exactly zero, and the rescale drops those terms rather than storing zeros.
+#[test]
+fn a_rescale_to_exactly_zero_drops_the_term() {
+    let build = |terms: &[(PauliString<1>, f64)]| {
+        let mut accumulator = BuildAccumulator::<1>::with_capacity(4, terms.len());
+        for &(p, c) in terms {
+            accumulator.add_term(p, Complex64::new(c, 0.0));
+        }
+        accumulator.finalize()
+    };
+    let input = build(&[
+        (PauliString::<1>::identity(), 2.0),
+        (PauliString::<1>::x(0), 1.0),
+        (PauliString::<1>::z(1), 0.5),
+    ]);
+    let want = build(&[
+        (PauliString::<1>::identity(), 2.0),
+        (PauliString::<1>::z(1), 0.5),
+    ]);
+    let depolarize = PtmChannel::depolarizing(0, 0.75);
+    for bits in [0u8, 2] {
+        let got = bucketed_layer(&input, &depolarize, &AlwaysKeep, false, bits, 0x51);
+        got.assert_invariants();
+        assert_terms_close(&got, &want, TOL, &format!("bits={bits}"));
+    }
+}
+
 // ---- determinism ----
 
 /// sqrt(SWAP): a wide delta set merging three or more contributions per key, the only regime where summation order is observable.

@@ -203,6 +203,26 @@ fn top_n_treats_underflowing_squares_as_one_tie_group() {
     sum.assert_invariants();
 }
 
+/// A cut never keeps a NaN coefficient, the "fewer only if coefficients are NaN" clause: of 3, NaN, 2, 1 at `n = 2`, at most 3 and 2 survive.
+#[test]
+fn top_n_never_keeps_a_nan_coefficient() {
+    let real = |v: f64| Complex64::new(v, 0.0);
+    let mut sum = PauliSum::<1>::from_sorted_columns(
+        (0u64..4).map(|i| [i]).collect(),
+        vec![[0u64]; 4],
+        vec![real(3.0), real(f64::NAN), real(2.0), real(1.0)],
+        3,
+    );
+    TopN(2).finalize_layer(&mut sum);
+    sum.assert_invariants();
+    let (x, _, c) = sum.to_arrays();
+    assert!(
+        c.iter().all(|c| !c.re.is_nan()),
+        "a NaN survived the cut: {c:?}"
+    );
+    assert!(x.iter().all(|x| [[0u64], [2u64]].contains(x)), "kept {x:?}");
+}
+
 /// A cut inside an underflowing tail keeps the representable terms and fills the rest from the tail in bucket order: magnitudes 3, 2, 1 plus five terms at 5e-200..1e-200 with `n = 5`.
 #[test]
 fn top_n_fills_from_an_underflowing_tail_in_bucket_order() {

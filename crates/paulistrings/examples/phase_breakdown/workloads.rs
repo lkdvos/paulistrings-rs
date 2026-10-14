@@ -266,11 +266,8 @@ pub(crate) fn build_circuit<const W: usize>(
 pub(crate) fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> PauliSum<W> {
     if layer.is_trotter_step() && cfg.truncation == TruncSpec::Keep {
         eprintln!(
-            "phase_breakdown: warning: {} under --truncation keep does not converge — a \
-             kicked-Ising step is a fresh set of distinct generators every step, so the term \
-             count grows without bound. Pass a coefficient threshold, e.g. \
-             --truncation coeff:1.220703125e-4 (2^-13, the presentation's working point) or \
-             --truncation coeff:3.90625e-3 (2^-8) for a quick run.",
+            "phase_breakdown: warning: {} under --truncation keep grows without bound; pass a \
+             coefficient threshold, e.g. --truncation coeff:1.220703125e-4 (2^-13).",
             layer.name(),
         );
     }
@@ -281,10 +278,8 @@ pub(crate) fn build_base_sum<const W: usize>(layer: LayerKind, cfg: &Config) -> 
         LayerKind::Trotter => {
             if cfg.n > TROTTER_MAX_N {
                 eprintln!(
-                    "phase_breakdown: note: trotter ignores --n above {TROTTER_MAX_N} \
-                     (requested {}) — two chained, untruncated 64-layer passes grow \
-                     combinatorially, and an uncapped --n has been measured driving this \
-                     layer past tens of GB of RSS. Capping this cell's input to {TROTTER_MAX_N}.",
+                    "phase_breakdown: note: trotter caps --n {} at {TROTTER_MAX_N}: its 64 \
+                     distinct generators grow combinatorially under no truncation.",
                     cfg.n,
                 );
             }

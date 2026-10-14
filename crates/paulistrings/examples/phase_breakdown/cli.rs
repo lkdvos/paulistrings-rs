@@ -7,116 +7,35 @@ use crate::workloads::{default_layers, LayerKind, HEAVY_HEX_QUBITS};
 pub(crate) const USAGE: &str = "\
 Usage: phase_breakdown [OPTIONS]
 
-Measures the phase-timing breakdown of propagate_with across a
-menu of layers and thread counts.
+Times one warmed-up propagate_with call per cell (layer x partitions x threads) and prints its
+phase breakdown. benchmarks/PROFILING.md documents every flag, the output contracts and the
+measurement protocol.
 
 Options:
-  --n <usize>              Target input term count (default: 1000000)
-  --qubits <usize>         Qubit count; picks W = ceil(qubits/64), W in {1,2}
-                            (default: 128)
-  --threads <csv>          Comma-separated thread counts (default: 1,8,16,32;
-                            16 = the reference host's physical-core count)
-  --layers <csv>           Comma-separated layers, from:
-                              rotation_zz, rotation_local, rotation_remote,
-                              cnot, gu2q, su4, depolarizing, trotter,
-                              tfim_step, heavyhex_step
-                            (default: rotation_zz,cnot,gu2q,depolarizing,trotter
-                            — su4 is opt-in, being the heaviest cell per --n:
-                            a dense 16x16 PTM, so ~16x the fanout of gu2q's
-                            sqrt(SWAP) and a ~16x larger closed key set)
-  --reps <usize>           Channel repetitions per cell, ignored by trotter;
-                            Trotter STEPS for tfim_step / heavyhex_step
-                            (default: 8)
-                            NOTE: trotter also ignores --n above 100 (see
-                            TROTTER_MAX_N in the source) — it is 64 distinct
-                            generators under no truncation, so growth is
-                            combinatorial rather than bounded; an uncapped
-                            large --n has been measured driving it to tens
-                            of GB of RSS.
-  --seed <u64|0xHEX>       RNG seed for the input sum (default: 0xC0FFEE)
-  --truncation <spec>      Truncation policy for every cell, one of:
-                              keep          no truncation (default)
-                              coeff:<t>     CoefficientThreshold(t): a
-                                            keep_term filter in the merge, no
-                                            finalize_layer pass
-                              topn:<N>      TopN(N): all cost in
-                                            finalize_layer. N is absolute and
-                                            must be BELOW the cell's
-                                            steady-state term count, else
-                                            TopN returns immediately.
-                                            REJECTED for a partitioned cell:
-                                            partitioned exact TopN is not
-                                            yet supported.
-                              atopn:<N>     ApproxTopN(N): the same, with a
-                                            histogram boundary instead of a
-                                            selection. Also keeps exactly N,
-                                            but not the N largest.
-  --partitions <csv>       Comma-separated partition counts, each a power of
-                            two (default: 1). P > 1 runs the cell through the
-                            partitioned engine; P = 1 runs the unpartitioned
-                            one.
-                            NOTE: --threads is the TOTAL thread count, so each
-                            partition's pool gets threads/P workers. Every
-                            --threads value must be divisible by every
-                            --partitions value.
-  --partition-cpus <spec>  Placement for P > 1, one of:
-                              auto       (default) one partition per NUMA node
-                                         in the affinity mask, capped at P
-                              <l>;<l>    Placement::Explicit, one Linux cpulist
-                                         per partition '0-7,16-23;8-15,24-31';
-                                         the count must equal every P > 1
-                              unpinned   Placement::Unpinned: partition shape,
-                                         no pinning (laptops, shared boxes)
-                            A partitioned cell must run under NO external
-                            placement prefix (taskset/numactl) -- see the note
-                            at the top of scripts/host-topology.sh.
-  --bind-memory 0|1        Bind each partition's allocations to its NUMA node
-                            (default: 1). 0 keeps the CPU pinning and drops
-                            the memory policy.
-  --partition-seed <u64|0xHEX>
-                           Seed picking the GF(2) partition rows. Default: the
-                            driver's own choice (the sum's hash seed). Only
-                            --partition-rows random reads it.
-  --partition-rows <spec>  How the log2(P) partition rows are chosen:
-                              random  (default) PartitionRows::from_seed, i.e.
-                                      the driver's own draw -- roughly half of
-                                      a two-qubit generator's deltas cross
-                              cut     log2(P) z-only rows labelling P
-                                      contiguous qubit blocks: every
-                                      single-qubit rotation is local, and a
-                                      ZZ(i,j) is remote iff the edge crosses
-                                      the cut. The blocks minimise crossed
-                                      edges (of the layer's own lattice: a
-                                      chain for tfim_step, the heavy-hex map
-                                      for heavyhex_step, none -- so an even
-                                      index split -- otherwise) subject to
-                                      +-25% size balance; the cut and its
-                                      crossing count are echoed to stderr
-                            cut rows are low weight, so they collide with H's
-                            own rows far more often than a random draw: they
-                            are checked with is_independent_of against the
-                            first 10 rows H will grow into, and the hash is
-                            re-seeded until they pass (said so on stderr, since
-                            it moves the coset dimension too).
-  --initial random|z0      The cell's input sum before the warm-up call:
-                              random  rand_sum(--n, --qubits, --seed), the
-                                      dense steady-state input; the default
-                                      for every layer but the two Trotter
-                                      steps
-                              z0      one term, Z on qubit --qubits/2, whose
-                                      support and term count then grow step by
-                                      step; the default for tfim_step and
-                                      heavyhex_step, and the input under which
-                                      the partition imbalance of a cut row
-                                      means anything (a dense random sum is
-                                      balanced under any row by construction)
-                            --n is not a size under z0, and trotter ignores
-                            this flag entirely (it keeps its low-weight input).
+  --n <usize>              Input term count (default: 1000000; trotter caps it at 100)
+  --qubits <usize>         Qubit count, at most 128 (default: 128)
+  --threads <csv>          Total thread counts (default: 1,8,16,32)
+  --layers <csv>           rotation_zz, rotation_local, rotation_remote, cnot, gu2q, su4,
+                           su4_local, depolarizing, trotter, tfim_step, heavyhex_step
+                           (default: rotation_zz,cnot,gu2q,depolarizing,trotter)
+  --reps <usize>           Channel repetitions per cell, Trotter steps for tfim_step and
+                           heavyhex_step, ignored by trotter (default: 8)
+  --seed <u64|0xHEX>       Seed of the input sum (default: 0xC0FFEE)
+  --truncation <spec>      keep (default), coeff:<t>, topn:<N> or atopn:<N>; topn runs at
+                           one partition only
+  --partitions <csv>       Partition counts, powers of two dividing every --threads entry
+                           (default: 1)
+  --partition-cpus <spec>  auto (default, one partition per NUMA node), unpinned, or one
+                           cpulist per partition, ';'-separated; run under no taskset/numactl
+  --bind-memory 0|1        Bind each partition's memory to its NUMA node (default: 1)
+  --partition-seed <seed>  Seed of random partition rows (default: the sum's hash seed)
+  --partition-rows <spec>  random (default) or cut: z-only rows over contiguous qubit blocks
+                           crossing the fewest of the layer's lattice edges
+  --initial random|z0      Input sum: random, or Z on qubit --qubits/2 (the default for
+                           tfim_step and heavyhex_step)
   --format table|json      Output format (default: table)
-  --json-out FILE          Also append one JSON line per cell to FILE,
-                           regardless of --format (input for scripts/perf-viz.py)
-  -h, --help               Print this message
-";
+  --json-out FILE          Also append one JSON line per cell to FILE
+  -h, --help               Print this message";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Format {
@@ -672,29 +591,13 @@ pub(crate) fn check_device_partitions(
 
 /// The extra `--help` lines the `mpi` feature adds.
 #[cfg(feature = "mpi")]
-pub(crate) const MPI_USAGE: &str = "\
-  --mpi                    Run each cell on the distributed driver: one
-                            partition per rank of MPI_COMM_WORLD (D = 1),
-                            placed by the launcher's affinity mask. Every rank
-                            runs the whole matrix and reports its own numbers,
-                            `vmhwm_kb` being peak RSS per rank including the
-                            exchange transients. --partitions must stay at 1.
-                            Each rank appends to its own --json-out sidecar,
-                            suffixed `.rank<N>`, whose lines carry `rank` and
-                            `ranks` fields. Launch it, e.g.:
-                              mpirun -n 4 --map-by ppr:1:numa --bind-to numa \\
-                                target/release/examples/phase_breakdown --mpi";
+pub(crate) const MPI_USAGE: &str =
+    "  --mpi                    One partition per rank of MPI_COMM_WORLD, --threads per rank;
+                           each rank writes its own sidecar, FILE.rank<N>";
 
 /// The extra `--help` lines the `cuda` feature adds.
 #[cfg(feature = "cuda")]
-pub(crate) const DEVICE_USAGE: &str = "\
-  --device <csv|auto>      Run each cell on CUDA devices through GpuPartitionedSum, one
-                            partition per ordinal (or auto, every visible device),
-                            and with --mpi one device per rank (MpiGpuSum, one ordinal
-                            or auto). The upload and download are untimed (upload_ns,
-                            download_ns); wall_ns is the second call on the resident sum.
-                            One cell per layer at --threads[0]; topn:<N> needs one
-                            ordinal at one partition. benchmarks/PROFILING.md maps the
-                            kernels onto the phases.
-  --gpu-partitions <n>     With --device: <n> virtual partitions on each device
-                            (devices x n a power of two, default 1).";
+pub(crate) const DEVICE_USAGE: &str =
+    "  --device <csv|auto>      Run each layer on these CUDA devices, one cell at --threads[0];
+                           with --mpi, one ordinal or auto per rank
+  --gpu-partitions <n>     Partitions per device (default: 1)";

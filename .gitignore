@@ -23,10 +23,6 @@ benchmarks/python/jl_performance/**/tasks/
 # Rendered docs site (mdbook build-dir); the source is docs/book/src.
 docs/book/site/
 
-# Sibling worktrees checked out inside the repo.
-/pres/
-/simd/
-
 .DS_Store
 .idea/
 .vscode/

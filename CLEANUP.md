@@ -279,4 +279,4 @@ Not yet measured: code A/B against `89bdcca` (D8).
 
 ## Resume here
 
-Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–22 done (D64, D65); 23 decided (D66), being applied. Next after 23 (benches/examples, `phase_breakdown`, Slurm cache pre-check, job-id-tagged results, optional paired MPI A/B), then the finish steps.
+Chunks 0–20 done and applied, all A/Bs measured (D16 accepted; D42 → D62 dispatch; D51 → D62 spin; D56 −17%). Chunks 0–22 done (D64, D65); 23 decided (D66), being applied. Next: the finish steps.

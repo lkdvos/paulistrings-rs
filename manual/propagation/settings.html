@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -206,14 +206,14 @@ print(stats.circuit_index)
 </code></pre>
 <pre><code class="language-text">4 5 5
 [4, 4, 4, 4] [4, 4, 4, 5]
-['Depolarizing', 'Depolarizing', 'Clifford2Q', 'PauliRotation']
+['depolarizing', 'depolarizing', 'cnot', 'PauliRotation']
 [3, 2, 1, 0]
 </code></pre>
 <p>A layer is one applied channel (<a href="index.html#the-loop">The loop</a>), so the broadcast <code>depolarize(p, [0, 1])</code> shows up as two entries and <code>len(circuit) == stats.layers</code>.
 The lists run in <strong>application</strong> order, which under <code>direction="heisenberg"</code> is the reverse of the circuit as written: the first entry above is the depolarizing channel pushed last.
 <code>circuit_index</code> recovers the position as written regardless of direction, and <code>application_index</code> is the loop counter.</p>
 <p><code>terms_out[k]</code> is the count <em>after</em> layer <code>k</code>’s truncation, <code>terms_in[k + 1] == terms_out[k]</code>, and <code>peak_terms</code> is the maximum of those resident counts.
-<code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, otherwise <code>None</code> (<a href="partitions.html">NUMA partitions</a>, <a href="mpi.html">MPI ranks</a>).
+<code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, one partition for an unpartitioned run (<a href="partitions.html">NUMA partitions</a>, <a href="mpi.html">MPI ranks</a>).
 The full field list is in the <a href="../../library/propagate.html#propagationstats">Library</a>.</p>
 <h2 id="estimate-the-memory-a-run-needs"><a class="header" href="#estimate-the-memory-a-run-needs">Estimate the memory a run needs</a></h2>
 <p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient.
@@ -238,8 +238,13 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)
 paulistrings.reset_log_cache()   # pyo3-log caches each logger's effective level
 </code></pre>
+<p>The INFO lines read <code>propagate: N terms through n channels (direction), scope</code> and <code>propagate: n layers applied, before -&gt; after terms, t s, scope</code>, where <code>scope</code> is <code>1 partition</code>, <code>P partitions [placement]</code>, or <code>partition r/P [placement]</code> for one rank of a <code>comm=</code> run, whose counts are that rank’s own.
+A layer’s DEBUG line reads <code>layer k/n [name]: before -&gt; after terms, t ms (partition r/P, d remote deltas, m rows in)</code> at every partition count, one line per partition.
+Placement, pinning and transport setup log under <code>paulistrings.partitioned</code>, and device setup (kernel compiles and the kernel cache, device choice, the NCCL and peer wires) under <code>paulistrings.gpu</code>, so each filters on its own.</p>
 <p>Call <a href="../../library/module-helpers.html"><code>reset_log_cache()</code></a> again after changing the level mid-process; the cache is otherwise stale for the rest of the process.
 Leave logging off when timing — an enabled DEBUG filter adds a clock read per layer.</p>
+<p>Every <code>PAULISTRINGS_*</code> environment variable is read once per process, the first time it is needed, and its effective value is logged at DEBUG under the target of the subsystem it tunes; an unparsable value logs a warning and the default applies.
+Set them before the first call, and alike on every rank of a <code>comm=</code> run.</p>
 <h2 id="threads"><a class="header" href="#threads">Threads</a></h2>
 <p>In a single unpartitioned process, set the thread count via <code>RAYON_NUM_THREADS</code> <strong>before the interpreter starts</strong> — Rayon builds its global pool at the first <code>propagate</code> call and never resizes it, so setting the variable from inside an already-running script does not reliably reach it:</p>
 <pre><code class="language-bash">RAYON_NUM_THREADS=32 python my_script.py
@@ -250,28 +255,15 @@ On the reference two-socket host, dense-PTM-heavy circuits (general two-qubit un
 Hyperthreads add no bandwidth and help only the latency-bound phases.
 The measured roofline behind those numbers is on <a href="../../examples/benchmarks/engine-performance.html#multi-thread-roofline">Engine performance</a>.</p>
 <p>Every benchmark on this site is run single-threaded, <code>RAYON_NUM_THREADS=1</code> exported before the interpreter starts, so that term counts and wall times are comparable across pages (<a href="../../examples/benchmarks/index.html#comparability-rules">Comparability rules</a>).</p>
-<h2 id="engine-selection"><a class="header" href="#engine-selection">Engine selection</a></h2>
-<p><code>engine</code> picks the storage path and changes nothing about the operator computed; all three settings agree to floating-point tolerance.</p>
-<ul>
-<li><code>"sorted"</code> (the default when <code>None</code>) is the bucketed engine every other page describes.</li>
-<li><code>"auto"</code> routes layers whose input has fewer than <code>small_sum_threshold</code> terms — <a href="../../library/module-helpers.html"><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></a>, <code>2048</code> — through a term-by-term direct-apply path and switches to the bucketed engine above it, unless the policy needs a whole-layer pass such as <code>topn</code>.</li>
-<li><code>"direct"</code> uses the direct path below the same threshold unconditionally.</li>
-</ul>
-<pre><code class="language-python">small = observable.propagate(circuit, policy, direction="heisenberg", engine="auto")
-assert len(small) == len(evolved)
-</code></pre>
-<p>The bucketed pipeline has a per-layer fixed cost that is nearly independent of the term count, which is what makes it lose to a hash-map engine on sums of a few hundred terms.
-<code>engine="auto"</code> removes that cost where it matters: on the configurations below the cross-engine crossover it was measured worth 1.08–2.69× on the same binary, and above its threshold it is inert, measured as its own control — a 84 836-term SU(4) run gave 1.409× with the path on and 1.416× with it off — <a href="../../examples/comparisons.html#below-the-crossover">Against other tools</a>.
-Reach for it when a run spends most of its layers on a small sum, such as a local observable through a shallow circuit; on anything that grows past a few thousand terms early it changes nothing.
-<code>engine</code> is ignored under <code>partitions=</code>.</p>
+<h2 id="bucket-sizing"><a class="header" href="#bucket-sizing">Bucket sizing</a></h2>
 <p><code>target_bucket_len</code> and <code>min_buckets</code> size the bucketed engine’s storage per layer; <code>PauliSum.num_buckets</code> reads back what was realized, which only ever grows.
-They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.</p>
+They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
+<code>target_bucket_len</code> must be at least 1 and <code>min_buckets</code> at least 16; anything smaller is a <code>ValueError</code>.</p>
 <h2 id="determinism"><a class="header" href="#determinism">Determinism</a></h2>
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
-Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, a partitioned run can differ from an unpartitioned one, and <code>engine="auto"</code> can differ from <code>"sorted"</code>, all within tolerance and all equally correct.
+Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
 Compare evolved sums with <code>numpy.allclose</code> on <code>coefficients_array()</code>, as <a href="incremental.html#splitting-a-circuit-is-free">Splitting a circuit is free</a> does, never with equality.</p>
-<p>Bit-identical output is only expected between runs at a fixed bucket count and the same hash seed — cosets are write-disjoint and each is applied sequentially, so this holds <em>across thread counts too</em>, and a <code>partitions=1</code> run reproduces the unpartitioned path byte for byte; across bucket counts, seeds or partition counts the bar drops back to tolerance.
-Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
+<p>Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
 <h2 id="untruncated-runs"><a class="header" href="#untruncated-runs">Untruncated runs</a></h2>
 <p><code>policy=None</code> applies no truncation at all; only coefficients that are exactly zero after a merge are dropped.
 The result is the exact evolved operator, and it is the reference the <a href="validation.html#score-against-an-exact-reference-where-you-can">cutoff sweep</a> is scored against wherever the problem is small enough to afford it.</p>

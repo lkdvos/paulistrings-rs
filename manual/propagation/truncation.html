@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -204,16 +204,16 @@ Reach for it unless you have a specific reason not to.</p>
 It keeps terms of Pauli weight at most <code>k</code>, which is useful when the causal cone is the real constraint and measurably useless when it is not: on a 2D lattice at high entangling strength it can delete most of the operator for no time saved, and at Clifford angles the operator passes through high weight mid-circuit even when it lands on a low-weight string, so a tight cap can truncate the whole sum to zero terms.</p>
 <p><strong><code>topn(k)</code> bounds memory, but changes what “converged” means.</strong>
 It keeps at most <code>k</code> terms, largest <code>|c|</code> first, so the error is set by the discarded tail rather than by a threshold; a <code>topn</code> run cannot carry a <code>coeff</code>-sweep convergence panel, and it has no equivalent in <code>PauliPropagation.jl</code> for cross-engine comparison.
-<code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within <code>k</code>, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
-<strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code> and keeps whole octaves from the top down while they fit in <code>n</code>, so at most <code>n</code> terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
+A sum of more than <code>k</code> terms keeps exactly <code>k</code>: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
+<strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code>, keeps whole octaves from the top down while they fit in <code>n</code>, and fills the rest from the next octave in storage order, so exactly <code>n</code> terms survive but not necessarily the <code>n</code> largest.
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="partitions.html">NUMA partitions</a> and <a href="mpi.html">MPI ranks</a>.</p>
 <p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
 Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as <a href="../measurements.html#echo"><code>diagonal_echo</code></a>; average many seeds and report the standard error.
+It is unbiased only for weight-diagonal read-outs such as the <a href="../measurements.html#echo">diagonal echo</a>; average many seeds and report the standard error.
 <code>PropagationStats.collapses</code> counts the draws.</p>
 <pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
 </code></pre>
-<p>Policies compose with <code>&amp;</code> (keep when both agree) and <code>|</code> (keep when either does):</p>
+<p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code>:</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>

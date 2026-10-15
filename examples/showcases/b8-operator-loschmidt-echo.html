@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -193,18 +193,20 @@ Its 11 scattering qubits carry an <code>rx</code> angle shifted by <code>η = 3�
 The echo is <code>S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)</code>, where <code>A = C†OC</code>, <code>O = Z^{⊗12}</code>, and <code>V_δ = ⊗ e^{-iδX}</code> on 35 qubits with <code>δ = 0.3</code>.</p>
 <h2 id="pp-mc"><a class="header" href="#pp-mc">PP-MC</a></h2>
 <!-- doctest: skip -->
-<pre><code class="language-python">from paulistrings import truncation
+<pre><code class="language-python">import ole
+from paulistrings import truncation
 policy = truncation.collapse_sample(cache=500_000_000, seed=s)
 A = O.propagate(C, policy, direction="heisenberg")
-S = diagonal_echo(A.anticommute_histogram(sites, axis="x"), 0.3)
+S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 </code></pre>
 <ul>
 <li><code>collapse_sample</code> propagates exactly until a gate leaves more than <code>cache</code> strings.</li>
 <li>It then draws one string with probability <code>b_P²/Σb²</code> and restarts from it.</li>
 <li>The last block is kept whole.</li>
 <li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
-<li><code>rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
-<li>Under <code>comm=</code> both read-outs are collective, and <code>collapse_sample</code> draws the same string whatever the thread count.</li>
+<li><code>ole.rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
+<li>Both estimators are numpy over <code>A.to_arrays()</code>; under <code>comm=</code> each rank reads its <code>result="local"</code> share and <code>comm.allreduce</code> sums the values.</li>
+<li><code>collapse_sample</code> draws the same string whatever the thread count.</li>
 </ul>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
 <p>One L = 6 trajectory at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>

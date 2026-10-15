@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -185,7 +185,7 @@
 <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>A distributed run is a <a href="partitions.html">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
-What is new is the transport (point-to-point MPI instead of in-process channels) and the launch (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning, subsection “Transport composition”).</p>
+What is new is the transport (point-to-point MPI instead of in-process channels) and the launch.</p>
 <h2 id="why-capacity"><a class="header" href="#why-capacity">Why: capacity</a></h2>
 <p><strong>The reason to reach for it is capacity.</strong>
 A sum that does not fit one node’s memory fits <code>P</code> of them, and the per-rank overhead is bounded and does not grow with the rank count.
@@ -248,7 +248,7 @@ A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term 
 evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
 </code></pre>
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
-The distributed <a href="../measurements.html#echo">echo read-out</a> <code>rotated_overlap</code> requires rows that skip the coordinates it flips, the x-bits of its sites for <code>axis="x"</code>.
+Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="../measurements.html#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
 <div class="table-wrapper">
@@ -285,21 +285,20 @@ See <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/R
 <!-- doctest: skip -->
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use paulistrings::engine::partitioned::PartitionRowPolicy;
-use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+</span>use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 
 let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
 let world = universe.world();
 let device = local_device_for_comm(&amp;world)?;
 let transport = MpiTransport::from_communicator(&amp;world);
-let mut split = MpiGpuSum::&lt;2&gt;::scatter_to_device(&amp;observable, transport, device, &amp;PartitionRowPolicy::Seeded(None))?;
+let mut split = MpiGpuSum::&lt;2&gt;::scatter_to_device(&amp;observable, transport, device)?;
 split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 if let Some(evolved) = split.gather()? {
     println!("{} terms", evolved.len());
 }
 <span class="boring">}</span></code></pre>
-<p><code>gpu::propagate_mpi_gpu</code> is the one-shot form.
+<p><code>scatter_to_device_with(&amp;observable, transport, GpuScatterOptions { rows, ..GpuScatterOptions::new(&amp;[device])? })</code> splits by other rows or layer options; <code>gpu::propagate_mpi_gpu</code> is the one-shot form.
 A device failure on any rank fails the call on every rank, with <code>GpuError::Poisoned</code> naming the failing rank on its peers, so the group never falls out of step.
 Launch with every node GPU visible to every task (<code>srun --gpus-per-node=&lt;k&gt; --mpi=pmix</code>, as <code>scripts/slurm/mpi-gpu.sbatch</code> does), where the locality pick matters.</p>
 <p>A remote layer’s columns move device to device over NCCL (<a href="gpu.html#exchange">CUDA devices</a>), which needs the NCCL library at run time (<a href="../../installation.html#gpu-and-mpi-features">Installation</a>).

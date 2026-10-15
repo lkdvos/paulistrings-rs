@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -279,7 +279,7 @@ t=0.50  &lt;X&gt;=+0.183984  terms=98698
 <tr><td><a href="#manual">Manual</a></td><td>operators, circuits, engine and propagation, measurements — read start to finish, or by topic</td></tr>
 <tr><td><a href="#examples">Examples</a></td><td>a guided first propagation, measured showcases and benchmarks, and comparisons against other tools</td></tr>
 <tr><td><a href="#library">Library</a></td><td>this book’s Python API reference</td></tr>
-<tr><td><a href="api/paulistrings/index.html">Rust API</a></td><td>rustdoc for the core crate, plus <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> on GitHub — the hand-off point for Rust users, not part of this book</td></tr>
+<tr><td><a href="api/paulistrings/index.html">Rust API</a></td><td>rustdoc for the core crate — the hand-off point for Rust users, not part of this book</td></tr>
 </tbody>
 </table>
 </div>
@@ -554,10 +554,10 @@ For the Ising chain, $h_k = -J$ on the bonds and $h_k = -h$ on the fields, so th
 <code>coefficients_array()</code> returns the $c_i$ as a <code>complex128</code> array of length $N$.
 All three are copies, and all three list the terms in the same canonical order: partition-bucket index, then lexicographic order of $(\boldsymbol{p}_x, \boldsymbol{p}_z)$.
 This order is neither insertion order nor label order, and <code>propagate</code> can change it, so rows are paired only within one snapshot.
-<code>PauliSum.from_arrays</code> is the inverse: duplicate rows are summed, arrays narrower than the sum’s width are zero-padded, and a bit set at or beyond site $L$ raises <code>ValueError</code>.</p>
+<code>to_arrays()</code> returns all three at once, and <code>PauliSum.from_arrays</code> is the inverse: duplicate rows are summed, arrays narrower than the sum’s width are zero-padded, and a bit set at or beyond site $L$ raises <code>ValueError</code>.</p>
 <pre><code class="language-python">import numpy as np
 
-x, z, c = hamiltonian.x_array(), hamiltonian.z_array(), hamiltonian.coefficients_array()
+x, z, c = hamiltonian.to_arrays()
 print(x.dtype, x.shape, c.dtype, c.shape)
 
 rebuilt = PauliSum.from_arrays(x, z, c, num_qubits=L)
@@ -769,7 +769,7 @@ print(len(observable), "-&gt;", len(evolved), "terms")
 <code>propagate</code> returns a <strong>new</strong> sum and leaves the input untouched, so the same observable can be propagated several ways and compared.
 The GIL is released for the duration of the call.</p>
 <p><code>propagate_with_stats</code> takes the same arguments and returns <code>(evolved, stats)</code>, where <code>stats</code> is a <code>PropagationStats</code> with per-layer term counts and timings; enabling it does not change the evolved sum — <a href="#stats">Stats, memory and logging</a>.
-The remaining keyword arguments (<code>engine</code>, <code>partitions</code>, <code>comm</code>, <code>device</code>, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the <a href="#engine-selection">settings</a>, <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a> and <a href="#cuda-devices">CUDA devices</a> pages.
+The remaining keyword arguments (<code>partitions</code>, <code>comm</code>, <code>device</code>, bucket sizing) change how the sum is stored and where the work runs, never the operator being computed, and are covered on the <a href="#bucket-sizing">settings</a>, <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a> and <a href="#cuda-devices">CUDA devices</a> pages.
 The full signature is in the <a href="#propagate--propagate_with_stats">Library</a>.</p>
 <h2 id="the-loop"><a class="header" href="#the-loop">The loop</a></h2>
 <p>A <strong>layer</strong> is one applied channel, not a brickwork layer of parallel gates — <a href="#one-gate-one-channel">One gate, one truncation point</a> is the definition, and it is the sense the word carries throughout this book and in <code>PropagationStats</code>.</p>
@@ -897,16 +897,16 @@ Reach for it unless you have a specific reason not to.</p>
 It keeps terms of Pauli weight at most <code>k</code>, which is useful when the causal cone is the real constraint and measurably useless when it is not: on a 2D lattice at high entangling strength it can delete most of the operator for no time saved, and at Clifford angles the operator passes through high weight mid-circuit even when it lands on a low-weight string, so a tight cap can truncate the whole sum to zero terms.</p>
 <p><strong><code>topn(k)</code> bounds memory, but changes what “converged” means.</strong>
 It keeps at most <code>k</code> terms, largest <code>|c|</code> first, so the error is set by the discarded tail rather than by a threshold; a <code>topn</code> run cannot carry a <code>coeff</code>-sweep convergence panel, and it has no equivalent in <code>PauliPropagation.jl</code> for cross-engine comparison.
-<code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within <code>k</code>, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
-<strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code> and keeps whole octaves from the top down while they fit in <code>n</code>, so at most <code>n</code> terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
+A sum of more than <code>k</code> terms keeps exactly <code>k</code>: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
+<strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code>, keeps whole octaves from the top down while they fit in <code>n</code>, and fills the rest from the next octave in storage order, so exactly <code>n</code> terms survive but not necessarily the <code>n</code> largest.
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a>.</p>
 <p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
 Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as <a href="#echo"><code>diagonal_echo</code></a>; average many seeds and report the standard error.
+It is unbiased only for weight-diagonal read-outs such as the <a href="#echo">diagonal echo</a>; average many seeds and report the standard error.
 <code>PropagationStats.collapses</code> counts the draws.</p>
 <pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
 </code></pre>
-<p>Policies compose with <code>&amp;</code> (keep when both agree) and <code>|</code> (keep when either does):</p>
+<p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code>:</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>
@@ -1126,7 +1126,7 @@ step 6  terms  4392  &lt;Z0&gt; +0.324827
 <p>The last point is identical to propagating the whole six-step circuit in one call — same 4 392 terms, same value, and the same row as the <code>1e-4</code> line of the <a href="#sweep-the-cutoff">cutoff sweep</a> on the previous page — because truncation runs after every layer either way.
 The series is therefore free: it is the same single pass, read out at every step boundary.</p>
 <p>Each <code>expectation</code> call is one masked pass over the surviving terms and does not consume the sum, so recording several observables per time point costs only those passes.
-The <a href="#the-2d-ising-quench">2D Ising quench</a> on the Examples landing page is the same pattern at 36 qubits and 40 steps, run against the crate’s Rust walkthrough rather than shown again in Python here.</p>
+The <a href="#quenched-time-evolution">quenched time-evolution</a> on the landing page is the same pattern at 36 qubits.</p>
 <h2 id="the-heisenberg-ordering-trap"><a class="header" href="#the-heisenberg-ordering-trap">The Heisenberg-ordering trap</a></h2>
 <p>Under <code>direction="heisenberg"</code> each <code>propagate</code> call conjugates the <em>outside</em> of what is already there, so an incremental call <strong>prepends</strong> its circuit rather than appending it.
 Propagating <code>a</code> and then <code>b</code> gives what the single circuit <code>b + a</code> gives, not <code>a + b</code>.</p>
@@ -1166,14 +1166,14 @@ print(stats.circuit_index)
 </code></pre>
 <pre><code class="language-text">4 5 5
 [4, 4, 4, 4] [4, 4, 4, 5]
-['Depolarizing', 'Depolarizing', 'Clifford2Q', 'PauliRotation']
+['depolarizing', 'depolarizing', 'cnot', 'PauliRotation']
 [3, 2, 1, 0]
 </code></pre>
 <p>A layer is one applied channel (<a href="#the-loop">The loop</a>), so the broadcast <code>depolarize(p, [0, 1])</code> shows up as two entries and <code>len(circuit) == stats.layers</code>.
 The lists run in <strong>application</strong> order, which under <code>direction="heisenberg"</code> is the reverse of the circuit as written: the first entry above is the depolarizing channel pushed last.
 <code>circuit_index</code> recovers the position as written regardless of direction, and <code>application_index</code> is the loop counter.</p>
 <p><code>terms_out[k]</code> is the count <em>after</em> layer <code>k</code>’s truncation, <code>terms_in[k + 1] == terms_out[k]</code>, and <code>peak_terms</code> is the maximum of those resident counts.
-<code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, otherwise <code>None</code> (<a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a>).
+<code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, one partition for an unpartitioned run (<a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a>).
 The full field list is in the <a href="#propagationstats">Library</a>.</p>
 <h2 id="estimate-the-memory-a-run-needs"><a class="header" href="#estimate-the-memory-a-run-needs">Estimate the memory a run needs</a></h2>
 <p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient.
@@ -1198,8 +1198,13 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)
 paulistrings.reset_log_cache()   # pyo3-log caches each logger's effective level
 </code></pre>
+<p>The INFO lines read <code>propagate: N terms through n channels (direction), scope</code> and <code>propagate: n layers applied, before -&gt; after terms, t s, scope</code>, where <code>scope</code> is <code>1 partition</code>, <code>P partitions [placement]</code>, or <code>partition r/P [placement]</code> for one rank of a <code>comm=</code> run, whose counts are that rank’s own.
+A layer’s DEBUG line reads <code>layer k/n [name]: before -&gt; after terms, t ms (partition r/P, d remote deltas, m rows in)</code> at every partition count, one line per partition.
+Placement, pinning and transport setup log under <code>paulistrings.partitioned</code>, and device setup (kernel compiles and the kernel cache, device choice, the NCCL and peer wires) under <code>paulistrings.gpu</code>, so each filters on its own.</p>
 <p>Call <a href="#module-helpers"><code>reset_log_cache()</code></a> again after changing the level mid-process; the cache is otherwise stale for the rest of the process.
 Leave logging off when timing — an enabled DEBUG filter adds a clock read per layer.</p>
+<p>Every <code>PAULISTRINGS_*</code> environment variable is read once per process, the first time it is needed, and its effective value is logged at DEBUG under the target of the subsystem it tunes; an unparsable value logs a warning and the default applies.
+Set them before the first call, and alike on every rank of a <code>comm=</code> run.</p>
 <h2 id="threads"><a class="header" href="#threads">Threads</a></h2>
 <p>In a single unpartitioned process, set the thread count via <code>RAYON_NUM_THREADS</code> <strong>before the interpreter starts</strong> — Rayon builds its global pool at the first <code>propagate</code> call and never resizes it, so setting the variable from inside an already-running script does not reliably reach it:</p>
 <pre><code class="language-bash">RAYON_NUM_THREADS=32 python my_script.py
@@ -1210,28 +1215,15 @@ On the reference two-socket host, dense-PTM-heavy circuits (general two-qubit un
 Hyperthreads add no bandwidth and help only the latency-bound phases.
 The measured roofline behind those numbers is on <a href="#multi-thread-roofline">Engine performance</a>.</p>
 <p>Every benchmark on this site is run single-threaded, <code>RAYON_NUM_THREADS=1</code> exported before the interpreter starts, so that term counts and wall times are comparable across pages (<a href="#comparability-rules">Comparability rules</a>).</p>
-<h2 id="engine-selection"><a class="header" href="#engine-selection">Engine selection</a></h2>
-<p><code>engine</code> picks the storage path and changes nothing about the operator computed; all three settings agree to floating-point tolerance.</p>
-<ul>
-<li><code>"sorted"</code> (the default when <code>None</code>) is the bucketed engine every other page describes.</li>
-<li><code>"auto"</code> routes layers whose input has fewer than <code>small_sum_threshold</code> terms — <a href="#module-helpers"><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></a>, <code>2048</code> — through a term-by-term direct-apply path and switches to the bucketed engine above it, unless the policy needs a whole-layer pass such as <code>topn</code>.</li>
-<li><code>"direct"</code> uses the direct path below the same threshold unconditionally.</li>
-</ul>
-<pre><code class="language-python">small = observable.propagate(circuit, policy, direction="heisenberg", engine="auto")
-assert len(small) == len(evolved)
-</code></pre>
-<p>The bucketed pipeline has a per-layer fixed cost that is nearly independent of the term count, which is what makes it lose to a hash-map engine on sums of a few hundred terms.
-<code>engine="auto"</code> removes that cost where it matters: on the configurations below the cross-engine crossover it was measured worth 1.08–2.69× on the same binary, and above its threshold it is inert, measured as its own control — a 84 836-term SU(4) run gave 1.409× with the path on and 1.416× with it off — <a href="#below-the-crossover">Against other tools</a>.
-Reach for it when a run spends most of its layers on a small sum, such as a local observable through a shallow circuit; on anything that grows past a few thousand terms early it changes nothing.
-<code>engine</code> is ignored under <code>partitions=</code>.</p>
+<h2 id="bucket-sizing"><a class="header" href="#bucket-sizing">Bucket sizing</a></h2>
 <p><code>target_bucket_len</code> and <code>min_buckets</code> size the bucketed engine’s storage per layer; <code>PauliSum.num_buckets</code> reads back what was realized, which only ever grows.
-They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.</p>
+They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
+<code>target_bucket_len</code> must be at least 1 and <code>min_buckets</code> at least 16; anything smaller is a <code>ValueError</code>.</p>
 <h2 id="determinism"><a class="header" href="#determinism">Determinism</a></h2>
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
-Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, a partitioned run can differ from an unpartitioned one, and <code>engine="auto"</code> can differ from <code>"sorted"</code>, all within tolerance and all equally correct.
+Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
 Compare evolved sums with <code>numpy.allclose</code> on <code>coefficients_array()</code>, as <a href="#splitting-a-circuit-is-free">Splitting a circuit is free</a> does, never with equality.</p>
-<p>Bit-identical output is only expected between runs at a fixed bucket count and the same hash seed — cosets are write-disjoint and each is applied sequentially, so this holds <em>across thread counts too</em>, and a <code>partitions=1</code> run reproduces the unpartitioned path byte for byte; across bucket counts, seeds or partition counts the bar drops back to tolerance.
-Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
+<p>Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
 <h2 id="untruncated-runs"><a class="header" href="#untruncated-runs">Untruncated runs</a></h2>
 <p><code>policy=None</code> applies no truncation at all; only coefficients that are exactly zero after a merge are dropped.
 The result is the exact evolved operator, and it is the reference the <a href="#score-against-an-exact-reference-where-you-can">cutoff sweep</a> is scored against wherever the problem is small enough to afford it.</p>
@@ -1246,12 +1238,12 @@ Estimate <code>peak_terms</code> from a prefix and the bytes-per-term arithmetic
 <h1 id="inside-the-engine"><a class="header" href="#inside-the-engine">Inside the engine</a></h1>
 <p><code>paulistrings</code> evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer’s data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
-The companion <a href="#engine-performance">Engine performance</a> page puts measured numbers to each claim; <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the invariants-only reference this page narrates — cited by section below rather than restated in full.</p>
+The companion <a href="#engine-performance">Engine performance</a> page puts measured numbers to each claim.</p>
 <h2 id="the-propagation-loop"><a class="header" href="#the-propagation-loop">The propagation loop</a></h2>
-<p>A <code>PauliSum</code> stores each term as a symplectic key: qubit <code>i</code>’s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient (ARCHITECTURE.md §Data-Model).
+<p>A <code>PauliSum</code> stores each term as a symplectic key: qubit <code>i</code>’s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient.
 Under this encoding Pauli multiplication is bitwise XOR of keys plus a phase, and the phase is folded into the coefficient at the boundary, so a key is a plain element of the vector space <code>GF(2)^{2n}</code>.</p>
 <p>Each circuit layer applies one channel to every term.
-A channel with support on <code>k</code> qubits maps an input key <code>v</code> to outputs <code>v ⊕ d</code>, where <code>d</code> ranges over a small <strong>delta set</strong> <code>D</code> determined by the channel alone: a Pauli rotation of any generator weight has <code>|D| = 2</code> (identity and the generator), a two-qubit Clifford at most 4, a dense two-qubit unitary at most 16 (ARCHITECTURE.md §Bucketing).
+A channel with support on <code>k</code> qubits maps an input key <code>v</code> to outputs <code>v ⊕ d</code>, where <code>d</code> ranges over a small <strong>delta set</strong> <code>D</code> determined by the channel alone: a Pauli rotation of any generator weight has <code>|D| = 2</code> (identity and the generator), a two-qubit Clifford at most 4, a dense two-qubit unitary at most 16.
 Applying a layer means fanning every term out over <code>D</code>, then recombining terms that landed on the same key.</p>
 <p>The recombination is the interesting part.
 Done naively it is a global sort or a concurrent hash map per layer, at millions to hundreds of millions of terms.</p>
@@ -1269,17 +1261,16 @@ Linearity is the property everything else follows from:</p>
 </code></pre>
 <p>A term in bucket <code>i</code> fans out only into buckets <code>i ⊕ h(d)</code> for <code>d ∈ D</code> — so the layer’s entire data-movement pattern is a function of the channel and the hash, known <strong>before touching a single term</strong>.
 Equal keys always share a bucket (h is a function), so duplicates can never straddle buckets.
-Because <code>H</code> is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one (ARCHITECTURE.md §Hash).</p>
+Because <code>H</code> is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one.</p>
 <p>Bucket count follows the sum’s size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
-Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucket-Policy).</p>
+Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited.</p>
 <h2 id="write-disjoint-cosets"><a class="header" href="#write-disjoint-cosets">Write-disjoint cosets</a></h2>
 <p>Take the span of <code>h(D)</code> in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: <strong>a coset is a closed task</strong>.
 That is the engine’s whole parallel decomposition — one coset per work-stealing task, and by construction no two tasks touch the same bucket, so a layer runs with no atomics, no locks, and no cross-thread reconciliation of any kind.
-Load balance comes from the random hash plus work-stealing (ARCHITECTURE.md §Parallelism).</p>
+Load balance comes from the random hash plus work-stealing.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/design/bucket-cosets.svg" alt="Bucket space partitioned into cosets"><span class="img-wrapper"><img src="assets/design/bucket-cosets.svg" alt="Bucket space partitioned into cosets"></span></label></p>
-<p>At a fixed bucket count and hash seed this structure also makes the output bitwise identical across thread counts and repeat runs: cosets are write-disjoint and work within one is sequential.
-Across bucket counts or seeds, output agrees to floating-point tolerance — equal-key summation order is deliberately unspecified (ARCHITECTURE.md §Determinism).</p>
+<p>Output agrees to floating-point tolerance across runs — equal-key summation order is deliberately unspecified.</p>
 <h2 id="in-place-layer-execution"><a class="header" href="#in-place-layer-execution">In-place layer execution</a></h2>
 <p>Each coset task, independently:</p>
 <ol>
@@ -1293,29 +1284,28 @@ The inner loop per (term, delta) is a few bit extractions, one table lookup, one
 <p>Two structural tricks keep the moved bytes down.
 The identity delta’s stream keeps its source keys, so it inherits the source bucket’s sorted order and is never sorted; and when the identity amplitude is dense (every rotation and general unitary), the gather materializes only the 16-byte coefficients and the merge borrows the key columns from the source bucket in place — identity keys are neither written nor re-read.
 The rest-stream sort itself exploits that a gather run is a concatenation of already-sorted per-delta streams; a radix variant takes over for dense two-qubit PTMs, where the sort dominates the layer.
-The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes (ARCHITECTURE.md §Engine).</p>
+The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes.</p>
 <p>Channels that never change keys at all (depolarizing, dephasing, Pauli gates) bypass the whole pipeline as a parallel coefficient rescale.</p>
 <h2 id="channel-preparation"><a class="header" href="#channel-preparation">Channel preparation</a></h2>
 <p>Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel’s own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
-Pauli rotations prepare specially at any generator weight, since their delta set is just <code>{0, generator}</code> (ARCHITECTURE.md §Prepared-Channels).</p>
+Pauli rotations above two qubits prepare specially, since their delta set is just <code>{0, generator}</code> at any weight.</p>
 <h2 id="truncation-1"><a class="header" href="#truncation-1">Truncation</a></h2>
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; <code>TopN</code> and its histogram-based approximation live there.
-Policies compose with and/or combinators.
-Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code> keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).</p>
+Policies compose with and/or combinators; or combines per-term filters only.
+Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code>/<code>ApproxTopN</code> keep exactly <code>n</code>, filling from the boundary in bucket order.</p>
 <h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
-<p><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
-The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs on <code>engine::bucketed</code>, <code>engine::merge</code>, and <code>pauli_sum</code> carry the precise per-module contracts.</p>
-<p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a>, and <code>ARCHITECTURE.md</code> §Partitioning for the mechanism.</p>
-<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism, §Truncation; module docs <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs"><code>engine/bucketed.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs"><code>engine/merge.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum.rs"><code>pauli_sum.rs</code></a>.</p>
+<p>The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs carry the engine’s contracts next to the code that keeps them.</p>
+<p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a> and <a href="#cuda-devices">GPU</a>.</p>
+<p>Sources: module docs <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/coset.rs"><code>engine/coset.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/hash.rs"><code>pauli_sum/hash.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs"><code>engine/bucketed.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs"><code>engine/merge.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/mod.rs"><code>pauli_sum/mod.rs</code></a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="numa-partitions"><a class="header" href="#numa-partitions">NUMA partitions</a></h1>
 <p>A partitioned run splits the sum across NUMA domains instead of sharing one thread pool across the whole box.
 Each domain gets its own pinned pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning and the engine it runs on is <a href="#inside-the-engine">Inside the engine</a>; this page is when to reach for it and how.
+The engine it runs on is <a href="#inside-the-engine">Inside the engine</a>; this page is when to reach for it and how.
 To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="#mpi-ranks">MPI ranks</a>.</p>
 <h2 id="when-it-pays"><a class="header" href="#when-it-pays">When partitioning pays</a></h2>
 <p><strong>Locality decides everything</strong>, in the sense <a href="#partitioned">Engine performance</a> measures in full: a dense two-qubit layer with no row crossing runs 4–18% faster at <code>P = 2</code> than <code>P = 1</code>, while any layer that exports rows runs 2–8.4× slower.</p>
@@ -1338,12 +1328,12 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
 <!-- doctest: skip -->
 <pre><code class="language-python">partitions=["0-7,16-23", "8-15,24-31"]
 </code></pre>
-<p><code>partitions=None</code> or <code>partitions=1</code> is the ordinary unpartitioned run, bit for bit.
+<p><code>partitions=None</code> or <code>partitions=1</code> is the ordinary unpartitioned run.
 On a single-node box <code>"auto"</code> also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a <code>ValueError</code> that points at explicit CPU lists.</p>
 <p><a href="#module-helpers"><code>paulistrings.numa_nodes()</code></a> reports what the machine offers, as one CPU list per node intersected with this process’s affinity mask, so a script can decide for itself before choosing.
 <code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
-<p><code>propagate_with_stats</code> fills <code>PropagationStats.partition</code> on a partitioned run: per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
-It is <code>None</code> for an unpartitioned run.
+<p><code>PropagationStats.partition</code> holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
+An unpartitioned run reports one partition.
 <code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the cost/benefit split above turns on.</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
@@ -1356,7 +1346,6 @@ print(stats.partition.local)           # True where a layer exchanged nothing
 The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool.
 An explicit CPU-list placement takes each partition’s thread count from its list length; <code>"auto"</code> and an integer count take it from the CPUs of the partition’s NUMA node inside this process’s affinity mask.
 The variable still governs an unpartitioned run (<a href="#threads">Stats, memory and logging</a>).</p>
-<p><strong><code>engine</code> is ignored.</strong> A partitioned run is always the bucketed engine; the <code>"auto"</code>/<code>"direct"</code> small-sum paths have no partitioned form.</p>
 <p><strong>Exact <code>topn</code> is unavailable.</strong>
 Choosing the <code>n</code>-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run raises <code>NotImplementedError</code> on <code>truncation.topn</code>.
 Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.
@@ -1366,8 +1355,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <li><strong>Pinning is Linux-only.</strong> Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.</li>
 <li><strong><code>P</code> is a power of two, at most 64.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, and the engine caps that at 6 (<code>P_MAX_BITS</code>).</li>
 <li><strong>Peak memory is above a single-pool run’s.</strong> A partitioned run holds <code>P</code> shares of the sum plus one layer’s exchange buffers, which are pooled and reused rather than freed between layers.</li>
-<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
-At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
+<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.</li>
 </ul>
 <h2 id="see-it-in-use-2"><a class="header" href="#see-it-in-use-2">See it in use</a></h2>
 <p><a href="#partitioned">Engine performance</a> has the <code>P = 2</code> versus <code>P = 1</code> tables per host and thread count, the per-layer times of an exchange-free layer, the bandwidth counters behind the gain, and the benchmarking protocol for reproducing them.</p>
@@ -1375,7 +1363,7 @@ At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
 <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>A distributed run is a <a href="#numa-partitions">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
-What is new is the transport (point-to-point MPI instead of in-process channels) and the launch (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning, subsection “Transport composition”).</p>
+What is new is the transport (point-to-point MPI instead of in-process channels) and the launch.</p>
 <h2 id="why-capacity"><a class="header" href="#why-capacity">Why: capacity</a></h2>
 <p><strong>The reason to reach for it is capacity.</strong>
 A sum that does not fit one node’s memory fits <code>P</code> of them, and the per-rank overhead is bounded and does not grow with the rank count.
@@ -1438,7 +1426,7 @@ A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term 
 evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
 </code></pre>
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
-The distributed <a href="#echo">echo read-out</a> <code>rotated_overlap</code> requires rows that skip the coordinates it flips, the x-bits of its sites for <code>axis="x"</code>.
+Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
 <div class="table-wrapper">
@@ -1475,21 +1463,20 @@ See <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/scripts/slurm/R
 <!-- doctest: skip -->
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use paulistrings::engine::partitioned::PartitionRowPolicy;
-use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
+</span>use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 
 let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized).unwrap();
 let world = universe.world();
 let device = local_device_for_comm(&amp;world)?;
 let transport = MpiTransport::from_communicator(&amp;world);
-let mut split = MpiGpuSum::&lt;2&gt;::scatter_to_device(&amp;observable, transport, device, &amp;PartitionRowPolicy::Seeded(None))?;
+let mut split = MpiGpuSum::&lt;2&gt;::scatter_to_device(&amp;observable, transport, device)?;
 split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 if let Some(evolved) = split.gather()? {
     println!("{} terms", evolved.len());
 }
 <span class="boring">}</span></code></pre>
-<p><code>gpu::propagate_mpi_gpu</code> is the one-shot form.
+<p><code>scatter_to_device_with(&amp;observable, transport, GpuScatterOptions { rows, ..GpuScatterOptions::new(&amp;[device])? })</code> splits by other rows or layer options; <code>gpu::propagate_mpi_gpu</code> is the one-shot form.
 A device failure on any rank fails the call on every rank, with <code>GpuError::Poisoned</code> naming the failing rank on its peers, so the group never falls out of step.
 Launch with every node GPU visible to every task (<code>srun --gpus-per-node=&lt;k&gt; --mpi=pmix</code>, as <code>scripts/slurm/mpi-gpu.sbatch</code> does), where the locality pick matters.</p>
 <p>A remote layer’s columns move device to device over NCCL (<a href="#exchange">CUDA devices</a>), which needs the NCCL library at run time (<a href="#gpu-and-mpi-features">Installation</a>).
@@ -1534,7 +1521,7 @@ Intra-node, that is what would take the 2-rank remote layer below the 3.5× in <
 <h1 id="cuda-devices"><a class="header" href="#cuda-devices">CUDA devices</a></h1>
 <p>A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a <a href="#numa-partitions">partitioned run</a>: one partition on one device, one partition per listed device, or one device per MPI rank.
 Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §GPU-Readiness; this page is when to reach for it and how.</p>
+The engine it runs is <a href="#inside-the-engine">Inside the engine</a>; this page is when to reach for it and how.</p>
 <h2 id="when-it-pays-1"><a class="header" href="#when-it-pays-1">When a device pays</a></h2>
 <p><strong>Dense two-qubit layers at a million terms and up are where the device wins.</strong>
 On an RTX A6000 a saturated <code>su4</code> layer runs 11× faster on wall than the 16-thread host engine at 1.41e7 terms, and 15× at 5.65e7 (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> § ccqlin038 — GPU).
@@ -1615,34 +1602,29 @@ It needs the extension built with both features (<code>maturin develop --release
 A list of several ordinals under <code>comm=</code> is a <code>ValueError</code>.
 A rank that cannot use its device fails the call on every rank, the peers raising the same exception type naming it.</p>
 <h2 id="rust-multi-device"><a class="header" href="#rust-multi-device">Rust: several devices, and one device per MPI rank</a></h2>
-<p><code>GpuPartitionedSum</code> splits a sum across the device partitions of a <code>Placement::Devices</code> runtime, one partition per listed device, and holds it across calls; <code>GpuPauliSum</code> is its one-device form, built by <code>GpuPauliSum::from_host(&amp;sum, ordinal)</code>:</p>
+<p><code>GpuPartitionedSum</code> splits a sum across device partitions, one per listed device, and holds it across calls; <code>GpuPartitionedSum::from_host(&amp;sum, ordinal)</code> is the one-device form:</p>
 <!-- doctest: skip -->
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
-use paulistrings::gpu::GpuPartitionedSum;
+</span>use paulistrings::gpu::GpuPartitionedSum;
 
-let config = PartitionConfig {
-    placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
-    bind_memory: false,
-    partition_row_seed: None,
-};
-let runtime = PartitionRuntime::new(&amp;config)?;
-let mut split = GpuPartitionedSum::scatter_to_devices(&amp;observable, runtime, &amp;config)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&amp;observable, &amp;[0, 1, 2, 3])?;
 split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 <span class="boring">}</span></code></pre>
+<p><code>scatter_to_devices_with</code> takes a <code>GpuScatterOptions { devices, rows, layer }</code>: a runtime resolved from <code>Placement::Devices</code>, the partition rows, and the device layer’s knobs (<code>GpuLayerOptions</code>); <code>GpuScatterOptions::new(&amp;devices)</code> fills in the defaults.</p>
 <p>The exchanged columns move device to device.
+With <code>enable_trace</code>, every layer’s <code>PartitionLayerRecord</code> carries the device partitions’ counters as <code>device</code> (a <code>DeviceLayerRecord</code> each: records, block size, arena batches, fallbacks, path taken) beside the shared <code>refine_passes</code> and <code>receive_chunks</code>.
 A device driver takes its policy as a <code>BuiltinTruncation</code>, which every builtin and combinator converts into (<code>ApproxTopN(n)</code> or <code>&amp;ApproxTopN(n)</code> alike).
-<code>per_device &gt; 1</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
+A runtime of <code>Placement::Devices { per_device &gt; 1 }</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
 With features <code>mpi</code> and <code>cuda</code>, <code>gpu::MpiGpuSum</code> is the <a href="#gpu-per-rank">MPI ranks</a> driver with each rank’s share on its own device.</p>
 <h2 id="exchange"><a class="header" href="#exchange">Exchange mode, merge and chunking</a></h2>
 <p>Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver’s device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (<code>gpu::MpiGpuSum</code>).
 The NCCL communicator starts <strong>once, collectively, at scatter</strong>: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
-<code>PAULISTRINGS_NCCL_TIMEOUT_S</code> (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
+<code>PAULISTRINGS_WIRE_TIMEOUT_S</code> (default 300) bounds every wait on the exchange, and every collective of an in-process device group (a host group waits 10 s); a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
 Running it needs the <code>nccl/2.23.4-1</code> module alongside <code>cuda,mpi</code> — see <a href="#gpu-and-mpi-features">Installation</a> and <a href="#gpu-per-rank">MPI ranks</a>.</p>
 <p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>), so two remote deltas that land on the same receiver key ship as one row.
-It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation, which has one remote entry, or a Clifford, whose remote entries never share an output pattern.
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>
 <p><strong>A device receive moves in chunks of destination positions</strong> rather than all at once (<code>GpuLayerOptions::exchange_bytes</code>, <code>PAULISTRINGS_GPU_EXCHANGE_BYTES</code>, <code>K</code>/<code>M</code>/<code>G</code> suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
 The send side is never chunked: its export volume stays resident until the layer’s last chunk moved.</p>
@@ -1654,8 +1636,7 @@ A Clifford layer that crosses a partition boundary keeps the fused layer, which 
 On a pair the driver reports as unsupported the copy stages through the host instead of faulting, and the outcome is logged.</p>
 <h2 id="what-changes-on-a-device"><a class="header" href="#what-changes-on-a-device">What changes on a device</a></h2>
 <p><strong>Results agree to floating-point tolerance, not bit for bit.</strong>
-The device sums equal keys in a different order from the host, as a different bucket count does (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Determinism).
-No reduction uses a floating-point atomic, so two runs on the same device give the same bits.</p>
+The device sums equal keys in a different order from the host, as a different bucket count does.</p>
 <p><strong>Storage order is the host’s canonical order, but for the device’s own bucket count.</strong>
 The download re-sorts each bucket to the host’s lexicographic order, and the device chooses its bucket count by rows per block rather than terms per bucket, so <code>x_array()</code> of a device result can list the terms in a different order from a host run’s.
 Compare two results by key, never by position.</p>
@@ -1770,22 +1751,8 @@ print(evolved.identity_coefficient())
 <p>A <code>num_qubits</code> mismatch between the two sums is a <code>ValueError</code>; there is no implicit padding.
 Both signatures are under <a href="#overlapother">Measurement</a>.</p>
 <h2 id="echo"><a class="header" href="#echo">Echo read-outs</a></h2>
-<p>An echo experiment perturbs the evolved observable <code>A</code> by <code>V = ⊗_q exp(-iδ G_q)</code>, one single-qubit Pauli generator <code>G_q</code> per site, and reads <code>2^-n tr(A V† A V)</code>.
-<code>rotated_overlap(sites, delta, axis)</code> computes it exactly without building <code>V† A V</code>, whose size grows as <code>2^k</code> in the number of sites a string anticommutes with.
-<code>anticommute_histogram(sites, axis)</code> is the cheaper read-out: <code>w[n]</code> is the weight <code>Σ|c|²</code> of the strings that anticommute with exactly <code>n</code> of the generators, and <code>diagonal_echo(w, delta) = Σ_n w[n] cos(2δ)^n / Σ_n w[n]</code> is the echo with every cross term between distinct strings dropped.</p>
-<pre><code class="language-python">from paulistrings import PauliSum, diagonal_echo
-
-a = PauliSum.from_strings({"XX": 0.6, "YY": 0.8}, num_qubits=2)
-print(diagonal_echo(a.anticommute_histogram([0, 1], axis="z"), 0.3))
-print(a.rotated_overlap([0, 1], 0.3, axis="z"))
-</code></pre>
-<pre><code class="language-text">0.6811788772383368
-0.9872471550895336
-</code></pre>
-<p>The gap is the <code>XX</code>–<code>YY</code> cross term, <code>2 · 0.6 · 0.8 · sin²(0.6)</code>, which the diagonal read-out omits by construction.
-<code>axis</code> is <code>"x"</code> or <code>"z"</code>; both methods take <code>comm=</code> for a sum split over MPI ranks and return the global value on every rank.
-The distributed <code>rotated_overlap</code> needs partition rows that never read a flipped coordinate, which <a href="#partition-row-selection"><code>partition_row_exclude</code></a> arranges.
-<a href="#b8--operator-loschmidt-echo">Showcase B8</a> uses both on a 56-qubit Loschmidt echo.</p>
+<p>An echo experiment perturbs the evolved observable <code>A</code> by <code>V = ⊗_q exp(-iδ G_q)</code> and reads <code>2^-n tr(A V† A V)</code>.
+The library has no echo read-out of its own: <code>to_arrays()</code> hands the propagated sum to numpy, and <a href="#b8--operator-loschmidt-echo">Showcase B8</a> computes the exact echo and its diagonal approximation there, per rank under MPI.</p>
 <h2 id="from-a-number-to-a-result"><a class="header" href="#from-a-number-to-a-result">From a number to a result</a></h2>
 <p>A single expectation value at a single cutoff is a number, not a result.
 The truncation that made the sum tractable deleted terms carrying signs, so the value can sit on either side of the truth and need not move monotonically as the cutoff tightens — <a href="#no-variational-bound">No variational bound</a> is the statement and the measured cases.
@@ -1799,16 +1766,6 @@ What turns the number into a result is <a href="#validating-a-result">Validating
 </ul>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
-<h2 id="the-2d-ising-quench"><a class="header" href="#the-2d-ising-quench">The flagship worked example: a 2D Ising quench</a></h2>
-<p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"><span class="img-wrapper"><img src="assets/ising-quench/ising_quench.svg" alt="Average X magnetization vs time for the 2D Ising quench, 4×4 and 6×6 lattices"></span></label></p>
-<p>The site’s landing figure is a transverse-field Ising quench on a periodic 4×4 and 6×6 lattice at <code>J = h = 1</code>, first-order Trotterized at <code>δt = 0.05</code> out to <code>t = 2</code>.
-The average X magnetization is Heisenberg-propagated through the 40-step circuit and read against <code>|+…+⟩</code> at every step, under <code>coeff(1e-10) &amp; topn(k)</code> with <code>k</code> of 50 000 (4×4) and 200 000 (6×6).
-The 6×6 case is <code>2³⁶</code> amplitudes, already out of reach for exact diagonalization; the quench runs in ~11–12 s on the reference host.</p>
-<p>The honest error bar there is not floating point but the <code>topn</code> tie rule: <code>topn</code> keeps or drops a magnitude-tied symmetry orbit whole, and an alternative tiebreak that always keeps exactly <code>k</code> terms moves the trajectory by up to 1.7% (4×4) and 0.37% (6×6).
-The larger lattice is the better-resolved one, because the observable averages over more sites and the truncation error self-averages.</p>
-<p>The walkthrough is a Rust one — it is the crate’s own worked example, embedded into its rustdoc — and is the hand-off point for Rust users rather than part of this book:
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/docs/examples/ising_2d_quench.md"><code>crates/paulistrings/docs/examples/ising_2d_quench.md</code></a>, with the source at <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/examples/ising_2d_quench.rs"><code>ising_2d_quench.rs</code></a>.
-For the same pattern in Python — one Trotter step at a time, an expectation value per step — see <a href="#incremental-propagation">Incremental propagation</a>.</p>
 <h2 id="contents"><a class="header" href="#contents">Contents</a></h2>
 <ul>
 <li><a href="#first-propagation">First propagation</a> — the site’s guided walkthrough: build an observable, build a circuit, propagate, validate.</li>
@@ -2684,7 +2641,8 @@ pytest examples/tests/test_showcase_b7.py                        # 0.5 s
 </code></pre>
 <p><a href="#threads"><code>RAYON_NUM_THREADS=1</code></a> must be exported before the interpreter starts; the
 script asserts the pin and refuses to run unpinned. A full run regenerates
-every artifact in the showcase directory.</p>
+every artifact in the showcase directory.
+<code>--quick</code> writes into the gitignored <code>benchmarks/results/b7-quick/</code> instead, and <code>--out-dir DIR</code> picks another directory.</p>
 <p><strong>Numbers:</strong> every value on this page is sourced from
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b7_stabilizer_prep/README.md"><code>examples/b7_stabilizer_prep/README.md</code></a>
 and its committed artifacts — <code>theta_sweep.csv</code>, <code>scaling.csv</code>,
@@ -2701,18 +2659,20 @@ Its 11 scattering qubits carry an <code>rx</code> angle shifted by <code>η = 3�
 The echo is <code>S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)</code>, where <code>A = C†OC</code>, <code>O = Z^{⊗12}</code>, and <code>V_δ = ⊗ e^{-iδX}</code> on 35 qubits with <code>δ = 0.3</code>.</p>
 <h2 id="pp-mc"><a class="header" href="#pp-mc">PP-MC</a></h2>
 <!-- doctest: skip -->
-<pre><code class="language-python">from paulistrings import truncation
+<pre><code class="language-python">import ole
+from paulistrings import truncation
 policy = truncation.collapse_sample(cache=500_000_000, seed=s)
 A = O.propagate(C, policy, direction="heisenberg")
-S = diagonal_echo(A.anticommute_histogram(sites, axis="x"), 0.3)
+S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 </code></pre>
 <ul>
 <li><code>collapse_sample</code> propagates exactly until a gate leaves more than <code>cache</code> strings.</li>
 <li>It then draws one string with probability <code>b_P²/Σb²</code> and restarts from it.</li>
 <li>The last block is kept whole.</li>
 <li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
-<li><code>rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
-<li>Under <code>comm=</code> both read-outs are collective, and <code>collapse_sample</code> draws the same string whatever the thread count.</li>
+<li><code>ole.rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
+<li>Both estimators are numpy over <code>A.to_arrays()</code>; under <code>comm=</code> each rank reads its <code>result="local"</code> share and <code>comm.allreduce</code> sums the values.</li>
+<li><code>collapse_sample</code> draws the same string whatever the thread count.</li>
 </ul>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
 <p>One L = 6 trajectory at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>
@@ -3927,7 +3887,7 @@ A remote layer is <strong>transfer-bound</strong> — the pipeline runs the cose
 <h2 id="noise-floor"><a class="header" href="#noise-floor">Noise floor</a></h2>
 <p>Single-shot campaign noise on the reference host is ±5–8% single-threaded and ±10–26% at 8–32 threads; untouched code moves that much between campaigns.
 Effects below that need the interleaved A/B protocol (<code>scripts/ab-compare.sh</code>), whose acceptance criterion is direction consistency across every pair.</p>
-<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Width, §Performance-Model (layout and dispatch).</p>
+<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); the <a href="api/paulistrings/index.html">Rust API</a> (layout and dispatch).</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="against-other-tools"><a class="header" href="#against-other-tools">Against other tools</a></h1>
 <p><em>Manual: <a href="#truncation">Truncation</a>, <a href="#engine-and-propagation">Engine and propagation</a></em></p>
@@ -4075,7 +4035,7 @@ faster.</p>
 <tr><th>workload</th><th>channels</th><th>crossover (peak terms)</th></tr>
 </thead>
 <tbody>
-<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong> (1.88 × 10³ with <code>engine="auto"</code>)</td></tr>
+<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong></td></tr>
 <tr><td>XXZ chain, n = 100, 6 Trotter steps</td><td>1 782</td><td><strong>2.00 × 10⁴</strong></td></tr>
 <tr><td>Haar SU(4) brickwork, n = 36, depth 6</td><td>105</td><td>none on the swept range: faster at every sign-consistent point</td></tr>
 </tbody>
@@ -4107,28 +4067,6 @@ site.</p>
 <p>Below the crossover jl’s hash-map backend is faster, by up to 3.6× at 68 terms:
 a hash-map insert per term costs little at 10² terms, while the bucketed
 per-layer pipeline costs nearly the same whatever the term count.</p>
-<p>That fixed cost is avoidable. <code>propagate(engine="auto")</code> routes layers below
-2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
-configurations
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>),
-measured on the same binary against the default:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>tracked set</th><th><code>engine="sorted"</code> (default)</th><th><code>engine="auto"</code></th></tr>
-</thead>
-<tbody>
-<tr><td>XXZ</td><td>1 625 terms</td><td>0.372× (jl faster)</td><td><strong>1.040×, a measured tie</strong></td></tr>
-<tr><td>XXZ</td><td>9 918 terms</td><td>0.873× (jl faster)</td><td><strong>1.051×, a measured tie</strong></td></tr>
-<tr><td>Haar SU(4)</td><td>1 416 terms</td><td>1.097×</td><td><strong>1.660×</strong></td></tr>
-<tr><td>kicked-Ising crossover</td><td>—</td><td>2.73 × 10³ terms</td><td><strong>1.88 × 10³ terms</strong></td></tr>
-</tbody>
-</table>
-</div>
-<p>Above its threshold the path is inert, measured as its own control: SU(4) at
-84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
-configurations passed the per-layer parity gate with the path enabled — 9 618
-per-layer counts, every one identical to PauliPropagation.jl’s.</p>
 <h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
 <p>How the <code>PauliPropagation.jl</code> comparison is made, and what had to be pinned before any number above could be quoted.</p>
 <h3 id="parity-discipline"><a class="header" href="#parity-discipline">Parity discipline</a></h3>
@@ -4266,10 +4204,9 @@ truncates during gate application.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md"><code>benchmarks/README.md</code></a>,
 plus the per-benchmark READMEs linked inline. Cross-engine performance numbers:
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>
-(protocol and headline tables, engine <code>81c568a</code>),
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md"><code>post-optimization/README.md</code></a>
+(protocol and headline tables, engine <code>81c568a</code>)
 and
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>.
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md"><code>post-optimization/README.md</code></a>.
 qiskit/openfermion numbers:
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>
 and its committed <code>results.json</code>.</p>
@@ -4288,8 +4225,8 @@ and its committed <code>results.json</code>.</p>
 <tr><td><a href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a></td><td>full signatures, engine/bucket/partition knobs, stats field tables</td></tr>
 <tr><td><a href="#truncation-policies">Truncation policies</a></td><td><code>coeff</code>/<code>weight</code>/<code>topn</code>/<code>approx_topn</code>/<code>collapse_sample</code>, <code>&amp;</code>/<code>|</code> combinators</td></tr>
 <tr><td><a href="#direction-semantics">Direction semantics</a></td><td><code>"forward"</code>/<code>"heisenberg"</code>, push-order note</td></tr>
-<tr><td><a href="#measurement">Measurement</a></td><td><code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>, <code>identity_coefficient</code>, <code>anticommute_histogram</code>, <code>rotated_overlap</code></td></tr>
-<tr><td><a href="#module-helpers">Module helpers</a></td><td><code>numa_nodes</code>, <code>mpi_available</code>, <code>DEFAULT_SMALL_SUM_THRESHOLD</code>, <code>reset_log_cache</code>, <code>diagonal_echo</code></td></tr>
+<tr><td><a href="#measurement">Measurement</a></td><td><code>expectation</code>, <code>expectation_stabilizer</code>, <code>overlap</code>, <code>identity_coefficient</code></td></tr>
+<tr><td><a href="#module-helpers">Module helpers</a></td><td><code>numa_nodes</code>, <code>mpi_available</code>, <code>reset_log_cache</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -4373,7 +4310,7 @@ This is what lets a sum be built directly out of strings, e.g. <code>p("XYZ") * 
 <tr><td><code>PauliSum(num_qubits)</code></td><td>the empty sum</td></tr>
 <tr><td><code>PauliSum.from_strings(terms, *, num_qubits=None)</code></td><td>from a <code>{pauli_string: coefficient}</code> dict; each key is <code>num_qubits</code> characters of <code>I/X/Y/Z</code>, index <code>i</code> addresses qubit <code>i</code></td></tr>
 <tr><td><code>PauliSum.from_strings(labels, coefficients, *, num_qubits=None)</code></td><td>the same, from two equal-length sequences instead of a dict; a label repeated in <code>labels</code> accumulates rather than raising</td></tr>
-<tr><td><code>PauliSum.from_arrays(x, z, coefficients, num_qubits)</code></td><td>from raw symplectic arrays — the inverse of <code>x_array</code>/<code>z_array</code>/<code>coefficients_array</code></td></tr>
+<tr><td><code>PauliSum.from_arrays(x, z, coefficients, num_qubits)</code></td><td>from raw symplectic arrays — the inverse of <code>to_arrays</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -4408,11 +4345,12 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.z_array()</code></td><td>Z-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
+<tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; a <code>result="local"</code> share gives this rank’s terms</td></tr>
 <tr><td><code>str(sum)</code>, <code>repr(sum)</code></td><td><code>coefficient*label</code> for the first few terms, <code>+</code>-joined, <code>... (N more terms)</code> past that; <code>0</code> for the empty sum</td></tr>
 </tbody>
 </table>
 </div>
-<p>All four array/list accessors return the sum’s canonical order (partition-bucket index ascending, then lexicographic <code>(x, z)</code>), consistently across calls.
+<p>All five array/list accessors return the sum’s canonical order (partition-bucket index ascending, then lexicographic <code>(x, z)</code>), consistently across calls.
 <code>str</code>/<code>repr</code> show that same order’s <em>prefix</em>, never sorted by coefficient magnitude — a magnitude sort would cost <code>O(len log len)</code> just to print a preview, on a type whose whole point is staying cheap at a huge term count.</p>
 <h2 id="arithmetic-1"><a class="header" href="#arithmetic-1">Arithmetic</a></h2>
 <div class="table-wrapper">
@@ -4474,8 +4412,8 @@ A generator coefficient <code>s</code> in <code>exp(-i*s*P)</code> (no <code>/2<
 <tr><td><code>.rx(theta, qubit)</code></td><td><code>gates.rx(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
 <tr><td><code>.ry(theta, qubit)</code></td><td><code>gates.ry(theta, qubit)</code></td><td>1</td><td><code>theta</code></td><td>—</td></tr>
 <tr><td><code>.pauli_rotation(pauli, qubits, theta)</code></td><td><code>gates.pauli_rotation(pauli, qubits, theta)</code></td><td>any</td><td><code>pauli[k]</code> acts on <code>qubits[k]</code>; identity positions are expressed by omission, not <code>I</code></td><td>the one exemption from the two-qubit support panic below — any generator weight is accepted</td></tr>
-<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex, checked unitary</td><td>—</td></tr>
-<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, checked unitary; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
+<tr><td><code>.unitary_1q(qubit, matrix)</code></td><td><code>gates.unitary_1q(qubit, matrix)</code></td><td>1</td><td><code>2x2</code> complex; <code>ValueError</code> unless every entry of <code>U†U − I</code> is within <code>1e-10</code></td><td>—</td></tr>
+<tr><td><code>.unitary_2q(q0, q1, matrix)</code></td><td><code>gates.unitary_2q(q0, q1, matrix)</code></td><td>2</td><td><code>4x4</code> complex, unitary to <code>1e-10</code> as above; <code>q0</code> is the more significant tensor factor (<code>|q0 q1&gt;</code>)</td><td>—</td></tr>
 </tbody>
 </table>
 </div>
@@ -4538,17 +4476,17 @@ A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it
 <p>See <a href="#importing-circuits">Importing circuits</a> for the recipe.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="propagate--propagate_with_stats"><a class="header" href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a></h1>
-<pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, engine=None,
-               small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
-               partitions=None, pin_memory=True, partition_row_seed=None,
-               partition_row_blocks=None, partition_row_exclude=None, comm=None,
-               result="gather", device=None) -&gt; PauliSum
+<pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
+               min_buckets=128, partitions=None, pin_memory=True,
+               partition_row_seed=None, partition_row_blocks=None,
+               partition_row_exclude=None, comm=None, result="gather",
+               device=None) -&gt; PauliSum
 
-sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
-                          small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
-                          partitions=None, pin_memory=True, partition_row_seed=None,
-                          partition_row_blocks=None, partition_row_exclude=None, comm=None,
-                          result="gather", device=None)
+sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
+                          min_buckets=128, partitions=None, pin_memory=True,
+                          partition_row_seed=None, partition_row_blocks=None,
+                          partition_row_exclude=None, comm=None, result="gather",
+                          device=None)
     -&gt; (PauliSum, PropagationStats)
 </code></pre>
 <p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
@@ -4563,17 +4501,15 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>circuit</code></td><td><code>Circuit</code></td><td>required</td><td>must share <code>num_qubits</code> with <code>sum</code></td></tr>
 <tr><td><code>policy</code></td><td><code>Truncation | None</code></td><td><code>None</code></td><td><code>None</code> applies no per-term filtering beyond the engine’s exact-zero drop</td></tr>
 <tr><td><code>direction</code></td><td><code>"forward" | "heisenberg" | None</code></td><td><code>None</code> = <code>"forward"</code></td><td><strong>the default is not the Heisenberg picture most examples here use</strong> — pass it explicitly; see <a href="#direction-semantics">Direction semantics</a></td></tr>
-<tr><td><code>engine</code></td><td><code>"sorted" | "auto" | "direct" | None</code></td><td><code>None</code> = <code>"sorted"</code></td><td><code>"sorted"</code>: always bucketed. <code>"auto"</code>: a term-by-term hash-map path below <code>small_sum_threshold</code>, unless the policy has a layer pass (e.g. <code>topn</code>). <code>"direct"</code>: same threshold, always. All three agree to floating-point tolerance</td></tr>
-<tr><td><code>small_sum_threshold</code></td><td><code>int | None</code></td><td><code>None</code> = <code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td>term-count cutoff for <code>"auto"</code>/<code>"direct"</code></td></tr>
-<tr><td><code>target_bucket_len</code></td><td><code>int | None</code></td><td><code>None</code> = <code>1024</code></td><td>sorting engine’s per-layer bucket-sizing knob</td></tr>
-<tr><td><code>min_buckets</code></td><td><code>int | None</code></td><td><code>None</code> = <code>128</code></td><td>sorting engine’s per-layer bucket-sizing knob</td></tr>
+<tr><td><code>target_bucket_len</code></td><td><code>int</code></td><td><code>1024</code></td><td>engine’s per-layer bucket-sizing knob; at least 1, else <code>ValueError</code></td></tr>
+<tr><td><code>min_buckets</code></td><td><code>int</code></td><td><code>128</code></td><td>engine’s per-layer bucket-sizing knob; at least 16, else <code>ValueError</code></td></tr>
 <tr><td><code>partitions</code></td><td><code>None | "auto" | int | list[list[int]]</code></td><td><code>None</code></td><td>splits the sum across NUMA domains; see below</td></tr>
 <tr><td><code>pin_memory</code></td><td><code>bool</code></td><td><code>True</code></td><td>binds each partition’s allocations to its node</td></tr>
 <tr><td><code>partition_row_seed</code></td><td><code>int | None</code></td><td><code>None</code> = the sum’s own hash seed</td><td>which GF(2) rows decide a term’s partition</td></tr>
 <tr><td><code>partition_row_blocks</code></td><td><code>list[list[int]] | None</code></td><td><code>None</code></td><td>explicit disjoint qubit blocks, one per partition, instead of a seeded draw</td></tr>
 <tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
-<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, which remembers its rows for the <code>comm=</code> <a href="#under-comm">echo read-outs</a></td></tr>
+<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, a plain <code>PauliSum</code> (<code>to_arrays()</code> reads it into numpy)</td></tr>
 <tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
 </tbody>
 </table>
@@ -4586,7 +4522,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><th>Value</th><th>Placement</th></tr>
 </thead>
 <tbody>
-<tr><td><code>None</code> or <code>1</code></td><td>unpartitioned — bit-for-bit today’s path</td></tr>
+<tr><td><code>None</code> or <code>1</code></td><td>unpartitioned</td></tr>
 <tr><td><code>"auto"</code></td><td>one partition per NUMA node (falls back to unpartitioned on a single-node box)</td></tr>
 <tr><td>an <code>int</code> power of two <code>&gt;= 2</code>, at most 64</td><td>caps placement at that many nodes</td></tr>
 <tr><td><code>list[list[int]]</code></td><td>explicit disjoint CPU lists, one partition per list</td></tr>
@@ -4595,7 +4531,7 @@ The GIL is released for the duration of both calls.</p>
 </div>
 <p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
 <p><code>partition_row_blocks</code> excludes both <code>partition_row_seed</code> and <code>partition_row_exclude</code>; each of the three needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
-<code>partition_row_exclude={"x": sites}</code> keeps every class <code>rotated_overlap(sites, axis="x")</code> groups on one rank; <code>{"z": sites}</code> does the same for <code>axis="z"</code>.
+<code>partition_row_exclude={"x": sites}</code> keeps strings that differ only in the x-bits of <code>sites</code> on one rank; <code>{"z": sites}</code> does the same for z-bits.
 Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
@@ -4626,9 +4562,9 @@ See <a href="#cuda-devices">CUDA devices</a>.</p>
 <pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum
 
 resident.propagate(circuit, policy=None, direction=None,
-                   target_bucket_len=None, min_buckets=None) -&gt; None
+                   target_bucket_len=1024, min_buckets=128) -&gt; None
 resident.propagate_with_stats(circuit, policy=None, direction=None,
-                              target_bucket_len=None, min_buckets=None) -&gt; PropagationStats
+                              target_bucket_len=1024, min_buckets=128) -&gt; PropagationStats
 resident.to_host() -&gt; PauliSum
 </code></pre>
 <p>A sum resident on one CUDA device: <code>propagate</code> steps it <strong>in place</strong>, <code>to_host</code> copies it back and leaves it resident.
@@ -4665,9 +4601,9 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.final_terms</code></td><td><code>int</code></td><td><code>terms_out[-1]</code>, or the input’s count for a zero-layer circuit</td></tr>
 <tr><td><code>.circuit_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the circuit as written, independent of <code>direction</code></td></tr>
 <tr><td><code>.application_index</code></td><td><code>list[int]</code></td><td>this layer’s position in the propagation loop, <code>0..layers</code> regardless of <code>direction</code></td></tr>
-<tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer</td></tr>
+<tr><td><code>.gate_name</code></td><td><code>list[str]</code></td><td>the applied channel’s debug name per layer: the <code>PtmChannel</code> constructor name (<code>hadamard</code>, <code>cnot</code>, <code>depolarizing</code>, …; <code>phase_gate_adjoint</code> for <code>sdg</code>) or <code>PauliRotation</code></td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[int]</code></td><td>elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks</td></tr>
-<tr><td><code>.partition</code></td><td><code>PartitionStats | None</code></td><td>per-partition detail for a <code>partitions=</code>/<code>comm=</code>/<code>device=</code> call, else <code>None</code></td></tr>
+<tr><td><code>.partition</code></td><td><code>PartitionStats</code></td><td>per-partition detail; one partition for an unpartitioned call</td></tr>
 <tr><td><code>.collapses</code></td><td><code>int | None</code></td><td>collapses a <code>truncation.collapse_sample</code> made during this call, <code>None</code> without one; under <code>comm=</code> rank 0’s count, all-reduced so every rank reports it</td></tr>
 </tbody>
 </table>
@@ -4706,8 +4642,8 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tbody>
 <tr><td><code>truncation.coeff(eps)</code></td><td><code>|c| &gt; eps</code> — note <strong>strictly</strong> greater; <code>|c| == eps</code> is dropped</td></tr>
 <tr><td><code>truncation.weight(k)</code></td><td>Pauli weight <code>&lt;= k</code></td></tr>
-<tr><td><code>truncation.topn(k)</code></td><td>at most <code>k</code> terms, largest <code>|c|</code> first; exact, no partitioned form</td></tr>
-<tr><td><code>truncation.approx_topn(k)</code></td><td>approximately <code>k</code> terms; partition/comm-safe</td></tr>
+<tr><td><code>truncation.topn(k)</code></td><td>exactly <code>k</code> terms (all of a smaller sum), largest <code>|c|</code> first; no partitioned form</td></tr>
+<tr><td><code>truncation.approx_topn(k)</code></td><td>exactly <code>k</code> terms, ranked by octave of <code>|c|**2</code>; partition/comm-safe</td></tr>
 <tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
 </tbody>
 </table>
@@ -4720,13 +4656,13 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 </thead>
 <tbody>
 <tr><td><code>a &amp; b</code></td><td>both</td></tr>
-<tr><td><code>a | b</code></td><td>either</td></tr>
+<tr><td><code>a | b</code></td><td>either; per-term filters only (<code>coeff</code>, <code>weight</code> and their compositions), so a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code> on either side raises <code>ValueError</code></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="topn-vs-approx_topn"><a class="header" href="#topn-vs-approx_topn"><code>topn</code> vs. <code>approx_topn</code></a></h2>
-<p><code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within <code>k</code>, dropped whole otherwise.
-<code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
+<p>Both keep every term above a boundary and fill up to <code>k</code> from the boundary itself: for <code>topn</code> the terms tied at the <code>k</code>-th largest magnitude, for <code>approx_topn</code> the octave of <code>\|c\|**2</code> where the count from the top first exceeds <code>k</code>.
+Boundary terms are taken in storage order (bucket order, rank order across partitions), so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="#choosing-a-policy">Truncation</a> for guidance and <a href="#truncation">Truncation</a> for the mechanism.</p>
 <h2 id="collapse_sample"><a class="header" href="#collapse_sample"><code>collapse_sample</code></a></h2>
@@ -4795,31 +4731,6 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <p>Hilbert–Schmidt overlap <code>tr(self* . other) / 2^n</code>, i.e. <code>sum(conj(a_i) * b_i)</code> over shared keys. Both sums must share <code>num_qubits</code>.</p>
 <h2 id="identity_coefficient"><a class="header" href="#identity_coefficient"><code>identity_coefficient()</code></a></h2>
 <p>Coefficient of the <code>I...I</code> term, i.e. <code>tr(O) / 2^n</code>.</p>
-<h2 id="anticommute_histogramsites-axisx-commnone"><a class="header" href="#anticommute_histogramsites-axisx-commnone"><code>anticommute_histogram(sites, axis="x", comm=None)</code></a></h2>
-<p><code>w[n]</code>, the total <code>|c|**2</code> of the strings that anticommute with exactly <code>n</code> of the generators <code>G_q</code>, <code>q in sites</code>, with <code>G = X</code> (<code>axis="x"</code>) or <code>Z</code> (<code>axis="z"</code>); <code>len(sites) + 1</code> entries summing to <code>sum(|c|**2)</code>.
-<code>paulistrings.diagonal_echo(w, delta)</code> turns it into the diagonal echo <code>sum_n w[n] cos(2 delta)**n / sum_n w[n]</code>.</p>
-<h2 id="rotated_overlapsites-delta-axisx-commnone"><a class="header" href="#rotated_overlapsites-delta-axisx-commnone"><code>rotated_overlap(sites, delta, axis="x", comm=None)</code></a></h2>
-<p>The exact operator Loschmidt echo <code>2**-n Tr(A V^dag A V)</code>, <code>V = prod_{q in sites} exp(-i delta G_q)</code>, without materializing <code>V^dag A V</code>; <code>sum(|c|**2)</code> at <code>delta = 0</code>.
-Cost is dominated by the largest class of strings equal away from the flipped bits on <code>sites</code>.</p>
-<p>Both read-outs raise <code>ValueError</code> for an axis other than <code>"x"</code>/<code>"z"</code> or a repeated or out-of-range site.</p>
-<h3 id="under-comm"><a class="header" href="#under-comm">Under <code>comm=</code></a></h3>
-<p>On a <code>propagate(..., comm=comm)</code> result both are collective and return the whole distributed sum’s value on every rank.
-<code>rotated_overlap</code> also needs the result’s partition rows to read none of the coordinates <code>V</code> flips (x-bits of <code>sites</code> for <code>axis="x"</code>, z-bits for <code>"z"</code>), and raises <code>ValueError</code> on every rank otherwise:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>Propagated with</th><th><code>axis="x"</code></th><th><code>axis="z"</code></th></tr>
-</thead>
-<tbody>
-<tr><td><code>partition_row_exclude={"x": sites}</code></td><td>yes</td><td>if the rows happen to avoid</td></tr>
-<tr><td><code>partition_row_exclude={"z": sites}</code></td><td>if the rows happen to avoid</td><td>yes</td></tr>
-<tr><td><code>partition_row_blocks=...</code></td><td>yes (cut rows read only z-bits)</td><td>if the rows happen to avoid</td></tr>
-<tr><td><code>result="gather"</code></td><td>yes</td><td>yes</td></tr>
-<tr><td>default seeded rows</td><td>if the rows happen to avoid</td><td>if the rows happen to avoid</td></tr>
-</tbody>
-</table>
-</div>
-<p>A sum that was not a <code>comm=</code> result, or was since added to another, raises <code>ValueError</code> under <code>comm=</code>; scaling keeps the split.</p>
 <h2 id="propagate_with_stats"><a class="header" href="#propagate_with_stats"><code>propagate_with_stats</code></a></h2>
 <p><code>propagate_with_stats(...)</code> returns <code>(evolved, PropagationStats)</code>; see <a href="#propagate--propagate_with_stats">propagate / propagate_with_stats</a> for the full signature and stats fields.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
@@ -4835,9 +4746,7 @@ Cost is dominated by the largest class of strings equal away from the flipped bi
 <tr><td><code>paulistrings.mpi_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(comm=...)</code> (compiled with the <code>mpi</code> feature)</td></tr>
 <tr><td><code>paulistrings.cuda_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(device=...)</code>: compiled with the <code>cuda</code> feature, <code>libcuda</code> and <code>libnvrtc</code> loadable, and a device visible</td></tr>
 <tr><td><code>paulistrings.GpuPauliSum</code></td><td>the device-resident sum <code>PauliSum.to_device</code> returns, present only in a build with the <code>cuda</code> feature; see <a href="#gpupaulisum"><code>GpuPauliSum</code></a></td></tr>
-<tr><td><code>paulistrings.DEFAULT_SMALL_SUM_THRESHOLD</code></td><td><code>int</code>, the default <code>small_sum_threshold</code> <code>propagate</code>/<code>propagate_with_stats</code> use when the kwarg is omitted</td></tr>
 <tr><td><code>paulistrings.reset_log_cache()</code></td><td>drops pyo3-log’s cached per-logger effective level</td></tr>
-<tr><td><code>paulistrings.diagonal_echo(hist, delta)</code></td><td><code>float</code>, the diagonal echo <code>sum_n w[n] cos(2 delta)**n / sum_n w[n]</code> of a <a href="#anticommute_histogramsites-axisx-commnone"><code>PauliSum.anticommute_histogram</code></a> <code>w</code>; <code>nan</code> when it is all zero</td></tr>
 </tbody>
 </table>
 </div>

@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -328,7 +328,7 @@ faster.</p>
 <tr><th>workload</th><th>channels</th><th>crossover (peak terms)</th></tr>
 </thead>
 <tbody>
-<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong> (1.88 × 10³ with <code>engine="auto"</code>)</td></tr>
+<tr><td>kicked-Ising, 127 q, 5 Trotter steps</td><td>1 355</td><td><strong>2.73 × 10³</strong></td></tr>
 <tr><td>XXZ chain, n = 100, 6 Trotter steps</td><td>1 782</td><td><strong>2.00 × 10⁴</strong></td></tr>
 <tr><td>Haar SU(4) brickwork, n = 36, depth 6</td><td>105</td><td>none on the swept range: faster at every sign-consistent point</td></tr>
 </tbody>
@@ -360,28 +360,6 @@ site.</p>
 <p>Below the crossover jl’s hash-map backend is faster, by up to 3.6× at 68 terms:
 a hash-map insert per term costs little at 10² terms, while the bucketed
 per-layer pipeline costs nearly the same whatever the term count.</p>
-<p>That fixed cost is avoidable. <code>propagate(engine="auto")</code> routes layers below
-2 048 terms through a direct-apply path, worth 1.08–2.69× on exactly those
-configurations
-(<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>),
-measured on the same binary against the default:</p>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th>workload</th><th>tracked set</th><th><code>engine="sorted"</code> (default)</th><th><code>engine="auto"</code></th></tr>
-</thead>
-<tbody>
-<tr><td>XXZ</td><td>1 625 terms</td><td>0.372× (jl faster)</td><td><strong>1.040×, a measured tie</strong></td></tr>
-<tr><td>XXZ</td><td>9 918 terms</td><td>0.873× (jl faster)</td><td><strong>1.051×, a measured tie</strong></td></tr>
-<tr><td>Haar SU(4)</td><td>1 416 terms</td><td>1.097×</td><td><strong>1.660×</strong></td></tr>
-<tr><td>kicked-Ising crossover</td><td>—</td><td>2.73 × 10³ terms</td><td><strong>1.88 × 10³ terms</strong></td></tr>
-</tbody>
-</table>
-</div>
-<p>Above its threshold the path is inert, measured as its own control: SU(4) at
-84 836 terms gives 1.409× with the path on and 1.416× with it off. All nine
-configurations passed the per-layer parity gate with the path enabled — 9 618
-per-layer counts, every one identical to PauliPropagation.jl’s.</p>
 <h2 id="methodology"><a class="header" href="#methodology">Methodology</a></h2>
 <p>How the <code>PauliPropagation.jl</code> comparison is made, and what had to be pinned before any number above could be quoted.</p>
 <h3 id="parity-discipline"><a class="header" href="#parity-discipline">Parity discipline</a></h3>
@@ -519,10 +497,9 @@ truncates during gate application.</li>
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/README.md"><code>benchmarks/README.md</code></a>,
 plus the per-benchmark READMEs linked inline. Cross-engine performance numbers:
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/README.md"><code>jl_performance/README.md</code></a>
-(protocol and headline tables, engine <code>81c568a</code>),
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md"><code>post-optimization/README.md</code></a>
+(protocol and headline tables, engine <code>81c568a</code>)
 and
-<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization-auto/README.md"><code>post-optimization-auto/README.md</code></a>.
+<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/jl_performance/post-optimization/README.md"><code>post-optimization/README.md</code></a>.
 qiskit/openfermion numbers:
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/python/baseline_comparison/README.md"><code>baseline_comparison/README.md</code></a>
 and its committed <code>results.json</code>.</p>

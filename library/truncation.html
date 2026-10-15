@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -192,8 +192,8 @@
 <tbody>
 <tr><td><code>truncation.coeff(eps)</code></td><td><code>|c| &gt; eps</code> — note <strong>strictly</strong> greater; <code>|c| == eps</code> is dropped</td></tr>
 <tr><td><code>truncation.weight(k)</code></td><td>Pauli weight <code>&lt;= k</code></td></tr>
-<tr><td><code>truncation.topn(k)</code></td><td>at most <code>k</code> terms, largest <code>|c|</code> first; exact, no partitioned form</td></tr>
-<tr><td><code>truncation.approx_topn(k)</code></td><td>approximately <code>k</code> terms; partition/comm-safe</td></tr>
+<tr><td><code>truncation.topn(k)</code></td><td>exactly <code>k</code> terms (all of a smaller sum), largest <code>|c|</code> first; no partitioned form</td></tr>
+<tr><td><code>truncation.approx_topn(k)</code></td><td>exactly <code>k</code> terms, ranked by octave of <code>|c|**2</code>; partition/comm-safe</td></tr>
 <tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
 </tbody>
 </table>
@@ -206,13 +206,13 @@
 </thead>
 <tbody>
 <tr><td><code>a &amp; b</code></td><td>both</td></tr>
-<tr><td><code>a | b</code></td><td>either</td></tr>
+<tr><td><code>a | b</code></td><td>either; per-term filters only (<code>coeff</code>, <code>weight</code> and their compositions), so a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code> on either side raises <code>ValueError</code></td></tr>
 </tbody>
 </table>
 </div>
 <h2 id="topn-vs-approx_topn"><a class="header" href="#topn-vs-approx_topn"><code>topn</code> vs. <code>approx_topn</code></a></h2>
-<p><code>topn</code> never splits a tie group of exactly-equal coefficient magnitudes: the whole group is kept if it fits within <code>k</code>, dropped whole otherwise.
-<code>approx_topn</code> bins by octave of <code>\|c\|**2</code> and keeps whole octaves top-down while they fit in <code>n</code>: at most <code>n</code> is kept, the shortfall is bounded by the coarsest excluded octave’s population, and a tie group is always kept whole.
+<p>Both keep every term above a boundary and fill up to <code>k</code> from the boundary itself: for <code>topn</code> the terms tied at the <code>k</code>-th largest magnitude, for <code>approx_topn</code> the octave of <code>\|c\|**2</code> where the count from the top first exceeds <code>k</code>.
+Boundary terms are taken in storage order (bucket order, rank order across partitions), so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="../manual/propagation/truncation.html#choosing-a-policy">Truncation</a> for guidance and <a href="../manual/propagation/truncation.html">Truncation</a> for the mechanism.</p>
 <h2 id="collapse_sample"><a class="header" href="#collapse_sample"><code>collapse_sample</code></a></h2>

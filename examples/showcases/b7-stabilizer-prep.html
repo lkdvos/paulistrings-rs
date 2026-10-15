@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-425cebdb.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -317,7 +317,8 @@ pytest examples/tests/test_showcase_b7.py                        # 0.5 s
 </code></pre>
 <p><a href="../../manual/propagation/settings.html#threads"><code>RAYON_NUM_THREADS=1</code></a> must be exported before the interpreter starts; the
 script asserts the pin and refuses to run unpinned. A full run regenerates
-every artifact in the showcase directory.</p>
+every artifact in the showcase directory.
+<code>--quick</code> writes into the gitignored <code>benchmarks/results/b7-quick/</code> instead, and <code>--out-dir DIR</code> picks another directory.</p>
 <p><strong>Numbers:</strong> every value on this page is sourced from
 <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b7_stabilizer_prep/README.md"><code>examples/b7_stabilizer_prep/README.md</code></a>
 and its committed artifacts — <code>theta_sweep.csv</code>, <code>scaling.csv</code>,

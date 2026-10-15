@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -185,7 +185,7 @@
 <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>A distributed run is a <a href="partitions.html">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
-What is new is the transport (point-to-point MPI instead of in-process channels) and the launch (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning, subsection “Transport composition”).</p>
+What is new is the transport (point-to-point MPI instead of in-process channels) and the launch.</p>
 <h2 id="why-capacity"><a class="header" href="#why-capacity">Why: capacity</a></h2>
 <p><strong>The reason to reach for it is capacity.</strong>
 A sum that does not fit one node’s memory fits <code>P</code> of them, and the per-rank overhead is bounded and does not grow with the rank count.

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -185,7 +185,7 @@
 <h1 id="numa-partitions"><a class="header" href="#numa-partitions">NUMA partitions</a></h1>
 <p>A partitioned run splits the sum across NUMA domains instead of sharing one thread pool across the whole box.
 Each domain gets its own pinned pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning and the engine it runs on is <a href="engine.html">Inside the engine</a>; this page is when to reach for it and how.
+The engine it runs on is <a href="engine.html">Inside the engine</a>; this page is when to reach for it and how.
 To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="mpi.html">MPI ranks</a>.</p>
 <h2 id="when-it-pays"><a class="header" href="#when-it-pays">When partitioning pays</a></h2>
 <p><strong>Locality decides everything</strong>, in the sense <a href="../../examples/benchmarks/engine-performance.html#partitioned">Engine performance</a> measures in full: a dense two-qubit layer with no row crossing runs 4–18% faster at <code>P = 2</code> than <code>P = 1</code>, while any layer that exports rows runs 2–8.4× slower.</p>
@@ -208,7 +208,7 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
 <!-- doctest: skip -->
 <pre><code class="language-python">partitions=["0-7,16-23", "8-15,24-31"]
 </code></pre>
-<p><code>partitions=None</code> or <code>partitions=1</code> is the ordinary unpartitioned run, bit for bit.
+<p><code>partitions=None</code> or <code>partitions=1</code> is the ordinary unpartitioned run.
 On a single-node box <code>"auto"</code> also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a <code>ValueError</code> that points at explicit CPU lists.</p>
 <p><a href="../../library/module-helpers.html"><code>paulistrings.numa_nodes()</code></a> reports what the machine offers, as one CPU list per node intersected with this process’s affinity mask, so a script can decide for itself before choosing.
 <code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
@@ -235,8 +235,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <li><strong>Pinning is Linux-only.</strong> Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.</li>
 <li><strong><code>P</code> is a power of two, at most 64.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, and the engine caps that at 6 (<code>P_MAX_BITS</code>).</li>
 <li><strong>Peak memory is above a single-pool run’s.</strong> A partitioned run holds <code>P</code> shares of the sum plus one layer’s exchange buffers, which are pooled and reused rather than freed between layers.</li>
-<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
-At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
+<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.</li>
 </ul>
 <h2 id="see-it-in-use"><a class="header" href="#see-it-in-use">See it in use</a></h2>
 <p><a href="../../examples/benchmarks/engine-performance.html#partitioned">Engine performance</a> has the <code>P = 2</code> versus <code>P = 1</code> tables per host and thread count, the per-layer times of an exchange-free layer, the bandwidth counters behind the gain, and the benchmarking protocol for reproducing them.</p>

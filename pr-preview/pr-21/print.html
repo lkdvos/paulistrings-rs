@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-baf5421b.js";
+            window.path_to_searchindex_js = "searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -279,7 +279,7 @@ t=0.50  &lt;X&gt;=+0.183984  terms=98698
 <tr><td><a href="#manual">Manual</a></td><td>operators, circuits, engine and propagation, measurements — read start to finish, or by topic</td></tr>
 <tr><td><a href="#examples">Examples</a></td><td>a guided first propagation, measured showcases and benchmarks, and comparisons against other tools</td></tr>
 <tr><td><a href="#library">Library</a></td><td>this book’s Python API reference</td></tr>
-<tr><td><a href="api/paulistrings/index.html">Rust API</a></td><td>rustdoc for the core crate, plus <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> on GitHub — the hand-off point for Rust users, not part of this book</td></tr>
+<tr><td><a href="api/paulistrings/index.html">Rust API</a></td><td>rustdoc for the core crate — the hand-off point for Rust users, not part of this book</td></tr>
 </tbody>
 </table>
 </div>
@@ -1223,8 +1223,7 @@ They are tuning knobs for the engine’s own benchmarks rather than for users, a
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
 Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
 Compare evolved sums with <code>numpy.allclose</code> on <code>coefficients_array()</code>, as <a href="#splitting-a-circuit-is-free">Splitting a circuit is free</a> does, never with equality.</p>
-<p>Bit-identical output is only expected between runs at a fixed bucket count and the same hash seed — cosets are write-disjoint and each is applied sequentially, so this holds <em>across thread counts too</em>, and a <code>partitions=1</code> run reproduces the unpartitioned path byte for byte; across bucket counts, seeds or partition counts the bar drops back to tolerance.
-Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
+<p>Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
 <h2 id="untruncated-runs"><a class="header" href="#untruncated-runs">Untruncated runs</a></h2>
 <p><code>policy=None</code> applies no truncation at all; only coefficients that are exactly zero after a merge are dropped.
 The result is the exact evolved operator, and it is the reference the <a href="#score-against-an-exact-reference-where-you-can">cutoff sweep</a> is scored against wherever the problem is small enough to afford it.</p>
@@ -1239,12 +1238,12 @@ Estimate <code>peak_terms</code> from a prefix and the bytes-per-term arithmetic
 <h1 id="inside-the-engine"><a class="header" href="#inside-the-engine">Inside the engine</a></h1>
 <p><code>paulistrings</code> evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer’s data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
-The companion <a href="#engine-performance">Engine performance</a> page puts measured numbers to each claim; <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the invariants-only reference this page narrates — cited by section below rather than restated in full.</p>
+The companion <a href="#engine-performance">Engine performance</a> page puts measured numbers to each claim.</p>
 <h2 id="the-propagation-loop"><a class="header" href="#the-propagation-loop">The propagation loop</a></h2>
-<p>A <code>PauliSum</code> stores each term as a symplectic key: qubit <code>i</code>’s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient (ARCHITECTURE.md §Data-Model).
+<p>A <code>PauliSum</code> stores each term as a symplectic key: qubit <code>i</code>’s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient.
 Under this encoding Pauli multiplication is bitwise XOR of keys plus a phase, and the phase is folded into the coefficient at the boundary, so a key is a plain element of the vector space <code>GF(2)^{2n}</code>.</p>
 <p>Each circuit layer applies one channel to every term.
-A channel with support on <code>k</code> qubits maps an input key <code>v</code> to outputs <code>v ⊕ d</code>, where <code>d</code> ranges over a small <strong>delta set</strong> <code>D</code> determined by the channel alone: a Pauli rotation of any generator weight has <code>|D| = 2</code> (identity and the generator), a two-qubit Clifford at most 4, a dense two-qubit unitary at most 16 (ARCHITECTURE.md §Bucketing).
+A channel with support on <code>k</code> qubits maps an input key <code>v</code> to outputs <code>v ⊕ d</code>, where <code>d</code> ranges over a small <strong>delta set</strong> <code>D</code> determined by the channel alone: a Pauli rotation of any generator weight has <code>|D| = 2</code> (identity and the generator), a two-qubit Clifford at most 4, a dense two-qubit unitary at most 16.
 Applying a layer means fanning every term out over <code>D</code>, then recombining terms that landed on the same key.</p>
 <p>The recombination is the interesting part.
 Done naively it is a global sort or a concurrent hash map per layer, at millions to hundreds of millions of terms.</p>
@@ -1262,17 +1261,16 @@ Linearity is the property everything else follows from:</p>
 </code></pre>
 <p>A term in bucket <code>i</code> fans out only into buckets <code>i ⊕ h(d)</code> for <code>d ∈ D</code> — so the layer’s entire data-movement pattern is a function of the channel and the hash, known <strong>before touching a single term</strong>.
 Equal keys always share a bucket (h is a function), so duplicates can never straddle buckets.
-Because <code>H</code> is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one (ARCHITECTURE.md §Hash).</p>
+Because <code>H</code> is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one.</p>
 <p>Bucket count follows the sum’s size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
-Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucketing, §Bucket-Policy).</p>
+Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited.</p>
 <h2 id="write-disjoint-cosets"><a class="header" href="#write-disjoint-cosets">Write-disjoint cosets</a></h2>
 <p>Take the span of <code>h(D)</code> in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: <strong>a coset is a closed task</strong>.
 That is the engine’s whole parallel decomposition — one coset per work-stealing task, and by construction no two tasks touch the same bucket, so a layer runs with no atomics, no locks, and no cross-thread reconciliation of any kind.
-Load balance comes from the random hash plus work-stealing (ARCHITECTURE.md §Parallelism).</p>
+Load balance comes from the random hash plus work-stealing.</p>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="assets/design/bucket-cosets.svg" alt="Bucket space partitioned into cosets"><span class="img-wrapper"><img src="assets/design/bucket-cosets.svg" alt="Bucket space partitioned into cosets"></span></label></p>
-<p>At a fixed bucket count and hash seed this structure also makes the output bitwise identical across thread counts and repeat runs: cosets are write-disjoint and work within one is sequential.
-Across bucket counts or seeds, output agrees to floating-point tolerance — equal-key summation order is deliberately unspecified (ARCHITECTURE.md §Determinism).</p>
+<p>Output agrees to floating-point tolerance across runs — equal-key summation order is deliberately unspecified.</p>
 <h2 id="in-place-layer-execution"><a class="header" href="#in-place-layer-execution">In-place layer execution</a></h2>
 <p>Each coset task, independently:</p>
 <ol>
@@ -1286,29 +1284,28 @@ The inner loop per (term, delta) is a few bit extractions, one table lookup, one
 <p>Two structural tricks keep the moved bytes down.
 The identity delta’s stream keeps its source keys, so it inherits the source bucket’s sorted order and is never sorted; and when the identity amplitude is dense (every rotation and general unitary), the gather materializes only the 16-byte coefficients and the merge borrows the key columns from the source bucket in place — identity keys are neither written nor re-read.
 The rest-stream sort itself exploits that a gather run is a concatenation of already-sorted per-delta streams; a radix variant takes over for dense two-qubit PTMs, where the sort dominates the layer.
-The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes (ARCHITECTURE.md §Engine).</p>
+The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes.</p>
 <p>Channels that never change keys at all (depolarizing, dephasing, Pauli gates) bypass the whole pipeline as a parallel coefficient rescale.</p>
 <h2 id="channel-preparation"><a class="header" href="#channel-preparation">Channel preparation</a></h2>
 <p>Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel’s own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
-Pauli rotations above two qubits prepare specially, since their delta set is just <code>{0, generator}</code> at any weight (ARCHITECTURE.md §Prepared-Channels).</p>
+Pauli rotations above two qubits prepare specially, since their delta set is just <code>{0, generator}</code> at any weight.</p>
 <h2 id="truncation-1"><a class="header" href="#truncation-1">Truncation</a></h2>
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; <code>TopN</code> and its histogram-based approximation live there.
 Policies compose with and/or combinators; or combines per-term filters only.
-Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code>/<code>ApproxTopN</code> keep exactly <code>n</code>, filling from the boundary in bucket order (ARCHITECTURE.md §Truncation).</p>
+Magnitude comparisons use <code>|c|²</code> rather than <code>|c|</code> (the same ordering, no <code>hypot</code> on the hot path), and <code>TopN</code>/<code>ApproxTopN</code> keep exactly <code>n</code>, filling from the boundary in bucket order.</p>
 <h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
-<p><a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
-The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs on <code>engine::bucketed</code>, <code>engine::merge</code>, and <code>pauli_sum</code> carry the precise per-module contracts.</p>
-<p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a>, and <code>ARCHITECTURE.md</code> §Partitioning for the mechanism.</p>
-<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism, §Truncation; module docs <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs"><code>engine/bucketed.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs"><code>engine/merge.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/mod.rs"><code>pauli_sum/mod.rs</code></a>.</p>
+<p>The rustdoc under <a href="api/paulistrings/index.html">/api/</a> documents the public types; the module docs carry the engine’s contracts next to the code that keeps them.</p>
+<p>The same loop runs with the sum split across NUMA domains or MPI ranks — <a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a> and <a href="#cuda-devices">GPU</a>.</p>
+<p>Sources: module docs <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/coset.rs"><code>engine/coset.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/hash.rs"><code>pauli_sum/hash.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs"><code>engine/bucketed.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs"><code>engine/merge.rs</code></a>, <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/mod.rs"><code>pauli_sum/mod.rs</code></a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="numa-partitions"><a class="header" href="#numa-partitions">NUMA partitions</a></h1>
 <p>A partitioned run splits the sum across NUMA domains instead of sharing one thread pool across the whole box.
 Each domain gets its own pinned pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning and the engine it runs on is <a href="#inside-the-engine">Inside the engine</a>; this page is when to reach for it and how.
+The engine it runs on is <a href="#inside-the-engine">Inside the engine</a>; this page is when to reach for it and how.
 To split across <em>processes</em> instead, for capacity rather than bandwidth, see <a href="#mpi-ranks">MPI ranks</a>.</p>
 <h2 id="when-it-pays"><a class="header" href="#when-it-pays">When partitioning pays</a></h2>
 <p><strong>Locality decides everything</strong>, in the sense <a href="#partitioned">Engine performance</a> measures in full: a dense two-qubit layer with no row crossing runs 4–18% faster at <code>P = 2</code> than <code>P = 1</code>, while any layer that exports rows runs 2–8.4× slower.</p>
@@ -1331,7 +1328,7 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
 <!-- doctest: skip -->
 <pre><code class="language-python">partitions=["0-7,16-23", "8-15,24-31"]
 </code></pre>
-<p><code>partitions=None</code> or <code>partitions=1</code> is the ordinary unpartitioned run, bit for bit.
+<p><code>partitions=None</code> or <code>partitions=1</code> is the ordinary unpartitioned run.
 On a single-node box <code>"auto"</code> also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a <code>ValueError</code> that points at explicit CPU lists.</p>
 <p><a href="#module-helpers"><code>paulistrings.numa_nodes()</code></a> reports what the machine offers, as one CPU list per node intersected with this process’s affinity mask, so a script can decide for itself before choosing.
 <code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
@@ -1358,8 +1355,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <li><strong>Pinning is Linux-only.</strong> Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.</li>
 <li><strong><code>P</code> is a power of two, at most 64.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, and the engine caps that at 6 (<code>P_MAX_BITS</code>).</li>
 <li><strong>Peak memory is above a single-pool run’s.</strong> A partitioned run holds <code>P</code> shares of the sum plus one layer’s exchange buffers, which are pooled and reused rather than freed between layers.</li>
-<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.
-At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
+<li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.</li>
 </ul>
 <h2 id="see-it-in-use-2"><a class="header" href="#see-it-in-use-2">See it in use</a></h2>
 <p><a href="#partitioned">Engine performance</a> has the <code>P = 2</code> versus <code>P = 1</code> tables per host and thread count, the per-layer times of an exchange-free layer, the bandwidth counters behind the gain, and the benchmarking protocol for reproducing them.</p>
@@ -1367,7 +1363,7 @@ At <code>P = 1</code> the output is bitwise the unpartitioned engine’s.</li>
 <h1 id="mpi-ranks"><a class="header" href="#mpi-ranks">MPI ranks</a></h1>
 <p>A distributed run is a <a href="#numa-partitions">partitioned run</a> with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
-What is new is the transport (point-to-point MPI instead of in-process channels) and the launch (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Partitioning, subsection “Transport composition”).</p>
+What is new is the transport (point-to-point MPI instead of in-process channels) and the launch.</p>
 <h2 id="why-capacity"><a class="header" href="#why-capacity">Why: capacity</a></h2>
 <p><strong>The reason to reach for it is capacity.</strong>
 A sum that does not fit one node’s memory fits <code>P</code> of them, and the per-rank overhead is bounded and does not grow with the rank count.
@@ -1525,7 +1521,7 @@ Intra-node, that is what would take the 2-rank remote layer below the 3.5× in <
 <h1 id="cuda-devices"><a class="header" href="#cuda-devices">CUDA devices</a></h1>
 <p>A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a <a href="#numa-partitions">partitioned run</a>: one partition on one device, one partition per listed device, or one device per MPI rank.
 Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §GPU; this page is when to reach for it and how.</p>
+The engine it runs is <a href="#inside-the-engine">Inside the engine</a>; this page is when to reach for it and how.</p>
 <h2 id="when-it-pays-1"><a class="header" href="#when-it-pays-1">When a device pays</a></h2>
 <p><strong>Dense two-qubit layers at a million terms and up are where the device wins.</strong>
 On an RTX A6000 a saturated <code>su4</code> layer runs 11× faster on wall than the 16-thread host engine at 1.41e7 terms, and 15× at 5.65e7 (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> § ccqlin038 — GPU).
@@ -1640,8 +1636,7 @@ A Clifford layer that crosses a partition boundary keeps the fused layer, which 
 On a pair the driver reports as unsupported the copy stages through the host instead of faulting, and the outcome is logged.</p>
 <h2 id="what-changes-on-a-device"><a class="header" href="#what-changes-on-a-device">What changes on a device</a></h2>
 <p><strong>Results agree to floating-point tolerance, not bit for bit.</strong>
-The device sums equal keys in a different order from the host, as a different bucket count does (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Determinism).
-No reduction uses a floating-point atomic, so two runs on the same device give the same bits.</p>
+The device sums equal keys in a different order from the host, as a different bucket count does.</p>
 <p><strong>Storage order is the host’s canonical order, but for the device’s own bucket count.</strong>
 The download re-sorts each bucket to the host’s lexicographic order, and the device chooses its bucket count by rows per block rather than terms per bucket, so <code>x_array()</code> of a device result can list the terms in a different order from a host run’s.
 Compare two results by key, never by position.</p>
@@ -3892,7 +3887,7 @@ A remote layer is <strong>transfer-bound</strong> — the pipeline runs the cose
 <h2 id="noise-floor"><a class="header" href="#noise-floor">Noise floor</a></h2>
 <p>Single-shot campaign noise on the reference host is ±5–8% single-threaded and ±10–26% at 8–32 threads; untouched code moves that much between campaigns.
 Effects below that need the interleaved A/B protocol (<code>scripts/ab-compare.sh</code>), whose acceptance criterion is direction consistency across every pair.</p>
-<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §Data-Model, §Width (layout and dispatch).</p>
+<p>Sources: <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> (roofline tables, phase shares, bandwidth ceilings, partitioned and distributed tables, all achieved numbers and verdicts); <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/benchmarks/PROFILING.md"><code>benchmarks/PROFILING.md</code></a> (byte model, interpretation rules, noise floor); the <a href="api/paulistrings/index.html">Rust API</a> (layout and dispatch).</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="against-other-tools"><a class="header" href="#against-other-tools">Against other tools</a></h1>
 <p><em>Manual: <a href="#truncation">Truncation</a>, <a href="#engine-and-propagation">Engine and propagation</a></em></p>
@@ -4527,7 +4522,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><th>Value</th><th>Placement</th></tr>
 </thead>
 <tbody>
-<tr><td><code>None</code> or <code>1</code></td><td>unpartitioned — bit-for-bit today’s path</td></tr>
+<tr><td><code>None</code> or <code>1</code></td><td>unpartitioned</td></tr>
 <tr><td><code>"auto"</code></td><td>one partition per NUMA node (falls back to unpartitioned on a single-node box)</td></tr>
 <tr><td>an <code>int</code> power of two <code>&gt;= 2</code>, at most 64</td><td>caps placement at that many nodes</td></tr>
 <tr><td><code>list[list[int]]</code></td><td>explicit disjoint CPU lists, one partition per list</td></tr>

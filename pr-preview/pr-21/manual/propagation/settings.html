@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
+            window.path_to_searchindex_js = "../../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -263,8 +263,7 @@ They are tuning knobs for the engine’s own benchmarks rather than for users, a
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
 Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
 Compare evolved sums with <code>numpy.allclose</code> on <code>coefficients_array()</code>, as <a href="incremental.html#splitting-a-circuit-is-free">Splitting a circuit is free</a> does, never with equality.</p>
-<p>Bit-identical output is only expected between runs at a fixed bucket count and the same hash seed — cosets are write-disjoint and each is applied sequentially, so this holds <em>across thread counts too</em>, and a <code>partitions=1</code> run reproduces the unpartitioned path byte for byte; across bucket counts, seeds or partition counts the bar drops back to tolerance.
-Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
+<p>Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.</p>
 <h2 id="untruncated-runs"><a class="header" href="#untruncated-runs">Untruncated runs</a></h2>
 <p><code>policy=None</code> applies no truncation at all; only coefficients that are exactly zero after a merge are dropped.
 The result is the exact evolved operator, and it is the reference the <a href="validation.html#score-against-an-exact-reference-where-you-can">cutoff sweep</a> is scored against wherever the problem is small enough to afford it.</p>

@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-baf5421b.js";
+            window.path_to_searchindex_js = "../searchindex-1a61195d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -229,7 +229,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><th>Value</th><th>Placement</th></tr>
 </thead>
 <tbody>
-<tr><td><code>None</code> or <code>1</code></td><td>unpartitioned — bit-for-bit today’s path</td></tr>
+<tr><td><code>None</code> or <code>1</code></td><td>unpartitioned</td></tr>
 <tr><td><code>"auto"</code></td><td>one partition per NUMA node (falls back to unpartitioned on a single-node box)</td></tr>
 <tr><td>an <code>int</code> power of two <code>&gt;= 2</code>, at most 64</td><td>caps placement at that many nodes</td></tr>
 <tr><td><code>list[list[int]]</code></td><td>explicit disjoint CPU lists, one partition per list</td></tr>

@@ -91,7 +91,7 @@ Quiet-box campaigns run on an exclusive Slurm node from `scripts/slurm/`.
 Rust and Python share one version: `scripts/bump-version.sh X.Y.Z` bumps `Cargo.toml` and `pyproject.toml` together, committed together (CI's `version-sync` job enforces it).
 Before tagging: `cargo test --workspace`, clippy, and the `mpi`, `python` and `docsrs` CI jobs green on `main`; the `docsrs` job is what docs.rs builds, locally `RUSTDOCFLAGS="-D warnings --cfg docsrs" cargo +nightly doc --no-deps -p paulistrings --features phase-timing,test-utils,cuda`.
 Dry-run `.github/workflows/release.yml` via `workflow_dispatch` before the real tag.
-**Pushing the tag is the user's step, never an agent's**: `git tag vX.Y.Z && git push origin vX.Y.Z` triggers `release.yml`, which publishes wheels to the GitHub Release.
+**Pushing the tag is the user's step, never an agent's**: `git tag vX.Y.Z && git push origin vX.Y.Z` triggers `release.yml`, which builds the wheels (`cuda` on Linux and Windows, never `mpi`) and the sdist, attaches them to the GitHub Release, and publishes them to PyPI by Trusted Publishing from the `pypi` environment.
 crates.io publishing is a separate manual `workflow_dispatch` of `.github/workflows/crates-publish.yml` (default `--dry-run`), after the wheel release; it authenticates by crates.io Trusted Publishing, so the repository holds no registry token.
 
 ## Progress logging

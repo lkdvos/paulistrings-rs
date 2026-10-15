@@ -31,7 +31,7 @@ python-source = "python"
 features = ["pyo3/extension-module"]
 
 # What a bare `uv sync`/`uv run` installs, and the venv's maturin builds the extension; keep it in step with the `dev` extra.
-# Not `paulistrings-rs[dev]`: outside uv (`maturin develop` installs this group) a self-referencing extra resolves against PyPI, where this project is not published.
+# Not `paulistrings-rs[dev]`: outside uv (`maturin develop` installs this group) a self-referencing extra resolves against PyPI rather than this checkout.
 [dependency-groups]
 dev = ["pytest>=7", "pytest-benchmark>=4", "ruff", "maturin>=1.5,<2.0"]
 

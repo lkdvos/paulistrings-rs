@@ -1,52 +1,62 @@
 # Installation
 
-The distribution is `paulistrings-rs` and the import is `import paulistrings`; it is not published to PyPI, where `paulistrings` is an unrelated project.
-Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to [GitHub Releases](https://github.com/lkdvos/paulistrings-rs/releases) instead — no Rust toolchain needed.
-
-With the [GitHub CLI](https://cli.github.com/), which resolves the latest release for you:
-
 ```bash
-gh release download --repo lkdvos/paulistrings-rs --pattern '*manylinux_2_28_x86_64.whl'
-pip install ./paulistrings_rs-*.whl
+pip install paulistrings-rs        # or: uv add paulistrings-rs
 ```
 
-Substitute the platform tag for your machine: `manylinux_2_28_x86_64` (Linux, including Rusty/Popeye), `macosx_11_0_arm64` (Apple silicon) or `macosx_10_12_x86_64` (Intel Mac).
-One abi3 wheel per platform serves every Python >= 3.9.
+The distribution is `paulistrings-rs` and the import is `import paulistrings`.
+Wheels cover Linux x86_64 and aarch64 (`manylinux_2_28`, glibc 2.28 or newer, which includes every Rusty node), macOS x86_64 and arm64, and Windows x86_64, and one abi3 wheel per platform serves every Python 3.9 or newer.
+Anywhere else pip builds the source distribution, which needs a Rust toolchain from [rustup](https://rustup.rs).
 
-Without `gh`, take the `.whl` asset for your platform from the [latest release](https://github.com/lkdvos/paulistrings-rs/releases/latest) and `pip install ./paulistrings_rs-*.whl`.
+Core propagation needs nothing but `numpy`.
+The `examples` extra adds `stim` and `qiskit`, which `interop.circuit_from_stim`, `interop.circuit_from_qiskit` and `interop.stabilizers_from_stim` import on first use, plus `qiskit-aer` and `matplotlib` for the example suite:
 
-These wheels cover the default engine only.
-The `mpi` feature is never bundled into a wheel — no MPI implementation is portable across clusters/vendors — so it stays a from-source pip install against the cluster's loaded MPI module:
+```bash
+pip install "paulistrings-rs[examples]"
+```
+
+With the package installed, the [Manual](manual/index.md) is where to go next; it opens with a four-line run and explains each part in turn.
+[First propagation](examples/first-propagation.md) carries that same run further, into term inspection and a validation sweep.
+
+## GPUs
+
+The Linux and Windows wheels include the CUDA backend, and need no CUDA toolkit to install.
+At runtime a device needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path: `module load cuda/12.8.0` on a Flatiron host, `pip install nvidia-cuda-nvrtc-cu12` elsewhere ([CUDA devices](manual/propagation/gpu.md#runtime-libraries)).
+Without them `paulistrings.cuda_available()` is `False` and everything else works.
+
+## MPI
+
+The `mpi` feature is never in a wheel, since no MPI build is portable across clusters, so it is a source build against the cluster's loaded MPI module.
+`mpi4py` must be built against that same MPI, so it is installed from source first:
 
 ```bash
 module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
-  --config-settings=build-args="--features mpi"
+pip install mpi4py --no-binary mpi4py
+pip install paulistrings-rs --no-binary paulistrings-rs --config-settings=build-args="--features cuda,mpi"
 ```
 
-The `cuda` feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.
-
-```bash
-pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
-  --config-settings=build-args="--features cuda"
-```
-
-At runtime it needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path: `module load cuda/12.8.0` on a Flatiron host, or `pip install nvidia-cuda-nvrtc-cu12` with its `lib` directory on `LD_LIBRARY_PATH` elsewhere.
-Without them `paulistrings.cuda_available()` is `False` and everything else works as in the default build.
+A source build replaces the wheel, so `--features` names every feature the build keeps; `cuda` is the one to drop on a machine without NVIDIA devices.
+Running across ranks is covered in [MPI ranks](manual/propagation/mpi.md).
 
 ### GPU and MPI features {#gpu-and-mpi-features}
 
-`cuda` and `mpi` together give one GPU per MPI rank ([MPI ranks](manual/propagation/mpi.md#gpu-per-rank)), whose exchange runs over NCCL, so both module sets plus the NCCL library; NCCL is `dlopen`ed like `libcuda`/`libnvrtc`, so it needs no toolkit to build either.
+The build above with `cuda,mpi` gives one GPU per MPI rank ([MPI ranks](manual/propagation/mpi.md#gpu-per-rank)), whose exchange runs over NCCL.
+NCCL is loaded at runtime like `libcuda` and `libnvrtc`, so it needs no toolkit to build; at runtime it needs `module load cuda/12.8.0 nccl/2.23.4-1` on a Flatiron host.
+
+## Rust
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
-export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
-  --config-settings=build-args="--features cuda,mpi"
+cargo add paulistrings
 ```
 
-Building from source (for contributors, or platforms without a release wheel) uses [uv](https://docs.astral.sh/uv/), which creates `./.venv` from the locked dependencies and builds the extension into it:
+The crate is the engine the Python package wraps, with its features off by default: `cuda`, `mpi` (which needs an MPI installation and `libclang` to build) and `phase-timing`.
+Its [API documentation](https://docs.rs/paulistrings) is a developer guide that states each item's contracts.
+Performance numbers in these docs are measured with `lto = "fat"` and `codegen-units = 1` in the release profile.
+
+## Developing
+
+A checkout builds with [uv](https://docs.astral.sh/uv/), which creates `./.venv` from the locked dependencies and builds the extension into it:
 
 ```bash
 git clone https://github.com/lkdvos/paulistrings-rs
@@ -55,26 +65,7 @@ cd paulistrings-rs
 uv run pytest python/paulistrings/tests
 ```
 
-The Python version comes from `.python-version` and the Rust toolchain is pinned in `rust-toolchain.toml` (1.94.0), so neither needs choosing.
+The Python version comes from `.python-version` and the Rust toolchain is pinned in `rust-toolchain.toml`, so neither needs choosing.
 `uv run` rebuilds the extension whenever a Rust source changed, so there is no separate rebuild step; from an activated `.venv`, `uv sync` does the same.
-
-Build `--release`. The release profile uses `lto = "fat"` and
-`codegen-units = 1`; a debug build of this workload is dramatically slower, and
-never worth benchmarking.
-
-Core propagation needs nothing but `numpy`.
-The optional extras matter for the example suite and the cross-library
-benchmarks, and also cover `stim`/`qiskit`, which `interop.circuit_from_stim`,
-`interop.circuit_from_qiskit` and `interop.stabilizers_from_stim` import lazily
-on first use — install one of these extras before reaching for those:
-
-```bash
-uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
-```
-
-`uv sync` removes whatever an extra it is not given had installed, so name every extra each time; `uv run` only adds.
-
-With the package installed, the [Manual](manual/index.md) is where to go next; it opens with a four-line run and explains each part in turn.
-[First propagation](examples/first-propagation.md) carries that same run further, into term inspection and a validation sweep.
-Building for MPI is covered separately in [MPI ranks](manual/propagation/mpi.md#building-from-source), since it needs the extra build step above plus a launcher, and building for a GPU in [CUDA devices](manual/propagation/gpu.md#building-from-source).
+`uv sync` removes whatever an extra it is not given had installed, so name every extra each time (`uv sync --extra examples --extra bench`); `uv run` only adds.
+Feature builds of a checkout are in [CUDA devices](manual/propagation/gpu.md#building-from-source) and [MPI ranks](manual/propagation/mpi.md#building-from-source).

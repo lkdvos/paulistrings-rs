@@ -21,28 +21,17 @@ Inspired by [`PauliStrings.jl`](https://github.com/nicolasloizeau/PauliStrings.j
 - **Operator-basis Pauli propagation at scale** — evolve the observable, not the wavefunction, in either the Schroedinger or Heisenberg picture.
 - **GF(2)-bucketed, write-disjoint parallel engine** — layers are partitioned by a GF(2)-linear hash, so output buckets are statically predictable and never collide across threads.
 - **Partitioned across NUMA domains and MPI ranks** — Support for scaling to arbitrary amount of nodes.
-- **CUDA backend** — one GPU runs a saturated dense two-qubit layer about 10× faster than a 16-thread host, scaling to several devices in one process or one GPU per MPI rank, behind the off-by-default `cuda` feature (`device=` from Python).
+- **CUDA backend** — one GPU runs a saturated dense two-qubit layer about 10× faster than a 16-thread host, scaling to several devices in one process or one GPU per MPI rank, included in the Linux and Windows wheels (`device=` from Python).
 - **Open extension traits for research** — plug in a custom `Channel` (gate or noise model) or `TruncationPolicy` without touching the engine.
 - **Rust core, Python front-end** — Low-overhead efficient engine with a convenient interface.
 
 ## Python quickstart
 
-Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to [GitHub Releases](https://github.com/lkdvos/paulistrings-rs/releases) — no Rust toolchain needed:
-
 ```bash
-pip install "paulistrings-rs @ https://github.com/lkdvos/paulistrings-rs/releases/download/vX.Y.Z/paulistrings_rs-X.Y.Z-cp39-abi3-<platform-tag>.whl"
+pip install paulistrings-rs        # or: uv add paulistrings-rs
 ```
 
-where `<platform-tag>` is `manylinux_2_28_x86_64` (Linux, incl. Rusty/Popeye), `macosx_11_0_arm64` (Apple silicon) or `macosx_10_12_x86_64` (Intel Mac); one abi3 wheel per platform serves every Python >= 3.9.
-Or download the `.whl` asset for your platform and `pip install ./paulistrings_rs-*.whl`.
-These wheels cover the default engine only; the `mpi` feature is never bundled into a wheel (no MPI implementation is portable across clusters) — see `CLAUDE.md` for the from-source `mpi` install.
-
-Building from source (for contributors, or platforms without a release wheel):
-
-```bash
-./scripts/setup.sh          # one-time, with uv: creates .venv, builds the extension
-source .venv/bin/activate
-```
+Wheels cover Linux, macOS and Windows, with the CUDA backend included on Linux and Windows; [Installation](https://lkdvos.github.io/paulistrings-rs/installation.html) covers GPUs, MPI and building from source.
 
 ```python
 import math

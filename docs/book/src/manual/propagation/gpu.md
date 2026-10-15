@@ -14,20 +14,12 @@ Every layer carries a fixed cost of a few launches and synchronizations that the
 The upload and download are paid once per `propagate(device=...)` call.
 A loop of many short calls — a Trotter time series, a cutoff sweep over the same prefix — should hold the sum on the device with [`PauliSum.to_device`](#resident-sums) instead.
 
-The feature is off by default and the released wheels omit it.
+The Linux and Windows wheels include the backend; the macOS wheels, with no CUDA driver to load, omit it.
 [`paulistrings.cuda_available()`](../../library/module-helpers.md) says whether this build can run on a device and one is visible, and `device=` in a build without the feature raises `RuntimeError`.
 
-## Building from source
+## Runtime libraries
 
-The `cuda` feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.
-
-```bash
-export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
-uv sync
-```
-
-Outside a checkout, the `pip install` in [Installation](../../installation.md) does the same.
-
+The backend needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.
 At runtime the process needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path.
 On a Flatiron host `module load cuda/12.8.0` provides the latter; elsewhere `pip install nvidia-cuda-nvrtc-cu12` does, with its `lib` directory added to `LD_LIBRARY_PATH`:
 
@@ -36,8 +28,19 @@ pip install nvidia-cuda-nvrtc-cu12
 export LD_LIBRARY_PATH="$(python -c 'import nvidia.cuda_nvrtc as m; print(list(m.__path__)[0])')/lib:$LD_LIBRARY_PATH"
 ```
 
+On Windows the libraries are found through `PATH` instead.
+
 A missing library makes `cuda_available()` return `False` rather than fail at import.
 The first propagation at each width compiles its kernels, which takes several seconds; later calls in the process reuse them, and an on-disk cache (`$PAULISTRINGS_KERNEL_CACHE`, default `~/.cache/paulistrings/kernels`, `off` to disable) makes the first call in a later process reuse them too.
+
+## Building from source
+
+A checkout builds the feature into its uv venv:
+
+```bash
+export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
+uv sync
+```
 
 ## Python
 

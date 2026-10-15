@@ -14,7 +14,7 @@ Its Python package, `paulistrings-rs`, is the user interface and is documented o
 
 ## Rust API
 
-The crate root re-exports [`PauliSum`], [`propagate`] and [`propagate_with`], the built-in channels and truncation policies, and the [`Channel`] and [`TruncationPolicy`] extension traits.
+`cargo add paulistrings`; the crate root re-exports [`PauliSum`], [`propagate`] and [`propagate_with`], the built-in channels and truncation policies, and the [`Channel`] and [`TruncationPolicy`] extension traits.
 The off-by-default features add per-phase timing (`phase-timing`), the MPI transport (`mpi`) and the CUDA backend (`cuda`).
 The [API documentation](https://docs.rs/paulistrings) is a developer guide in which each item states the contracts it keeps.
 [`CLAUDE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/CLAUDE.md) lists the build, test and benchmark commands.

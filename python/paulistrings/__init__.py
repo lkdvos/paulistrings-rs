@@ -21,6 +21,8 @@ reports what ``partitions="auto"`` has to place against,
 ``cuda_available()`` whether it was compiled with ``cuda`` *and* a CUDA device is visible.
 """
 
+from importlib.metadata import version as _distribution_version
+
 from . import _paulistrings
 from ._paulistrings import (
     Circuit,
@@ -37,6 +39,8 @@ from ._paulistrings import (
 from . import gates, noise, truncation
 from . import interop
 from . import io
+
+__version__ = _distribution_version("paulistrings-rs")
 
 __all__ = [
     "Circuit",

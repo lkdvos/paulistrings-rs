@@ -16,7 +16,7 @@ It is an off-by-default build option the released wheel omits, so the default wh
 
 ## Building from source
 
-The `mpi` feature needs an MPI installation (for `mpicc`, which rsmpi's build script probes) and a `libclang` for its bindgen; the pip build against a cluster's loaded MPI module is in [Installation](../../installation.md).
+The `mpi` feature needs an MPI installation (for `mpicc`, which rsmpi's build script probes) and a `libclang` for its bindgen; [Installation](../../installation.md#mpi-and-multi-node-runs) has the pip build against a cluster's MPI, a check script and Slurm job scripts.
 
 `mpi4py` must be built against the *same* MPI the extension links; the boundary checks the width of `MPI_Comm` and refuses a mismatch rather than corrupting a handle.
 In a checkout, `scripts/sync-mpi-venv.sh` builds a venv `./.venv-mpi` with uv: the extension with `--features mpi`, and `mpi4py` compiled from source against the loaded MPI.

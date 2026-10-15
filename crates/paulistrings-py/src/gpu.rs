@@ -375,8 +375,8 @@ mod cuda {
 #[cfg(not(feature = "cuda"))]
 pub(crate) fn cuda_unavailable_error() -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(
-        "paulistrings was built without CUDA support; rebuild with \
-         `maturin develop --release --features cuda`",
+        "paulistrings was built without CUDA support, which only the Linux and Windows wheels \
+         include; see https://lkdvos.github.io/paulistrings-rs/installation.html#gpus",
     )
 }
 

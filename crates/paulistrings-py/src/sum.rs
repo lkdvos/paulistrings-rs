@@ -823,7 +823,8 @@ fn comm_requested(comm: Option<&Bound<'_, PyAny>>) -> bool {
 #[cfg(not(feature = "mpi"))]
 fn mpi_unavailable_error() -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(
-        "paulistrings was built without MPI support; rebuild with `maturin develop --features mpi`",
+        "paulistrings was built without MPI support, which no wheel includes; build it from source as in \
+         https://lkdvos.github.io/paulistrings-rs/installation.html#mpi-and-multi-node-runs",
     )
 }
 

@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-77f9d504.js";
+            window.path_to_searchindex_js = "searchindex-8a905066.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -198,19 +198,86 @@ The <code>examples</code> extra adds <code>stim</code> and <code>qiskit</code>, 
 <p>The Linux and Windows wheels include the CUDA backend, and need no CUDA toolkit to install.
 At runtime a device needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, <code>pip install nvidia-cuda-nvrtc-cu12</code> elsewhere (<a href="manual/propagation/gpu.html#runtime-libraries">CUDA devices</a>).
 Without them <code>paulistrings.cuda_available()</code> is <code>False</code> and everything else works.</p>
-<h2 id="mpi"><a class="header" href="#mpi">MPI</a></h2>
-<p>The <code>mpi</code> feature is never in a wheel, since no MPI build is portable across clusters, so it is a source build against the cluster’s loaded MPI module.
-<code>mpi4py</code> must be built against that same MPI, so it is installed from source first:</p>
-<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
-export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install mpi4py --no-binary mpi4py
-pip install paulistrings-rs --no-binary paulistrings-rs --config-settings=build-args="--features cuda,mpi"
+<h2 id="mpi-and-multi-node-runs"><a class="header" href="#mpi-and-multi-node-runs">MPI and multi-node runs</a></h2>
+<p>The <code>mpi</code> feature is never in a wheel, since no MPI build is portable across clusters, so it is a source build against the cluster’s MPI.
+The commands below are for Rusty; on another cluster, substitute its MPI, LLVM and Python modules.</p>
+<h3 id="where-to-build"><a class="header" href="#where-to-build">Where to build</a></h3>
+<ul>
+<li><strong>On a Rocky 9 workstation or login node.</strong> The build fetches crates from crates.io, and the <code>modules/2.4-20250724</code> stack is Rocky 9 only.</li>
+<li><strong>With a Rust toolchain from <a href="https://rustup.rs">rustup</a>.</strong> It is needed at build time only; the nodes run the compiled extension.</li>
+<li><strong>Into a venv on the shared filesystem</strong> (<code>/mnt/home</code> or <code>/mnt/ceph</code>), which every node mounts. Local <code>/home</code> and <code>/tmp</code> are invisible to the nodes.</li>
+</ul>
+<h3 id="build"><a class="header" href="#build">Build</a></h3>
+<p><code>mpi4py</code> must be built against the same MPI as the extension (its pip wheel bundles a different one), so both are built from source:</p>
+<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+export LIBCLANG_PATH=$(llvm-config --libdir)    # rsmpi's bindgen needs libclang
+
+python3 -m venv ~/venvs/paulistrings-mpi
+source ~/venvs/paulistrings-mpi/bin/activate
+pip install "mpi4py&gt;=4,&lt;5" --no-binary mpi4py
+pip install paulistrings-rs --no-binary paulistrings-rs --config-settings=build-args="--features mpi"
+python -c "import paulistrings; print(paulistrings.mpi_available())"    # True
 </code></pre>
-<p>A source build replaces the wheel, so <code>--features</code> names every feature the build keeps; <code>cuda</code> is the one to drop on a machine without NVIDIA devices.
-Running across ranks is covered in <a href="manual/propagation/mpi.html">MPI ranks</a>.</p>
+<p>A source build replaces the wheel, so <code>--features</code> names every feature the build keeps: <code>--features cuda,mpi</code> for <a href="#gpu-and-mpi-features">one GPU per rank</a>.
+The extension records the MPI library directory in its rpath, so <code>import paulistrings</code> works without the modules loaded; load them in the job anyway, since <code>srun</code> and <code>mpi4py</code> need the same MPI.</p>
+<h3 id="check-it"><a class="header" href="#check-it">Check it</a></h3>
+<p>Save this as <code>check_mpi.py</code>; it evolves <code>Σ Z</code> under a layer of Hadamards and reads <code>⟨+|Σ X|+⟩ = n</code> back from the ranks’ shares:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">import mpi4py
+
+mpi4py.rc.thread_level = "serialized"  # before mpi4py.MPI is imported
+from mpi4py import MPI
+
+import paulistrings
+from paulistrings import Circuit, PauliSum, truncation
+
+comm = MPI.COMM_WORLD
+n = 64
+observable = PauliSum.from_strings({"I" * q + "Z" + "I" * (n - q - 1): 1.0 for q in range(n)}, num_qubits=n)
+circuit = Circuit(n)
+for q in range(n):
+    circuit.h(q)
+local = observable.propagate(circuit, truncation.approx_topn(1000), direction="heisenberg", comm=comm, result="local")
+value = comm.allreduce(local.expectation("x+"))
+if comm.Get_rank() == 0:
+    print(f"paulistrings {paulistrings.__version__}: {comm.Get_size()} ranks, &lt;+|sum X|+&gt; = {value.real:g} (expect {n})")
+</code></pre>
+<p>On the build workstation, <code>mpirun -n 2 python check_mpi.py</code> runs it on two ranks, and the job below runs it across nodes.</p>
+<h3 id="run-across-nodes"><a class="header" href="#run-across-nodes">Run across nodes</a></h3>
+<p>One rank per NUMA domain, bound to it, and a power-of-two rank count; the Rocky 9 constraint keeps the job on nodes that can load a Rocky 9 build.
+Rusty’s CPU nodes have two sockets, each one NUMA domain unless the node reports more (<code>lscpu | grep 'NUMA node(s)'</code> inside a job), so two icelake nodes give four ranks of 32 cores:</p>
+<pre><code class="language-bash">#!/bin/bash
+#SBATCH --nodes=2
+#SBATCH --exclusive
+#SBATCH --constraint=icelake&amp;rocky9
+#SBATCH --time=01:00:00
+
+module load modules/2.4-20250724 openmpi/5.0.6 python-mpi/3.12.9
+source ~/venvs/paulistrings-mpi/bin/activate
+srun --ntasks-per-node=2 --cpus-per-task=32 --cpu-bind=ldoms --mpi=pmix python check_mpi.py
+</code></pre>
+<p>For rome nodes use <code>--cpus-per-task=64</code>, for genoa <code>48</code>.
+Without <code>--cpu-bind=ldoms</code> every rank’s thread pool spans the whole node and the ranks compete for cores.
+Every rank must build the same observable and circuit, since each keeps its own share of a sum it holds whole; <a href="manual/propagation/mpi.html#requirements">MPI ranks</a> lists the requirements and the <a href="manual/propagation/mpi.html#launching">launch options</a>.</p>
 <h3 id="gpu-and-mpi-features"><a class="header" href="#gpu-and-mpi-features">GPU and MPI features</a></h3>
-<p>The build above with <code>cuda,mpi</code> gives one GPU per MPI rank (<a href="manual/propagation/mpi.html#gpu-per-rank">MPI ranks</a>), whose exchange runs over NCCL.
-NCCL is loaded at runtime like <code>libcuda</code> and <code>libnvrtc</code>, so it needs no toolkit to build; at runtime it needs <code>module load cuda/12.8.0 nccl/2.23.4-1</code> on a Flatiron host.</p>
+<p>Built with <code>--features cuda,mpi</code>, each rank runs its share on one GPU and the ranks exchange over NCCL (<a href="manual/propagation/mpi.html#gpu-per-rank">MPI ranks</a>).
+The job loads the CUDA and NCCL libraries, which the extension opens at runtime, and makes every GPU of a node visible to every rank on it, which <code>--gpus-per-node</code> does and <code>--gpus-per-task</code> does not; without that, NCCL falls back from NVLink to copies through host memory:</p>
+<pre><code class="language-bash">#!/bin/bash
+#SBATCH --partition=gpu
+#SBATCH --nodes=1
+#SBATCH --gpus-per-node=4
+#SBATCH --ntasks-per-node=4
+#SBATCH --cpus-per-task=8
+#SBATCH --constraint=a100-80gb&amp;rocky9
+#SBATCH --time=01:00:00
+
+module load modules/2.4-20250724 openmpi/5.0.6 python-mpi/3.12.9 cuda/12.8.0 nccl/2.23.4-1
+source ~/venvs/paulistrings-mpi/bin/activate
+srun --cpu-bind=cores --mpi=pmix python script.py    # propagate(..., comm=comm, device="auto")
+</code></pre>
+<p><code>--constraint=h100-sxm5</code> selects the H100 nodes instead.
+Above one node, the NCCL exchange is not yet tested (<a href="https://github.com/lkdvos/paulistrings-rs/issues/40">#40</a>).
+Every rank holds the whole input in host memory before the scatter (<a href="https://github.com/lkdvos/paulistrings-rs/issues/35">#35</a>), so size <code>--mem-per-cpu</code> for that.</p>
 <h2 id="rust"><a class="header" href="#rust">Rust</a></h2>
 <pre><code class="language-bash">cargo add paulistrings
 </code></pre>

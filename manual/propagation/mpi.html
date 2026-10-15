@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-77f9d504.js";
+            window.path_to_searchindex_js = "../../searchindex-8a905066.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -194,7 +194,7 @@ A remote layer is <strong>transfer-bound</strong>, so the lever is fewer bytes (
 <p>It is an off-by-default build option the released wheel omits, so the default wheel cannot do it.
 <a href="../../library/module-helpers.html"><code>paulistrings.mpi_available()</code></a> says whether this build can, and <code>comm=</code> in a build without it raises <code>RuntimeError</code>.</p>
 <h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
-<p>The <code>mpi</code> feature needs an MPI installation (for <code>mpicc</code>, which rsmpi’s build script probes) and a <code>libclang</code> for its bindgen; the pip build against a cluster’s loaded MPI module is in <a href="../../installation.html">Installation</a>.</p>
+<p>The <code>mpi</code> feature needs an MPI installation (for <code>mpicc</code>, which rsmpi’s build script probes) and a <code>libclang</code> for its bindgen; <a href="../../installation.html#mpi-and-multi-node-runs">Installation</a> has the pip build against a cluster’s MPI, a check script and Slurm job scripts.</p>
 <p><code>mpi4py</code> must be built against the <em>same</em> MPI the extension links; the boundary checks the width of <code>MPI_Comm</code> and refuses a mismatch rather than corrupting a handle.
 In a checkout, <code>scripts/sync-mpi-venv.sh</code> builds a venv <code>./.venv-mpi</code> with uv: the extension with <code>--features mpi</code>, and <code>mpi4py</code> compiled from source against the loaded MPI.</p>
 <pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv

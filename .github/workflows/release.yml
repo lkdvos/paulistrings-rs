@@ -149,4 +149,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # A re-run after a partial upload completes it; PyPI never accepts a file again under the same name.
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true

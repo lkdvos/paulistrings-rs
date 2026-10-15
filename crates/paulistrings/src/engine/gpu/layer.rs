@@ -339,6 +339,12 @@ impl<const W: usize> LayerScratch<W> {
         Ok(())
     }
 
+    /// The original bucket at each position of the resident `bucket_at`, for a host-side debug check.
+    #[cfg(debug_assertions)]
+    pub(super) fn bucket_at_host(&self) -> &[u32] {
+        &self.bucket_at_host
+    }
+
     /// The longest source bucket, read once per bucket count and layer.
     pub(super) fn longest_bucket(&mut self, sum: &GpuSum<W>) -> Result<u32, GpuError> {
         if let Some(l) = self.longest {

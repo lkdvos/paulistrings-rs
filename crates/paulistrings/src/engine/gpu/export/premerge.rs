@@ -223,11 +223,57 @@ pub(super) fn premerge_partner<const W: usize>(
     }
     let fallbacks = stream.clone_dtoh(&scratch.export.premerge.fallback)?;
     stream.synchronize()?;
+    #[cfg(debug_assertions)]
+    debug_assert_merged_within_unmerged(sum, &sub, scratch, blocks)?;
     scratch.record.high_word_fallbacks += fallbacks[0];
     scratch.record.full_key_fallbacks += fallbacks[1];
     scratch.record.rows_premerged += total - merged;
     timed!(scratch.lap(sum, t0, |stats| &mut stats.export_kernel_ns)?);
     Ok(Some(merged))
+}
+
+/// Panic unless every block holds at most its unmerged rows at every position, so the merge never outputs more rows than its input and every segment still fits the receiver's tag; downloads the counts, so a debug build alone runs it.
+#[cfg(debug_assertions)]
+fn debug_assert_merged_within_unmerged<const W: usize>(
+    sum: &GpuSum<W>,
+    sub: &DevicePrepared<W>,
+    scratch: &LayerScratch<W>,
+    blocks: &[DeviceBlock<W>],
+) -> Result<(), GpuError> {
+    let stream = &sum.stream;
+    let buckets = sum.hash.num_buckets();
+    let partner_entries = blocks.len();
+    let mut unmerged = vec![0u32; buckets * partner_entries];
+    stream.memcpy_dtoh(
+        &scratch
+            .export
+            .premerge
+            .counts
+            .slice(0..buckets * partner_entries),
+        &mut unmerged[..],
+    )?;
+    stream.synchronize()?;
+    let bucket_at = scratch.bucket_at_host();
+    for (j, block) in blocks.iter().enumerate() {
+        let mut block_unmerged = 0u64;
+        for (position, &beta) in bucket_at[..buckets].iter().enumerate() {
+            let source = (beta ^ sub.bucket_delta[j]) as usize;
+            let allowed = unmerged[source * partner_entries + j];
+            let merged = block.offsets[position + 1] - block.offsets[position];
+            assert!(
+                merged <= allowed,
+                "sender-side merge: block {j} holds {merged} rows at position {position}, more than \
+                 its {allowed} unmerged rows there",
+            );
+            block_unmerged += u64::from(allowed);
+        }
+        assert!(
+            u64::from(block.offsets[buckets]) <= block_unmerged,
+            "sender-side merge: block {j} holds {} rows, more than its {block_unmerged} unmerged rows",
+            block.offsets[buckets],
+        );
+    }
+    Ok(())
 }
 
 /// The merge's batch loop: the fused layer into the arena, the split and its scan, the block offsets, and the copy of every block's share.

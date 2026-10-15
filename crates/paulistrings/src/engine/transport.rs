@@ -15,6 +15,9 @@ pub struct ChunkMap {
     cosets: u32,
     /// Clamped to `1..=cosets`.
     chunks: u32,
+    /// `chunks` before the clamp, which every partition must have asked for alike; only the MPI header carries it.
+    #[cfg(feature = "mpi")]
+    requested: u32,
 }
 
 impl ChunkMap {
@@ -38,6 +41,8 @@ impl ChunkMap {
             coset_dimension,
             cosets,
             chunks: (chunks as u32).min(cosets).max(1),
+            #[cfg(feature = "mpi")]
+            requested: chunks as u32,
         }
     }
 
@@ -53,6 +58,12 @@ impl ChunkMap {
 
     pub(crate) fn chunks(&self) -> usize {
         self.chunks as usize
+    }
+
+    /// The chunk count this map was asked for, before the clamp to the coset count.
+    #[cfg(feature = "mpi")]
+    pub(crate) fn requested_chunks(&self) -> u32 {
+        self.requested
     }
 
     /// The first position of chunk `k`, a multiple of the coset size; `bound(chunks())` is the position count.

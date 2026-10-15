@@ -34,55 +34,69 @@ fn header_round_trips_through_its_byte_form() {
     let c = [7u8; 40];
     let parts: Vec<&[u8]> = vec![&a, &b, &c];
 
-    let words = encode_header(3, &parts);
+    let words = encode_header(3, 8, &parts);
     assert_eq!(words[0] & 0xffff_ffff, u64::from(WIRE_VERSION));
     assert_eq!(words[0] >> 32, 3);
-    assert_eq!(words[1], 3);
-    assert_eq!(&words[2..], &[3, 0, 40]);
+    assert_eq!(words[1], 8);
+    assert_eq!(words[2], 3);
+    assert_eq!(&words[3..], &[3, 0, 40]);
 
     let bytes: &[u8] = bytemuck::cast_slice(&words);
-    assert_eq!(decode_header(bytes, 3, 0), vec![3, 0, 40]);
+    assert_eq!(decode_header(bytes, 3, 8, 0), vec![3, 0, 40]);
 }
 
 #[test]
-fn an_empty_payload_encodes_as_a_two_word_header() {
-    let words = encode_header(0, &[]);
-    assert_eq!(words.len(), 2);
+fn an_empty_payload_encodes_as_a_three_word_header() {
+    let words = encode_header(0, 0, &[]);
+    assert_eq!(words.len(), 3);
     let bytes: &[u8] = bytemuck::cast_slice(&words);
-    assert_eq!(decode_header(bytes, 0, 0), Vec::<usize>::new());
+    assert_eq!(decode_header(bytes, 0, 0, 0), Vec::<usize>::new());
 }
 
 #[test]
 #[should_panic(expected = "wire version")]
 fn a_header_from_another_wire_version_is_rejected() {
-    let mut words = encode_header(1, &[]);
+    let mut words = encode_header(1, 0, &[]);
     words[0] = (words[0] & !0xffff_ffff) | 99;
     let bytes: &[u8] = bytemuck::cast_slice(&words);
-    let _ = decode_header(bytes, 1, 0);
+    let _ = decode_header(bytes, 1, 0, 0);
 }
 
 #[test]
 #[should_panic(expected = "not the expected rank")]
 fn a_header_from_the_wrong_rank_is_rejected() {
-    let words = encode_header(2, &[]);
+    let words = encode_header(2, 0, &[]);
     let bytes: &[u8] = bytemuck::cast_slice(&words);
-    let _ = decode_header(bytes, 5, 0);
+    let _ = decode_header(bytes, 5, 0, 0);
+}
+
+/// A partner that read another `PAULISTRINGS_EXCHANGE_CHUNKS` may cut its bulk parts differently, which the receiver must refuse before posting a bulk receive.
+#[test]
+#[should_panic(
+    expected = "rank 1 asked for 64 exchange chunks, this rank for 8 — every rank must run with \
+                the same PAULISTRINGS_EXCHANGE_CHUNKS"
+)]
+fn a_header_asking_for_another_chunk_count_is_rejected() {
+    let a = [1u8; 16];
+    let words = encode_header(1, 64, &[&a]);
+    let bytes: &[u8] = bytemuck::cast_slice(&words);
+    let _ = decode_header(bytes, 1, 8, 0);
 }
 
 #[test]
 #[should_panic(expected = "declared")]
 fn a_header_whose_part_count_disagrees_with_its_length_is_rejected() {
     let a = [1u8, 2];
-    let mut words = encode_header(0, &[&a]);
-    words[1] = 4;
+    let mut words = encode_header(0, 0, &[&a]);
+    words[2] = 4;
     let bytes: &[u8] = bytemuck::cast_slice(&words);
-    let _ = decode_header(bytes, 0, 0);
+    let _ = decode_header(bytes, 0, 0, 0);
 }
 
 #[test]
-#[should_panic(expected = "at least two")]
+#[should_panic(expected = "at least 3")]
 fn a_truncated_header_is_rejected() {
-    let _ = decode_header(&[0u8; 8], 0, 0);
+    let _ = decode_header(&[0u8; 16], 0, 0, 0);
 }
 
 #[test]

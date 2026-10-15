@@ -32,7 +32,7 @@ pub use ::mpi as rsmpi;
 pub type MpiSum<const W: usize> = DistributedSum<W, MpiTransport>;
 
 /// Version of the header framing, bumped when it changes.
-const WIRE_VERSION: u32 = 1;
+const WIRE_VERSION: u32 = 2;
 
 /// Tags pack `epoch:11 | kind:4`, inside the guaranteed `MPI_TAG_UB` of 32767.
 const KIND_BITS: i32 = 4;
@@ -225,7 +225,7 @@ impl MpiTransport {
 
     /// Send this rank's gather contribution to the root and wait it out.
     fn send_gather(&self, parts: &[&[u8]], header_tag: Rank, part_tag: Rank) {
-        let header = encode_header(self.rank, parts);
+        let header = encode_header(self.rank, 0, parts);
         let header: &[u8] = bytemuck::cast_slice(&header);
         let sends = 1 + parts
             .iter()
@@ -289,11 +289,11 @@ impl MpiTransport {
         }
     }
 
-    /// Blocking receive of one framing header from `src`, returning the declared part lengths.
-    fn recv_header(&self, src: usize, header_tag: Rank) -> Vec<usize> {
+    /// Blocking receive of one framing header from `src`, returning the declared part lengths; panics unless `src` asked for `chunks` chunks.
+    fn recv_header(&self, src: usize, header_tag: Rank, chunks: u32) -> Vec<usize> {
         let peer = self.comm.process_at_rank(src as Rank);
         let (bytes, _status) = peer.receive_vec_with_tag::<u8>(header_tag);
-        decode_header(&bytes, src as u32, self.rank)
+        decode_header(&bytes, src as u32, chunks, self.rank)
     }
 
     /// The root's half of the gather into `(source rank, sized parts)`, in `send_gather`'s message order.
@@ -347,21 +347,30 @@ fn version_matches(built: &str, running: &str) -> bool {
     }
 }
 
-/// The framing header for `parts`: `(source << 32) | version`, the part count, one byte length per part.
-fn encode_header(src: u32, parts: &[&[u8]]) -> Vec<u64> {
-    let mut words = Vec::with_capacity(parts.len() + 2);
+/// The framing header for `parts`: `(source << 32) | version`, the requested chunk count (zero for a gather), the part count, one byte length per part.
+fn encode_header(src: u32, chunks: u32, parts: &[&[u8]]) -> Vec<u64> {
+    let mut words = Vec::with_capacity(parts.len() + HEADER_WORDS);
     words.push((u64::from(src) << 32) | u64::from(WIRE_VERSION));
+    words.push(u64::from(chunks));
     words.push(parts.len() as u64);
     words.extend(parts.iter().map(|p| p.len() as u64));
     words
 }
 
-/// The part lengths [`encode_header`] declared; panics on a malformed header, another wire version, or a source other than `expected_src`.
-fn decode_header(bytes: &[u8], expected_src: u32, this_rank: u32) -> Vec<usize> {
+/// Words of a header before its part lengths.
+const HEADER_WORDS: usize = 3;
+
+/// The part lengths [`encode_header`] declared; panics on a malformed header, another wire version, a source other than `expected_src`, or a chunk count other than `expected_chunks`.
+fn decode_header(
+    bytes: &[u8],
+    expected_src: u32,
+    expected_chunks: u32,
+    this_rank: u32,
+) -> Vec<usize> {
     assert!(
-        bytes.len() >= 2 * size_of::<u64>() && bytes.len().is_multiple_of(size_of::<u64>()),
+        bytes.len() >= HEADER_WORDS * size_of::<u64>() && bytes.len().is_multiple_of(size_of::<u64>()),
         "rank {this_rank}: framing header from rank {expected_src} is {} bytes, expected a whole number \
-         of u64 words, at least two",
+         of u64 words, at least {HEADER_WORDS}",
         bytes.len(),
     );
     let words: Vec<u64> = bytes
@@ -381,14 +390,24 @@ fn decode_header(bytes: &[u8], expected_src: u32, this_rank: u32) -> Vec<usize> 
         "rank {this_rank}: a framing header tagged for this layer came from rank {src}, not the expected \
          rank {expected_src}",
     );
-    let n_parts = words[1] as usize;
+    let chunks = words[1];
+    assert_eq!(
+        chunks,
+        u64::from(expected_chunks),
+        "rank {this_rank}: rank {expected_src} asked for {chunks} exchange chunks, this rank for \
+         {expected_chunks} — every rank must run with the same PAULISTRINGS_EXCHANGE_CHUNKS",
+    );
+    let n_parts = words[2] as usize;
     assert_eq!(
         words.len(),
-        n_parts + 2,
+        n_parts + HEADER_WORDS,
         "rank {this_rank}: rank {expected_src} declared {n_parts} parts in a {}-word header",
         words.len(),
     );
-    words[2..].iter().map(|&len| len as usize).collect()
+    words[HEADER_WORDS..]
+        .iter()
+        .map(|&len| len as usize)
+        .collect()
 }
 
 /// Messages a part of `len` bytes is sent in, exactly `slice::chunks(chunk).count()`.
@@ -456,9 +475,9 @@ impl Collectives for MpiTransport {
 }
 
 impl Transport for MpiTransport {
-    /// Per partner, in posting order: a self-describing header (wire version, source rank, every part's byte length), the early parts under their own tag, then the bulk parts cut at the chunk edges and posted chunk-major.
+    /// Per partner, in posting order: a self-describing header (wire version, source rank, chunk count, every part's byte length), the early parts under their own tag, then the bulk parts cut at the chunk edges and posted chunk-major.
     /// Only the header's size is unknown to the receiver; every later message is a receive of known length straight into the columns the coset loop reads.
-    /// Non-overtaking matches sends to receives in posting order, so both sides walk partners, parts and chunks ascending, and every rank must use the same chunk count (`PAULISTRINGS_EXCHANGE_CHUNKS`, never a thread count).
+    /// Non-overtaking matches sends to receives in posting order, so both sides walk partners, parts and chunks ascending, and every rank must use the same chunk count (`PAULISTRINGS_EXCHANGE_CHUNKS`, never a thread count); the header carries the count as requested, before the clamp, so a mismatch panics on both ranks of a pair at the first exchange, before any bulk receive is posted.
     /// Raw host bytes: every rank runs the same architecture and `W`.
     /// Deadlock freedom is `ChunkPipeline`'s (`mpi/pipeline.rs`).
     fn exchange_layer<P, F, R>(
@@ -501,9 +520,10 @@ impl Transport for MpiTransport {
             .iter()
             .map(|&q| send[q].as_ref().expect("a partner's payload").byte_parts())
             .collect();
+        let chunks = map.chunks();
         let headers: Vec<Vec<u64>> = all_parts
             .iter()
-            .map(|p| encode_header(self.rank, p))
+            .map(|p| encode_header(self.rank, map.requested_chunks(), p))
             .collect();
         let early: Vec<Vec<&[u8]>> = partners
             .iter()
@@ -518,7 +538,6 @@ impl Transport for MpiTransport {
                     .bulk_parts(map)
             })
             .collect();
-        let chunks = map.chunks();
 
         // SAFETY: while `body` runs, the `&mut` views MPI fills and the `&[Option<P>]` the body reads alias.
         // They never touch the same bytes at once: the early parts complete before `body` starts, and a chunk's columns are read only after `wait_chunk` saw its receives complete.
@@ -544,7 +563,7 @@ impl Transport for MpiTransport {
                 // Every send is posted before the first blocking receive.
                 let mut lens: Vec<Vec<usize>> = Vec::with_capacity(partners.len());
                 for &src in &partners {
-                    lens.push(self.recv_header(src, tags.header));
+                    lens.push(self.recv_header(src, tags.header, map.requested_chunks()));
                 }
 
                 // SAFETY: no other alias exists yet; the collection holds only this rank's sends.
@@ -642,7 +661,7 @@ impl Transport for MpiTransport {
 
         let mut buffers: Vec<Vec<Vec<u8>>> = (1..n)
             .map(|src| {
-                self.recv_header(src, header_tag)
+                self.recv_header(src, header_tag, 0)
                     .into_iter()
                     .map(|len| vec![0u8; len])
                     .collect()

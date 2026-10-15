@@ -150,7 +150,7 @@ def esc(s) -> str:
 
 
 def load_provenance(txt_path: Path, missing: list, malformed: dict) -> Optional[dict]:
-    """Parse only the header (first ~8 lines) plus any 'determinism gate' lines.
+    """Parse only the header (first ~8 lines).
 
     Header shape (see any <prefix>.txt in benchmarks/results/):
         <title line>
@@ -171,7 +171,7 @@ def load_provenance(txt_path: Path, missing: list, malformed: dict) -> Optional[
         missing.append(txt_path.name)
         return None
 
-    prov: dict = {"title": None, "host": None, "gates": []}
+    prov: dict = {"title": None, "host": None}
     header = lines[:8]
     if header:
         title_line = header[0]
@@ -186,11 +186,6 @@ def load_provenance(txt_path: Path, missing: list, malformed: dict) -> Optional[
         key = m.group(1).strip().lower()
         val = m.group(2).strip()
         prov[key] = val
-
-    for line in lines:
-        m = re.match(r"^determinism gate:\s*(PASS|FAIL)\s*$", line.strip())
-        if m:
-            prov["gates"].append(m.group(1))
 
     return prov
 
@@ -554,14 +549,6 @@ def render_header(campaign_name: str, prov: Optional[dict]) -> str:
         out.append(f"<dt>{esc(label)}</dt><dd>{esc(val)}</dd>")
     out.append("</dl>")
 
-    gates = prov.get("gates", [])
-    if gates:
-        out.append('<p class="gates">')
-        for i, g in enumerate(gates):
-            cls = "chip-pass" if g == "PASS" else "chip-fail"
-            label = f"determinism gate {i + 1}: {g}" if len(gates) > 1 else f"determinism gate: {g}"
-            out.append(f'<span class="chip {cls}">{esc(label)}</span>')
-        out.append("</p>")
     return "\n".join(out)
 
 
@@ -1266,16 +1253,6 @@ dl.provenance {
 }
 dl.provenance dt { color: #666666; font-weight: 600; }
 dl.provenance dd { margin: 0; }
-.chip {
-  display: inline-block;
-  padding: 3px 10px;
-  border-radius: 12px;
-  font-size: 0.85em;
-  font-weight: 600;
-  margin-right: 6px;
-}
-.chip-pass { background: #e2f4e5; color: #1e7d34; }
-.chip-fail { background: #fce4e4; color: #b3261e; }
 .note { color: #666666; font-size: 0.9em; }
 .legend {
   display: flex;

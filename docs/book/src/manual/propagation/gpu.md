@@ -148,7 +148,7 @@ The NCCL communicator starts **once, collectively, at scatter**: a rank that can
 Running it needs the `nccl/2.23.4-1` module alongside `cuda,mpi` — see [Installation](../../installation.md#gpu-and-mpi-features) and [MPI ranks](mpi.md#gpu-per-rank).
 
 **A device sender merges one partner's rows by key before the exchange** (`GpuLayerOptions::premerge`), so two remote deltas that land on the same receiver key ship as one row.
-It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation, which has one remote entry, or a Clifford, whose remote entries never share an output pattern.
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.
 
 **A device receive moves in chunks of destination positions** rather than all at once (`GpuLayerOptions::exchange_bytes`, `PAULISTRINGS_GPU_EXCHANGE_BYTES`, `K`/`M`/`G` suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.

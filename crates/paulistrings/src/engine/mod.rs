@@ -70,7 +70,7 @@ pub struct PropagateOptions {
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.
     ///
-    /// At least 16, below which the "worth splitting" gate goes non-monotone ([`validate`](Self::validate)).
+    /// At least 16, so a sum of at most 1024 terms keeps one bucket ([`validate`](Self::validate)).
     pub min_buckets: usize,
 }
 

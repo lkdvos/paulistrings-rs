@@ -148,7 +148,7 @@ A heavier cut compares term counts alone (`test_support::assert_runs_agree_count
 - Roofline denominators come from `crates/membench` via `scripts/bandwidth.sh` (`--device` for a GPU) against `research/HARDWARE.md`.
 - Record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number.
 - A GPU timing is the second application of a gate on the saturated sum; its dense CPU reference is `(T₃ − T₁)/2` over `--reps 3` and `--reps 1`, never `wall/3`.
-- `PAULISTRINGS_GPU_EXCHANGE_BYTES` is the device layer's one runtime knob; the sender-side merge and the Clifford scatter path are `GpuLayerOptions` fields, so an A/B of either is a code A/B.
+- `PAULISTRINGS_GPU_EXCHANGE_BYTES` is the device layer's one tuning knob (`PAULISTRINGS_WIRE_TIMEOUT_S` only bounds waits); the sender-side merge and the Clifford scatter path are `GpuLayerOptions` fields, so an A/B of either is a code A/B.
 - `PAULISTRINGS_EXCHANGE_CHUNKS` overrides the MPI pipeline's chunk count (default 8; `1` disables the overlap, `scripts/mpi-test.sh` uses 64 to force the pipelined receive), and every rank must see the same value.
 - Every `PAULISTRINGS_*` runtime variable is an `engine::knob::Knob`: read once per process, its effective value logged at DEBUG, an unparsable value warned about and defaulted; tests call `Knob::resolve` rather than setting the environment.
 

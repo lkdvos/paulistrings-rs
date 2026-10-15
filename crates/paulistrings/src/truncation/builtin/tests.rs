@@ -441,6 +441,17 @@ fn approx_top_n_matches_the_stable_sort_rule_across_bucket_counts() {
     }
 }
 
+/// A top octave holding more than `n` terms is the boundary octave and keeps its first `n` in bucket order, never empties the sum.
+#[test]
+fn approx_top_n_cuts_inside_an_overfull_top_octave() {
+    // |c|² ∈ {4, 4.84, 5.76, 6.76} all lie in octave [4, 8); 0.5 lies below it.
+    let magnitudes = [2.0f64, 2.2, 0.5, 2.4, 2.6];
+    let mut sum = sum_of_mags(&magnitudes);
+    ApproxTopN(3).finalize_layer(&mut sum);
+    sum.assert_invariants();
+    assert_eq!(kept_mags(&sum), vec![2.0, 2.2, 2.4]);
+}
+
 /// A complex coefficient is ranked by `re² + im²` like everywhere else.
 #[test]
 fn approx_top_n_ranks_complex_coefficients_by_squared_magnitude() {

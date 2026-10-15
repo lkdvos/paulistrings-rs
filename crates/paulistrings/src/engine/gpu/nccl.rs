@@ -1,5 +1,5 @@
 //! [`NcclComm`], the NCCL communicator and [`DeviceWire`] of a device group over MPI, and the group's start agreement.
-//! See ARCHITECTURE.md §Partitioning.
+//! See ARCHITECTURE.md §Device exchange.
 
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicUsize, Ordering};

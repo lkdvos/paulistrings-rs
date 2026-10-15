@@ -1,4 +1,4 @@
-//! The CUDA backend (feature `cuda`): device probes, device-resident sums and their propagation drivers. See ARCHITECTURE.md §GPU-Readiness.
+//! The CUDA backend (feature `cuda`): device probes, device-resident sums and their propagation drivers. See ARCHITECTURE.md §GPU.
 //!
 //! [`GpuPartitionedSum`] holds a sum on one device or splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
 

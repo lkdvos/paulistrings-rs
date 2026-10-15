@@ -1,4 +1,4 @@
-//! [`GpuDistributedSum`], [`DistributedSum`] over one device partition per process, with the MPI front door `MpiGpuSum` and the device pick `local_device_for_comm` (feature `mpi`). See ARCHITECTURE.md §Partitioning.
+//! [`GpuDistributedSum`], [`DistributedSum`] over one device partition per process, with the MPI front door `MpiGpuSum` and the device pick `local_device_for_comm` (feature `mpi`). See ARCHITECTURE.md §GPU.
 
 use std::sync::Arc;
 use std::time::Instant;

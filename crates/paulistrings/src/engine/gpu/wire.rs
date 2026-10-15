@@ -1,5 +1,5 @@
 //! The device exchange's wire protocol: [`DeviceWire`] and [`WireGroup`], the host half ([`BlockSkeletons`], [`schedule`]), and [`PeerWire`], the in-process wire.
-//! See ARCHITECTURE.md §Partitioning.
+//! See ARCHITECTURE.md §Device exchange.
 
 mod peer;
 

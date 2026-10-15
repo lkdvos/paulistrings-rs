@@ -23,7 +23,7 @@ pub(super) fn note_slot(slot_of: &mut Vec<usize>, i: usize, slot: usize) {
 
 /// The posted bulk receives and sends of a two-phase exchange, waited on chunk by chunk as a [`ChunkWait`].
 ///
-/// One waiter at a time holds the driver role and drives `MPI_Waitsome` over every request until its own chunk completes; the others sleep on a condvar; why that is `MPI_THREAD_SERIALIZED`-safe and deadlock-free: ARCHITECTURE.md §Partitioning.
+/// One waiter at a time holds the driver role and drives `MPI_Waitsome` over every request until its own chunk completes; the others sleep on a condvar; why that is `MPI_THREAD_SERIALIZED`-safe and deadlock-free: ARCHITECTURE.md §Transport composition.
 pub(super) struct ChunkPipeline<'a, 'c> {
     /// Locked only by the driver-role holder, so never contended.
     inner: Mutex<PipelineInner<'a, 'c>>,

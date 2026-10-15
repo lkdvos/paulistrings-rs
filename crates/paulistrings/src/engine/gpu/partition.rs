@@ -1,4 +1,4 @@
-//! [`DevicePartition`], one partition of the layer loop held on a CUDA device. See ARCHITECTURE.md §Partitioning.
+//! [`DevicePartition`], one partition of the layer loop held on a CUDA device. See ARCHITECTURE.md §GPU.
 
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
@@ -39,7 +39,7 @@ pub struct FaultPlan {
 
 /// A partition whose sum lives on a device.
 ///
-/// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop (ARCHITECTURE.md §GPU-Readiness).
+/// The seam's methods cannot fail, so a device error is recorded in [`Self::error`] and every later layer is skipped; the driver surfaces it after the loop (ARCHITECTURE.md §GPU).
 /// `hash` is the driver's view of the bucket count: `refine` advances it alone, `apply_layer` brings the device up to it, and [`Self::take_error`] re-syncs it to the device.
 /// `keep` is the per-term half of the run's policy, lowered once per call.
 // `pub` only because it is the backend parameter of the `pub` device driver aliases, like `HostPartition`.

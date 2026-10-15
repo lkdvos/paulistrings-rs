@@ -1,4 +1,4 @@
-//! [`PartitionRuntime`]: the resolved placement, one pinned pool per partition, and the scoped fan-out every in-process partitioned call runs inside (ARCHITECTURE.md §Partitioning).
+//! [`PartitionRuntime`]: the resolved placement, one pinned pool per partition, and the scoped fan-out every in-process partitioned call runs inside (ARCHITECTURE.md §Transport composition).
 //! A layer runs inside `ThreadPool::install`, so transport calls come from a pool worker, which is why the MPI transport needs `MPI_THREAD_SERIALIZED`.
 
 use std::sync::Arc;

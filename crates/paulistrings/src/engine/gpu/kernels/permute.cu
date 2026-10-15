@@ -1,4 +1,4 @@
-// The permutation layer for a table under which no two input keys emit one output key (`DevicePrepared::permutation`, ARCHITECTURE.md §GPU-Readiness).
+// The permutation layer for a table under which no two input keys emit one output key (`DevicePrepared::permutation`, ARCHITECTURE.md §GPU).
 // k_permute_count counts the surviving rows per (source bucket, entry), k_permute_lengths sizes every output bucket from those counts, and k_permute_scatter scatters each row to bucket beta ^ bucket_delta[e] with no sort, no arena and no compaction.
 // Output bucket beta' holds, entry by entry, the survivors of source bucket beta' ^ bucket_delta[e] in source order; nothing reads that order.
 

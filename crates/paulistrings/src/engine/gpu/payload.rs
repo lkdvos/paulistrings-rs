@@ -1,4 +1,4 @@
-//! [`DevicePayload`], one partner's exchange blocks with their columns in device memory. See ARCHITECTURE.md §Partitioning.
+//! [`DevicePayload`], one partner's exchange blocks with their columns in device memory. See ARCHITECTURE.md §Device exchange.
 
 use std::sync::Arc;
 

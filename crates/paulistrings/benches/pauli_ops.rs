@@ -1,7 +1,7 @@
 //! Criterion microbenches for the hot ops on the propagation path: `PauliString::mul_assign`,
 //! `PauliSum::add`, `apply_layer_bucketed` across the structurally distinct channel classes,
 //! `propagate` over a Trotter-shaped circuit, and thread scaling against the memory-bandwidth
-//! ceiling (`ARCHITECTURE.md §Performance-Model`).
+//! ceiling (`research/HARDWARE.md §Memory bandwidth ceilings`).
 //!
 //! Inputs are built with a seeded `Xs64` xorshift so timings are reproducible across machines.
 

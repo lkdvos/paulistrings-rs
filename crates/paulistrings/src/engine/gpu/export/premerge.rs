@@ -1,4 +1,4 @@
-//! The sender-side merge: one partner's exported rows merged by key before the exchange (ARCHITECTURE.md §Partitioning).
+//! The sender-side merge: one partner's exported rows merged by key before the exchange (ARCHITECTURE.md §Device exchange).
 
 use std::sync::Arc;
 

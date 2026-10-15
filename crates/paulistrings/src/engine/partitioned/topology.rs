@@ -1,4 +1,4 @@
-//! CPU sets, NUMA node discovery, thread and memory pinning, and the pinned Rayon pool one partition runs on (ARCHITECTURE.md §Partitioning).
+//! CPU sets, NUMA node discovery, thread and memory pinning, and the pinned Rayon pool one partition runs on (ARCHITECTURE.md §Transport composition).
 //! Discovery is sysfs plus `libc`; on non-Linux targets every entry point reports one node and pins nothing.
 
 use std::fmt;

@@ -1,4 +1,4 @@
-//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale. See ARCHITECTURE.md §Engine, §Partitioning and §GPU-Readiness.
+//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale. See ARCHITECTURE.md §Engine, §GPU and §Device exchange.
 
 use std::sync::Arc;
 
@@ -39,7 +39,7 @@ pub(super) use fused::{
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 
-/// The partition's phase counters under `phase-timing` (ARCHITECTURE.md §GPU-Readiness, `benchmarks/PROFILING.md` contract (a)), nothing otherwise.
+/// The partition's phase counters under `phase-timing` (`benchmarks/PROFILING.md` contract (a)), nothing otherwise.
 #[cfg(feature = "phase-timing")]
 pub(crate) type DeviceStats = crate::engine::stats::PhaseStats;
 #[cfg(not(feature = "phase-timing"))]

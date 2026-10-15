@@ -1,4 +1,4 @@
-//! The export kernels, the exchange over a device wire, and the chunked receive of one device layer. See ARCHITECTURE.md §Partitioning.
+//! The export kernels, the exchange over a device wire, and the chunked receive of one device layer. See ARCHITECTURE.md §Device exchange.
 
 use std::sync::Arc;
 
@@ -59,7 +59,7 @@ pub(crate) struct DeviceExport<const W: usize> {
     pub(crate) fail_after_chunk: Option<usize>,
 }
 
-/// A remote layer's transfers not yet made, chunk `c` (positions `map.bound(c)..map.bound(c + 1)`) moving just before the fused layer reaches it (ARCHITECTURE.md §Partitioning).
+/// A remote layer's transfers not yet made, chunk `c` (positions `map.bound(c)..map.bound(c + 1)`) moving just before the fused layer reaches it (ARCHITECTURE.md §Device exchange).
 pub(crate) struct PendingReceive<const W: usize> {
     pub(crate) map: ChunkMap,
     /// The first chunk not yet moved.
@@ -143,7 +143,7 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
-/// One remote layer's exchange after the count (ARCHITECTURE.md §Partitioning): the export blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
+/// One remote layer's exchange after the count (ARCHITECTURE.md §Device exchange): the export blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
 pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,

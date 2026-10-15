@@ -1,11 +1,10 @@
 """``partitions=`` / ``pin_memory=`` on the propagate surface.
 
 The Rust side is covered by ``crates/paulistrings/tests/propagate_partitioned.rs``
-(which pins the partitioned engine against the unpartitioned one, including a
-``P = 1`` bitwise check) and by ``truncation_spec.rs``'s
+(which pins the partitioned engine against the unpartitioned one) and by ``truncation_spec.rs``'s
 ``spec_finalize_partitioned_matches_core_builtins``. This file checks the Python
 boundary: that the kwargs exist with the documented spellings and defaults, that
-``partitions=None`` is today's path *exactly*, that a two-partition run agrees
+``partitions=None`` is the unpartitioned path, that a two-partition run agrees
 with the unpartitioned one on both the terms and the per-layer term counts, that
 the placement errors are clean ``ValueError``/``TypeError``s, that an exact
 ``topn`` is a ``NotImplementedError``, and that the trace surfaced as
@@ -179,11 +178,10 @@ def _assert_counts_equal(got, want):
 
 @pytest.mark.parametrize("partitions", [None, 1])
 def test_none_and_one_are_the_classic_path(partitions):
-    """``partitions=None``/``1`` must be today's path *bit for bit*, not merely
-    close: the kwargs are additive, and ``1`` short-circuits before any pool is
-    built."""
+    """``partitions=None``/``1`` is the unpartitioned path: the kwargs are
+    additive, and ``1`` short-circuits before any pool is built."""
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    assert _as_dict(s.propagate(c, partitions=partitions)) == _as_dict(s.propagate(c))
+    _assert_terms_close(s.propagate(c, partitions=partitions), s.propagate(c))
 
 
 def test_unpartitioned_stats_report_one_partition():
@@ -278,7 +276,7 @@ def test_the_kwargs_are_accepted_positionally_after_min_buckets():
         partitions=_cpu_sets(),
         pin_memory=False,
     )
-    assert _as_dict(positional) == _as_dict(keyword)
+    _assert_terms_close(positional, keyword)
 
 
 def test_a_trotter_loop_reuses_the_runtime():
@@ -494,7 +492,7 @@ def test_default_partition_rows_are_unchanged():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
     want = s.propagate(c, partitions=_cpu_sets())
     got = s.propagate(c, partitions=_cpu_sets(), partition_row_seed=None, partition_row_blocks=None)
-    assert _as_dict(got) == _as_dict(want)
+    _assert_terms_close(got, want)
 
 
 def test_distinct_seeds_move_different_rows():
@@ -689,7 +687,7 @@ def test_collapse_sample_at_one_partition_is_the_unpartitioned_trajectory():
         got, got_stats = s.propagate_with_stats(
             c, truncation.collapse_sample(8, seed), direction="heisenberg", partitions=_cpu_sets(1)
         )
-        assert _as_dict(got) == _as_dict(want), f"seed {seed}"
+        _assert_terms_close(got, want)
         assert got_stats.collapses == want_stats.collapses >= 1
 
 

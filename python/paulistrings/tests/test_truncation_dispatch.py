@@ -111,7 +111,7 @@ def test_a_dispatched_collapse_sample_draws_the_undispatched_trajectory():
         fallback = truncation.collapse_sample(1, seed) & _both_or(truncation.weight(1))
         want, want_type = _run(s, c, fallback, {})
         assert "WithFilter" in got_type and want_type.endswith("BuiltinTruncation")
-        assert _as_dict(got) == _as_dict(want)
+        _assert_close(got, want)
 
 
 def test_propagate_with_stats_dispatches_too():

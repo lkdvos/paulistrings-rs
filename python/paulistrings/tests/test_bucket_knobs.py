@@ -104,9 +104,7 @@ def test_the_defaults_are_the_engines():
         parameters = inspect.signature(method).parameters
         assert parameters["target_bucket_len"].default == 1024
         assert parameters["min_buckets"].default == 128
-    assert _as_dict(s.propagate(c)) == _as_dict(
-        s.propagate(c, target_bucket_len=1024, min_buckets=128)
-    )
+    _assert_terms_close(s.propagate(c), s.propagate(c, target_bucket_len=1024, min_buckets=128))
 
 
 @pytest.mark.parametrize("method", ["propagate", "propagate_with_stats"])

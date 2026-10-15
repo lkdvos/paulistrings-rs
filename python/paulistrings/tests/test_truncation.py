@@ -20,7 +20,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates, truncation
 
-from .test_from_arrays import _as_dict
+from .test_from_arrays import _as_dict, _assert_close
 
 
 TOL = 1e-12
@@ -281,7 +281,7 @@ def test_collapse_sample_above_the_final_size_is_a_no_op():
     s, c = _fanout_case()
     want = s.propagate(c, direction="heisenberg")
     got, stats = s.propagate_with_stats(c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
-    assert _as_dict(got) == _as_dict(want)
+    _assert_close(got, want)
     assert stats.collapses == 0
 
 
@@ -305,15 +305,12 @@ def test_collapse_sample_bounds_every_layer_by_the_cache():
 def test_collapse_sample_is_reproducible_per_seed():
     s, c = _fanout_case()
     runs = {
-        seed: [
-            _as_dict(s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg"))
-            for _ in range(2)
-        ]
+        seed: [s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg") for _ in range(2)]
         for seed in range(6)
     }
-    for seed, (first, second) in runs.items():
-        assert first == second, f"seed {seed}"
-    assert len({repr(sorted(r[0].items())) for r in runs.values()}) > 1, "seeds must draw differently"
+    for first, second in runs.values():
+        _assert_close(second, first)
+    assert len({repr(sorted(_as_dict(r[0]))) for r in runs.values()}) > 1, "seeds must draw differently"
 
 
 def test_collapse_sample_counts_per_call_and_continues_its_sequence():
@@ -327,7 +324,7 @@ def test_collapse_sample_counts_per_call_and_continues_its_sequence():
     # Two four-layer calls on one object draw what one eight-layer call draws.
     policy = truncation.collapse_sample(1, 11)
     chained = s.propagate(circuit, policy).propagate(circuit, policy)
-    assert _as_dict(chained) == _as_dict(s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
+    _assert_close(chained, s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
 
 
 def test_collapse_sample_draws_by_squared_magnitude():

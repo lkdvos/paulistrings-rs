@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-80364fa9.js";
+            window.path_to_searchindex_js = "searchindex-77f9d504.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -287,58 +287,51 @@ t=0.50  &lt;X&gt;=+0.183984  terms=98698
 Dual-licensed MIT OR Apache-2.0.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="installation"><a class="header" href="#installation">Installation</a></h1>
-<p>The distribution is <code>paulistrings-rs</code> and the import is <code>import paulistrings</code>; it is not published to PyPI, where <code>paulistrings</code> is an unrelated project.
-Released wheels (manylinux x86_64, macOS x86_64/arm64) are attached to <a href="https://github.com/lkdvos/paulistrings-rs/releases">GitHub Releases</a> instead — no Rust toolchain needed.</p>
-<p>With the <a href="https://cli.github.com/">GitHub CLI</a>, which resolves the latest release for you:</p>
-<pre><code class="language-bash">gh release download --repo lkdvos/paulistrings-rs --pattern '*manylinux_2_28_x86_64.whl'
-pip install ./paulistrings_rs-*.whl
+<pre><code class="language-bash">pip install paulistrings-rs        # or: uv add paulistrings-rs
 </code></pre>
-<p>Substitute the platform tag for your machine: <code>manylinux_2_28_x86_64</code> (Linux, including Rusty/Popeye), <code>macosx_11_0_arm64</code> (Apple silicon) or <code>macosx_10_12_x86_64</code> (Intel Mac).
-One abi3 wheel per platform serves every Python &gt;= 3.9.</p>
-<p>Without <code>gh</code>, take the <code>.whl</code> asset for your platform from the <a href="https://github.com/lkdvos/paulistrings-rs/releases/latest">latest release</a> and <code>pip install ./paulistrings_rs-*.whl</code>.</p>
-<p>These wheels cover the default engine only.
-The <code>mpi</code> feature is never bundled into a wheel — no MPI implementation is portable across clusters/vendors — so it stays a from-source pip install against the cluster’s loaded MPI module:</p>
+<p>The distribution is <code>paulistrings-rs</code> and the import is <code>import paulistrings</code>.
+Wheels cover Linux x86_64 and aarch64 (<code>manylinux_2_28</code>, glibc 2.28 or newer, which includes every Rusty node), macOS x86_64 and arm64, and Windows x86_64, and one abi3 wheel per platform serves every Python 3.9 or newer.
+Anywhere else pip builds the source distribution, which needs a Rust toolchain from <a href="https://rustup.rs">rustup</a>.</p>
+<p>Core propagation needs nothing but <code>numpy</code>.
+The <code>examples</code> extra adds <code>stim</code> and <code>qiskit</code>, which <code>interop.circuit_from_stim</code>, <code>interop.circuit_from_qiskit</code> and <code>interop.stabilizers_from_stim</code> import on first use, plus <code>qiskit-aer</code> and <code>matplotlib</code> for the example suite:</p>
+<pre><code class="language-bash">pip install "paulistrings-rs[examples]"
+</code></pre>
+<p>With the package installed, the <a href="#manual">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
+<a href="#first-propagation">First propagation</a> carries that same run further, into term inspection and a validation sweep.</p>
+<h2 id="gpus"><a class="header" href="#gpus">GPUs</a></h2>
+<p>The Linux and Windows wheels include the CUDA backend, and need no CUDA toolkit to install.
+At runtime a device needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, <code>pip install nvidia-cuda-nvrtc-cu12</code> elsewhere (<a href="#runtime-libraries">CUDA devices</a>).
+Without them <code>paulistrings.cuda_available()</code> is <code>False</code> and everything else works.</p>
+<h2 id="mpi"><a class="header" href="#mpi">MPI</a></h2>
+<p>The <code>mpi</code> feature is never in a wheel, since no MPI build is portable across clusters, so it is a source build against the cluster’s loaded MPI module.
+<code>mpi4py</code> must be built against that same MPI, so it is installed from source first:</p>
 <pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
 export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
-  --config-settings=build-args="--features mpi"
+pip install mpi4py --no-binary mpi4py
+pip install paulistrings-rs --no-binary paulistrings-rs --config-settings=build-args="--features cuda,mpi"
 </code></pre>
-<p>The <code>cuda</code> feature is also a from-source build, but it needs no CUDA toolkit to compile: the kernels are compiled by NVRTC at runtime.</p>
-<pre><code class="language-bash">pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
-  --config-settings=build-args="--features cuda"
-</code></pre>
-<p>At runtime it needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path: <code>module load cuda/12.8.0</code> on a Flatiron host, or <code>pip install nvidia-cuda-nvrtc-cu12</code> with its <code>lib</code> directory on <code>LD_LIBRARY_PATH</code> elsewhere.
-Without them <code>paulistrings.cuda_available()</code> is <code>False</code> and everything else works as in the default build.</p>
+<p>A source build replaces the wheel, so <code>--features</code> names every feature the build keeps; <code>cuda</code> is the one to drop on a machine without NVIDIA devices.
+Running across ranks is covered in <a href="#mpi-ranks">MPI ranks</a>.</p>
 <h3 id="gpu-and-mpi-features"><a class="header" href="#gpu-and-mpi-features">GPU and MPI features</a></h3>
-<p><code>cuda</code> and <code>mpi</code> together give one GPU per MPI rank (<a href="#gpu-per-rank">MPI ranks</a>), whose exchange runs over NCCL, so both module sets plus the NCCL library; NCCL is <code>dlopen</code>ed like <code>libcuda</code>/<code>libnvrtc</code>, so it needs no toolkit to build either.</p>
-<pre><code class="language-bash">module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1
-export LIBCLANG_PATH=$(llvm-config --libdir)
-pip install "paulistrings-rs[dev] @ git+https://github.com/lkdvos/paulistrings-rs" \
-  --config-settings=build-args="--features cuda,mpi"
+<p>The build above with <code>cuda,mpi</code> gives one GPU per MPI rank (<a href="#gpu-per-rank">MPI ranks</a>), whose exchange runs over NCCL.
+NCCL is loaded at runtime like <code>libcuda</code> and <code>libnvrtc</code>, so it needs no toolkit to build; at runtime it needs <code>module load cuda/12.8.0 nccl/2.23.4-1</code> on a Flatiron host.</p>
+<h2 id="rust"><a class="header" href="#rust">Rust</a></h2>
+<pre><code class="language-bash">cargo add paulistrings
 </code></pre>
-<p>Building from source (for contributors, or platforms without a release wheel) uses <a href="https://docs.astral.sh/uv/">uv</a>, which creates <code>./.venv</code> from the locked dependencies and builds the extension into it:</p>
+<p>The crate is the engine the Python package wraps, with its features off by default: <code>cuda</code>, <code>mpi</code> (which needs an MPI installation and <code>libclang</code> to build) and <code>phase-timing</code>.
+Its <a href="https://docs.rs/paulistrings">API documentation</a> is a developer guide that states each item’s contracts.
+Performance numbers in these docs are measured with <code>lto = "fat"</code> and <code>codegen-units = 1</code> in the release profile.</p>
+<h2 id="developing"><a class="header" href="#developing">Developing</a></h2>
+<p>A checkout builds with <a href="https://docs.astral.sh/uv/">uv</a>, which creates <code>./.venv</code> from the locked dependencies and builds the extension into it:</p>
 <pre><code class="language-bash">git clone https://github.com/lkdvos/paulistrings-rs
 cd paulistrings-rs
 ./scripts/setup.sh                        # uv sync, plus the examples extra
 uv run pytest python/paulistrings/tests
 </code></pre>
-<p>The Python version comes from <code>.python-version</code> and the Rust toolchain is pinned in <code>rust-toolchain.toml</code> (1.94.0), so neither needs choosing.
-<code>uv run</code> rebuilds the extension whenever a Rust source changed, so there is no separate rebuild step; from an activated <code>.venv</code>, <code>uv sync</code> does the same.</p>
-<p>Build <code>--release</code>. The release profile uses <code>lto = "fat"</code> and
-<code>codegen-units = 1</code>; a debug build of this workload is dramatically slower, and
-never worth benchmarking.</p>
-<p>Core propagation needs nothing but <code>numpy</code>.
-The optional extras matter for the example suite and the cross-library
-benchmarks, and also cover <code>stim</code>/<code>qiskit</code>, which <code>interop.circuit_from_stim</code>,
-<code>interop.circuit_from_qiskit</code> and <code>interop.stabilizers_from_stim</code> import lazily
-on first use — install one of these extras before reaching for those:</p>
-<pre><code class="language-bash">uv sync --extra examples                 # matplotlib, stim, qiskit, qiskit-aer — the oracles and plots
-uv sync --extra examples --extra bench   # plus pytest-benchmark; add `uv run --with openfermion` for the openfermion baseline
-</code></pre>
-<p><code>uv sync</code> removes whatever an extra it is not given had installed, so name every extra each time; <code>uv run</code> only adds.</p>
-<p>With the package installed, the <a href="#manual">Manual</a> is where to go next; it opens with a four-line run and explains each part in turn.
-<a href="#first-propagation">First propagation</a> carries that same run further, into term inspection and a validation sweep.
-Building for MPI is covered separately in <a href="#building-from-source">MPI ranks</a>, since it needs the extra build step above plus a launcher, and building for a GPU in <a href="#building-from-source-1">CUDA devices</a>.</p>
+<p>The Python version comes from <code>.python-version</code> and the Rust toolchain is pinned in <code>rust-toolchain.toml</code>, so neither needs choosing.
+<code>uv run</code> rebuilds the extension whenever a Rust source changed, so there is no separate rebuild step; from an activated <code>.venv</code>, <code>uv sync</code> does the same.
+<code>uv sync</code> removes whatever an extra it is not given had installed, so name every extra each time (<code>uv sync --extra examples --extra bench</code>); <code>uv run</code> only adds.
+Feature builds of a checkout are in <a href="#building-from-source-1">CUDA devices</a> and <a href="#building-from-source">MPI ranks</a>.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="manual"><a class="header" href="#manual">Manual</a></h1>
 <p>The Manual is the reading path through the library: what each object is, how to use it, and where it bites.
@@ -1529,21 +1522,23 @@ Sparse layers (<code>cnot</code>, a Pauli rotation) gain 2–5×, because each o
 Every layer carries a fixed cost of a few launches and synchronizations that the host engine does not pay, so the advantage shrinks below about 1e4 terms.</p>
 <p>The upload and download are paid once per <code>propagate(device=...)</code> call.
 A loop of many short calls — a Trotter time series, a cutoff sweep over the same prefix — should hold the sum on the device with <a href="#resident-sums"><code>PauliSum.to_device</code></a> instead.</p>
-<p>The feature is off by default and the released wheels omit it.
+<p>The Linux and Windows wheels include the backend; the macOS wheels, with no CUDA driver to load, omit it.
 <a href="#module-helpers"><code>paulistrings.cuda_available()</code></a> says whether this build can run on a device and one is visible, and <code>device=</code> in a build without the feature raises <code>RuntimeError</code>.</p>
-<h2 id="building-from-source-1"><a class="header" href="#building-from-source-1">Building from source</a></h2>
-<p>The <code>cuda</code> feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.</p>
-<pre><code class="language-bash">export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
-uv sync
-</code></pre>
-<p>Outside a checkout, the <code>pip install</code> in <a href="#installation">Installation</a> does the same.</p>
-<p>At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
+<h2 id="runtime-libraries"><a class="header" href="#runtime-libraries">Runtime libraries</a></h2>
+<p>The backend needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.
+At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
 On a Flatiron host <code>module load cuda/12.8.0</code> provides the latter; elsewhere <code>pip install nvidia-cuda-nvrtc-cu12</code> does, with its <code>lib</code> directory added to <code>LD_LIBRARY_PATH</code>:</p>
 <pre><code class="language-bash">pip install nvidia-cuda-nvrtc-cu12
 export LD_LIBRARY_PATH="$(python -c 'import nvidia.cuda_nvrtc as m; print(list(m.__path__)[0])')/lib:$LD_LIBRARY_PATH"
 </code></pre>
+<p>On Windows the libraries are found through <code>PATH</code> instead.</p>
 <p>A missing library makes <code>cuda_available()</code> return <code>False</code> rather than fail at import.
 The first propagation at each width compiles its kernels, which takes several seconds; later calls in the process reuse them, and an on-disk cache (<code>$PAULISTRINGS_KERNEL_CACHE</code>, default <code>~/.cache/paulistrings/kernels</code>, <code>off</code> to disable) makes the first call in a later process reuse them too.</p>
+<h2 id="building-from-source-1"><a class="header" href="#building-from-source-1">Building from source</a></h2>
+<p>A checkout builds the feature into its uv venv:</p>
+<pre><code class="language-bash">export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
+uv sync
+</code></pre>
 <h2 id="python-2"><a class="header" href="#python-2">Python</a></h2>
 <p>The snippets on this page are skipped by the doc checker because they need a CUDA device.</p>
 <!-- doctest: skip -->

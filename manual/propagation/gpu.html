@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-80364fa9.js";
+            window.path_to_searchindex_js = "../../searchindex-77f9d504.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -193,21 +193,23 @@ Sparse layers (<code>cnot</code>, a Pauli rotation) gain 2–5×, because each o
 Every layer carries a fixed cost of a few launches and synchronizations that the host engine does not pay, so the advantage shrinks below about 1e4 terms.</p>
 <p>The upload and download are paid once per <code>propagate(device=...)</code> call.
 A loop of many short calls — a Trotter time series, a cutoff sweep over the same prefix — should hold the sum on the device with <a href="#resident-sums"><code>PauliSum.to_device</code></a> instead.</p>
-<p>The feature is off by default and the released wheels omit it.
+<p>The Linux and Windows wheels include the backend; the macOS wheels, with no CUDA driver to load, omit it.
 <a href="../../library/module-helpers.html"><code>paulistrings.cuda_available()</code></a> says whether this build can run on a device and one is visible, and <code>device=</code> in a build without the feature raises <code>RuntimeError</code>.</p>
-<h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
-<p>The <code>cuda</code> feature needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.</p>
-<pre><code class="language-bash">export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
-uv sync
-</code></pre>
-<p>Outside a checkout, the <code>pip install</code> in <a href="../../installation.html">Installation</a> does the same.</p>
-<p>At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
+<h2 id="runtime-libraries"><a class="header" href="#runtime-libraries">Runtime libraries</a></h2>
+<p>The backend needs no CUDA toolkit at build time: the kernels are CUDA C++ compiled by NVRTC when a width is first used, and the driver and NVRTC libraries are loaded at runtime.
+At runtime the process needs the NVIDIA driver’s <code>libcuda</code> and a CUDA 12 <code>libnvrtc</code> on the library search path.
 On a Flatiron host <code>module load cuda/12.8.0</code> provides the latter; elsewhere <code>pip install nvidia-cuda-nvrtc-cu12</code> does, with its <code>lib</code> directory added to <code>LD_LIBRARY_PATH</code>:</p>
 <pre><code class="language-bash">pip install nvidia-cuda-nvrtc-cu12
 export LD_LIBRARY_PATH="$(python -c 'import nvidia.cuda_nvrtc as m; print(list(m.__path__)[0])')/lib:$LD_LIBRARY_PATH"
 </code></pre>
+<p>On Windows the libraries are found through <code>PATH</code> instead.</p>
 <p>A missing library makes <code>cuda_available()</code> return <code>False</code> rather than fail at import.
 The first propagation at each width compiles its kernels, which takes several seconds; later calls in the process reuse them, and an on-disk cache (<code>$PAULISTRINGS_KERNEL_CACHE</code>, default <code>~/.cache/paulistrings/kernels</code>, <code>off</code> to disable) makes the first call in a later process reuse them too.</p>
+<h2 id="building-from-source"><a class="header" href="#building-from-source">Building from source</a></h2>
+<p>A checkout builds the feature into its uv venv:</p>
+<pre><code class="language-bash">export MATURIN_PEP517_ARGS="--features cuda"   # uv rebuilds whenever this changes, so keep it set for this venv
+uv sync
+</code></pre>
 <h2 id="python"><a class="header" href="#python">Python</a></h2>
 <p>The snippets on this page are skipped by the doc checker because they need a CUDA device.</p>
 <!-- doctest: skip -->

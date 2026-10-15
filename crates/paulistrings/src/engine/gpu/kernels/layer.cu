@@ -1,4 +1,4 @@
-// The fused layer, one block per output position (ARCHITECTURE.md §Engine, §GPU).
+// The fused layer, one block per output position; contracts in engine/gpu/layer.rs.
 // Records (g_lo32, tag) for every emitting (source bucket, entry) pair, local or received, live in shared memory; a 16-bit index array is radix-sorted over them, equal-g32 runs are checked on the full key, and a segmented sum deduplicates before the surviving rows are written to the arena at seg_start[p].
 // Fallbacks are block-uniform: a colliding adjacent pair (equal g_lo32, different key) triggers eight more passes over g_hi32, and a pair still colliding after that a full lex-key sort.
 

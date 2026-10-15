@@ -1,4 +1,4 @@
-//! [`Collectives`], the group operations a partition's truncation and layer loop issue besides the exchange (ARCHITECTURE.md §Partitioning).
+//! [`Collectives`], the group operations a partition's truncation and layer loop issue besides the exchange.
 
 /// Seals [`Collectives`] and, through it, [`Transport`](crate::Transport).
 pub(crate) mod sealed {

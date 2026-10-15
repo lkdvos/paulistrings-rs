@@ -2,8 +2,8 @@
 //! talk to the group at all.
 //!
 //! A layer's exchange is conditional already (no remote delta ⇒ no transport
-//! call). These tests pin the other half of the contract, ARCHITECTURE.md
-//! §Partitioning: the bucket-count agreement is on a *schedule*, so a run of
+//! call). These tests pin the other half of the contract in `engine/driver.rs`:
+//! the bucket-count agreement is on a *schedule*, so a run of
 //! exchange-free layers is also collective-free, and an exchange is always
 //! preceded by an agreement, so both sides index their blocks by the same
 //! bucket count.

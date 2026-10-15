@@ -1,4 +1,4 @@
-//! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance (ARCHITECTURE.md §Determinism).
+//! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance.
 //! Every case returns early without a device.
 
 use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum};

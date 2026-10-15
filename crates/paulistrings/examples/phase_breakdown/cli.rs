@@ -194,7 +194,7 @@ impl Initial {
     }
 }
 
-/// `--partition-rows`: how the `log2(P)` GF(2) partition rows are chosen (`ARCHITECTURE.md §Partitioning`).
+/// `--partition-rows`: how the `log2(P)` GF(2) partition rows are chosen (`PartitionRows`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PartitionRowSpec {
     /// `PartitionRows::from_seed`, the driver's own default.

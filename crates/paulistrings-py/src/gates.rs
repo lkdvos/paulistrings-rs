@@ -1,4 +1,4 @@
-//! `paulistrings._paulistrings.gates` submodule: gate factories. See ARCHITECTURE.md §Python-Bindings.
+//! `paulistrings._paulistrings.gates` submodule: gate factories.
 
 use crate::channel_spec::{Axis, ChannelSpec, PyChannel};
 use num_complex::Complex64;

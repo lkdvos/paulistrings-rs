@@ -1,4 +1,7 @@
-//! The export pass: a layer's rows that belong to another partition, gathered into one [`ExchangeBlock`] per remote delta (ARCHITECTURE.md §Partitioning).
+//! The export pass: a layer's rows that belong to another partition, gathered into one [`ExchangeBlock`] per remote delta.
+//!
+//! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
+//! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
 
 use num_complex::Complex64;
 use rayon::prelude::*;

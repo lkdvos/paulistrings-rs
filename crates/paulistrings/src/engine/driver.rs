@@ -1,4 +1,12 @@
-//! The layer loop `run_layers` every driver runs, one partition's share of a call at any partition count (ARCHITECTURE.md §Transport composition).
+//! The layer loop `run_layers` every driver runs, one partition's share of a call at any partition count.
+//!
+//! Every partition issues the same transport calls in the same order, or the group falls out of step; per layer:
+//! 1. `allreduce_max_u8` of the proposed bucket bits, on any layer whose plan has a remote delta (both sides index the exchange's blocks by the count) and otherwise on the schedule of `agrees_bucket_bits`;
+//! 2. the exchange, only if the plan has a remote delta;
+//! 3. the policy's layer pass, on every layer, if `finalizes_layer` is true.
+//!
+//! Between agreements a partition keeps its count even when its own proposal is higher, so the counts stay equal without communicating, and the schedule depends on the layer index and the plan alone.
+//! At `P = 1` there is no group: the loop skips the reduction and refines every layer, which keeps it bitwise `propagate`.
 
 use crate::channel::Prepare;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -17,7 +25,7 @@ use crate::engine::{Direction, PropagateOptions, LOG_TARGET};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::truncation::TruncationPolicy;
 
-/// Layers between two bucket-count agreements, and the length of the opening ramp that precedes them (ARCHITECTURE.md §Partitioning).
+/// Layers between two bucket-count agreements, and the length of the opening ramp that precedes them.
 pub(crate) const BITS_AGREE_EVERY: usize = 16;
 
 /// Whether the layer at `application_index` of a call agrees the bucket count; a pure function of it, so every partition answers alike.
@@ -98,7 +106,7 @@ fn prepare_or_panic<const W: usize>(
     })
 }
 
-/// One partition's layer loop, run in lock-step with its peers inside its own pool (ARCHITECTURE.md §Partitioning).
+/// One partition's layer loop, run in lock-step with its peers inside its own pool, in the module's collective order.
 pub(crate) fn run_layers<const W: usize, T, X, B>(
     circuit: &Circuit<W>,
     policy: &T,

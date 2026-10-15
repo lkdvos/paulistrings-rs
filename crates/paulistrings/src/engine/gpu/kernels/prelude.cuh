@@ -33,12 +33,12 @@ static_assert(MAX_BUCKET_LEN * MAX_ENTRIES <= 65536u, "a tag fits 16 bits");
 constexpr u32 TAG_OFFSET_BITS = log2_exact(MAX_BUCKET_LEN);
 #define TAG_OFFSET_MASK (MAX_BUCKET_LEN - 1u)
 #define LOCAL_DIM 16
-// `received_slot[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot (ARCHITECTURE.md §Device exchange).
+// `received_slot[e]` for an entry whose rows come from a local bucket; any other value is the received block's slot.
 #define NO_REMOTE 0xFFFFFFFFu
 // `entry_of[s]` for a support pattern no entry of a permutation table emits for (permute.cu).
 #define NO_ENTRY 0xFFFFFFFFu
 
-// Prepared-table kinds: a `LocalPtm` and a wide `PreparedRotation` (ARCHITECTURE.md §Prepared-Channels).
+// Prepared-table kinds: a `LocalPtm` and a wide `PreparedRotation`.
 #define MODE_LOCAL 0
 #define MODE_ROTATION 1
 

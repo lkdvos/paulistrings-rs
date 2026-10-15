@@ -1,4 +1,10 @@
-//! The export kernels, the exchange over a device wire, and the chunked receive of one device layer. See ARCHITECTURE.md §Device exchange.
+//! The export kernels, the exchange over a device wire, and the chunked receive of one device layer.
+//!
+//! The device exports the host's wire unit (`engine/partitioned/export.rs`) but never moves rows through host memory, so a group is all device partitions or all host ones.
+//! A remote layer makes one call beyond the host's: block headers and offsets go through `Transport::exchange`, then one `allreduce_sum_u64` votes on going ahead and on the chunk count, and on a unanimous yes the bulk columns move over the device wire.
+//! Failure never strands a peer: a partition that cannot receive, has a failed wire or has already failed votes no, nobody then posts, and every block is taken as empty.
+//! A partition whose layer fails before its exchange still makes the call, with one empty skeleton per remote delta and a no vote.
+//! After a yes every partition posts every chunk's transfer even if its own layer fails mid-way, discarding what arrives; only a failed wire stops the posting, and its peers' bounded waits then fail too.
 
 use std::sync::Arc;
 
@@ -59,7 +65,7 @@ pub(crate) struct DeviceExport<const W: usize> {
     pub(crate) fail_after_chunk: Option<usize>,
 }
 
-/// A remote layer's transfers not yet made, chunk `c` (positions `map.bound(c)..map.bound(c + 1)`) moving just before the fused layer reaches it (ARCHITECTURE.md §Device exchange).
+/// A remote layer's transfers not yet made, chunk `c` (positions `map.bound(c)..map.bound(c + 1)`) moving just before the fused layer reaches it.
 pub(crate) struct PendingReceive<const W: usize> {
     pub(crate) map: ChunkMap,
     /// The first chunk not yet moved.
@@ -143,7 +149,7 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
     votes[..size].iter().all(|&v| v == 0).then_some(chunks)
 }
 
-/// One remote layer's exchange after the count (ARCHITECTURE.md §Device exchange): the export blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
+/// One remote layer's exchange after the count: the export blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
 pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     sum: &GpuSum<W>,
     table: &DevicePrepared<W>,

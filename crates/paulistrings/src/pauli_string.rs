@@ -1,4 +1,5 @@
-//! [`PauliString<W>`], the symplectic `(x, z)` encoding of a Pauli operator on up to `64·W` qubits (ARCHITECTURE.md §Data-Model, §Width).
+//! [`PauliString<W>`], the symplectic `(x, z)` encoding of a Pauli operator on up to `64·W` qubits.
+//! The derived `Ord`, lexicographic in `x` then `z`, must agree with the `(x, z)` tuple order every bucket of a [`PauliSum`](crate::PauliSum) is sorted in.
 
 use num_complex::Complex64;
 

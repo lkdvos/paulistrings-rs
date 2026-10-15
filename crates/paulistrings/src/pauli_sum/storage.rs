@@ -1,4 +1,4 @@
-//! [`PauliSum`]'s per-bucket column storage, the bucket-count policy and the merge helpers (ARCHITECTURE.md §Data-Model, §Bucket-Policy).
+//! [`PauliSum`]'s per-bucket column storage, the bucket-count policy and the merge helpers.
 
 use std::borrow::Cow;
 
@@ -28,21 +28,21 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     b
 }
 
-/// Minimum terms per bucket for the parallelism floor to apply (ARCHITECTURE.md §Bucket-Policy).
+/// Minimum terms per bucket for the parallelism floor to apply.
 // Not lower without checking a dense and a sparse PTM layer: the bucket count also caps the coset dimension a dense layer's sort needs (research/FINDINGS.md §The dense-PTM bucket cliff is a delta-span rank effect).
 pub(crate) const MIN_TERMS_PER_TASK: usize = 64;
 
 /// Below this many terms the bucket-parallel maintenance passes run serially.
 const PARALLEL_MIN_TERMS: usize = DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK;
 
-/// Default target terms per bucket (ARCHITECTURE.md §Bucket-Policy).
+/// Default target terms per bucket.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
-/// Default floor on the bucket count, fixed rather than thread-derived (ARCHITECTURE.md §Bucket-Policy).
+/// Default floor on the bucket count, fixed rather than thread-derived, so the partition is a function of the sum alone and the output is bitwise identical across thread counts (`tests/propagate_bucketed.rs` pins it).
 /// Must be `>= 16`, or `desired_bits` stops giving a sum of `<= 1024` terms a single bucket.
 pub const DEFAULT_MIN_BUCKETS: usize = 128;
 
-/// One bucket's columns, whose capacity is retained across layers (ARCHITECTURE.md §Data-Model).
+/// One bucket's columns, whose capacity is retained across layers.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct BucketColumns<const W: usize> {
     pub(crate) x: Vec<[u64; W]>,

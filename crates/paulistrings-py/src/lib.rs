@@ -1,10 +1,7 @@
 //! Python bindings for `paulistrings`.
 //!
-//! See ARCHITECTURE.md §Python-Bindings. The user-visible Python surface is a
-//! small set of classes (`PauliSum`, `Circuit`) plus three factory submodules
-//! (`gates`, `noise`, `truncation`). The width parameter `W` is monomorphized
-//! at a fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop
-//! (ARCHITECTURE.md §Width).
+//! The user-visible Python surface is a small set of classes (`PauliSum`, `Circuit`) plus three factory submodules (`gates`, `noise`, `truncation`).
+//! The width parameter `W` is monomorphized at a fixed set `{1, 2, 4, 8, 16}` and dispatched once per call, outside any hot loop.
 
 // PyO3 0.22's `#[pymethods]` expansion converts return values via `.into()` even for a `PyResult<T>`, which clippy flags; the lint is on the macro output, not our code.
 #![allow(clippy::useless_conversion)]

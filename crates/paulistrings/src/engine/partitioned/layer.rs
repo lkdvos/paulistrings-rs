@@ -1,4 +1,4 @@
-//! One layer of the partitioned engine, export → exchange → coset loop (ARCHITECTURE.md §Partitioning).
+//! One layer of the partitioned engine, export → exchange → coset loop.
 //! It neither rebuckets nor finalizes the layer; the driver owns both.
 
 use super::exchange_block::{ExchangeBlock, PartnerPayload};

@@ -78,7 +78,7 @@ Redundant key gathers are still the fused kernel's largest known cost; a fix mus
 ### One `BuiltinTruncation` enum for host truncation
 
 Idea: run every host policy as the `BuiltinTruncation` enum, matched per term, instead of one monomorphized engine per policy.
-Rejected: **10–14% slower** wall on `cnot` and `rotation_zz`, merge **+31–37%** (job 7228665); the host keeps the generic policies, onto which Python lowers its policy trees (`ARCHITECTURE.md §Python-Bindings`).
+Rejected: **10–14% slower** wall on `cnot` and `rotation_zz`, merge **+31–37%** (job 7228665); the host keeps the generic policies, onto which Python lowers its policy trees (`crates/paulistrings-py/src/truncation_dispatch.rs`).
 
 ## Shipped
 

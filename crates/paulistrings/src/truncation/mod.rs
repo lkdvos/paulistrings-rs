@@ -1,4 +1,4 @@
-//! The [`TruncationPolicy`] trait and the built-in policies. See ARCHITECTURE.md §Truncation.
+//! The [`TruncationPolicy`] trait and the built-in policies.
 
 pub(crate) mod builtin;
 mod tree;

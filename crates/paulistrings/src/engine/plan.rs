@@ -1,4 +1,6 @@
-//! Per-layer classification of a prepared channel's deltas into local (`part(d) = 0`) and remote ones (ARCHITECTURE.md §Partitioning).
+//! Per-layer classification of a prepared channel's deltas into local (`part(d) = 0`) and remote ones.
+//!
+//! The partition rows are linear, so a key delta `d` moves every term by the same `part(d)`: remoteness is a property of the delta alone, every partition reaches the same verdict without communicating, and the partner set is symmetric.
 
 use crate::channel::prepared::Prepared;
 use crate::pauli_sum::hash::PartitionRows;

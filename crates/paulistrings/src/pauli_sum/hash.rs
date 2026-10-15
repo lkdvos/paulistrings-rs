@@ -1,4 +1,4 @@
-//! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`] (ARCHITECTURE.md §Hash, §Partitioning).
+//! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`].
 
 use crate::pauli_string::word_mask;
 use crate::rng::{mix64, SPLITMIX_GAMMA};
@@ -137,6 +137,7 @@ impl<const W: usize> Gf2Matrix<W> {
 /// The GF(2)-linear hash `h(v) = H·v` from a Pauli key `v = (x, z)` to a bucket index, for a dense random `H` drawn from a seed.
 ///
 /// Linearity gives `h(v ⊕ d) = h(v) ⊕ h(d)`, so a channel's output buckets are predictable from its input buckets.
+/// The active rows are a prefix of one fixed matrix, so a refine splits every bucket in two by one row parity with the within-bucket order inherited, and a coarsen merges bucket pairs; neither needs a sort to keep the [`PauliSum`](crate::PauliSum) invariant.
 #[derive(Clone, Debug)]
 pub struct Gf2Hash<const W: usize> {
     /// All [`B_MAX_BITS`] rows of `H`.
@@ -237,7 +238,10 @@ impl<const W: usize> Gf2Hash<W> {
     }
 }
 
-/// The `p` GF(2) rows `part(v) = P·v` that split a sum across `2^p` partitions, fixed while the bucket hash refines (ARCHITECTURE.md §Partitioning).
+/// The `p` GF(2) rows `part(v) = P·v` that split a sum across `2^p` partitions: a partition holds exactly the terms with `part(v)` equal to its rank.
+///
+/// A matrix separate from [`Gf2Hash`]'s and fixed for a run, since a row that moved as the bucket hash refines would change a term's owner mid-run.
+/// Dependence on the bucket hash's rows costs load balance, never correctness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionRows<const W: usize> {
     /// One row per partition bit: `P = 1 << rows` partitions.

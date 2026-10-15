@@ -1,10 +1,10 @@
-//! The [`Transport`] trait, the [`Payload`] wire seam, the exchange's [`ChunkMap`], and the one-partition [`SoloTransport`] (ARCHITECTURE.md §Partitioning).
+//! The [`Transport`] trait, the [`Payload`] wire seam, the exchange's [`ChunkMap`], and the one-partition [`SoloTransport`].
 
 use crate::collectives::sealed::Sealed;
 use crate::collectives::Collectives;
 use crate::engine::coset::CosetOrder;
 
-/// The chunks a layer's bulk transfer is cut into, over the positions of the receiver's [`CosetOrder`](crate::engine::coset::CosetOrder) (ARCHITECTURE.md §Partitioning).
+/// The chunks a layer's bulk transfer is cut into, over the positions of the receiver's [`CosetOrder`](crate::engine::coset::CosetOrder).
 ///
 /// Chunk edges always fall on coset boundaries, so a coset task waits on exactly one chunk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1,5 +1,4 @@
-//! `paulistrings._paulistrings.truncation` submodule: policy factories. See
-//! ARCHITECTURE.md §Truncation and ARCHITECTURE.md §Python-Bindings.
+//! `paulistrings._paulistrings.truncation` submodule: policy factories.
 //!
 //! Python composition is via the `&` and `|` operators on the returned objects; `|` combines per-term filters only.
 

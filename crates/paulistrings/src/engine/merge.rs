@@ -1,4 +1,4 @@
-//! The per-run sort kernels and the fused two-stream merge, the bucketed engine's inner loop (ARCHITECTURE.md §Engine).
+//! The per-run sort kernels and the fused two-stream merge, the bucketed engine's inner loop.
 //!
 //! Both sorts leave a run ascending in lex `(x, z)` with duplicates allowed, as a permutation of its rows; equal-key order is unspecified, so they agree only to floating-point tolerance.
 
@@ -22,7 +22,7 @@ pub(crate) struct SortScratch<const W: usize> {
 }
 
 /// Sort the columns in place by the key `(x, z)` alone, by comparison through a permutation.
-// Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams (ARCHITECTURE.md §Engine).
+// Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams.
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
 fn sort_by_comparison<const W: usize>(
     columns: &mut BucketColumns<W>,
@@ -257,7 +257,7 @@ fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut S
 
 /// Merge the strictly ascending `identity` stream with the sorted `rest` stream into `out`, summing equal keys and applying `keep_term` to each full sum.
 // Signed-zero contract: exact-zero rows are summed like any other, and the only zero test is on the final sum.
-// Three loops, so neither stream's bound is tested in the main walk (ARCHITECTURE.md §Engine).
+// Three loops, so neither stream's bound is tested in the main walk: research/FINDINGS.md §Branch misprediction: merge loop split and branchless gather filter.
 // Not segment copies: research/FINDINGS.md §Segment-copy merge
 // Not a branchless walk: research/FINDINGS.md §Branchless `merge2_into`
 pub(crate) fn merge_identity_and_rest<const W: usize, T: TruncationPolicy<W> + ?Sized>(

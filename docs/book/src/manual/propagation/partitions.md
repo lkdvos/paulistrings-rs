@@ -2,7 +2,7 @@
 
 A partitioned run splits the sum across NUMA domains instead of sharing one thread pool across the whole box.
 Each domain gets its own pinned pool and its own share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a domain boundary.
-The mechanism is in [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Partitioning and the engine it runs on is [Inside the engine](engine.md); this page is when to reach for it and how.
+The engine it runs on is [Inside the engine](engine.md); this page is when to reach for it and how.
 To split across *processes* instead, for capacity rather than bandwidth, see [MPI ranks](mpi.md).
 
 ## When partitioning pays {#when-it-pays}

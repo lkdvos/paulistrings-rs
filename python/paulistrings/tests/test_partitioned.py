@@ -56,7 +56,7 @@ pytestmark = pytest.mark.skipif(
 WIDTHS = [8, 130]
 
 # Coefficients agree to floating point, not bit for bit: the partitioned run
-# sums equal keys in a different order (ARCHITECTURE.md §Determinism).
+# sums equal keys in a different order.
 TOL = 1e-9
 
 # Terms in the seeded observable — comfortably more than one bucket, so the

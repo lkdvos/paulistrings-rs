@@ -1,5 +1,4 @@
 //! [`PtmChannel`], every built-in one- and two-qubit gate and noise channel as a compact Pauli-transfer matrix (PTM).
-//! See ARCHITECTURE.md §Channels.
 
 mod clifford;
 mod noise;
@@ -346,7 +345,7 @@ impl<const W: usize> Channel<W> for PtmChannel {
         self.apply_rows(true, input_x, input_z, coeff, out);
     }
 
-    /// Tabulated straight from the stored PTM, without probing `apply`.
+    /// Tabulated straight from the stored PTM, without probing `apply`; a test holds it bit-equal to the probe.
     fn prepare_for_layer(
         &self,
         hash: &Gf2Hash<W>,

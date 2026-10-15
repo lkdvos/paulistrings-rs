@@ -1,4 +1,9 @@
-//! `Gf2Span`, the GF(2) span of a channel's bucket deltas and the coset index algebra over it, and `CosetOrder`, the coset-contiguous bucket order a layer runs in (ARCHITECTURE.md §Engine).
+//! `Gf2Span`, the GF(2) span of a channel's bucket deltas and the coset index algebra over it, and `CosetOrder`, the coset-contiguous bucket order a layer runs in.
+//!
+//! The bucket hash is linear, so output bucket `β′` reads only the input buckets `β′ ⊕ h(D)` for a channel's key deltas `D`.
+//! A coset of the span of `h(D)` is therefore a closed task: its output buckets read only its own input buckets and no other coset writes them, which is why a layer needs no synchronization inside it.
+//! The span rather than `h(D)` itself, since a custom channel's delta set need not be XOR-closed.
+//! Where several deltas share a bucket delta the gather walks them all, so correctness never depends on the draw of the hash rows.
 
 use crate::pauli_sum::hash::B_MAX_BITS;
 

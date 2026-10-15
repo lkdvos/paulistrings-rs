@@ -1,4 +1,4 @@
-//! Partitioned execution: the sum split across NUMA domains or MPI ranks by GF(2) partition rows, one pinned Rayon pool per partition, and the push-model exchange between them (ARCHITECTURE.md §Partitioning).
+//! Partitioned execution: the sum split across NUMA domains or MPI ranks by GF(2) partition rows, one pinned Rayon pool per partition, and the push-model exchange between them.
 //! `PartitionedSum` holds every partition in one process, `DistributedSum` is one partition of a group of processes; both run `engine::driver::run_layers`.
 //! Setting a run up returns `Result`; everything past that is a contract violation and panics, since the group is already out of step.
 

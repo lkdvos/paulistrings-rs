@@ -2,7 +2,7 @@
 
 A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a [partitioned run](partitions.md): one partition on one device, one partition per listed device, or one device per MPI rank.
 Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
-The mechanism is in [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §GPU; this page is when to reach for it and how.
+The engine it runs is [Inside the engine](engine.md); this page is when to reach for it and how.
 
 ## When a device pays {#when-it-pays}
 
@@ -166,7 +166,7 @@ On a pair the driver reports as unsupported the copy stages through the host ins
 ## What changes on a device
 
 **Results agree to floating-point tolerance, not bit for bit.**
-The device sums equal keys in a different order from the host, as a different bucket count does ([`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Determinism).
+The device sums equal keys in a different order from the host, as a different bucket count does.
 No reduction uses a floating-point atomic, so two runs on the same device give the same bits.
 
 **Storage order is the host's canonical order, but for the device's own bucket count.**

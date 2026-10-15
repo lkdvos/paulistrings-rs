@@ -300,9 +300,10 @@ fn downcast<T: 'static>(body: Box<dyn std::any::Any + Send>, from: usize, op: &s
     }
 }
 
-/// The transport between the partitions of one process: a mutex-and-condvar rendezvous, spun on briefly before blocking, for the collectives and a `P × P` matrix of unbounded `mpsc` channels for the exchange (ARCHITECTURE.md §Transport composition).
+/// The transport between the partitions of one process: a mutex-and-condvar rendezvous, spun on briefly before blocking, for the collectives and a `P × P` matrix of unbounded `mpsc` channels for the exchange.
 ///
 /// Built as a group by [`group`](Self::group), one endpoint per partition thread, and called by one thread per rank, since the generation counter is that thread's call index.
+/// Each call records `(generation, kind)`, so a collective-order violation panics naming both partitions rather than hanging, and a dropped endpoint wakes the others so a waiter fails fast.
 pub struct InProcessTransport {
     rank: u32,
     size: u32,

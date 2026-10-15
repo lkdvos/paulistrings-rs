@@ -1,4 +1,4 @@
-// k_octave_histogram: `ApproxTopN`'s octave histogram of |c|^2 (ARCHITECTURE.md §Truncation).
+// k_octave_histogram: `ApproxTopN`'s octave histogram of |c|^2.
 // k_radix_histogram and k_radix_extract: exact `TopN`'s radix-select over the u64 bit pattern of |c|^2, which orders a non-negative f64 as its value.
 // Both retain through `k_boundary_counts` and `k_retain`: the key `bits >> shift` (shift 52 is the octave, 0 the exact value) above `boundary`, plus a quota of terms at it in bucket order.
 

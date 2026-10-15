@@ -1,6 +1,6 @@
 //! The propagation front door [`propagate`], one partition of the partitioned layer loop; one layer is applied in `bucketed`.
 //!
-//! See ARCHITECTURE.md §Engine.
+//! At a fixed bucket count and hash seed the output is bitwise identical across thread counts and repeat runs, since cosets are write-disjoint and sequential inside; tests pin it as a tripwire, and across bucket counts the bar is tolerance.
 
 pub(crate) mod backend;
 pub(crate) mod bucketed;
@@ -63,7 +63,7 @@ pub enum Direction {
 /// Tuning knobs for [`propagate_with`]; [`Default`] is what [`propagate`] uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PropagateOptions {
-    /// Terms per bucket the per-layer partition targets (ARCHITECTURE.md §Bucket-Policy).
+    /// Terms per bucket the per-layer partition targets.
     ///
     /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and rebucketing is grow-only, so lowering either mid-run never coarsens a partition.
     /// At least 1 ([`validate`](Self::validate)).
@@ -74,7 +74,7 @@ pub struct PropagateOptions {
     pub min_buckets: usize,
 }
 
-/// The smallest accepted [`PropagateOptions::min_buckets`] (ARCHITECTURE.md §Bucket-Policy).
+/// The smallest accepted [`PropagateOptions::min_buckets`].
 const SMALLEST_MIN_BUCKETS: usize = 16;
 
 impl PropagateOptions {
@@ -171,7 +171,7 @@ where
         progress_scope(None, 1, None),
     );
 
-    // One partition of `run_layers` on the caller's pool (ARCHITECTURE.md §Transport composition).
+    // One partition of `run_layers` on the caller's pool, over the no-op `SoloTransport`.
     let tracing = scratch.trace.is_some();
     let rows = PartitionRows::none(sum.num_qubits());
     let mut work = PartitionWork {

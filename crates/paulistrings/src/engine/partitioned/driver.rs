@@ -1,4 +1,4 @@
-//! The call frame around `run_layers` shared by every partitioned driver, the scatter, and the [`propagate_partitioned`] front door (ARCHITECTURE.md §Transport composition).
+//! The call frame around `run_layers` shared by every partitioned driver, the scatter, and the [`propagate_partitioned`] front door.
 
 #[cfg(feature = "phase-timing")]
 use std::sync::atomic::Ordering;
@@ -49,7 +49,7 @@ pub(crate) fn scatter_local<const W: usize>(
     local
 }
 
-/// The scatter bits rule of ARCHITECTURE.md §Partitioning, with `pbits = log2(P)` and `want` the all-reduced [`desired_bits`].
+/// The scatter's agreed bucket bits, with `pbits = log2(P)` and `want` the all-reduced [`desired_bits`]: a partition sheds at most `pbits` of the bits the sum arrived with and never drops below what its share wants.
 fn scatter_bits(bits: u8, pbits: u8, want: u8) -> u8 {
     want.max(bits.saturating_sub(pbits)).min(bits)
 }

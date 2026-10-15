@@ -28,7 +28,7 @@ use crate::truncation::BuiltinTruncation;
 
 use crate::engine::LOG_TARGET;
 
-/// A [`PauliSum`] split across the device partitions of a [`PartitionRuntime`] resolved from [`Placement::Devices`] (ARCHITECTURE.md §GPU): [`PartitionedSum`] over the device backend.
+/// A [`PauliSum`] split across the device partitions of a [`PartitionRuntime`] resolved from [`Placement::Devices`]: [`PartitionedSum`] over the device backend.
 ///
 /// Rows a layer moves between partitions go device to device and never touch the host.
 /// Several partitions may share one device (`per_device > 1`), which is a testing shape; one partition per device is the production one.

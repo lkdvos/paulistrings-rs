@@ -1,4 +1,4 @@
-//! Scatter and gather of a [`PauliSum`] across the partitions of the partitioned engine (ARCHITECTURE.md §Partitioning).
+//! Scatter and gather of a [`PauliSum`] across the partitions of the partitioned engine.
 
 use num_complex::Complex64;
 

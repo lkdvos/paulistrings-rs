@@ -57,7 +57,7 @@ const TEST_SHARED_LIMIT: &str = "-DTEST_SHARED_LIMIT=";
 /// Source-bucket rows the 12-bit tag offset of a fused-layer record can address; `-DMAX_BUCKET_LEN` to the kernels.
 pub(crate) const MAX_BUCKET_LEN: usize = 1 << 12;
 
-/// Fused-layer block width for `w`, register-bound (ARCHITECTURE.md §GPU); `-DTHREADS` to the kernels.
+/// Fused-layer block width for `w`, register-bound; `-DTHREADS` to the kernels.
 pub(crate) fn layer_threads(w: usize) -> u32 {
     match w {
         1 | 2 => 1024,

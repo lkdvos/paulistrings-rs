@@ -128,7 +128,7 @@ POLICY = truncation.approx_topn(NUM_TERMS * 16)
 # where the retained set is a strict subset.
 TIGHT_POLICY = truncation.approx_topn(NUM_TERMS // 2)
 # Coefficients agree to floating point, not bit for bit: the distributed run
-# sums equal keys in a different order (ARCHITECTURE.md §Determinism).
+# sums equal keys in a different order.
 TOL = 1e-9
 # Qubits the circuit touches. The observable's support spans both words, so a
 # narrow window still exercises the multi-word key path.

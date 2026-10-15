@@ -1,4 +1,4 @@
-//! `propagate_with` against `propagate`: the default options are `propagate` bit for bit, a reused scratch leaks no state, and the bucket-count knobs coarsen the partition without changing the sum beyond tolerance (ARCHITECTURE.md §Bucket-Policy).
+//! `propagate_with` against `propagate`: the default options are `propagate` bit for bit, a reused scratch leaks no state, and the bucket-count knobs coarsen the partition without changing the sum beyond tolerance.
 //! The bitwise checks run in both feature configurations, so `--features phase-timing` must not change a bit.
 
 use paulistrings::test_support::{assert_terms_close, rand_sum, rand_sum_real};

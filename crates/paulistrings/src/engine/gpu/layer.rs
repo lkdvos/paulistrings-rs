@@ -1,4 +1,8 @@
-//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale. See ARCHITECTURE.md §Engine, §GPU and §Device exchange.
+//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale.
+//!
+//! Within a bucket the device keeps unique keys in no particular order; the fused layer sorts records by fingerprint and falls back to the full key on a collision, so equal keys always end adjacent.
+//! A block's records and a source bucket's rows are checked against `LAYER_CAP` and `MAX_BUCKET_LEN` before the launch: a lone partition refines past a violation up to `GpuLayerOptions::max_bits`, while a group member reports `Unsupported`, since nobody refines off-schedule.
+//! A permutation table takes the scatter path instead of the fused layer only when the layer has no received rows.
 
 use std::sync::Arc;
 
@@ -515,7 +519,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             "more than 2^32 pre-dedup records in one layer",
         ));
     }
-    // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (ARCHITECTURE.md §Partitioning).
+    // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (engine/driver.rs).
     let max_bits = if solo {
         scratch.options.max_bits.min(B_MAX_BITS)
     } else {

@@ -16,7 +16,7 @@ This crate is the pure-Rust core. Python bindings live in the
 
 Python is the user interface: install `paulistrings-rs` and read the [documentation site](https://lkdvos.github.io/paulistrings-rs/).
 This crate's rustdoc is a developer guide to the engine rather than a user API.
-[`CLAUDE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/CLAUDE.md) lists the build, test and benchmark commands, and [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) is the design source of truth.
+[`CLAUDE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/CLAUDE.md) lists the build, test and benchmark commands.
 
 ## Design
 
@@ -34,8 +34,7 @@ Four pillars in priority order:
 
 See the [API documentation](https://docs.rs/paulistrings) for module-level
 guides on the bucketed engine, width monomorphization, and the extension
-traits. For the system-level design, see
-[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md).
+traits; each module states the contracts it keeps.
 
 ## License
 

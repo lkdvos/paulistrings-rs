@@ -1,7 +1,6 @@
 //! The Rust core of `paulistrings-rs`: operators evolved in the Pauli basis under gates and noise channels, stored as a GF(2)-bucketed `PauliSum` and optionally partitioned over NUMA domains, MPI ranks or CUDA devices.
 //!
 //! These docs are a developer guide; the user-facing API is the Python package, documented at <https://lkdvos.github.io/paulistrings-rs/>.
-//! [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) is the design source of truth.
 
 #![warn(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_auto_cfg))]

@@ -116,7 +116,7 @@ pub(crate) fn group_bits(size: u32) -> u8 {
     size.trailing_zeros() as u8
 }
 
-/// One process's partition of a sum split across a [`Transport`]'s group, held across calls so a driver scatters once, steps many times and gathers once (ARCHITECTURE.md §Transport composition).
+/// One process's partition of a sum split across a [`Transport`]'s group, held across calls so a driver scatters once, steps many times and gathers once.
 ///
 /// The input is replicated: every rank scatters the same sum and keeps its own partition.
 /// [`gather`](Self::gather) returns `Some` on rank 0 only, and a [`PartitionTrace`] holds this rank's counts only.

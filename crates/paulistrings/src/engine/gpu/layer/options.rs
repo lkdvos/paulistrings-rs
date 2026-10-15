@@ -21,11 +21,12 @@ pub struct GpuLayerOptions {
     pub arena_bytes: usize,
     /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`](crate::gpu::GpuError::Unsupported); `B_MAX_BITS` by default.
     pub max_bits: u8,
-    /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Device exchange); on by default.
+    /// Merge one partner's exported rows by key on the sender before the exchange; on by default.
     pub premerge: bool,
     /// Bytes the received rows of a remote layer may hold on the device at once, at `(2W + 3) × 8` per row.
     ///
-    /// The receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Device exchange); a chunk exceeds the cap only when one position alone does.
+    /// The receive then moves in chunks of destination positions, each merged by the fused layer before the next arrives; a chunk exceeds the cap only when one position alone does.
+    /// The chunk count is a power of two, so one cut refines every coarser one and the group can agree on the largest count anyone asked for.
     /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary).
     pub exchange_bytes: usize,
     /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path (`k_permute_*`) instead of the fused layer; on by default.

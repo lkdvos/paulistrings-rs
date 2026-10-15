@@ -2,7 +2,7 @@
 
 A distributed run is a [partitioned run](partitions.md) with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
-What is new is the transport (point-to-point MPI instead of in-process channels) and the launch ([`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Partitioning, subsection "Transport composition").
+What is new is the transport (point-to-point MPI instead of in-process channels) and the launch.
 
 ## Why: capacity
 

@@ -183,7 +183,7 @@ fn bucketed_layer_case<const W: usize, C>(
 /// The bucketed engine on the four structurally distinct channel classes, plus the two extreme
 /// fan-in shapes (`general_unitary2q`, up to 16 deltas; `rotation_w4`, per-term phase computation
 /// instead of table lookup). Brackets the read amplification from fan-in
-/// (`ARCHITECTURE.md §Bucketing`). Measured at 10^6 only: at 10^4 the sum fits in cache.
+/// (`engine/coset.rs`). Measured at 10^6 only: at 10^4 the sum fits in cache.
 fn bench_apply_layer_bucketed(c: &mut Criterion) {
     let mut group = c.benchmark_group("apply_layer_bucketed");
     group.plot_config(PlotConfiguration::default().summary_scale(AxisScale::Logarithmic));
@@ -250,7 +250,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
             .num_threads(t)
             .build()
             .expect("failed to build rayon pool");
-        // Bucket count does not depend on thread count (ARCHITECTURE.md §Bucket-Policy).
+        // Bucket count does not depend on thread count (`DEFAULT_MIN_BUCKETS`).
         let hash = Gf2Hash::<2>::new(128, bits_for(input.len()), 0xBEEF);
         let mut sum = with_hash(input.clone(), hash);
         let prep = prepare(&rot, sum.hash(), false).unwrap();
@@ -269,7 +269,7 @@ fn bench_thread_scaling_bucketed(c: &mut Criterion) {
 }
 
 /// Thread scaling on the widest delta set the engine has: a dense `PtmChannel::unitary_2q` reads 16 input
-/// buckets per output vs. a rotation's 2 (`ARCHITECTURE.md §Bucketing`). Threads are {1, 8, 32}
+/// buckets per output vs. a rotation's 2 (`engine/coset.rs`). Threads are {1, 8, 32}
 /// rather than the full sweep: three points fix the curve's ends and knee.
 fn bench_thread_scaling_bucketed_gu2q(c: &mut Criterion) {
     let mut group = c.benchmark_group("thread_scaling_bucketed_gu2q");
@@ -415,7 +415,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     });
 
     // Tie-dense: only four distinct magnitudes, so the tie group at the threshold is ~25% of the
-    // sum — the shape that exercises the boundary-quota pass (ARCHITECTURE.md §Truncation) on a
+    // sum — the shape that exercises the boundary-quota pass (`TopN`) on a
     // non-trivial group.
     let tied: PauliSum<2> = tie_heavy_sum_unmasked::<2>(n, 128, 0x70_9F);
     let tied_hash = Gf2Hash::<2>::new(128, bits_for(tied.len()), 0xBEEF);

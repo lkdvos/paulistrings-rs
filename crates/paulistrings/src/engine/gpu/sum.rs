@@ -35,6 +35,7 @@ fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -
 
 /// A bucketed Pauli sum resident on one CUDA device.
 ///
+/// Within a bucket keys are unique in no particular order; [`Self::to_host`] restores the host order.
 /// [`Self::from_host`] and [`Self::to_host`] round-trip bitwise, bucket by bucket, under the host sum's [`Gf2Hash`].
 /// Resident device memory is `16·W + 24` bytes per term plus `8` per bucket, doubled once a refine has run.
 /// Every fallible operation returns a [`GpuError`], device allocation failure as [`GpuError::OutOfMemory`].

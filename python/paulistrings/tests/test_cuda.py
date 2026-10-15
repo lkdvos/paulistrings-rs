@@ -28,7 +28,7 @@ needs_cuda = pytest.mark.skipif(
 WIDTHS = [8, 68, 130]
 
 # Coefficients agree to floating point, not bit for bit: the device sums equal
-# keys in a different order (ARCHITECTURE.md §Determinism).
+# keys in a different order.
 TOL = 1e-9
 
 NUM_TERMS = 4_000

@@ -1,4 +1,4 @@
-//! Partition-row diagnostics: a circuit's key delta masks with their layer counts, and per-layer local/remote delta counts under given rows (ARCHITECTURE.md §Partitioning).
+//! Partition-row diagnostics: a circuit's key delta masks with their layer counts, and per-layer local/remote delta counts under given rows.
 //! A row `r` leaves a delta local iff `⟨r, d⟩ = parity(rx & dx) ^ parity(rz & dz) = 0`.
 
 use std::collections::HashMap;

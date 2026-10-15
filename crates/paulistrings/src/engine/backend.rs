@@ -1,4 +1,4 @@
-//! The storage seam under `run_layers`, [`PartitionStorage`] and [`PartitionBackend`], and its host-memory implementation [`HostPartition`] (ARCHITECTURE.md §Transport composition).
+//! The storage seam under `run_layers`, [`PartitionStorage`] and [`PartitionBackend`], and its host-memory implementation [`HostPartition`].
 
 use super::partitioned::layer::{
     apply_layer_partitioned_with_plan, LayerExchangeCounts, PartitionState,
@@ -44,7 +44,7 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
     fn stats(&mut self) -> &mut PhaseStats;
 }
 
-/// One layer under policy `T`; an implementor must issue exactly the transport calls the host layer issues, in the same order, or the group falls out of step (the device backend adds one vote, ARCHITECTURE.md §Device exchange).
+/// One layer under policy `T`; an implementor must issue exactly the transport calls the host layer issues, in the same order, or the group falls out of step; the device backend's one addition is the exchange vote (`engine/gpu/export.rs`), legal only because every partition of a group runs the same backend.
 pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
     fn apply_layer<X: Transport>(
         &mut self,

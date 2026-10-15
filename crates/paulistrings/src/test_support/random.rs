@@ -164,7 +164,7 @@ pub fn low_weight_sum<const W: usize>(
 }
 
 /// [`rand_sum`]'s keys with only four distinct coefficient magnitudes, so any cut through the sum lands inside a tie group spanning a quarter of it.
-/// Not contrived: lattice-symmetric Hamiltonians produce exactly-equal-coefficient terms this way, which is why `TopN` has a tie rule at all (ARCHITECTURE.md §Truncation).
+/// Not contrived: lattice-symmetric Hamiltonians produce exactly-equal-coefficient terms this way, which is why `TopN` has a tie rule at all.
 pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
     let base = rand_sum::<W>(n, num_qubits, seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);

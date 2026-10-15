@@ -1,5 +1,4 @@
 //! The [`Channel`] trait, its output buffer, and the built-in gates and noise channels.
-//! See ARCHITECTURE.md §Channels.
 
 pub(crate) mod prepared;
 pub(crate) mod ptm;
@@ -98,11 +97,11 @@ fn write_pauli<const W: usize>(
 /// A gate or noise channel: maps a Pauli string to a small weighted sum of Pauli strings.
 ///
 /// Built-ins: [`PtmChannel`] (every one- and two-qubit gate and noise channel) and [`PauliRotation`].
-/// A custom channel implements `support`, `apply` and `apply_adjoint`; the engine derives its per-layer form by probing `apply` (ARCHITECTURE.md §Prepared-Channels).
+/// A custom channel implements `support`, `apply` and `apply_adjoint`; the engine derives its per-layer form by probing `apply` on the at most 16 local basis Paulis.
 pub trait Channel<const W: usize>: Send + Sync {
     /// Qubits this channel acts on, as a bitmask built with [`support_mask`].
     ///
-    /// Outputs must differ from their input only at these qubits.
+    /// Outputs must differ from their input only at these qubits, with amplitudes that depend on the input only through its bits here; the engine's probe of `apply` is sound exactly then, and debug builds re-probe on an all-ones background to catch a violation.
     fn support(&self) -> [u64; W];
 
     /// Short name for the per-layer progress log.
@@ -140,7 +139,7 @@ pub trait Channel<const W: usize>: Send + Sync {
         out: &mut OutputBuffer<W>,
     );
 
-    /// The engine form for one layer: probed from `apply` unless a built-in knows its table (ARCHITECTURE.md §Prepared-Channels).
+    /// The engine form for one layer: probed from `apply` unless a built-in knows its table.
     /// Neither callable nor overridable outside the crate, since `PrepareToken` and `Prepared` cannot be named there.
     #[doc(hidden)]
     fn prepare_for_layer(

@@ -1,5 +1,4 @@
-//! Python `PauliSum` class with width-monomorphized backing storage. See
-//! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
+//! Python `PauliSum` class with width-monomorphized backing storage.
 
 #[cfg(feature = "cuda")]
 use crate::truncation_spec::COLLAPSE_SAMPLE_DEVICE_MSG;
@@ -278,7 +277,7 @@ impl PauliSumImpl {
 }
 
 /// Build a `PauliSum<W>` from a `{pauli_string: coefficient}` Python dict.
-/// Format matches the test helper in `pauli_sum.rs`: character `i` describes qubit `i`, coefficients multiply the literal Hermitian Pauli string (ARCHITECTURE.md §Data-Model).
+/// Format matches the test helper in `pauli_sum.rs`: character `i` describes qubit `i`, coefficients multiply the literal Hermitian Pauli string.
 fn parse_terms<const W: usize>(
     num_qubits: usize,
     terms: &Bound<'_, PyDict>,

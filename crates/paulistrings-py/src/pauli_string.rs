@@ -1,5 +1,4 @@
-//! Python `PauliString` class with width-monomorphized backing storage. See
-//! ARCHITECTURE.md §Width and ARCHITECTURE.md §Python-Bindings.
+//! Python `PauliString` class with width-monomorphized backing storage.
 
 use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl};
 use num_complex::Complex64;

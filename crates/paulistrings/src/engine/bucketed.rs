@@ -1,6 +1,7 @@
 //! One layer of the bucketed engine, applied coset by coset, and the reusable `LayerScratch`.
 //!
-//! See ARCHITECTURE.md §Engine.
+//! A coset task swaps its bucket columns into worker scratch and writes its outputs back into the emptied columns, so the layer runs in place.
+//! Identity-delta rows keep their keys, so a run's identity stream inherits the source bucket's order and is never sorted; every other row, received rows included, joins the rest stream.
 
 use std::sync::Mutex;
 
@@ -93,7 +94,7 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
         coordinates: Vec<u32>,
         /// Whether `deltas()[0]` is the identity delta, whose stream goes to the run's pre-sorted `id` columns.
         has_identity: bool,
-        /// Whether the identity amplitude is nonzero on every active support pattern, so the merge borrows the id keys from the source bucket (ARCHITECTURE.md §Engine).
+        /// Whether the identity amplitude is nonzero on every active support pattern, so the identity stream is one-to-one with the source bucket and the merge borrows its key columns.
         dense_identity: bool,
         /// This layer's per-run sort kernel.
         sort_kernel: SortKernel,
@@ -174,7 +175,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
     }
 }
 
-/// Rows received from other partitions, appended to an output bucket's rest stream before the sort so `keep_term` sees the complete sum (ARCHITECTURE.md §Partitioning).
+/// Rows received from other partitions, appended to an output bucket's rest stream before the sort so `keep_term` sees the complete sum; never the identity stream, which the merge requires strictly ascending.
 /// An implementation that can return rows must set `NEEDS_BETA = true`; under `false` every call site compiles away.
 pub(crate) trait ExtraRows<const W: usize> {
     /// Whether the engine recovers original bucket indices and calls this source at all.
@@ -275,7 +276,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     }
     lap!(stamp, scratch.stats.permute_ns);
 
-    // Each coset reads and writes only its own chunk (ARCHITECTURE.md §Parallelism).
+    // Each coset reads and writes only its own chunk (engine/coset.rs); research/FINDINGS.md §Static coset→worker placement.
     {
         if num_cosets >= MIN_COSETS_FOR_PARALLEL {
             let pool = rayon::current_num_threads().max(1);

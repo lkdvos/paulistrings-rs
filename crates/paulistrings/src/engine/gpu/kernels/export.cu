@@ -1,4 +1,4 @@
-// k_export_counts and k_export_fill: one exchange block per remote delta, CSR by the receiver's destination position (ARCHITECTURE.md §Partitioning).
+// k_export_counts and k_export_fill: one exchange block per remote delta, CSR by the receiver's destination position (engine/partitioned/export.rs).
 // counts[p] is entry e's row count from source bucket bucket_at[p] ^ bucket_delta; the fill writes segment p warp-compacted in source order, rows bitwise the local emitters'.
 
 extern "C" __global__ void k_export_counts(const u32* __restrict__ cnt, const u32* __restrict__ bucket_at, u32 bucket_delta,

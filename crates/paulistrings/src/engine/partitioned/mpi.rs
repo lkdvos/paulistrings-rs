@@ -456,7 +456,11 @@ impl Collectives for MpiTransport {
 }
 
 impl Transport for MpiTransport {
-    /// Wire framing and deadlock freedom: ARCHITECTURE.md §Transport composition.
+    /// Per partner, in posting order: a self-describing header (wire version, source rank, every part's byte length), the early parts under their own tag, then the bulk parts cut at the chunk edges and posted chunk-major.
+    /// Only the header's size is unknown to the receiver; every later message is a receive of known length straight into the columns the coset loop reads.
+    /// Non-overtaking matches sends to receives in posting order, so both sides walk partners, parts and chunks ascending, and every rank must use the same chunk count (`PAULISTRINGS_EXCHANGE_CHUNKS`, never a thread count).
+    /// Raw host bytes: every rank runs the same architecture and `W`.
+    /// Deadlock freedom is `ChunkPipeline`'s (`mpi/pipeline.rs`).
     fn exchange_layer<P, F, R>(
         &self,
         send: Vec<Option<P>>,

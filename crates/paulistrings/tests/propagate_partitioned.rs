@@ -2,8 +2,8 @@
 //!
 //! The partitioned engine's contract is that splitting the sum across
 //! partitions changes nothing observable: the gathered output agrees with the
-//! unpartitioned engine to floating-point tolerance (ARCHITECTURE.md
-//! §Determinism), and at `P = 1` it is the unpartitioned engine, bit for bit.
+//! unpartitioned engine to floating-point tolerance, and at `P = 1` it is the
+//! unpartitioned engine, bit for bit.
 //!
 //! Every configuration here is `test_support::unpinned_partitions`, so the
 //! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —

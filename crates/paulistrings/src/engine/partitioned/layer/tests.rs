@@ -471,7 +471,7 @@ fn empty_partition_participates() {
     assert_terms_close(&got, &want, TOL, "empty partition");
 }
 
-/// Each partition's output agrees across Rayon pool sizes (ARCHITECTURE.md §Determinism).
+/// Each partition's output is bitwise identical across Rayon pool sizes, a tripwire rather than a correctness requirement.
 #[test]
 fn partitioned_output_agrees_across_pool_sizes() {
     let input = rand_sum::<1>(1500, 8, 0x9D6);

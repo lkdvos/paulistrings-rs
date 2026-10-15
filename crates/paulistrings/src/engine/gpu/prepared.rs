@@ -1,4 +1,4 @@
-//! [`DevicePrepared`], one prepared channel in the layout `kernels/prelude.cuh`'s `Table` reads. See ARCHITECTURE.md §Prepared-Channels.
+//! [`DevicePrepared`], one prepared channel in the layout `kernels/prelude.cuh`'s `Table` reads.
 
 use num_complex::Complex64;
 
@@ -45,7 +45,7 @@ pub(crate) struct DevicePrepared<const W: usize> {
     pub(crate) fanout: usize,
     /// The reduction choice.
     pub(crate) dense: bool,
-    /// One identity entry and no received entry: the rescale path, which would drop every received row (ARCHITECTURE.md §Partitioning).
+    /// One identity entry and no received entry: the rescale path, which would drop every received row.
     pub(crate) key_preserving: bool,
     /// At most one emitting entry per pattern, no two entries reaching one output pattern, no received entry: the scatter path (`kernels/permute.cu`), after the rescale.
     pub(crate) permutation: bool,

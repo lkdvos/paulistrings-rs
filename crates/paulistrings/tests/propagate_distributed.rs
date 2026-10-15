@@ -2,8 +2,8 @@
 //!
 //! The distributed driver is the partitioned engine with one partition per
 //! *process*. Its contract is the same as the in-process one's — the gathered
-//! output agrees with `propagate` to floating-point tolerance (ARCHITECTURE.md
-//! §Determinism) — but the code path differs: the layer loop runs on one thread
+//! output agrees with `propagate` to floating-point tolerance — but the code
+//! path differs: the layer loop runs on one thread
 //! per rank rather than fanned out from a single driver, the scatter is
 //! replicated rather than split from one sum, and the gather goes through the
 //! transport's byte framing instead of a local merge.

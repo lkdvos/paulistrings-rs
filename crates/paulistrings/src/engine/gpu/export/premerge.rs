@@ -1,4 +1,7 @@
-//! The sender-side merge: one partner's exported rows merged by key before the exchange (ARCHITECTURE.md §Device exchange).
+//! The sender-side merge: one partner's exported rows merged by key before the exchange.
+//!
+//! Two remote deltas to one partner can emit one key only into one receiver position, so the merge is position-local; it sums equal keys and drops an exact-zero sum but truncates nothing, since only the receiver sees a key's complete sum.
+//! The merged rows are split over the partner's blocks without exceeding any block's unmerged count, so the wire format and the receive path are unchanged.
 
 use std::sync::Arc;
 

@@ -140,6 +140,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps -p paulistrings
 
+  # What docs.rs builds: nightly, `--cfg docsrs`, and the features in `[package.metadata.docs.rs]`.
+  docsrs:
+    name: docs.rs build
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings --cfg docsrs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo +nightly doc --no-deps -p paulistrings --features phase-timing,test-utils,cuda
+
   python:
     name: python
     runs-on: ubuntu-latest

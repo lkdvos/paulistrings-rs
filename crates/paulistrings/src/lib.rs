@@ -3,7 +3,7 @@
 //! These docs are a developer guide; the user-facing API is the Python package, documented at <https://lkdvos.github.io/paulistrings-rs/>.
 
 #![warn(missing_docs)]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod channel;
 mod circuit;

@@ -9,36 +9,22 @@ Pauli strings are stored as symplectic bitvectors, and terms are assigned to wor
 As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
 Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.
 
-This crate is the pure-Rust core. Python bindings live in the
-[`paulistrings-rs`](https://github.com/lkdvos/paulistrings-rs) workspace.
+This crate is the Rust core of the [`paulistrings-rs`](https://github.com/lkdvos/paulistrings-rs) workspace.
+Its Python package, `paulistrings-rs`, is the user interface and is documented on the [documentation site](https://lkdvos.github.io/paulistrings-rs/).
 
-## Building from source and developing
+## Rust API
 
-Python is the user interface: install `paulistrings-rs` and read the [documentation site](https://lkdvos.github.io/paulistrings-rs/).
-This crate's rustdoc is a developer guide to the engine rather than a user API.
+The crate root re-exports [`PauliSum`], [`propagate`] and [`propagate_with`], the built-in channels and truncation policies, and the [`Channel`] and [`TruncationPolicy`] extension traits.
+The off-by-default features add per-phase timing (`phase-timing`), the MPI transport (`mpi`) and the CUDA backend (`cuda`).
+The [API documentation](https://docs.rs/paulistrings) is a developer guide in which each item states the contracts it keeps.
 [`CLAUDE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/CLAUDE.md) lists the build, test and benchmark commands.
-
-## Design
-
-Four pillars in priority order:
-
-1. **Correctness** of the Pauli algebra — symplectic encoding, phase
-   tracking, the dedup invariant restored after every layer.
-2. **Performance** at 10⁶–10⁸ terms — SoA layout, GF(2)-bucketed
-   write-disjoint layers, Rayon-parallel with no global sort.
-3. **Extensibility** for research — open [`Channel`] and
-   [`TruncationPolicy`] traits.
-4. **GPU-readiness** — structure-of-arrays columns, fixed-fanout buffers,
-   shared-nothing parallelism that maps onto CUB primitives without
-   restructuring.
-
-See the [API documentation](https://docs.rs/paulistrings) for module-level
-guides on the bucketed engine, width monomorphization, and the extension
-traits; each module states the contracts it keeps.
 
 ## License
 
 Dual-licensed under MIT or Apache-2.0, at your option.
 
+[`PauliSum`]: https://docs.rs/paulistrings/latest/paulistrings/struct.PauliSum.html
+[`propagate`]: https://docs.rs/paulistrings/latest/paulistrings/fn.propagate.html
+[`propagate_with`]: https://docs.rs/paulistrings/latest/paulistrings/fn.propagate_with.html
 [`Channel`]: https://docs.rs/paulistrings/latest/paulistrings/trait.Channel.html
 [`TruncationPolicy`]: https://docs.rs/paulistrings/latest/paulistrings/trait.TruncationPolicy.html

@@ -403,6 +403,72 @@ fn merge_cancellation_and_signed_zero() {
     assert!(ox.is_empty(), "got keys {ox:?} with coeffs {oc:?}");
 }
 
+// ---- `PauliString`'s derived `Ord` is the merge's key order ----
+
+mod key_order {
+    use super::*;
+    use crate::pauli_string::PauliString;
+    use proptest::prelude::*;
+
+    /// A key word, often small so that whole words and whole `x` parts tie.
+    fn word() -> impl Strategy<Value = u64> {
+        prop_oneof![0u64..4, any::<u64>()]
+    }
+
+    fn string<const W: usize>() -> impl Strategy<Value = PauliString<W>> {
+        (
+            proptest::array::uniform::<_, W>(word()),
+            proptest::array::uniform::<_, W>(word()),
+        )
+            .prop_map(|(x, z)| PauliString { x, z })
+    }
+
+    /// `a.cmp(&b)` against the `(x, z)` tuple order, the sorts' order, and the order the merge emits a one-row identity stream and a one-row rest stream in.
+    fn check<const W: usize>(a: PauliString<W>, b: PauliString<W>) -> Result<(), TestCaseError> {
+        let order = a.cmp(&b);
+        prop_assert_eq!(order, (a.x, a.z).cmp(&(b.x, b.z)));
+
+        let one = Complex64::new(1.0, 0.0);
+        let mut rest = columns(&[b.x, a.x], &[b.z, a.z], &[one, one]);
+        sort_by_comparison(&mut rest, &mut SortScratch::default());
+        let sorted = PauliString {
+            x: rest.x[0],
+            z: rest.z[0],
+        };
+        prop_assert_eq!(sorted, a.min(b));
+
+        let (x, z, _) = run_merge(
+            (&[a.x], &[a.z], &[one]),
+            (&[b.x], &[b.z], &[Complex64::new(2.0, 0.0)]),
+            &AlwaysKeep,
+        );
+        let emitted: Vec<PauliString<W>> = x
+            .iter()
+            .zip(&z)
+            .map(|(&x, &z)| PauliString { x, z })
+            .collect();
+        let want = match order {
+            std::cmp::Ordering::Less => vec![a, b],
+            std::cmp::Ordering::Equal => vec![a],
+            std::cmp::Ordering::Greater => vec![b, a],
+        };
+        prop_assert_eq!(emitted, want);
+        Ok(())
+    }
+
+    proptest! {
+        #[test]
+        fn derived_ord_is_the_merge_order_w1(a in string::<1>(), b in string::<1>()) {
+            check(a, b)?;
+        }
+
+        #[test]
+        fn derived_ord_is_the_merge_order_w2(a in string::<2>(), b in string::<2>()) {
+            check(a, b)?;
+        }
+    }
+}
+
 impl<const W: usize> SortScratch<W> {
     /// Total heap capacity held across this scratch's buffers.
     pub(crate) fn total_capacity(&self) -> usize {

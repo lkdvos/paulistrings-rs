@@ -34,7 +34,7 @@ fn histogram_matches<const W: usize>() {
 }
 
 #[test]
-fn histogram_is_bitwise_the_hosts() {
+fn histogram_is_the_hosts() {
     crate::require_cuda!();
     histogram_matches::<1>();
     histogram_matches::<2>();

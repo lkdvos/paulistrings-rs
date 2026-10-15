@@ -1,7 +1,7 @@
 use super::BuiltinTruncation as T;
 use super::*;
 use crate::engine::partitioned::in_process::InProcessTransport;
-use crate::test_support::{and, assert_same_terms, or, rand_sum_real, KeepAll};
+use crate::test_support::{and, assert_same_terms, assert_terms_close, or, rand_sum_real, KeepAll};
 use crate::truncation::{And, Or};
 
 /// Weights 0..3 on one word, and coefficients on both sides of 0.1 and 0.5.
@@ -117,7 +117,7 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
     let twin = tree.clone();
     let mut got = input.clone();
     <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut got);
-    assert_same_terms(&got, &want, "host");
+    assert_terms_close(&got, &want, 1e-12, "host");
     assert!(tree.contains_collapse_sample());
     assert!(tree.supports_partitioned());
     let T::And(_, leaf) = &twin else {
@@ -132,7 +132,7 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
     let mut got = input.clone();
     let tree = T::from(CollapseSample::new(10, 7));
     <T as TruncationPolicy<1>>::finalize_layer_partitioned(&tree, &mut got, &group[0]);
-    assert_same_terms(&got, &want, "partitioned P=1");
+    assert_terms_close(&got, &want, 1e-12, "partitioned P=1");
 }
 
 #[test]

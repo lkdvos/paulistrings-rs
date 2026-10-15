@@ -130,8 +130,7 @@ fn exchange_free_layers_are_collective_free() {
 }
 
 /// `P = 1` has no group to agree with, so the driver takes no collective at
-/// all — and keeps rebucketing every layer, which is what keeps the run
-/// bitwise identical to `propagate` (`propagate_partitioned`'s own tripwire).
+/// all — and keeps rebucketing every layer, as `propagate` does.
 #[test]
 fn one_partition_takes_no_collective_and_still_rebuckets() {
     let circuit = steps(2, 0.1);

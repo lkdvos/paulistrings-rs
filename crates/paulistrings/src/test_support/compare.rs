@@ -53,7 +53,7 @@ pub fn octave_rank(c: Complex64) -> u64 {
 }
 
 /// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.
-/// Only appropriate between two computations that sum equal keys in the same order; anything compared against [`naive_apply_layer`] wants [`assert_terms_close`] instead.
+/// Only for results that do no arithmetic on coefficients (filters, moves, round trips); anything computed wants [`assert_terms_close`] instead.
 pub fn assert_same_terms<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: term count");
     let got = canonical_triples(got);

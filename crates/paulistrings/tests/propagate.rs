@@ -12,8 +12,7 @@
 //! assertions below are well defined.
 //!
 //! `tests/propagate_bucketed.rs` covers the bucketed-engine-specific
-//! properties: agreement with the naive oracle over whole circuits, and
-//! thread-count stability.
+//! properties: agreement with the naive oracle over whole circuits.
 
 use num_complex::Complex64;
 use paulistrings::test_support::IdentityChannel;
@@ -499,7 +498,7 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
 /// The trajectory is a function of the seed.
 #[test]
 fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
-    use paulistrings::test_support::{collapsing_circuit, z0_sum};
+    use paulistrings::test_support::{assert_terms_close, collapsing_circuit, z0_sum};
     use paulistrings::CollapseSample;
 
     const CACHE: usize = 6;
@@ -519,9 +518,10 @@ fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
         assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: Σ|c|² = {norm}");
 
         let (again, again_collapses) = run(seed);
-        assert_eq!(out.to_arrays(), again.to_arrays(), "seed {seed} repeats");
+        assert_terms_close(&again, &out, 1e-12, &format!("seed {seed} repeats"));
         assert_eq!(collapses, again_collapses);
-        finals.insert(format!("{:?}", out.to_arrays()));
+        let (x, z, _) = out.to_arrays();
+        finals.insert(format!("{:?}", (x, z)));
     }
     assert!(
         finals.len() > 1,

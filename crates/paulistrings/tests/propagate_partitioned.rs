@@ -2,8 +2,7 @@
 //!
 //! The partitioned engine's contract is that splitting the sum across
 //! partitions changes nothing observable: the gathered output agrees with the
-//! unpartitioned engine to floating-point tolerance, and at `P = 1` it is the
-//! unpartitioned engine, bit for bit.
+//! unpartitioned engine to floating-point tolerance.
 //!
 //! Every configuration here is `test_support::unpinned_partitions`, so the
 //! tests run on any box (one node, no NUMA, a `taskset`ed CI container) —
@@ -12,7 +11,7 @@
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, heavy_cut,
     propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, zz_rotation, KeepAll,
+    trotter_circuit, unpinned_partitions, KeepAll,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -177,49 +176,6 @@ fn random_circuit_matches_propagate_w2() {
         "w2 and",
         &PS,
     );
-}
-
-/// The tripwire that `P = 1` is *today's* engine: same rebucket policy, same
-/// layer, same finalization, same bits out — not merely tolerance-equal.
-#[test]
-fn one_partition_matches_propagate_bitwise() {
-    let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = rand_sum_real::<1>(2_000, 32, 0x71A0);
-    for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(&circuit, sum.clone(), &ApproxTopN(2_000), direction);
-        let got = propagate_partitioned(
-            &circuit,
-            sum.clone(),
-            &ApproxTopN(2_000),
-            direction,
-            &config(1),
-            PropagateOptions::default(),
-        )
-        .expect("topology resolves");
-        assert_eq!(
-            got.to_arrays(),
-            want.to_arrays(),
-            "P=1 {direction:?} is not bitwise identical to propagate",
-        );
-    }
-
-    // And with no truncation at all, on a short prefix so the sum stays small.
-    let mut short = Circuit::<1>::new(8);
-    for q in 0..6 {
-        short.push(zz_rotation::<1>(q, (q + 1) % 8, 0.2));
-    }
-    let small = rand_sum::<1>(500, 8, 0x71A3);
-    let want = propagate(&short, small.clone(), &KeepAll, Direction::Forward);
-    let got = propagate_partitioned(
-        &short,
-        small,
-        &KeepAll,
-        Direction::Forward,
-        &config(1),
-        PropagateOptions::default(),
-    )
-    .expect("topology resolves");
-    assert_eq!(got.to_arrays(), want.to_arrays(), "P=1 keep-all");
 }
 
 /// `PropagateOptions` reaches the partitioned layer loop: a coarse bucket

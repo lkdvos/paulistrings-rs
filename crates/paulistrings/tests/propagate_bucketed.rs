@@ -1,7 +1,7 @@
 //! `propagate` on the bucketed engine, through the public API only.
 //!
 //! `tests/propagate.rs` holds the hand-computed algebra expectations; this file covers what is specific to the bucketed engine.
-//! Agreement with the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`) over whole circuits, truncation policies on many-term sums, Heisenberg round trips, and byte-identical output across thread counts (a convenience tripwire, not a correctness requirement).
+//! Agreement with the naive per-layer oracle (`paulistrings::test_support::naive_apply_layer`) over whole circuits, truncation policies on many-term sums, and Heisenberg round trips.
 
 use num_complex::Complex64;
 use paulistrings::test_support::IdentityChannel;

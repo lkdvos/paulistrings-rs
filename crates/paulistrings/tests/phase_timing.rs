@@ -1,7 +1,6 @@
 //! Behavior of the `phase-timing` counters themselves. The *non-perturbation*
-//! guarantee is not tested here — it is the whole existing suite (fingerprint
-//! net, thread-count/bucket-count bitwise identity, capacity stability)
-//! passing under `--features phase-timing`.
+//! guarantee is not tested here — it is the whole existing suite passing
+//! under `--features phase-timing`.
 #![cfg(feature = "phase-timing")]
 
 use paulistrings::test_support::InProcessTransport;

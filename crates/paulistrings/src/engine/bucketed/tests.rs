@@ -312,7 +312,7 @@ fn a_rescale_to_exactly_zero_drops_the_term() {
     }
 }
 
-// ---- determinism ----
+// ---- agreement across bucket counts, seeds and gather orders ----
 
 /// sqrt(SWAP): a wide delta set merging three or more contributions per key, the only regime where summation order is observable.
 fn sqrt_swap_w1(a: usize, b: usize) -> PtmChannel {
@@ -745,7 +745,7 @@ fn single_bucket_sum_is_one_serial_coset() {
     }
 }
 
-/// A wide rotation whose generator hashes to bucket delta 0 (`r = 0`); at most two summands per key, so this stays bitwise.
+/// A wide rotation whose generator hashes to bucket delta 0 (`r = 0`).
 #[test]
 fn wide_rotation_with_colliding_bucket_delta() {
     // Weight 4 > MAX_LOCAL_SUPPORT, so it prepares as `Prepared::Rotation`.

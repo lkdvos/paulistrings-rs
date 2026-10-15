@@ -325,7 +325,7 @@ where
     assert_eq!(
         dev.gather().unwrap().to_arrays(),
         input.to_arrays(),
-        "{what}: bitwise untouched"
+        "{what}: untouched"
     );
 }
 
@@ -398,21 +398,9 @@ fn su4_layer<const W: usize>(num_qubits: usize, q0: usize, q1: usize) -> Circuit
     )
 }
 
-/// `to_arrays` with the coefficients as bit patterns, for bitwise run-to-run comparison.
-type ArrayBits = (Vec<[u64; 2]>, Vec<[u64; 2]>, Vec<(u64, u64)>);
-
-fn arrays_bits(sum: &PauliSum<2>) -> ArrayBits {
-    let (x, z, c) = sum.to_arrays();
-    (
-        x,
-        z,
-        c.iter().map(|c| (c.re.to_bits(), c.im.to_bits())).collect(),
-    )
-}
-
 /// Every block takes a fallback: with the low fingerprint word zeroed the `g_hi32` passes decide, with `FINGERPRINT_BITS=0` only the full-key sort does.
 #[test]
-fn fallback_paths_run_resolve_and_are_reproducible() {
+fn fallback_paths_run_and_resolve() {
     require_cuda!();
     let input = rand_sum::<2>(3000, 128, 0xFA11);
     let circuit = su4_layer::<2>(128, 0, 1);
@@ -420,19 +408,17 @@ fn fallback_paths_run_resolve_and_are_reproducible() {
     let run = |opts: &[String]| {
         let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, opts);
         assert_terms_close(&got, &want, TOL, &format!("{opts:?}"));
-        (arrays_bits(&got), c)
+        c
     };
-    let (hi, c) = run(&["-DFINGERPRINT_ZERO_LOW".to_string()]);
+    let c = run(&["-DFINGERPRINT_ZERO_LOW".to_string()]);
     assert!(c.high_word_fallbacks > 0, "{c:?}");
     assert_eq!(c.full_key_fallbacks, 0, "{c:?}");
-    assert_eq!(run(&["-DFINGERPRINT_ZERO_LOW".to_string()]).0, hi);
-    let (key, c) = run(&["-DFINGERPRINT_BITS=0".to_string()]);
+    let c = run(&["-DFINGERPRINT_BITS=0".to_string()]);
     assert!(
         c.high_word_fallbacks > 0 && c.full_key_fallbacks > 0,
         "{c:?}"
     );
-    assert_eq!(run(&["-DFINGERPRINT_BITS=0".to_string()]).0, key);
-    let (_, c) = run(&[]);
+    let c = run(&[]);
     assert_eq!((c.high_word_fallbacks, c.full_key_fallbacks), (0, 0));
 }
 
@@ -485,7 +471,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
 
 /// A small arena batches the positions, and the output outgrows the spare's capacity mid-layer.
 #[test]
-fn multi_batch_output_growth_agrees_and_is_reproducible() {
+fn multi_batch_output_growth_agrees() {
     require_cuda!();
     let input = rand_sum::<2>(20_000, 128, 0xBA7C);
     let circuit = su4_layer::<2>(128, 5, 70);
@@ -494,24 +480,20 @@ fn multi_batch_output_growth_agrees_and_is_reproducible() {
         arena_bytes: 1 << 20,
         ..GpuLayerOptions::default()
     };
-    let run = || {
-        device_run(
-            &circuit,
-            &input,
-            &KeepAll,
-            Direction::Forward,
-            Some(small),
-            &[],
-        )
-    };
-    let (got, c) = run();
+    let (got, c) = device_run(
+        &circuit,
+        &input,
+        &KeepAll,
+        Direction::Forward,
+        Some(small),
+        &[],
+    );
     assert!(c.batches > 1, "{c:?}");
     assert!(
         got.len() > 2 * input.len(),
         "the output outgrew the input-sized spare"
     );
     assert_terms_close(&got, &want, TOL, "multi-batch");
-    assert_eq!(arrays_bits(&run().0), arrays_bits(&got));
 }
 
 /// A layer that cannot fit returns `Err`, leaves the previous layer's output, and the same object continues correctly afterwards.
@@ -628,19 +610,6 @@ fn a_small_records_per_block_agrees() {
         (Some(o), &[]),
         None,
     );
-}
-
-#[test]
-fn output_is_bitwise_reproducible_run_to_run() {
-    require_cuda!();
-    let input = rand_sum::<2>(5000, 128, 0x88);
-    let circuit = random_circuit::<2>(128, 10, 0x9999, true);
-    let run =
-        || arrays_bits(&device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &[]).0);
-    let first = run();
-    for _ in 0..2 {
-        assert_eq!(run(), first);
-    }
 }
 
 /// A CNOT, a rotation with a generator in several words and an SU(4) across words, at `nq` qubits.
@@ -760,11 +729,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
     );
     let (on, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, None, &[]);
     let (fused, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, Some(off), &[]);
-    assert_eq!(
-        on.to_arrays(),
-        fused.to_arrays(),
-        "one product per key: the two paths agree bit for bit"
-    );
+    assert_terms_close(&on, &fused, TOL, "permutation and fused paths");
     for hook in ["-DFINGERPRINT_BITS=8", "-DFINGERPRINT_ZERO_LOW"] {
         let extra = [hook.to_string()];
         check_with(

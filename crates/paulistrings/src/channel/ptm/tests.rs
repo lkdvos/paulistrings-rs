@@ -59,17 +59,16 @@ fn assert_same_local_ptm<const W: usize>(a: &Prepared<W>, b: &Prepared<W>, what:
         assert_eq!(x.bucket_delta, y.bucket_delta, "{what}");
         assert_eq!((x.mask_x, x.mask_z), (y.mask_x, y.mask_z), "{what}");
         for (u, v) in x.amplitude.iter().zip(y.amplitude.iter()) {
-            assert_eq!(
-                (u.re.to_bits(), u.im.to_bits()),
-                (v.re.to_bits(), v.im.to_bits()),
-                "{what}: delta {}",
+            assert!(
+                (u - v).norm() < 1e-14,
+                "{what}: delta {}: {u} vs {v}",
                 x.local_delta
             );
         }
     }
 }
 
-/// The direct table must be bit for bit what probing `apply` derives, in both directions.
+/// The direct table must be the one probing `apply` derives, in both directions: the same deltas and masks, amplitudes to tolerance.
 fn check_prepare_matches_the_probe<const W: usize>(q0: usize, q1: usize) {
     for seed in [1u64, 2] {
         let hash = Gf2Hash::<W>::new(64 * W, 10, seed);

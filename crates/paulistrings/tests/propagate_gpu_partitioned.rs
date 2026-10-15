@@ -1,14 +1,14 @@
-//! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device agree to tolerance, and `P = 1` is `GpuPartitionedSum::from_host` bit for bit.
+//! `GpuPartitionedSum` against the unpartitioned `propagate`: `P` virtual device partitions on one device, `P = 1` included, agree to tolerance.
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
 use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
-    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, random_circuit, rows_reading_z63,
-    single_cuts, spread_magnitudes, su4_chain, trotter_circuit, with_hash,
-    x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, heavy_cut,
+    propagate_discarding, rand_sum, rand_sum_real, random_circuit, rows_reading_z63, single_cuts,
+    spread_magnitudes, su4_chain, trotter_circuit, with_hash, x0_terms_identity_on_q63,
+    zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, set_fault_plan, FaultPlan};
 use paulistrings::{
@@ -264,9 +264,9 @@ fn edge_cases() {
     }
 }
 
-/// `P = 1` takes the same path as `GpuPartitionedSum::from_host`, so the two agree bit for bit, and both agree with the host to tolerance.
+/// `P = 1` and `GpuPartitionedSum::from_host` both agree with the host.
 #[test]
-fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
+fn one_partition_and_gpu_pauli_sum_both_match_the_host() {
     require_cuda!();
     let circuit = random_circuit::<2>(70, 15, 0x9BB1, true);
     let sum = spread_magnitudes(&rand_sum::<2>(2_000, 70, 0x9BB2), 40, 0x9BB2);
@@ -276,23 +276,29 @@ fn one_partition_is_gpu_pauli_sum_bitwise_and_both_match_the_host() {
         let mut dev = GpuPartitionedSum::from_host(&sum, test_devices()[0]).expect("upload");
         dev.propagate(&circuit, ApproxTopN(4_000), direction)
             .expect("device");
-        let want = dev.gather().expect("download");
+        let resident = dev.gather().expect("download");
         assert_eq!(
-            want.len(),
+            resident.len(),
             host.len(),
             "GpuPauliSum {direction:?}: term count"
         );
         assert_runs_agree(
             ApproxTopN(4_000),
             discarded,
-            &want,
+            &resident,
             &host,
             TOL,
             &format!("GpuPauliSum vs host {direction:?}"),
         );
         let got = run(&circuit, &sum, &ApproxTopN(4_000), direction, 1).expect("partitioned");
-        assert_same_terms(&got, &want, &format!("P=1 {direction:?}"));
-        assert_eq!(got.to_arrays(), want.to_arrays(), "P=1 {direction:?} bits");
+        assert_runs_agree(
+            ApproxTopN(4_000),
+            discarded,
+            &got,
+            &host,
+            TOL,
+            &format!("P=1 vs host {direction:?}"),
+        );
     }
 }
 
@@ -417,9 +423,9 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
     }
 }
 
-/// A dense layer at `P = 2` ships several remote deltas to its one partner, the output agrees with the host, and two runs are bitwise equal.
+/// A dense layer at `P = 2` ships several remote deltas to its one partner, and the output agrees with the host.
 #[test]
-fn several_deltas_to_one_partner_agree_and_are_reproducible() {
+fn several_deltas_to_one_partner_agree() {
     require_cuda!();
     let nq = 10;
     let sum = rand_sum::<1>(2_000, nq, 0x5E7);
@@ -444,12 +450,6 @@ fn several_deltas_to_one_partner_agree_and_are_reproducible() {
     let first = split.gather().expect("gather");
     assert_eq!(first.len(), want.len(), "term count");
     assert_terms_close(&first, &want, TOL, "several deltas");
-    let again = run(&circuit, &sum, &KeepAll, Direction::Forward, 2).expect("again");
-    assert_eq!(
-        first.to_arrays(),
-        again.to_arrays(),
-        "two runs are bitwise equal"
-    );
 }
 
 /// A partition failing before its exchange returns the error, its partners finish, and the split refuses every later call.

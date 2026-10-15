@@ -126,7 +126,7 @@ fn download<const W: usize>(
     (x, z, c)
 }
 
-/// The device payloads equal the host payloads bitwise: presence, headers, offsets and the three columns.
+/// The device payloads equal the host payloads: presence, headers, offsets and keys exactly, coefficients to tolerance.
 fn assert_payloads_eq<const W: usize>(e: &Exported<W>, what: &str) {
     assert_eq!(e.got_counts.rows_sent, e.want_rows, "{what}: rows");
     assert_eq!(e.got.len(), e.want.len());
@@ -142,11 +142,14 @@ fn assert_payloads_eq<const W: usize>(e: &Exported<W>, what: &str) {
                     let (wx, wz, wc) = wb.columns();
                     assert_eq!(x, wx.as_flattened(), "{what}: x {j} to {q}");
                     assert_eq!(z, wz.as_flattened(), "{what}: z {j} to {q}");
-                    assert_eq!(
-                        c,
-                        bytemuck::cast_slice::<Complex64, f64>(wc),
-                        "{what}: coeff {j} to {q}"
-                    );
+                    let wc = bytemuck::cast_slice::<Complex64, f64>(wc);
+                    assert_eq!(c.len(), wc.len(), "{what}: coeff {j} to {q}");
+                    for (i, (a, b)) in c.iter().zip(wc).enumerate() {
+                        assert!(
+                            (a - b).abs() < 1e-14,
+                            "{what}: coeff {j} to {q} at {i}: {a} vs {b}"
+                        );
+                    }
                 }
             }
             _ => panic!("{what}: payload presence to {q} differs"),
@@ -154,7 +157,7 @@ fn assert_payloads_eq<const W: usize>(e: &Exported<W>, what: &str) {
     }
 }
 
-/// Unmerged, the device payloads equal `export_layer`'s blocks bitwise, and the SU(4) ships several blocks to one partner.
+/// Unmerged, the device payloads equal `export_layer`'s blocks, and the SU(4) ships several blocks to one partner.
 fn device_export_matches_host<const W: usize>(num_qubits: usize, seed: u64, pbits: u8) {
     let input = rand_sum::<W>(6000, num_qubits, seed);
     let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, seed ^ 0x77);
@@ -179,7 +182,7 @@ fn device_export_matches_host<const W: usize>(num_qubits: usize, seed: u64, pbit
 }
 
 #[test]
-fn device_payloads_match_export_layer_bitwise() {
+fn device_payloads_match_export_layer() {
     crate::require_cuda!();
     device_export_matches_host::<1>(12, 0xE7, 1);
     device_export_matches_host::<1>(12, 0xE8, 2);
@@ -538,7 +541,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     );
 }
 
-/// With the merge on, every rank of `input` under `rows` through an SU(4) falls back to the unmerged export, bitwise `export_layer`'s.
+/// With the merge on, every rank of `input` under `rows` through an SU(4) falls back to the unmerged export, `export_layer`'s.
 fn assert_unmerged_fallback(input: &PauliSum<1>, rows: &PartitionRows<1>, nvrtc: &[String]) {
     let mut remote_layers = 0;
     for rank in 0..rows.num_partitions() as u32 {

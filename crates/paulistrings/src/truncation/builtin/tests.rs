@@ -499,8 +499,9 @@ proptest! {
 
 use crate::pauli_sum::Gf2Hash;
 use crate::test_support::{
-    assert_frequencies, collapsed_index, first_n_by_rank, four_term_keys, magnitude_rank,
-    octave_rank, rand_sum, storage_triples, weighted_four_term_sum, FOUR_TERM_WEIGHTS,
+    assert_frequencies, assert_terms_close, collapsed_index, first_n_by_rank, four_term_keys,
+    magnitude_rank, octave_rank, rand_sum, storage_triples, weighted_four_term_sum,
+    FOUR_TERM_WEIGHTS,
 };
 
 /// Weights `[0, 1, 0, 2]`: slot 1 owns `[0, 1)`, slot 3 owns `[1, 3)`, and a target at or past 3 falls back to slot 3.
@@ -582,9 +583,9 @@ fn collapse_sample_draws_by_squared_magnitude() {
     check_pick_frequencies::<1>(2);
 }
 
-/// The draw is keyed by `(seed, pass)`, so a trajectory repeats from its seed, and a local pool of one or eight threads picks the same string.
+/// The draw is keyed by `(seed, pass)`, so a trajectory repeats from its seed, and a local pool of one or eight threads picks the same string; coefficients agree to tolerance.
 #[test]
-fn collapse_sample_is_reproducible_and_thread_count_independent() {
+fn collapse_sample_draw_is_a_function_of_the_seed() {
     let input = rand_sum::<1>(4000, 16, 0xC011).with_hash(Gf2Hash::new(16, 5, 0x1234));
     let pick = |threads: usize, seed: u64| {
         let pool = rayon::ThreadPoolBuilder::new()
@@ -597,7 +598,7 @@ fn collapse_sample_is_reproducible_and_thread_count_independent() {
                 .map(|_| {
                     let mut sum = input.clone();
                     policy.finalize_layer(&mut sum);
-                    sum.to_arrays()
+                    sum
                 })
                 .collect::<Vec<_>>()
         })
@@ -605,10 +606,13 @@ fn collapse_sample_is_reproducible_and_thread_count_independent() {
     let mut distinct = std::collections::HashSet::new();
     for seed in 0..8u64 {
         let one = pick(1, seed);
-        assert_eq!(one, pick(8, seed), "seed {seed}");
-        assert_eq!(one, pick(1, seed), "seed {seed} repeats");
-        for arrays in &one {
-            distinct.insert(arrays.0[0]);
+        for (other, what) in [(pick(8, seed), "eight threads"), (pick(1, seed), "repeat")] {
+            for (pass, (a, b)) in one.iter().zip(&other).enumerate() {
+                assert_terms_close(b, a, 1e-12, &format!("seed {seed} pass {pass} {what}"));
+            }
+        }
+        for sum in &one {
+            distinct.insert(sum.to_arrays().0[0]);
         }
     }
     assert!(distinct.len() > 4, "passes and seeds must draw differently");

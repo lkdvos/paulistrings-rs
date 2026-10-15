@@ -1,4 +1,4 @@
-//! The layer loop `run_layers` every driver runs, one partition's share of a call at any partition count (ARCHITECTURE.md §Partitioning).
+//! The layer loop `run_layers` every driver runs, one partition's share of a call at any partition count (ARCHITECTURE.md §Transport composition).
 
 use crate::channel::Prepare;
 use std::sync::atomic::{AtomicU32, Ordering};

@@ -349,7 +349,7 @@ impl<const W: usize> PartitionRows<W> {
 
     /// Rows that label a qubit cut: `log2(blocks.len())` z-only rows giving block `b` the label `b`.
     ///
-    /// A term's label is the XOR of the labels of the blocks it has odd z-weight in, so an x-only generator is local under any cut and a `ZZ(i, j)` bond is remote exactly when it crosses blocks (ARCHITECTURE.md §Partitioning).
+    /// A term's label is the XOR of the labels of the blocks it has odd z-weight in, so an x-only generator is local under any cut and a `ZZ(i, j)` bond is remote exactly when it crosses blocks.
     /// Blocks must be disjoint; qubits in no block behave as if in block 0.
     ///
     /// # Panics

@@ -40,7 +40,7 @@ Equal keys always share a bucket (h is a function), so duplicates can never stra
 Because `H` is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one (ARCHITECTURE.md §Hash).
 
 Bucket count follows the sum's size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
-Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to `H` splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucket-Policy).
+Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to `H` splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucketing, §Bucket-Policy).
 
 ## Write-disjoint cosets
 
@@ -77,7 +77,7 @@ Channels that never change keys at all (depolarizing, dephasing, Pauli gates) by
 Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel's own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
-Pauli rotations prepare specially at any generator weight, since their delta set is just `{0, generator}` (ARCHITECTURE.md §Prepared-Channels).
+Pauli rotations above two qubits prepare specially, since their delta set is just `{0, generator}` at any weight (ARCHITECTURE.md §Prepared-Channels).
 
 ## Truncation
 

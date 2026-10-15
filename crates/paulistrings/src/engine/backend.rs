@@ -1,4 +1,4 @@
-//! The storage seam under `run_layers`, [`PartitionStorage`] and [`PartitionBackend`], and its host-memory implementation [`HostPartition`] (ARCHITECTURE.md §Partitioning).
+//! The storage seam under `run_layers`, [`PartitionStorage`] and [`PartitionBackend`], and its host-memory implementation [`HostPartition`] (ARCHITECTURE.md §Transport composition).
 
 use super::partitioned::layer::{
     apply_layer_partitioned_with_plan, LayerExchangeCounts, PartitionState,

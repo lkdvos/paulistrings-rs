@@ -38,7 +38,7 @@ const PARALLEL_MIN_TERMS: usize = DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK;
 /// Default target terms per bucket (ARCHITECTURE.md §Bucket-Policy).
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
-/// Default floor on the bucket count, fixed rather than thread-derived (ARCHITECTURE.md §Determinism).
+/// Default floor on the bucket count, fixed rather than thread-derived (ARCHITECTURE.md §Bucket-Policy).
 /// Must be `>= 16`, or `desired_bits` stops giving a sum of `<= 1024` terms a single bucket.
 pub const DEFAULT_MIN_BUCKETS: usize = 128;
 

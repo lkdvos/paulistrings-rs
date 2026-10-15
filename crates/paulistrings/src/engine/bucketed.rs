@@ -174,7 +174,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
     }
 }
 
-/// Rows received from other partitions, appended to an output bucket's rest stream before the sort so `keep_term` sees the complete sum (ARCHITECTURE.md §Truncation).
+/// Rows received from other partitions, appended to an output bucket's rest stream before the sort so `keep_term` sees the complete sum (ARCHITECTURE.md §Partitioning).
 /// An implementation that can return rows must set `NEEDS_BETA = true`; under `false` every call site compiles away.
 pub(crate) trait ExtraRows<const W: usize> {
     /// Whether the engine recovers original bucket indices and calls this source at all.

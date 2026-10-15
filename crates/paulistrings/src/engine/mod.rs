@@ -171,7 +171,7 @@ where
         progress_scope(None, 1, None),
     );
 
-    // One partition of `run_layers` on the caller's pool (ARCHITECTURE.md §Partitioning).
+    // One partition of `run_layers` on the caller's pool (ARCHITECTURE.md §Transport composition).
     let tracing = scratch.trace.is_some();
     let rows = PartitionRows::none(sum.num_qubits());
     let mut work = PartitionWork {

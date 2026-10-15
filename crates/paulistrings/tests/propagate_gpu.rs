@@ -343,7 +343,7 @@ fn exact_top_n_edge_cases_match_the_host() {
     require_cuda!();
     use paulistrings::test_support::tie_heavy_sum;
     use BuiltinTruncation as T;
-    // Four equal-size magnitude groups (ARCHITECTURE.md §Truncation): 200 terms, 50 per group.
+    // Four equal-size magnitude groups (`tie_heavy_sum`): 200 terms, 50 per group.
     let sum = tie_heavy_sum::<1>(200, 8, 0xED9E);
     let circuit = Circuit::<1>::new(8);
     check(&circuit, &sum, &T::TopN(50), "tie group fits exactly");

@@ -1,4 +1,4 @@
-//! The call frame around `run_layers` shared by every partitioned driver, the scatter, and the [`propagate_partitioned`] front door (ARCHITECTURE.md §Partitioning).
+//! The call frame around `run_layers` shared by every partitioned driver, the scatter, and the [`propagate_partitioned`] front door (ARCHITECTURE.md §Transport composition).
 
 #[cfg(feature = "phase-timing")]
 use std::sync::atomic::Ordering;

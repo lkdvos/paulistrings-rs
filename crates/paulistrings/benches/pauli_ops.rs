@@ -415,7 +415,7 @@ fn bench_finalize_top_n(c: &mut Criterion) {
     });
 
     // Tie-dense: only four distinct magnitudes, so the tie group at the threshold is ~25% of the
-    // sum — the shape that exercises the group-detection pass (ARCHITECTURE.md §Truncation) on a
+    // sum — the shape that exercises the boundary-quota pass (ARCHITECTURE.md §Truncation) on a
     // non-trivial group.
     let tied: PauliSum<2> = tie_heavy_sum_unmasked::<2>(n, 128, 0x70_9F);
     let tied_hash = Gf2Hash::<2>::new(128, bits_for(tied.len()), 0xBEEF);

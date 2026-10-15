@@ -17,10 +17,7 @@ use num_complex::Complex64;
 /// The three channels of the export fixtures: a dense SU(4), a Clifford and a rotation.
 fn fixture_channels<const W: usize>() -> Vec<(&'static str, Box<dyn Channel<W>>)> {
     vec![
-        (
-            "su4",
-            Box::new(PtmChannel::unitary_2q(0, 1, haar_su4_matrix())),
-        ),
+        ("su4", Box::new(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()))),
         ("cnot", Box::new(PtmChannel::cnot(1, 3))),
         ("zz", Box::new(zz_rotation::<W>(0, 2, 0.3))),
     ]
@@ -39,10 +36,8 @@ fn dense_on_01<const W: usize>(base: &PauliSum<W>) -> PauliSum<W> {
             let (mut x, mut z) = (*x, *z);
             x[0] = (x[0] & !0b11) | (s & 0b11);
             z[0] = (z[0] & !0b11) | (s >> 2);
-            accumulator.add_term(
-                crate::pauli_string::PauliString::<W> { x, z },
-                c * (1.0 + s as f64),
-            );
+            accumulator
+                .add_term(crate::pauli_string::PauliString::<W> { x, z }, c * (1.0 + s as f64));
         }
     }
     accumulator.finalize()
@@ -77,24 +72,11 @@ fn export_rank<const W: usize>(
     }
     let nb = local.num_buckets();
     let mut order = CosetOrder::default();
-    order.rebuild(
-        &Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()),
-        true,
-    );
-    let (want, want_counts) = export_layer(
-        &local,
-        &prepared,
-        &plan,
-        size,
-        &order,
-        &mut ExportScratch::default(),
-    );
+    order.rebuild(&Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()), true);
+    let (want, want_counts) =
+        export_layer(&local, &prepared, &plan, size, &order, &mut ExportScratch::default());
     let dev = GpuSum::from_host_with_options(&local, 0, nvrtc).expect("upload");
-    let options = GpuLayerOptions {
-        premerge,
-        arena_bytes,
-        ..GpuLayerOptions::default()
-    };
+    let options = GpuLayerOptions { premerge, arena_bytes, ..GpuLayerOptions::default() };
     let mut scratch = LayerScratch::new(&dev, options).expect("scratch");
     let table = DevicePrepared::new(&prepared, dev.hash(), &dev.fingerprints, &plan.remote);
     scratch.upload_table(&dev, &table).expect("table");
@@ -207,11 +189,7 @@ fn the_receive_takes_the_fewest_power_of_two_chunks_under_its_cap() {
     assert_eq!(receive_chunking(&off, b, 7), (1, 7));
     assert_eq!(receive_chunking(&off, b, 6), (2, 6));
     assert_eq!(receive_chunking(&off, b, 3), (3, 4));
-    assert_eq!(
-        receive_chunking(&[0, 5], 1, 1),
-        (0, 5),
-        "one position is one chunk"
-    );
+    assert_eq!(receive_chunking(&[0, 5], 1, 1), (0, 5), "one position is one chunk");
     let mut base = Vec::new();
     assert_eq!(chunk_layout(&off, b, 2, 4, &mut base), 6);
     assert_eq!(base[0].wrapping_add(off[2]), 0);
@@ -251,10 +229,7 @@ fn an_empty_partition_ships_empty_blocks() {
     assert_payloads_eq(&e, "empty");
     let payload = e.got[1].as_ref().expect("a device payload for the partner");
     assert_eq!(payload.blocks.len(), e.plan.remote.len());
-    assert!(payload
-        .blocks
-        .iter()
-        .all(|b| b.rows() == 0 && b.offsets.len() == 9));
+    assert!(payload.blocks.iter().all(|b| b.rows() == 0 && b.offsets.len() == 9));
 }
 
 type Key<const W: usize> = ([u64; W], [u64; W]);
@@ -273,9 +248,7 @@ fn position_sums<const W: usize>(blocks: &[BlockColumns<W>], b: usize) -> (Posit
     for (off, x, z, c) in blocks {
         for p in 0..b {
             for i in off[p] as usize..off[p + 1] as usize {
-                *out[p]
-                    .entry((x[i], z[i]))
-                    .or_insert(Complex64::new(0.0, 0.0)) += c[i];
+                *out[p].entry((x[i], z[i])).or_insert(Complex64::new(0.0, 0.0)) += c[i];
                 let n = seen[p].entry((x[i], z[i])).or_insert(0);
                 *n += 1;
                 most = most.max(*n);
@@ -296,17 +269,11 @@ fn assert_position_sums_close<const W: usize>(
     for (p, (g, w)) in got.iter().zip(want).enumerate() {
         for (k, gc) in g {
             let wc = w.get(k).copied().unwrap_or(zero);
-            assert!(
-                (gc - wc).norm() <= tol,
-                "{what}: position {p} key {k:?}: {gc} vs {wc}"
-            );
+            assert!((gc - wc).norm() <= tol, "{what}: position {p} key {k:?}: {gc} vs {wc}");
         }
         for (k, wc) in w {
             if !g.contains_key(k) {
-                assert!(
-                    wc.norm() <= tol,
-                    "{what}: position {p} lost key {k:?} ({wc})"
-                );
+                assert!(wc.norm() <= tol, "{what}: position {p} lost key {k:?} ({wc})");
             }
         }
     }
@@ -341,10 +308,7 @@ fn premerge_matches_host_by_key<const W: usize>(
             let Some(e) = export_rank(input, rows, channel.as_ref(), rank, on) else {
                 continue;
             };
-            let (nb, what) = (
-                e.nb,
-                format!("W={W} {name} rank {rank} arena={arena_bytes}"),
-            );
+            let (nb, what) = (e.nb, format!("W={W} {name} rank {rank} arena={arena_bytes}"));
             for (q, w) in e.want.iter().enumerate() {
                 let (Some(w), Some(g)) = (w, &e.got[q]) else {
                     assert!(w.is_none() && e.got[q].is_none(), "{what}: presence to {q}");
@@ -377,13 +341,8 @@ fn premerge_matches_host_by_key<const W: usize>(
                     assert_eq!(most, 1, "{what}: a key twice across the blocks to {q}");
                 }
             }
-            let shipped: usize = e
-                .got
-                .iter()
-                .flatten()
-                .flat_map(|p| &p.blocks)
-                .map(DeviceBlock::rows)
-                .sum();
+            let shipped: usize =
+                e.got.iter().flatten().flat_map(|p| &p.blocks).map(DeviceBlock::rows).sum();
             assert_eq!(
                 e.got_counts.rows_sent.iter().sum::<u64>(),
                 shipped as u64,
@@ -405,11 +364,7 @@ fn premerge_fixture<const W: usize>(num_qubits: usize, seed: u64, pbits: u8) {
     // The SU(4) ships under half its unmerged rows; the Clifford and the rotation have nothing to merge.
     let check_shrink = |name: &str, sent: u64, unmerged: u64| {
         if name == "su4" {
-            assert!(
-                sent * 2 < unmerged,
-                "P={}: su4 sent {sent} of {unmerged} rows",
-                1 << pbits
-            );
+            assert!(sent * 2 < unmerged, "P={}: su4 sent {sent} of {unmerged} rows", 1 << pbits);
         } else {
             assert_eq!(sent, unmerged, "{name}: nothing to merge");
         }
@@ -419,18 +374,11 @@ fn premerge_fixture<const W: usize>(num_qubits: usize, seed: u64, pbits: u8) {
             premerge_matches_host_by_key(&input, &rows, arena, &[])
         {
             check_shrink(name, sent, unmerged);
-            assert_eq!(
-                fallbacks,
-                (0, 0),
-                "{name}: a 64-bit fingerprint needs no fallback"
-            );
+            assert_eq!(fallbacks, (0, 0), "{name}: a 64-bit fingerprint needs no fallback");
         }
     }
     // Every merge block takes a fallback: the `g_hi32` passes with the low word cleared, the full-key sort with no fingerprint at all.
-    for (opt, full_key) in [
-        ("-DFINGERPRINT_ZERO_LOW", false),
-        ("-DFINGERPRINT_BITS=0", true),
-    ] {
+    for (opt, full_key) in [("-DFINGERPRINT_ZERO_LOW", false), ("-DFINGERPRINT_BITS=0", true)] {
         let nvrtc = [opt.to_string()];
         for (name, sent, unmerged, fallbacks) in
             premerge_matches_host_by_key(&input, &rows, DEFAULT_ARENA_BYTES, &nvrtc)
@@ -466,9 +414,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     let rows = PartitionRows::<1>::from_rows(nq, vec![[0b1u64]], vec![[0u64]]);
     let channel = PtmChannel::unitary_2q(0, 1, sqrt_swap_matrix());
     let prepared = channel.prepare(&hash, false).expect("prepared");
-    let Prepared::Local(ptm) = &prepared else {
-        unreachable!()
-    };
+    let Prepared::Local(ptm) = &prepared else { unreachable!() };
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let d = ptm.deltas();
     let zero = Complex64::new(0.0, 0.0);
@@ -503,17 +449,11 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     assert_eq!(rows.partition_of(&ka.x, &ka.z), 0);
     assert_eq!(rows.partition_of(&kb.x, &kb.z), 0);
     let (tx, tz) = (ka.x[0] ^ d[ea].mask_x[0], ka.z[0] ^ d[ea].mask_z[0]);
-    assert_eq!(
-        (tx, tz),
-        (kb.x[0] ^ d[eb].mask_x[0], kb.z[0] ^ d[eb].mask_z[0])
-    );
+    assert_eq!((tx, tz), (kb.x[0] ^ d[eb].mask_x[0], kb.z[0] ^ d[eb].mask_z[0]));
     let dev = GpuSum::from_host(&local, 0).expect("upload");
     let table = DevicePrepared::new(&prepared, &hash, &dev.fingerprints, &plan.remote);
     let shipped = |premerge: bool| {
-        let options = GpuLayerOptions {
-            premerge,
-            ..GpuLayerOptions::default()
-        };
+        let options = GpuLayerOptions { premerge, ..GpuLayerOptions::default() };
         let mut scratch = LayerScratch::new(&dev, options).expect("scratch");
         scratch.upload_table(&dev, &table).expect("table");
         scratch.count_local(&dev, &table).expect("count");
@@ -535,10 +475,7 @@ fn exactly_cancelling_remote_rows_are_not_shipped() {
     assert_eq!(plain.iter().filter(|k| **k == (tx, tz)).count(), 2);
     let (merged, merged_rows) = shipped(true);
     assert!(!merged.contains(&(tx, tz)), "the cancelled key travelled");
-    assert!(
-        merged_rows + 2 <= plain_rows,
-        "{merged_rows} vs {plain_rows}"
-    );
+    assert!(merged_rows + 2 <= plain_rows, "{merged_rows} vs {plain_rows}");
 }
 
 /// With the merge on, every rank of `input` under `rows` through an SU(4) falls back to the unmerged export, `export_layer`'s.
@@ -550,10 +487,7 @@ fn assert_unmerged_fallback(input: &PauliSum<1>, rows: &PartitionRows<1>, nvrtc:
             continue;
         };
         remote_layers += 1;
-        assert_eq!(
-            e.scratch.record.rows_premerged, 0,
-            "rank {rank}: no rows were premerged"
-        );
+        assert_eq!(e.scratch.record.rows_premerged, 0, "rank {rank}: no rows were premerged");
         assert_payloads_eq(&e, &format!("rank {rank}"));
     }
     assert!(remote_layers > 0, "the fixture must export something");
@@ -587,9 +521,5 @@ fn oversize_partner_group_falls_back_to_unmerged_export() {
     let base = rand_sum::<1>(400, 32, 0xB5CA);
     let input = dense_on_01(&base).with_hash(Gf2Hash::<1>::new(32, B_MAX_BITS, 0xB5CA));
     assert!(input.num_buckets() * 8 > SCAN_LIMIT);
-    assert_unmerged_fallback(
-        &input,
-        &PartitionRows::<1>::from_seed(32, 1, 0xB5CA ^ 0x77),
-        &[],
-    );
+    assert_unmerged_fallback(&input, &PartitionRows::<1>::from_seed(32, 1, 0xB5CA ^ 0x77), &[]);
 }

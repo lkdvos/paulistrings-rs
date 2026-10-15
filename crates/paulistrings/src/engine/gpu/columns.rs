@@ -65,14 +65,7 @@ pub(crate) fn grow<T: DeviceRepr>(
     n: usize,
     ordinal: u32,
 ) -> Result<(), GpuError> {
-    grow_keep(
-        stream,
-        slice,
-        n,
-        0,
-        ordinal,
-        (n * std::mem::size_of::<T>()) as u64,
-    )
+    grow_keep(stream, slice, n, 0, ordinal, (n * std::mem::size_of::<T>()) as u64)
 }
 
 impl<const W: usize> DeviceColumns<W> {
@@ -110,15 +103,9 @@ impl<const W: usize> DeviceColumns<W> {
     /// Bytes a `(terms, buckets)` allocation needs, or `Unsupported` past the `u32` index range.
     fn request_bytes(terms: usize, buckets: usize) -> Result<u64, GpuError> {
         if terms > u32::MAX as usize || buckets >= u32::MAX as usize {
-            return Err(GpuError::Unsupported(
-                "more than u32::MAX terms or buckets on one device",
-            ));
+            return Err(GpuError::Unsupported("more than u32::MAX terms or buckets on one device"));
         }
-        let csr = if buckets > 0 {
-            (2 * buckets as u64 + 1) * 4
-        } else {
-            0
-        };
+        let csr = if buckets > 0 { (2 * buckets as u64 + 1) * 4 } else { 0 };
         Ok(terms as u64 * Self::BYTES_PER_TERM as u64 + csr)
     }
 

@@ -13,10 +13,7 @@ fn every_constructor(q0: usize, q1: usize) -> Vec<(&'static str, PtmChannel)> {
         ("pauli_y", PtmChannel::pauli_y(q0)),
         ("pauli_z", PtmChannel::pauli_z(q0)),
         ("unitary_1q", PtmChannel::unitary_1q(q0, t_gate)),
-        (
-            "pauli_channel",
-            PtmChannel::pauli_channel(q0, 0.03, 0.04, 0.05),
-        ),
+        ("pauli_channel", PtmChannel::pauli_channel(q0, 0.03, 0.04, 0.05)),
     ];
     for p in [0.0, 0.07, 0.75, 1.0] {
         channels.push(("depolarizing", PtmChannel::depolarizing(q0, p)));
@@ -27,19 +24,10 @@ fn every_constructor(q0: usize, q1: usize) -> Vec<(&'static str, PtmChannel)> {
         channels.push(("cnot", PtmChannel::cnot(a, b)));
         channels.push(("cz", PtmChannel::cz(a, b)));
         channels.push(("swap", PtmChannel::swap(a, b)));
-        channels.push((
-            "unitary_2q sqrt-swap",
-            PtmChannel::unitary_2q(a, b, sqrt_swap_matrix()),
-        ));
-        channels.push((
-            "unitary_2q haar",
-            PtmChannel::unitary_2q(a, b, haar_su4_matrix()),
-        ));
+        channels.push(("unitary_2q sqrt-swap", PtmChannel::unitary_2q(a, b, sqrt_swap_matrix())));
+        channels.push(("unitary_2q haar", PtmChannel::unitary_2q(a, b, haar_su4_matrix())));
         channels.push(("depolarizing_2q", PtmChannel::depolarizing_2q(a, b, 0.07)));
-        channels.push((
-            "depolarizing_2q",
-            PtmChannel::depolarizing_2q(a, b, 15.0 / 16.0),
-        ));
+        channels.push(("depolarizing_2q", PtmChannel::depolarizing_2q(a, b, 15.0 / 16.0)));
     }
     channels
 }
@@ -48,22 +36,14 @@ fn assert_same_local_ptm<const W: usize>(a: &Prepared<W>, b: &Prepared<W>, what:
     let (Prepared::Local(a), Prepared::Local(b)) = (a, b) else {
         panic!("{what}: both preparations must be local");
     };
-    assert_eq!(
-        a.qubits().collect::<Vec<_>>(),
-        b.qubits().collect::<Vec<_>>(),
-        "{what}"
-    );
+    assert_eq!(a.qubits().collect::<Vec<_>>(), b.qubits().collect::<Vec<_>>(), "{what}");
     assert_eq!(a.num_deltas(), b.num_deltas(), "{what}");
     for (x, y) in a.deltas().iter().zip(b.deltas()) {
         assert_eq!(x.local_delta, y.local_delta, "{what}");
         assert_eq!(x.bucket_delta, y.bucket_delta, "{what}");
         assert_eq!((x.mask_x, x.mask_z), (y.mask_x, y.mask_z), "{what}");
         for (u, v) in x.amplitude.iter().zip(y.amplitude.iter()) {
-            assert!(
-                (u - v).norm() < 1e-14,
-                "{what}: delta {}: {u} vs {v}",
-                x.local_delta
-            );
+            assert!((u - v).norm() < 1e-14, "{what}: delta {}: {u} vs {v}", x.local_delta);
         }
     }
 }

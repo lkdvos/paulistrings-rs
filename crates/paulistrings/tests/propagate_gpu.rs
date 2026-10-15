@@ -57,8 +57,7 @@ where
         dev.set_layer_options(o);
     }
     dev.enable_trace();
-    dev.propagate(circuit, policy, direction)
-        .expect("device propagate");
+    dev.propagate(circuit, policy, direction).expect("device propagate");
     let got = dev.gather().expect("download");
     assert_eq!(dev.len(), got.len());
     (got, last_layer(&mut dev).1)
@@ -129,36 +128,16 @@ fn single_cuts_match_propagate() {
 fn random_circuits_match_propagate_w1() {
     require_cuda!();
     let input = rand_sum::<1>(500, 6, 0x11);
-    check(
-        &random_circuit::<1>(6, 30, 0x9AA1, true),
-        &input,
-        &KeepAll,
-        "dense W=1",
-    );
-    check(
-        &random_circuit::<1>(6, 40, 0x9AA2, false),
-        &input,
-        &KeepAll,
-        "sparse W=1",
-    );
+    check(&random_circuit::<1>(6, 30, 0x9AA1, true), &input, &KeepAll, "dense W=1");
+    check(&random_circuit::<1>(6, 40, 0x9AA2, false), &input, &KeepAll, "sparse W=1");
 }
 
 #[test]
 fn random_circuits_match_propagate_w2() {
     require_cuda!();
     let input = rand_sum::<2>(2000, 70, 0x22);
-    check(
-        &random_circuit::<2>(70, 20, 0x9BB1, true),
-        &input,
-        &KeepAll,
-        "dense W=2",
-    );
-    check(
-        &random_circuit::<2>(70, 30, 0x9BB2, false),
-        &input,
-        &KeepAll,
-        "sparse W=2",
-    );
+    check(&random_circuit::<2>(70, 20, 0x9BB1, true), &input, &KeepAll, "dense W=2");
+    check(&random_circuit::<2>(70, 30, 0x9BB2, false), &input, &KeepAll, "sparse W=2");
 }
 
 #[test]
@@ -176,17 +155,9 @@ fn weight_three_rotation_and_a_long_trotter_run() {
     );
     // 2 · 20 = 40 layers from a single term, so the bucket count grows and the device refines mid-run.
     let mut acc = paulistrings::BuildAccumulator::<1>::new(20);
-    acc.add_term(
-        PauliString::<1>::z(0),
-        num_complex::Complex64::new(1.0, 0.0),
-    );
+    acc.add_term(PauliString::<1>::z(0), num_complex::Complex64::new(1.0, 0.0));
     let small = acc.finalize();
-    check(
-        &trotter_circuit::<1>(20, 0.1),
-        &small,
-        &CoefficientThreshold(1e-4),
-        "trotter",
-    );
+    check(&trotter_circuit::<1>(20, 0.1), &small, &CoefficientThreshold(1e-4), "trotter");
 }
 
 #[test]
@@ -200,12 +171,7 @@ fn exact_cancellation_drops_the_zero_term() {
     assert!(dropped, "the fixture must cancel exactly in some direction");
     check(&circuit, &input, &KeepAll, "cancellation");
     let input2 = cancellation_sum::<2>(128);
-    check(
-        &one_layer(128, Box::new(cancellation_channel())),
-        &input2,
-        &KeepAll,
-        "cancellation W=2",
-    );
+    check(&one_layer(128, Box::new(cancellation_channel())), &input2, &KeepAll, "cancellation W=2");
 }
 
 /// The truncation matrix on a dense random circuit, host `propagate` and one device driven by the same `BuiltinTruncation` value.
@@ -223,18 +189,12 @@ fn truncation_matrix<const W: usize>(num_qubits: usize, layers: usize, seed: u64
         ("coeff negative eps", T::Coefficient(-1.0)),
         ("weight 4", T::Weight(4)),
         ("approx n", T::ApproxTopN(n)),
-        (
-            "coeff & approx",
-            and(T::Coefficient(1e-9), T::ApproxTopN(n)),
-        ),
+        ("coeff & approx", and(T::Coefficient(1e-9), T::ApproxTopN(n))),
         ("approx & weight", and(T::ApproxTopN(n), T::Weight(4))),
         ("coeff | weight", or(T::Coefficient(1e-3), T::Weight(4))),
         ("topn n", T::TopN(n)),
         ("coeff & topn", and(T::Coefficient(1e-6), T::TopN(n))),
-        (
-            "topn & (coeff | weight)",
-            and(T::TopN(n), or(T::Coefficient(1e-9), T::Weight(4))),
-        ),
+        ("topn & (coeff | weight)", and(T::TopN(n), or(T::Coefficient(1e-9), T::Weight(4)))),
     ];
     for (name, policy) in &matrix {
         check(&circuit, &input, policy, &format!("W={W} {name}"));
@@ -261,18 +221,8 @@ fn builtin_policy_types_lower_and_match_the_host() {
     let circuit = random_circuit::<2>(128, 12, 0x5557, true);
     check(&circuit, &input, &CoefficientThreshold(1e-3), "coeff");
     check(&circuit, &input, &ApproxTopN(4_000), "approx 4000");
-    check(
-        &circuit,
-        &input,
-        &And(CoefficientThreshold(1e-3), ApproxTopN(4_000)),
-        "coeff & approx",
-    );
-    check(
-        &circuit,
-        &input,
-        &And(ApproxTopN(4_000), WeightCutoff(4)),
-        "approx & weight",
-    );
+    check(&circuit, &input, &And(CoefficientThreshold(1e-3), ApproxTopN(4_000)), "coeff & approx");
+    check(&circuit, &input, &And(ApproxTopN(4_000), WeightCutoff(4)), "approx & weight");
     check(
         &circuit,
         &input,
@@ -322,11 +272,7 @@ where
     let r = dev.propagate(&circuit, policy, Direction::Forward);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{what}: {r:?}");
     assert_eq!(dev.len(), input.len(), "{what}: nothing ran");
-    assert_eq!(
-        dev.gather().unwrap().to_arrays(),
-        input.to_arrays(),
-        "{what}: untouched"
-    );
+    assert_eq!(dev.gather().unwrap().to_arrays(), input.to_arrays(), "{what}: untouched");
 }
 
 #[test]
@@ -351,8 +297,7 @@ fn exact_top_n_edge_cases_match_the_host() {
     let mut dev = GpuPartitionedSum::from_host(&sum, 0).expect("upload");
     for n in [0usize, 1, sum.len(), sum.len() + 5] {
         let want = propagate(&circuit, sum.clone(), &T::TopN(n), Direction::Forward);
-        dev.propagate(&circuit, T::TopN(n), Direction::Forward)
-            .expect("device propagate");
+        dev.propagate(&circuit, T::TopN(n), Direction::Forward).expect("device propagate");
         assert_eq!(dev.len(), want.len(), "n={n}");
         assert_terms_close(&dev.gather().unwrap(), &want, TOL, &format!("n={n}"));
         dev = GpuPartitionedSum::from_host(&sum, 0).expect("re-upload");
@@ -368,10 +313,7 @@ fn exact_top_n_is_unsupported_above_one_partition() {
     let circuit = one_layer(8, Box::new(PtmChannel::cnot(0, 1)));
     let mut split = GpuPartitionedSum::scatter_to_devices(&input, &[0, 0]).expect("scatter");
     let r = split.propagate(&circuit, T::TopN(10), Direction::Forward);
-    assert!(
-        matches!(r, Err(GpuError::Unsupported("exact TopN on device"))),
-        "{r:?}"
-    );
+    assert!(matches!(r, Err(GpuError::Unsupported("exact TopN on device"))), "{r:?}");
 }
 
 #[test]
@@ -380,22 +322,12 @@ fn short_fingerprints_still_agree() {
     let input = rand_sum::<2>(2000, 128, 0x66);
     let circuit = random_circuit::<2>(128, 8, 0x7777, true);
     for fp in ["-DFINGERPRINT_BITS=8", "-DFINGERPRINT_BITS=0"] {
-        check_with(
-            &circuit,
-            &input,
-            &KeepAll,
-            fp,
-            (None, &[fp.to_string()]),
-            None,
-        );
+        check_with(&circuit, &input, &KeepAll, fp, (None, &[fp.to_string()]), None);
     }
 }
 
 fn su4_layer<const W: usize>(num_qubits: usize, q0: usize, q1: usize) -> Circuit<W> {
-    one_layer(
-        num_qubits,
-        Box::new(PtmChannel::unitary_2q(q0, q1, haar_su4_matrix())),
-    )
+    one_layer(num_qubits, Box::new(PtmChannel::unitary_2q(q0, q1, haar_su4_matrix())))
 }
 
 /// Every block takes a fallback: with the low fingerprint word zeroed the `g_hi32` passes decide, with `FINGERPRINT_BITS=0` only the full-key sort does.
@@ -414,10 +346,7 @@ fn fallback_paths_run_and_resolve() {
     assert!(c.high_word_fallbacks > 0, "{c:?}");
     assert_eq!(c.full_key_fallbacks, 0, "{c:?}");
     let c = run(&["-DFINGERPRINT_BITS=0".to_string()]);
-    assert!(
-        c.high_word_fallbacks > 0 && c.full_key_fallbacks > 0,
-        "{c:?}"
-    );
+    assert!(c.high_word_fallbacks > 0 && c.full_key_fallbacks > 0, "{c:?}");
     let c = run(&[]);
     assert_eq!((c.high_word_fallbacks, c.full_key_fallbacks), (0, 0));
 }
@@ -431,10 +360,7 @@ fn a_small_shared_memory_limit_still_agrees() {
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
     let limit = ["-DTEST_SHARED_LIMIT=40000".to_string()];
     let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, None, &limit);
-    assert!(
-        c.record_capacity <= 2048 && c.max_block_records <= 2048,
-        "{c:?}"
-    );
+    assert!(c.record_capacity <= 2048 && c.max_block_records <= 2048, "{c:?}");
     assert_terms_close(&got, &want, TOL, "small shared limit");
 }
 
@@ -444,10 +370,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
     require_cuda!();
     let input = rand_sum::<2>(100_000, 128, 0x0FF);
     let circuit = su4_layer::<2>(128, 0, 1);
-    let options = PropagateOptions {
-        target_bucket_len: 1 << 20,
-        min_buckets: 16,
-    };
+    let options = PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 16 };
     let want = propagate_with(
         &circuit,
         input.clone(),
@@ -462,8 +385,7 @@ fn oversize_buckets_trigger_the_refine_and_recount_loop() {
         ..GpuLayerOptions::default()
     });
     dev.enable_trace();
-    dev.propagate_with(&circuit, KeepAll, Direction::Forward, options)
-        .expect("propagate");
+    dev.propagate_with(&circuit, KeepAll, Direction::Forward, options).expect("propagate");
     let (layer, _) = last_layer(&mut dev);
     assert!(layer.refine_passes[0] > 0, "{layer:?}");
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "oversize loop");
@@ -476,23 +398,10 @@ fn multi_batch_output_growth_agrees() {
     let input = rand_sum::<2>(20_000, 128, 0xBA7C);
     let circuit = su4_layer::<2>(128, 5, 70);
     let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
-    let small = GpuLayerOptions {
-        arena_bytes: 1 << 20,
-        ..GpuLayerOptions::default()
-    };
-    let (got, c) = device_run(
-        &circuit,
-        &input,
-        &KeepAll,
-        Direction::Forward,
-        Some(small),
-        &[],
-    );
+    let small = GpuLayerOptions { arena_bytes: 1 << 20, ..GpuLayerOptions::default() };
+    let (got, c) = device_run(&circuit, &input, &KeepAll, Direction::Forward, Some(small), &[]);
     assert!(c.batches > 1, "{c:?}");
-    assert!(
-        got.len() > 2 * input.len(),
-        "the output outgrew the input-sized spare"
-    );
+    assert!(got.len() > 2 * input.len(), "the output outgrew the input-sized spare");
     assert_terms_close(&got, &want, TOL, "multi-batch");
 }
 
@@ -519,25 +428,16 @@ fn a_mid_run_error_leaves_the_last_layer_and_the_sum_resumes() {
     all.push(PtmChannel::cnot(7, 90));
 
     let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
-    dev.set_layer_options(GpuLayerOptions {
-        max_bits: 3,
-        ..GpuLayerOptions::default()
-    });
+    dev.set_layer_options(GpuLayerOptions { max_bits: 3, ..GpuLayerOptions::default() });
     assert!(matches!(
         dev.propagate(&whole, KeepAll, Direction::Forward),
         Err(GpuError::Unsupported(_))
     ));
     let after_first = propagate(&first, input.clone(), &KeepAll, Direction::Forward);
     assert_eq!(dev.len(), after_first.len());
-    assert_terms_close(
-        &dev.gather().unwrap(),
-        &after_first,
-        TOL,
-        "last completed layer",
-    );
+    assert_terms_close(&dev.gather().unwrap(), &after_first, TOL, "last completed layer");
     dev.set_layer_options(GpuLayerOptions::default());
-    dev.propagate(&rest, KeepAll, Direction::Forward)
-        .expect("resumes");
+    dev.propagate(&rest, KeepAll, Direction::Forward).expect("resumes");
     let want = propagate(&all, input, &KeepAll, Direction::Forward);
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "resumed");
 }
@@ -557,8 +457,7 @@ fn repeated_propagate_on_one_resident_sum() {
     c3.push(PtmChannel::hadamard(0));
     for (i, c) in [c1, c2, c3].iter().enumerate() {
         host = propagate(c, host, &KeepAll, Direction::Heisenberg);
-        dev.propagate(c, KeepAll, Direction::Heisenberg)
-            .expect("propagate");
+        dev.propagate(c, KeepAll, Direction::Heisenberg).expect("propagate");
         assert_eq!(dev.len(), host.len(), "call {i}");
         assert_terms_close(&dev.gather().unwrap(), &host, TOL, &format!("call {i}"));
     }
@@ -572,10 +471,7 @@ fn no_identity_delta_and_a_zero_bucket_delta_generator() {
     let probe = Gf2Hash::<2>::new(128, 6, input.hash().seed());
     let mut rng = Xs64::new(0x6E4);
     let gen = loop {
-        let mut g = PauliString::<2> {
-            x: [0; 2],
-            z: [0; 2],
-        };
+        let mut g = PauliString::<2> { x: [0; 2], z: [0; 2] };
         for _ in 0..3 {
             let q = (rng.next_u64() % 128) as usize;
             g.x[q / 64] |= 1 << (q % 64);
@@ -602,14 +498,7 @@ fn a_small_records_per_block_agrees() {
         arena_bytes: 1 << 20,
         ..GpuLayerOptions::default()
     };
-    check_with(
-        &circuit,
-        &input,
-        &KeepAll,
-        "fixed 256, 1 MiB arena",
-        (Some(o), &[]),
-        None,
-    );
+    check_with(&circuit, &input, &KeepAll, "fixed 256, 1 MiB arena", (Some(o), &[]), None);
 }
 
 /// A CNOT, a rotation with a generator in several words and an SU(4) across words, at `nq` qubits.
@@ -644,13 +533,8 @@ fn propagate_gpu_front_door_and_options() {
     assert_terms_close(&got, &want, TOL, "front door");
     let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.enable_trace();
-    dev.propagate_with(
-        &circuit,
-        KeepAll,
-        Direction::Forward,
-        PropagateOptions::default(),
-    )
-    .expect("with options");
+    dev.propagate_with(&circuit, KeepAll, Direction::Forward, PropagateOptions::default())
+        .expect("with options");
     let trace = dev.take_trace().expect("tracing on");
     assert_eq!(trace.layers.len(), circuit.len());
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "traced");
@@ -660,9 +544,7 @@ fn propagate_gpu_front_door_and_options() {
 fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64) {
     use paulistrings::test_support::{random_clifford_circuit, with_zero_coefficients};
     let input = with_zero_coefficients(&rand_sum::<W>(3000, nq, 0xC11F), 7);
-    assert!(input
-        .iter()
-        .any(|(_, _, c)| c == num_complex::Complex64::new(0.0, 0.0)));
+    assert!(input.iter().any(|(_, _, c)| c == num_complex::Complex64::new(0.0, 0.0)));
     let gates: Vec<(&str, Box<dyn Channel<W>>)> = vec![
         ("h", Box::new(PtmChannel::hadamard(q0))),
         ("s", Box::new(PtmChannel::phase_gate(q1))),
@@ -674,13 +556,7 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
         ("keep", BuiltinTruncation::Keep),
         ("coeff", BuiltinTruncation::Coefficient(0.5)),
         ("weight", BuiltinTruncation::Weight(weight as u32)),
-        (
-            "and",
-            and(
-                BuiltinTruncation::Coefficient(0.3),
-                BuiltinTruncation::Weight(weight as u32),
-            ),
-        ),
+        ("and", and(BuiltinTruncation::Coefficient(0.3), BuiltinTruncation::Weight(weight as u32))),
     ];
     for (name, ch) in gates {
         let circuit = one_layer(nq, ch);
@@ -702,62 +578,22 @@ fn clifford_layers<const W: usize>(nq: usize, q0: usize, q1: usize, weight: u64)
     );
     for (pname, policy) in &policies {
         let what = format!("random clifford {pname}");
-        check_with(
-            &circuit,
-            &input,
-            policy,
-            &what,
-            (None, &[]),
-            Some(last_permutes),
-        );
+        check_with(&circuit, &input, policy, &what, (None, &[]), Some(last_permutes));
     }
-    let off = GpuLayerOptions {
-        clifford: false,
-        ..GpuLayerOptions::default()
-    };
-    let cnot = one_layer(
-        nq,
-        Box::new(PtmChannel::cnot(q0, q1)) as Box<dyn Channel<W>>,
-    );
-    check_with(
-        &cnot,
-        &input,
-        &KeepAll,
-        "knob off",
-        (Some(off), &[]),
-        Some(false),
-    );
+    let off = GpuLayerOptions { clifford: false, ..GpuLayerOptions::default() };
+    let cnot = one_layer(nq, Box::new(PtmChannel::cnot(q0, q1)) as Box<dyn Channel<W>>);
+    check_with(&cnot, &input, &KeepAll, "knob off", (Some(off), &[]), Some(false));
     let (on, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, None, &[]);
     let (fused, _) = device_run(&cnot, &input, &KeepAll, Direction::Forward, Some(off), &[]);
     assert_terms_close(&on, &fused, TOL, "permutation and fused paths");
     for hook in ["-DFINGERPRINT_BITS=8", "-DFINGERPRINT_ZERO_LOW"] {
         let extra = [hook.to_string()];
-        check_with(
-            &circuit,
-            &input,
-            &KeepAll,
-            hook,
-            (None, &extra),
-            Some(last_permutes),
-        );
+        check_with(&circuit, &input, &KeepAll, hook, (None, &extra), Some(last_permutes));
     }
-    let rot = one_layer(
-        nq,
-        Box::new(zz_rotation::<W>(q0, q1, 0.4)) as Box<dyn Channel<W>>,
-    );
+    let rot = one_layer(nq, Box::new(zz_rotation::<W>(q0, q1, 0.4)) as Box<dyn Channel<W>>);
     check_with(&rot, &input, &KeepAll, "rotation", (None, &[]), Some(false));
-    check_with(
-        &su4_layer::<W>(nq, q0, q1),
-        &input,
-        &KeepAll,
-        "su4",
-        (None, &[]),
-        Some(false),
-    );
-    let dep = one_layer(
-        nq,
-        Box::new(PtmChannel::depolarizing(q0, 0.1)) as Box<dyn Channel<W>>,
-    );
+    check_with(&su4_layer::<W>(nq, q0, q1), &input, &KeepAll, "su4", (None, &[]), Some(false));
+    let dep = one_layer(nq, Box::new(PtmChannel::depolarizing(q0, 0.1)) as Box<dyn Channel<W>>);
     let (_, c) = device_run(&dep, &input, &KeepAll, Direction::Forward, None, &[]);
     assert!(c.rescaled && !c.permuted, "{c:?}");
 }
@@ -783,24 +619,15 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         Gf2Hash::new(128, 0, rand_sum::<2>(1, 128, 0).hash().seed()),
     );
     assert_eq!(input.num_buckets(), 1);
-    let opts = GpuLayerOptions {
-        records_per_block: 1 << 30,
-        ..GpuLayerOptions::default()
-    };
-    let circuit = one_layer(
-        128,
-        Box::new(PtmChannel::cnot(3, 90)) as Box<dyn Channel<2>>,
-    );
+    let opts = GpuLayerOptions { records_per_block: 1 << 30, ..GpuLayerOptions::default() };
+    let circuit = one_layer(128, Box::new(PtmChannel::cnot(3, 90)) as Box<dyn Channel<2>>);
     let want = propagate_with(
         &circuit,
         input.clone(),
         &KeepAll,
         Direction::Forward,
         &mut LayerScratch::new(),
-        PropagateOptions {
-            target_bucket_len: 1 << 20,
-            min_buckets: 1 << 20,
-        },
+        PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 },
     );
     let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
     dev.set_layer_options(opts);
@@ -809,17 +636,11 @@ fn the_permutation_path_has_no_bucket_length_cap() {
         &circuit,
         KeepAll,
         Direction::Forward,
-        PropagateOptions {
-            target_bucket_len: 1 << 20,
-            min_buckets: 1 << 20,
-        },
+        PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 },
     )
     .expect("device propagate");
     let (layer, c) = last_layer(&mut dev);
-    assert!(
-        c.permuted && layer.bits == 0 && layer.refine_passes[0] == 0,
-        "{layer:?}"
-    );
+    assert!(c.permuted && layer.bits == 0 && layer.refine_passes[0] == 0, "{layer:?}");
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "one bucket of 20000");
 }
 
@@ -855,11 +676,7 @@ fn a_declined_preparation_is_unsupported_as_on_the_host() {
     require_cuda!();
     let input = rand_sum::<1>(100, 8, 0x56);
     let mut dev = GpuPartitionedSum::from_host(&input, 0).expect("upload");
-    let r = dev.propagate(
-        &one_layer(8, Box::new(ThreeQubits)),
-        KeepAll,
-        Direction::Forward,
-    );
+    let r = dev.propagate(&one_layer(8, Box::new(ThreeQubits)), KeepAll, Direction::Forward);
     assert!(
         matches!(r, Err(GpuError::Unsupported(m)) if m.contains("unsupported except for PauliRotation")),
         "{r:?}"

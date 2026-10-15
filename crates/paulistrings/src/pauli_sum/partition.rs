@@ -61,23 +61,15 @@ impl<const W: usize> PauliSum<W> {
             (rank as usize) < rows.num_partitions(),
             "PauliSum::filter_partition: rank {rank} out of range",
         );
-        let buckets = map_buckets(self.len, &self.buckets, |columns| {
-            filter_bucket(columns, rows, rank)
-        });
+        let buckets =
+            map_buckets(self.len, &self.buckets, |columns| filter_bucket(columns, rows, rank));
         let len = buckets.iter().map(|c| c.len()).sum();
-        Self {
-            buckets,
-            hash: self.hash.clone(),
-            num_qubits: self.num_qubits,
-            len,
-        }
+        Self { buckets, hash: self.hash.clone(), num_qubits: self.num_qubits, len }
     }
 
     /// Gather key-disjoint sums sharing hash rows and bucket count back into one; panics on an empty or misaligned input.
     pub(crate) fn merge_partitions(parts: Vec<Self>) -> Self {
-        let first = parts
-            .first()
-            .expect("PauliSum::merge_partitions: no inputs to merge");
+        let first = parts.first().expect("PauliSum::merge_partitions: no inputs to merge");
         let hash = first.hash.clone();
         let num_qubits = first.num_qubits;
         for p in parts.iter().skip(1) {
@@ -96,9 +88,8 @@ impl<const W: usize> PauliSum<W> {
         let num_parts = parts.len();
         let len: usize = parts.iter().map(|p| p.len).sum();
 
-        let mut runs: Vec<Vec<BucketColumns<W>>> = (0..num_buckets)
-            .map(|_| Vec::with_capacity(num_parts))
-            .collect();
+        let mut runs: Vec<Vec<BucketColumns<W>>> =
+            (0..num_buckets).map(|_| Vec::with_capacity(num_parts)).collect();
         for p in parts {
             for (b, columns) in p.buckets.into_iter().enumerate() {
                 runs[b].push(columns);
@@ -107,12 +98,7 @@ impl<const W: usize> PauliSum<W> {
 
         let buckets = map_buckets(len, runs, merge_disjoint_runs);
 
-        Self {
-            buckets,
-            hash,
-            num_qubits,
-            len,
-        }
+        Self { buckets, hash, num_qubits, len }
     }
 
     /// Rebuild a sum from the columns [`Self::to_arrays`] produced, cut back into buckets by `lens`; nothing is sorted.
@@ -158,12 +144,7 @@ impl<const W: usize> PauliSum<W> {
             })
             .collect();
 
-        Self {
-            buckets,
-            hash,
-            num_qubits,
-            len,
-        }
+        Self { buckets, hash, num_qubits, len }
     }
 
     /// Wrap per-bucket columns that already satisfy the invariant, one entry per bucket of `hash`.
@@ -181,12 +162,7 @@ impl<const W: usize> PauliSum<W> {
             hash.num_buckets(),
         );
         let len = buckets.iter().map(BucketColumns::len).sum();
-        Self {
-            buckets,
-            hash,
-            num_qubits,
-            len,
-        }
+        Self { buckets, hash, num_qubits, len }
     }
 
     /// `Some(r)` if every term lies in partition `r`, `None` on an empty or a mixed sum.

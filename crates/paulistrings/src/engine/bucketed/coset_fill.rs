@@ -55,9 +55,7 @@ impl<const W: usize> GatherRun<W> {
         // One slot past the exact capacity: `append_if` writes a discarded row at `len` before deciding not to publish it.
         self.identity.x.reserve(identity_key_capacity + 1);
         self.identity.z.reserve(identity_key_capacity + 1);
-        self.identity
-            .coeff
-            .reserve(identity_coefficient_capacity + 1);
+        self.identity.coeff.reserve(identity_coefficient_capacity + 1);
         self.rest.x.reserve(rest_capacity + 1);
         self.rest.z.reserve(rest_capacity + 1);
         self.rest.coeff.reserve(rest_capacity + 1);
@@ -75,11 +73,7 @@ impl<const W: usize> GatherRun<W> {
         z: [u64; W],
         c: Complex64,
     ) {
-        let BucketColumns {
-            x: xs,
-            z: zs,
-            coeff: cs,
-        } = columns;
+        let BucketColumns { x: xs, z: zs, coeff: cs } = columns;
         let len = xs.len();
         debug_assert!(len < xs.capacity());
         debug_assert!(len < zs.capacity());
@@ -133,11 +127,7 @@ fn debug_assert_received_rows_joined_the_rest<const W: usize>(
     promised: usize,
 ) {
     assert_eq!(
-        (
-            run.identity.x.len(),
-            run.identity.z.len(),
-            run.identity.coeff.len()
-        ),
+        (run.identity.x.len(), run.identity.z.len(), run.identity.coeff.len()),
         (identity_keys, identity_keys, identity_coefficients),
         "received rows joined the identity stream",
     );
@@ -169,9 +159,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
 {
     let members = chunk.len();
     let beta_of = |j: usize| -> u32 { order.bucket_at((chunk_base + j) as u32) };
-    let CosetScratch {
-        old, runs, sort, ..
-    } = scratch;
+    let CosetScratch { old, runs, sort, .. } = scratch;
     stamp!(stamp);
     old.resize_with(members, BucketColumns::default);
     runs.resize_with(members, GatherRun::default);
@@ -185,12 +173,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     // Exact per-run capacity per stream; it is also the bound `append_if`'s safety relies on.
     for (j, run) in runs.iter_mut().enumerate() {
         let (identity_key_capacity, identity_coefficient_capacity, mut rest_capacity) = match plan {
-            DeltaPlan::Local {
-                coordinates,
-                has_identity,
-                dense_identity,
-                ..
-            } => {
+            DeltaPlan::Local { coordinates, has_identity, dense_identity, .. } => {
                 let mut identity = 0usize;
                 let mut rest = 0usize;
                 for (entry, &coordinate) in coordinates.iter().enumerate() {
@@ -211,32 +194,18 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             } => (
                 0,
                 old[j ^ *coordinate_identity as usize].len(),
-                if *generator_local {
-                    old[j ^ *generator_coordinate as usize].len()
-                } else {
-                    0
-                },
+                if *generator_local { old[j ^ *generator_coordinate as usize].len() } else { 0 },
             ),
         };
         if X::NEEDS_BETA {
             rest_capacity += extra.count(beta_of(j));
         }
-        run.reset(
-            identity_key_capacity,
-            identity_coefficient_capacity,
-            rest_capacity,
-        );
+        run.reset(identity_key_capacity, identity_coefficient_capacity, rest_capacity);
     }
     lap!(stamp, scratch.stats.size_ns);
 
     match plan {
-        DeltaPlan::Local {
-            ptm,
-            coordinates,
-            has_identity,
-            dense_identity,
-            ..
-        } => {
+        DeltaPlan::Local { ptm, coordinates, has_identity, dense_identity, .. } => {
             if members >= 1 << GATHER_OUTPUT_MAJOR_MIN_R {
                 gather_local_output_major(
                     old,
@@ -266,10 +235,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             // Every term emits one identity row, kept even when `cos == 0` (the signed-zero contract on `merge_identity_and_rest`), so the merge borrows the source keys.
             for (i, source) in old.iter().enumerate() {
                 for row in 0..source.len() {
-                    let key = PauliString::<W> {
-                        x: source.x[row],
-                        z: source.z[row],
-                    };
+                    let key = PauliString::<W> { x: source.x[row], z: source.z[row] };
                     if key.commutes_with(&rotation.generator) {
                         runs[i ^ *coordinate_identity as usize]
                             .push_identity_coefficient(source.coeff[row]);
@@ -295,11 +261,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     if X::NEEDS_BETA {
         for (j, run) in runs.iter_mut().enumerate() {
             #[cfg(debug_assertions)]
-            let lens_before = (
-                run.identity.x.len(),
-                run.identity.coeff.len(),
-                run.rest.len(),
-            );
+            let lens_before = (run.identity.x.len(), run.identity.coeff.len(), run.rest.len());
             extra.append_into(beta_of(j), &mut run.rest);
             #[cfg(debug_assertions)]
             debug_assert_received_rows_joined_the_rest(run, lens_before, extra.count(beta_of(j)));
@@ -317,31 +279,21 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
         sort_kernel.sort(&mut run.rest, sort);
         lap!(stamp, scratch.stats.sort_ns);
         let (a_x, a_z): (&[[u64; W]], &[[u64; W]]) = match plan {
-            DeltaPlan::Local {
-                dense_identity: true,
-                ..
-            } => {
+            DeltaPlan::Local { dense_identity: true, .. } => {
                 let source = &old[j];
                 debug_assert_eq!(source.len(), run.identity.len());
                 tally!(scratch.stats.rows_id, source.len());
                 (&source.x, &source.z)
             }
             DeltaPlan::Local { .. } => (&run.identity.x, &run.identity.z),
-            DeltaPlan::Rotation {
-                coordinate_identity,
-                ..
-            } => {
+            DeltaPlan::Rotation { coordinate_identity, .. } => {
                 let source = &old[j ^ *coordinate_identity as usize];
                 debug_assert_eq!(source.len(), run.identity.len());
                 tally!(scratch.stats.rows_id, source.len());
                 (&source.x, &source.z)
             }
         };
-        let identity = ColumnsRef {
-            x: a_x,
-            z: a_z,
-            coeff: &run.identity.coeff,
-        };
+        let identity = ColumnsRef { x: a_x, z: a_z, coeff: &run.identity.coeff };
         merge_identity_and_rest::<W, T>(identity, run.rest.view(), destination, policy);
         lap!(stamp, scratch.stats.merge_ns);
     }
@@ -446,12 +398,7 @@ pub(super) fn gather_local_output_major<const W: usize>(
                     key_x[w] ^= delta.mask_x[w];
                     key_z[w] ^= delta.mask_z[w];
                 }
-                run.push_if(
-                    nonzero(amplitude),
-                    key_x,
-                    key_z,
-                    source.coeff[row] * amplitude,
-                );
+                run.push_if(nonzero(amplitude), key_x, key_z, source.coeff[row] * amplitude);
             }
         }
     }

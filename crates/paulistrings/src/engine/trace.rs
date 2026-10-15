@@ -74,21 +74,13 @@ impl PartitionTrace {
     pub fn peak_terms(&self) -> Option<usize> {
         let first = self.layers.first()?;
         let total = |counts: &[usize]| counts.iter().sum::<usize>();
-        let peak_out = self
-            .layers
-            .iter()
-            .map(|layer| total(&layer.terms_out))
-            .max();
+        let peak_out = self.layers.iter().map(|layer| total(&layer.terms_out)).max();
         Some(total(&first.terms_in).max(peak_out.unwrap_or(0)))
     }
 
     /// Rows moved across partitions over the whole trace.
     pub fn total_rows_exchanged(&self) -> u64 {
-        self.layers
-            .iter()
-            .flat_map(|layer| layer.rows_sent.iter())
-            .flat_map(|row| row.iter())
-            .sum()
+        self.layers.iter().flat_map(|layer| layer.rows_sent.iter()).flat_map(|row| row.iter()).sum()
     }
 
     /// Per layer, the maximum input term count over partitions divided by the mean; `1.0` for a layer where every partition was empty.
@@ -109,26 +101,17 @@ impl PartitionTrace {
 
     /// Layers that made no transport call.
     pub fn local_layers(&self) -> usize {
-        self.layers
-            .iter()
-            .filter(|layer| layer.remote_deltas == 0)
-            .count()
+        self.layers.iter().filter(|layer| layer.remote_deltas == 0).count()
     }
 
     /// Layers that exchanged.
     pub fn remote_layers(&self) -> usize {
-        self.layers
-            .iter()
-            .filter(|layer| layer.remote_deltas > 0)
-            .count()
+        self.layers.iter().filter(|layer| layer.remote_deltas > 0).count()
     }
 
     /// Collective calls over the whole trace, excluding the point-to-point exchanges.
     pub fn total_collectives(&self) -> u64 {
-        self.layers
-            .iter()
-            .map(|layer| u64::from(layer.collectives))
-            .sum()
+        self.layers.iter().map(|layer| u64::from(layer.collectives)).sum()
     }
 }
 

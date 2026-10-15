@@ -48,9 +48,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
             block.z = (0..n).map(|_| [0u64]).collect();
             block.coeff = (0..n).map(|p| Complex64::new(f64::from(p), 0.0)).collect();
 
-            let payload = PartnerPayload::<1> {
-                blocks: vec![block],
-            };
+            let payload = PartnerPayload::<1> { blocks: vec![block] };
             let received = vec![None, Some(payload)];
             let mut plan_deltas = deltas.clone();
             plan_deltas.sort_unstable();
@@ -72,11 +70,7 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
                 assert_eq!(rows.count(beta), 1, "one row per bucket");
                 let mut rest = BucketColumns::default();
                 rows.append_into(beta, &mut rest);
-                assert_eq!(
-                    rest.x,
-                    vec![[u64::from(p)]],
-                    "bucket {beta} read position {p}"
-                );
+                assert_eq!(rest.x, vec![[u64::from(p)]], "bucket {beta} read position {p}");
                 assert_eq!(rest.z, vec![[0u64]]);
                 assert_eq!(rest.coeff, vec![Complex64::new(f64::from(p), 0.0)]);
             }
@@ -132,10 +126,7 @@ where
                 })
             })
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("a partition panicked"))
-            .collect()
+        handles.into_iter().map(|h| h.join().expect("a partition panicked")).collect()
     });
 
     let mut sums = Vec::with_capacity(results.len());
@@ -318,10 +309,7 @@ fn all_remote_rotation_generator() {
     let (parts, counts) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, None);
     let sent: u64 = counts.iter().map(|c| c.rows_sent.iter().sum::<u64>()).sum();
     let received: u64 = counts.iter().map(|c| c.rows_received).sum();
-    assert_eq!(
-        sent, anticommuting,
-        "one exported row per anticommuting term"
-    );
+    assert_eq!(sent, anticommuting, "one exported row per anticommuting term");
     assert_eq!(received, anticommuting, "everything sent is received");
     for c in &counts {
         assert_eq!(c.remote_deltas, 1);
@@ -443,10 +431,7 @@ fn exact_zero_sum_across_partitions_is_dropped() {
 #[test]
 fn empty_partition_participates() {
     let channels = differential_channels_w1();
-    let (_, su4) = channels
-        .iter()
-        .find(|(n, _)| *n == "haar_su4")
-        .expect("the dense SU(4) cell");
+    let (_, su4) = channels.iter().find(|(n, _)| *n == "haar_su4").expect("the dense SU(4) cell");
     // Two terms over four partitions: at least two parts are empty.
     let mut accumulator = BuildAccumulator::<1>::with_capacity(8, 2);
     accumulator.add_term(PauliString::<1>::x(1), Complex64::new(1.0, 0.0));
@@ -477,17 +462,10 @@ fn partitioned_output_agrees_across_pool_sizes() {
     let input = rand_sum::<1>(1500, 8, 0x9D6);
     let channels = differential_channels_w1();
     let rot = PauliRotation::new(wide_gen(), 0.41);
-    let (_, su4) = channels
-        .iter()
-        .find(|(n, _)| *n == "haar_su4")
-        .expect("the dense SU(4) cell");
+    let (_, su4) = channels.iter().find(|(n, _)| *n == "haar_su4").expect("the dense SU(4) cell");
     // The wide rotation needs the row that sees its generator, or nothing crosses.
     let cases: [(&str, &dyn Channel<1>, PartitionRows<1>); 2] = [
-        (
-            "su4",
-            su4.as_ref(),
-            PartitionRows::<1>::from_seed(8, 1, 0x9D8),
-        ),
+        ("su4", su4.as_ref(), PartitionRows::<1>::from_seed(8, 1, 0x9D8)),
         ("rot_wide", &rot, rows_seeing_qubit_2_x()),
     ];
 
@@ -496,10 +474,7 @@ fn partitioned_output_agrees_across_pool_sizes() {
         let hash = Gf2Hash::<1>::new(8, 6, 0x9D7);
         let whole = input.clone().with_hash(hash);
         let prepared = channel.prepare(whole.hash(), false).expect("prepare");
-        assert!(
-            PartitionPlan::new(&prepared, &rows, 0).has_remote(),
-            "{name}"
-        );
+        assert!(PartitionPlan::new(&prepared, &rows, 0).has_remote(), "{name}");
 
         let (one, counts_one) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, Some(1));
         let (four, counts_four) = run_parts(&whole, &prepared, &rows, &AlwaysKeep, Some(4));

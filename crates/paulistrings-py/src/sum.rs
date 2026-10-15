@@ -52,8 +52,7 @@ impl PauliSumImpl {
 
     /// Uniform product state: the `+1` eigenstate of `axis` on every qubit.
     pub fn expectation_uniform(&self, axis: PauliAxis) -> Complex64 {
-        for_each_width!(self, |s| s
-            .expectation_product(&ProductBasis::uniform(axis)))
+        for_each_width!(self, |s| s.expectation_product(&ProductBasis::uniform(axis)))
     }
 
     /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. Caller already checked one entry per qubit, so the resulting masks have no bit set past `num_qubits`.
@@ -203,14 +202,10 @@ impl PauliSumImpl {
                 )
             })?,
         };
-        for_num_qubits!(num_qubits, |W| parse_label_list::<W>(
-            num_qubits,
-            &labels,
-            coefficients
-        )?)
-        .ok_or_else(|| {
-            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-        })
+        for_num_qubits!(num_qubits, |W| parse_label_list::<W>(num_qubits, &labels, coefficients)?)
+            .ok_or_else(|| {
+                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+            })
     }
 
     /// Single-term sum from a `PauliString`'s key and a coefficient — `PauliString.__mul__`'s body.
@@ -264,15 +259,10 @@ impl PauliSumImpl {
                 x_shape[0]
             )));
         }
-        for_num_qubits!(num_qubits, |W| build_from_arrays::<W>(
-            num_qubits,
-            x,
-            z,
-            coefficients
-        )?)
-        .ok_or_else(|| {
-            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-        })
+        for_num_qubits!(num_qubits, |W| build_from_arrays::<W>(num_qubits, x, z, coefficients)?)
+            .ok_or_else(|| {
+                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+            })
     }
 }
 
@@ -372,9 +362,7 @@ fn stabilizer_expectation<const W: usize>(
             )));
         }
         let key = parse_pauli_key::<W>(body).map_err(|e| {
-            PyValueError::new_err(format!(
-                "expectation_stabilizer: generator {i} {spec:?}: {e}"
-            ))
+            PyValueError::new_err(format!("expectation_stabilizer: generator {i} {spec:?}: {e}"))
         })?;
         gens.push((key, minus));
     }
@@ -447,11 +435,7 @@ fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
         return Ok(arr.as_array().to_vec());
     }
     if let Ok(arr) = val.extract::<PyReadonlyArray1<f64>>() {
-        return Ok(arr
-            .as_array()
-            .iter()
-            .map(|&re| Complex64::new(re, 0.0))
-            .collect());
+        return Ok(arr.as_array().iter().map(|&re| Complex64::new(re, 0.0)).collect());
     }
     Err(PyTypeError::new_err(
         "PauliSum.from_arrays: coefficients must be a complex128 or float64 NumPy array",
@@ -466,9 +450,7 @@ pub(crate) fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if let Ok(f) = val.extract::<f64>() {
         return Ok(Complex64::new(f, 0.0));
     }
-    Err(PyTypeError::new_err(
-        "expected complex, float, or int coefficient",
-    ))
+    Err(PyTypeError::new_err("expected complex, float, or int coefficient"))
 }
 
 /// One character of a per-qubit product-state label, in qiskit's `Statevector.from_label` alphabet. `None` for anything else.
@@ -503,10 +485,7 @@ pub(crate) fn propagate_options(
     target_bucket_len: usize,
     min_buckets: usize,
 ) -> PyResult<PropagateOptions> {
-    let options = PropagateOptions {
-        target_bucket_len,
-        min_buckets,
-    };
+    let options = PropagateOptions { target_bucket_len, min_buckets };
     options.validate().map_err(PyValueError::new_err)?;
     Ok(options)
 }
@@ -527,9 +506,7 @@ fn parse_partitions(
 
     let placement = if let Ok(name) = obj.extract::<String>() {
         match name.as_str() {
-            "auto" => Placement::Auto {
-                max_partitions: None,
-            },
+            "auto" => Placement::Auto { max_partitions: None },
             other => {
                 return Err(PyValueError::new_err(format!(
                     "partitions must be 'auto', got {other:?}"
@@ -566,9 +543,7 @@ fn parse_partitions(
                          nodes"
                     )));
                 }
-                Placement::Auto {
-                    max_partitions: Some(k),
-                }
+                Placement::Auto { max_partitions: Some(k) }
             }
         }
     } else if let Ok(sets) = obj.extract::<Vec<Vec<usize>>>() {
@@ -601,11 +576,8 @@ fn parse_partitions(
         ));
     };
 
-    let config = PartitionConfig {
-        placement,
-        bind_memory: pin_memory,
-        threads_per_partition: None,
-    };
+    let config =
+        PartitionConfig { placement, bind_memory: pin_memory, threads_per_partition: None };
     let num_partitions = config.num_partitions().map_err(topology_error)?;
     if num_partitions == 1 && matches!(config.placement, Placement::Auto { .. }) {
         // A single-node box: nothing to partition, so run the classic path rather than pay for a pool build and pin a thread nobody asked to pin. An explicit one-element CPU list is still honoured.
@@ -682,10 +654,8 @@ fn validate_partition_row_blocks_impl(
     // half the partitions permanently empty; the caller sees a `ValueError`
     // instead.
     for bit in 0..num_partitions.trailing_zeros() {
-        let reachable = blocks
-            .iter()
-            .enumerate()
-            .any(|(b, qubits)| (b >> bit) & 1 == 1 && !qubits.is_empty());
+        let reachable =
+            blocks.iter().enumerate().any(|(b, qubits)| (b >> bit) & 1 == 1 && !qubits.is_empty());
         if !reachable {
             return Err(format!(
                 "partition_row_blocks: no qubit lies in a block whose index has bit {bit} set, so \
@@ -717,9 +687,7 @@ fn parse_partition_row_exclude(
     };
     let shape = "partition_row_exclude must be None or a dict {\"x\": [qubits], \"z\": [qubits]} \
                  naming the qubits whose x-bit / z-bit no partition row may read";
-    let dict = obj
-        .downcast::<PyDict>()
-        .map_err(|_| PyTypeError::new_err(shape))?;
+    let dict = obj.downcast::<PyDict>().map_err(|_| PyTypeError::new_err(shape))?;
     let (mut exclude_x, mut exclude_z) = (Vec::new(), Vec::new());
     for (key, value) in dict.iter() {
         let key: String = key.extract().map_err(|_| PyTypeError::new_err(shape))?;
@@ -824,9 +792,7 @@ fn topn_partitioned_error(partitions: Option<&Bound<'_, PyAny>>) -> PyErr {
         // A distributed run: `comm=`'s repr says nothing useful, so the kwarg's name is the actionable part.
         None => "comm=<mpi4py communicator>".to_string(),
         Some(obj) => {
-            let repr = obj
-                .repr()
-                .map_or_else(|_| "…".to_string(), |repr| repr.to_string());
+            let repr = obj.repr().map_or_else(|_| "…".to_string(), |repr| repr.to_string());
             format!("partitions={repr}")
         }
     };
@@ -841,9 +807,9 @@ fn parse_result(result: &str) -> PyResult<bool> {
     match result {
         "gather" => Ok(true),
         "local" => Ok(false),
-        other => Err(PyValueError::new_err(format!(
-            "result must be 'gather' or 'local', got {other:?}"
-        ))),
+        other => {
+            Err(PyValueError::new_err(format!("result must be 'gather' or 'local', got {other:?}")))
+        }
     }
 }
 
@@ -898,11 +864,7 @@ struct TracePlacement {
 
 impl TracePlacement {
     fn partitions(partitions: usize) -> Self {
-        Self {
-            partitions,
-            ranks: None,
-            devices: None,
-        }
+        Self { partitions, ranks: None, devices: None }
     }
 }
 
@@ -962,10 +924,9 @@ impl RunMode {
                 ));
                 Ok(RunOutput {
                     sum: out,
-                    trace: scratch.take_trace().map(|trace| RunTrace {
-                        trace,
-                        placement: TracePlacement::partitions(1),
-                    }),
+                    trace: scratch
+                        .take_trace()
+                        .map(|trace| RunTrace { trace, placement: TracePlacement::partitions(1) }),
                     collapses: collapses_since(policy, before),
                 })
             }
@@ -975,10 +936,7 @@ impl RunMode {
                 let runtime = runtime_for(&config).map_err(PropagateFailure::Topology)?;
                 let mut split = PartitionedSum::scatter_with(
                     sum.clone(),
-                    ScatterOptions {
-                        runtime,
-                        rows: ScatterRows::Policy(rows.clone()),
-                    },
+                    ScatterOptions { runtime, rows: ScatterRows::Policy(rows.clone()) },
                 );
                 if traced {
                     split.enable_trace();
@@ -1004,9 +962,8 @@ impl RunMode {
                 .map_err(PropagateFailure::Topology),
             #[cfg(feature = "cuda")]
             RunMode::Devices(config, devices, rows) => {
-                let (out, trace) = run_devices(
-                    &config, &rows, circuit, sum, policy, direction, options, traced,
-                )?;
+                let (out, trace) =
+                    run_devices(&config, &rows, circuit, sum, policy, direction, options, traced)?;
                 Ok(RunOutput {
                     sum: out,
                     trace: trace.map(|trace| RunTrace {
@@ -1056,9 +1013,7 @@ fn run_devices<const W: usize>(
     if traced {
         split.enable_trace();
     }
-    split
-        .propagate_with(circuit, policy, direction, options)
-        .map_err(PropagateFailure::Gpu)?;
+    split.propagate_with(circuit, policy, direction, options).map_err(PropagateFailure::Gpu)?;
     let trace = split.take_trace();
     let out = split.gather().map_err(PropagateFailure::Gpu)?;
     Ok((out, trace))
@@ -1072,11 +1027,9 @@ fn row_policy(
 ) -> PartitionRowPolicy {
     match (row_blocks, exclude) {
         (Some(blocks), _) => PartitionRowPolicy::Cut(blocks),
-        (None, Some((exclude_x, exclude_z))) => PartitionRowPolicy::SeededExcluding {
-            seed,
-            exclude_x,
-            exclude_z,
-        },
+        (None, Some((exclude_x, exclude_z))) => {
+            PartitionRowPolicy::SeededExcluding { seed, exclude_x, exclude_z }
+        }
         (None, None) => PartitionRowPolicy::Seeded(seed),
     }
 }
@@ -1144,11 +1097,7 @@ fn parse_run_mode(
     }
     let config = parse_partitions(partitions, pin_memory)?;
     if (distributed || config.is_some()) && !policy.supports_partitioned() {
-        return Err(topn_partitioned_error(if distributed {
-            None
-        } else {
-            partitions
-        }));
+        return Err(topn_partitioned_error(if distributed { None } else { partitions }));
     }
     let rows = row_policy(row_blocks, exclude, partition_row_seed);
     if distributed {
@@ -1168,9 +1117,7 @@ fn parse_run_mode(
                 )?;
             }
             let transport = crate::mpi::transport_from_comm(py, comm)?;
-            return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(
-                transport, rows, gather,
-            )));
+            return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(transport, rows, gather)));
         }
         #[cfg(not(feature = "mpi"))]
         {
@@ -1226,9 +1173,7 @@ fn parse_device_mode(
         ));
     }
     let request = crate::gpu::parse_device(device)?;
-    let shown = device
-        .repr()
-        .map_or_else(|_| "…".to_string(), |repr| repr.to_string());
+    let shown = device.repr().map_or_else(|_| "…".to_string(), |repr| repr.to_string());
     let shown = format!("device={shown}");
     let row_blocks = parse_partition_row_blocks(partition_row_blocks)?;
     if partition_row_seed.is_some() && row_blocks.is_some() {
@@ -1315,10 +1260,7 @@ fn parse_device_mode(
         }
         let rows = row_policy(row_blocks, exclude, partition_row_seed);
         let config = PartitionConfig {
-            placement: Placement::Devices {
-                devices: devices.clone(),
-                per_device: 1,
-            },
+            placement: Placement::Devices { devices: devices.clone(), per_device: 1 },
             bind_memory: false,
             threads_per_partition: None,
         };
@@ -1358,23 +1300,12 @@ fn parse_distributed_device_mode(
         let auto = paulistrings::gpu::local_device_for_comm(transport.communicator());
         let local = crate::gpu::resolve_rank_device(request, shown, rank, auto);
         let device = crate::mpi::agree_device(py, &transport, local, shown)?;
-        Ok(RunMode::DistributedDevice(crate::mpi::MpiGpuRun::new(
-            transport, rows, gather, device,
-        )))
+        Ok(RunMode::DistributedDevice(crate::mpi::MpiGpuRun::new(transport, rows, gather, device)))
     }
     #[cfg(not(feature = "mpi"))]
     {
-        let _ = (
-            py,
-            comm,
-            request,
-            shown,
-            gather,
-            partition_row_seed,
-            row_blocks,
-            exclude,
-            num_qubits,
-        );
+        let _ =
+            (py, comm, request, shown, gather, partition_row_seed, row_blocks, exclude, num_qubits);
         Err(crate::gpu::device_comm_unavailable_error())
     }
 }
@@ -1399,11 +1330,7 @@ pub(crate) fn check_num_qubits(
 /// A plain record with read-only attributes; `terms_in` and `terms_out` have
 /// one entry per layer applied, in application order (so *reverse* circuit
 /// order under `direction="heisenberg"`).
-#[pyclass(
-    frozen,
-    module = "paulistrings._paulistrings",
-    name = "PropagationStats"
-)]
+#[pyclass(frozen, module = "paulistrings._paulistrings", name = "PropagationStats")]
 pub struct PropagationStats {
     layers: usize,
     terms_in: Vec<usize>,
@@ -1519,10 +1446,7 @@ impl PropagationStats {
             circuit_index: layers.iter().map(|l| l.circuit_index).collect(),
             application_index: layers.iter().map(|l| l.application_index).collect(),
             gate_name: layers.iter().map(|l| l.gate_name).collect(),
-            nanos: layers
-                .iter()
-                .map(|l| l.nanos.iter().copied().max().unwrap_or(0))
-                .collect(),
+            nanos: layers.iter().map(|l| l.nanos.iter().copied().max().unwrap_or(0)).collect(),
             partition: PartitionStats::from_trace(
                 &trace,
                 placement.partitions,
@@ -1542,11 +1466,7 @@ impl PropagationStats {
     ) -> Self {
         let run = RunTrace {
             trace,
-            placement: TracePlacement {
-                partitions: 1,
-                ranks: None,
-                devices: Some(vec![device]),
-            },
+            placement: TracePlacement { partitions: 1, ranks: None, devices: Some(vec![device]) },
         };
         Self::from_run_trace(run, final_terms, None)
     }
@@ -1651,10 +1571,8 @@ impl PartitionStats {
             .collect::<Vec<_>>()
             .join(", ");
         let show = |value: Option<u32>| value.map_or_else(|| "None".to_string(), |v| v.to_string());
-        let devices = self
-            .devices
-            .as_ref()
-            .map_or_else(|| "None".to_string(), |d| format!("{d:?}"));
+        let devices =
+            self.devices.as_ref().map_or_else(|| "None".to_string(), |d| format!("{d:?}"));
         format!(
             "PartitionStats(partitions={}, rank={}, size={}, devices={}, local=[{}], \
              rows_exported={:?}, bytes_exported={:?}, terms_in={:?}, terms_out={:?}, \
@@ -1766,12 +1684,7 @@ fn format_coeff(c: Complex64) -> String {
     if c.im == 0.0 {
         format!("{}", c.re)
     } else {
-        format!(
-            "({}{}{}j)",
-            c.re,
-            if c.im < 0.0 { "-" } else { "+" },
-            c.im.abs()
-        )
+        format!("({}{}{}j)", c.re, if c.im < 0.0 { "-" } else { "+" }, c.im.abs())
     }
 }
 
@@ -1783,10 +1696,8 @@ fn format_sum(inner: &PauliSumImpl) -> String {
         return "0".to_string();
     }
     let shown = inner.preview(PREVIEW_TERMS);
-    let mut parts: Vec<String> = shown
-        .iter()
-        .map(|(label, c)| format!("{}*{}", format_coeff(*c), label))
-        .collect();
+    let mut parts: Vec<String> =
+        shown.iter().map(|(label, c)| format!("{}*{}", format_coeff(*c), label)).collect();
     if len > shown.len() {
         parts.push(format!(
             "... ({} more term{})",
@@ -1815,11 +1726,9 @@ impl PauliSum {
     /// Empty Pauli sum on `num_qubits` qubits.
     #[new]
     fn new(num_qubits: usize) -> PyResult<Self> {
-        PauliSumImpl::empty_for(num_qubits)
-            .map(Self::plain)
-            .ok_or_else(|| {
-                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-            })
+        PauliSumImpl::empty_for(num_qubits).map(Self::plain).ok_or_else(|| {
+            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
+        })
     }
 
     /// Build from a `{pauli_string: coefficient}` dict, or from `(labels, coefficients)` — two equal-length sequences.
@@ -1987,16 +1896,12 @@ impl PauliSum {
 
     /// `self + other`: coefficients added on matching strings, the rest kept. Both operands are left untouched.
     fn __add__(&self, other: &Self) -> PyResult<Self> {
-        Ok(Self::plain(
-            self.checked_add(&other.inner, Complex64::new(1.0, 0.0))?,
-        ))
+        Ok(Self::plain(self.checked_add(&other.inner, Complex64::new(1.0, 0.0))?))
     }
 
     /// `self - other`, the same merge with `other`'s coefficients negated.
     fn __sub__(&self, other: &Self) -> PyResult<Self> {
-        Ok(Self::plain(
-            self.checked_add(&other.inner, Complex64::new(-1.0, 0.0))?,
-        ))
+        Ok(Self::plain(self.checked_add(&other.inner, Complex64::new(-1.0, 0.0))?))
     }
 
     /// `self += other`, in place.
@@ -2039,10 +1944,7 @@ impl PauliSum {
     fn x_array<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
         let (w, x_flat, _z_flat) = self.inner.xz_flat();
         let n = x_flat.len() / w;
-        x_flat
-            .into_pyarray_bound(py)
-            .reshape([n, w])
-            .expect("flat length is n*w by construction")
+        x_flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
     }
 
     /// Snapshot of the Z-part column as a 2-D NumPy `uint64` array. See
@@ -2050,10 +1952,7 @@ impl PauliSum {
     fn z_array<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<u64>> {
         let (w, _x_flat, z_flat) = self.inner.xz_flat();
         let n = z_flat.len() / w;
-        z_flat
-            .into_pyarray_bound(py)
-            .reshape([n, w])
-            .expect("flat length is n*w by construction")
+        z_flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
     }
 
     /// `(x, z, coefficients)` as NumPy arrays, the exact inverse of `from_arrays`: `x`/`z` are `uint64` of shape `(len, width)` and `coefficients` is `complex128` of shape `(len,)`, row `i` of each describing the same term.
@@ -2063,23 +1962,14 @@ impl PauliSum {
     fn to_arrays<'py>(
         &self,
         py: Python<'py>,
-    ) -> (
-        Bound<'py, PyArray2<u64>>,
-        Bound<'py, PyArray2<u64>>,
-        Bound<'py, PyArray1<Complex64>>,
-    ) {
+    ) -> (Bound<'py, PyArray2<u64>>, Bound<'py, PyArray2<u64>>, Bound<'py, PyArray1<Complex64>>)
+    {
         let (w, x_flat, z_flat, coeffs) = self.inner.columns_flat();
         let n = coeffs.len();
         let reshape = |flat: Vec<u64>| {
-            flat.into_pyarray_bound(py)
-                .reshape([n, w])
-                .expect("flat length is n*w by construction")
+            flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
         };
-        (
-            reshape(x_flat),
-            reshape(z_flat),
-            coeffs.into_pyarray_bound(py),
-        )
+        (reshape(x_flat), reshape(z_flat), coeffs.into_pyarray_bound(py))
     }
 
     /// Active monomorphized width `W` (number of `u64` words per term).
@@ -2308,10 +2198,7 @@ mod partition_row_knob_tests {
 
         // The two cuts disagree on at least this term, so they are genuinely different row
         // sets, not two spellings of the same partition.
-        assert_ne!(
-            rows_low.partition_of(&z2.x, &z2.z),
-            rows_alt.partition_of(&z2.x, &z2.z)
-        );
+        assert_ne!(rows_low.partition_of(&z2.x, &z2.z), rows_alt.partition_of(&z2.x, &z2.z));
     }
 
     /// A block count that doesn't match the partition count is a `ValueError`, not a panic —
@@ -2378,10 +2265,7 @@ mod propagate_options_tests {
 
     #[test]
     fn literal_defaults_are_the_engines() {
-        let literal = PropagateOptions {
-            target_bucket_len: 1024,
-            min_buckets: 128,
-        };
+        let literal = PropagateOptions { target_bucket_len: 1024, min_buckets: 128 };
         assert_eq!(literal, PropagateOptions::default());
     }
 }

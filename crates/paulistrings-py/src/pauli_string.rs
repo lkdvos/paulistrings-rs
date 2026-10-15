@@ -53,10 +53,7 @@ impl PauliStringImpl {
 
     /// Parse an `IXYZ` label, one character per qubit, through the same parser `PauliSum.from_strings` uses.
     fn from_label(label: &str) -> PyResult<Option<Self>> {
-        Ok(for_num_qubits!(
-            label.chars().count(),
-            |W| parse_pauli_key::<W>(label)?
-        ))
+        Ok(for_num_qubits!(label.chars().count(), |W| parse_pauli_key::<W>(label)?))
     }
 
     fn weight(&self) -> u32 {
@@ -128,10 +125,7 @@ pub struct PauliString {
 
 impl PauliString {
     fn build(inner: Option<PauliStringImpl>, num_qubits: usize) -> PyResult<Self> {
-        Ok(Self {
-            inner: inner.ok_or_else(too_wide)?,
-            num_qubits,
-        })
+        Ok(Self { inner: inner.ok_or_else(too_wide)?, num_qubits })
     }
 
     /// `from_label`'s body, shared with the module-level `p()` shorthand.
@@ -166,13 +160,7 @@ impl PauliString {
             .inner
             .bracket(&other.inner, op)
             .ok_or_else(|| PyValueError::new_err(format!("{what}: width mismatch")))?;
-        Ok((
-            coeff,
-            Self {
-                inner: product,
-                num_qubits: self.num_qubits,
-            },
-        ))
+        Ok((coeff, Self { inner: product, num_qubits: self.num_qubits }))
     }
 }
 
@@ -188,30 +176,21 @@ impl PauliString {
     #[classmethod]
     fn x(_cls: &Bound<'_, PyType>, qubit: usize, num_qubits: usize) -> PyResult<Self> {
         Self::check_qubit(qubit, num_qubits)?;
-        Self::build(
-            PauliStringImpl::single(Axis::X, qubit, num_qubits),
-            num_qubits,
-        )
+        Self::build(PauliStringImpl::single(Axis::X, qubit, num_qubits), num_qubits)
     }
 
     /// `Y` on `qubit`, identity elsewhere. Hermitian convention: the `(x=1, z=1)` key carries no phase of its own.
     #[classmethod]
     fn y(_cls: &Bound<'_, PyType>, qubit: usize, num_qubits: usize) -> PyResult<Self> {
         Self::check_qubit(qubit, num_qubits)?;
-        Self::build(
-            PauliStringImpl::single(Axis::Y, qubit, num_qubits),
-            num_qubits,
-        )
+        Self::build(PauliStringImpl::single(Axis::Y, qubit, num_qubits), num_qubits)
     }
 
     /// `Z` on `qubit`, identity elsewhere.
     #[classmethod]
     fn z(_cls: &Bound<'_, PyType>, qubit: usize, num_qubits: usize) -> PyResult<Self> {
         Self::check_qubit(qubit, num_qubits)?;
-        Self::build(
-            PauliStringImpl::single(Axis::Z, qubit, num_qubits),
-            num_qubits,
-        )
+        Self::build(PauliStringImpl::single(Axis::Z, qubit, num_qubits), num_qubits)
     }
 
     /// Parse an `IXYZ` label; `num_qubits` is its length. Same alphabet and qubit indexing as `PauliSum.from_strings` (character `i` addresses qubit `i`).
@@ -306,11 +285,7 @@ impl PauliString {
                 "PauliString * x: x must be a complex or real number (scalar scaling)",
             )
         })?;
-        Ok(PauliSum::plain(PauliSumImpl::from_single(
-            &self.inner,
-            self.num_qubits,
-            factor,
-        )))
+        Ok(PauliSum::plain(PauliSumImpl::from_single(&self.inner, self.num_qubits, factor)))
     }
 
     /// `scalar * self`, identical to `self * scalar`.

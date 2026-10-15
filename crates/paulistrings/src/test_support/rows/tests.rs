@@ -69,15 +69,9 @@ fn count_remote_deltas_reports_layers_in_application_order() {
     circuit.push(PtmChannel::hadamard(3));
     circuit.push(PtmChannel::phase_gate(9));
 
-    assert_eq!(
-        count_remote_deltas(&circuit, &h, &rows, false),
-        vec![(1, 1), (2, 0)],
-    );
+    assert_eq!(count_remote_deltas(&circuit, &h, &rows, false), vec![(1, 1), (2, 0)],);
     // Heisenberg order is the reverse. `S` is not self-adjoint, but its adjoint's delta set is the same subspace, so the counts do not move.
-    assert_eq!(
-        count_remote_deltas(&circuit, &h, &rows, true),
-        vec![(2, 0), (1, 1)],
-    );
+    assert_eq!(count_remote_deltas(&circuit, &h, &rows, true), vec![(2, 0), (1, 1)],);
 }
 
 #[test]
@@ -87,8 +81,5 @@ fn count_remote_deltas_without_rows_is_all_local() {
     let mut circuit = Circuit::<2>::new(NQ);
     circuit.push(PtmChannel::cnot(1, 4));
     circuit.push(PtmChannel::hadamard(3));
-    assert_eq!(
-        count_remote_deltas(&circuit, &h, &rows, false),
-        vec![(4, 0), (2, 0)],
-    );
+    assert_eq!(count_remote_deltas(&circuit, &h, &rows, false), vec![(4, 0), (2, 0)],);
 }

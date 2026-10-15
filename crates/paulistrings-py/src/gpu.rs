@@ -12,9 +12,7 @@ pub(crate) use cuda::{gpu_error, resolve_devices, GpuPauliSum};
 /// `value` as a device ordinal, or a `ValueError` naming it.
 fn ordinal(value: i64) -> PyResult<u32> {
     u32::try_from(value).map_err(|_| {
-        PyValueError::new_err(format!(
-            "device={value} is not a CUDA device ordinal (0, 1, ...)"
-        ))
+        PyValueError::new_err(format!("device={value} is not a CUDA device ordinal (0, 1, ...)"))
     })
 }
 
@@ -54,9 +52,7 @@ pub(crate) fn parse_device(obj: &Bound<'_, PyAny>) -> PyResult<DeviceRequest> {
             values.into_iter().map(ordinal).collect::<PyResult<_>>()?,
         ));
     }
-    Err(PyTypeError::new_err(
-        "device must be None, an int, a list of ints, or 'auto'",
-    ))
+    Err(PyTypeError::new_err("device must be None, an int, a list of ints, or 'auto'"))
 }
 
 /// Why a policy containing an exact `topn` cannot run on more than one CUDA device (or one device per rank under `comm=`), prefixed by the caller with the kwarg or method that asked for one.
@@ -202,21 +198,17 @@ mod cuda {
     impl GpuPauliSumImpl {
         /// Upload `sum` with its trace enabled once; every call drains it.
         pub(crate) fn upload(sum: &PauliSumImpl, device: u32) -> Result<Self, GpuError> {
-            Ok(
-                for_each_width_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
-                    let mut resident = GpuPartitionedSum::from_host(s, device)?;
-                    resident.enable_trace();
-                    resident
-                }),
-            )
+            Ok(for_each_width_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
+                let mut resident = GpuPartitionedSum::from_host(s, device)?;
+                resident.enable_trace();
+                resident
+            }))
         }
 
         pub(crate) fn download(&self) -> Result<PauliSumImpl, GpuError> {
-            Ok(
-                for_each_width_convert!(GpuPauliSumImpl => PauliSumImpl, self, |s| {
-                    s.gather()?
-                }),
-            )
+            Ok(for_each_width_convert!(GpuPauliSumImpl => PauliSumImpl, self, |s| {
+                s.gather()?
+            }))
         }
 
         pub(crate) fn len(&self) -> usize {
@@ -295,15 +287,7 @@ mod cuda {
             target_bucket_len: usize,
             min_buckets: usize,
         ) -> PyResult<()> {
-            self.step(
-                py,
-                circuit,
-                policy,
-                direction,
-                target_bucket_len,
-                min_buckets,
-                false,
-            )?;
+            self.step(py, circuit, policy, direction, target_bucket_len, min_buckets, false)?;
             Ok(())
         }
 
@@ -320,28 +304,14 @@ mod cuda {
             min_buckets: usize,
         ) -> PyResult<PropagationStats> {
             let trace = self
-                .step(
-                    py,
-                    circuit,
-                    policy,
-                    direction,
-                    target_bucket_len,
-                    min_buckets,
-                    true,
-                )?
+                .step(py, circuit, policy, direction, target_bucket_len, min_buckets, true)?
                 .unwrap_or_default();
-            Ok(PropagationStats::from_device_trace(
-                trace,
-                self.inner.device(),
-                self.inner.len(),
-            ))
+            Ok(PropagationStats::from_device_trace(trace, self.inner.device(), self.inner.len()))
         }
 
         /// Download the sum as a host `PauliSum`, each bucket in the host's canonical order. The resident sum is left in place.
         fn to_host(&self, py: Python<'_>) -> PyResult<PauliSum> {
-            let inner = py
-                .allow_threads(|| self.inner.download())
-                .map_err(gpu_error)?;
+            let inner = py.allow_threads(|| self.inner.download()).map_err(gpu_error)?;
             Ok(PauliSum::plain(inner))
         }
 
@@ -420,9 +390,8 @@ pub(crate) fn to_device(
     #[cfg(feature = "cuda")]
     {
         let ordinal = cuda::resolve_device(ordinal, &format!("device={device}"))?;
-        let inner = py
-            .allow_threads(|| cuda::GpuPauliSumImpl::upload(sum, ordinal))
-            .map_err(gpu_error)?;
+        let inner =
+            py.allow_threads(|| cuda::GpuPauliSumImpl::upload(sum, ordinal)).map_err(gpu_error)?;
         Ok(Py::new(py, GpuPauliSum { inner })?.into_py(py))
     }
     #[cfg(not(feature = "cuda"))]

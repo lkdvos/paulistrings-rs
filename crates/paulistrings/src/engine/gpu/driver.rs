@@ -55,11 +55,7 @@ pub(super) fn lower_for_run<const W: usize>(
     }
     let keep = KeepProgram::lower(policy)?;
     let adjoint = matches!(direction, Direction::Heisenberg);
-    if circuit
-        .channels
-        .iter()
-        .any(|ch| ch.prepare(hash, adjoint).is_none())
-    {
+    if circuit.channels.iter().any(|ch| ch.prepare(hash, adjoint).is_none()) {
         return Err(GpuError::Unsupported(DECLINED_PREPARATION));
     }
     Ok(keep)
@@ -74,10 +70,7 @@ pub(crate) fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<
 }
 
 fn first_nonzero(codes: &[u64]) -> Option<(usize, u64)> {
-    codes
-        .iter()
-        .position(|&code| code != 0)
-        .map(|rank| (rank, codes[rank]))
+    codes.iter().position(|&code| code != 0).map(|rank| (rank, codes[rank]))
 }
 
 /// Where and how a device scatter splits a sum: the shape of every device driver's `_with` scatter.
@@ -101,10 +94,7 @@ impl<const W: usize> GpuScatterOptions<W> {
             &[device] => device_runtime(device)?,
             _ => {
                 let config = PartitionConfig {
-                    placement: Placement::Devices {
-                        devices: devices.to_vec(),
-                        per_device: 1,
-                    },
+                    placement: Placement::Devices { devices: devices.to_vec(), per_device: 1 },
                     bind_memory: false,
                     threads_per_partition: None,
                 };
@@ -127,10 +117,7 @@ pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuEr
         return Ok(runtime.clone());
     }
     let config = PartitionConfig {
-        placement: Placement::Devices {
-            devices: vec![device],
-            per_device: 1,
-        },
+        placement: Placement::Devices { devices: vec![device], per_device: 1 },
         bind_memory: false,
         threads_per_partition: None,
     };
@@ -177,12 +164,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     ) -> Result<Self, GpuError> {
         let runtime = device_runtime(ordinal)?;
         let rows = PartitionRows::none(sum.num_qubits());
-        Self::upload(
-            sum,
-            rows,
-            runtime,
-            (GpuLayerOptions::default(), extra_options),
-        )
+        Self::upload(sum, rows, runtime, (GpuLayerOptions::default(), extra_options))
     }
 
     /// Split `sum` one partition per device of `devices`, by the default rows as [`PartitionedSum::scatter`] draws them.
@@ -207,11 +189,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         sum: &PauliSum<W>,
         options: GpuScatterOptions<W>,
     ) -> Result<Self, GpuError> {
-        let GpuScatterOptions {
-            devices,
-            rows,
-            layer,
-        } = options;
+        let GpuScatterOptions { devices, rows, layer } = options;
         layer.assert_valid();
         let rows = rows.resolve(sum, devices.partition_bits());
         Self::upload(sum, rows, devices, (layer, &[]))
@@ -300,10 +278,8 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         }
         self.propagate_on_backend(circuit, &policy, direction, options);
         let partitions = self.backends_mut();
-        let (mut outcomes, codes): (Vec<_>, Vec<u64>) = partitions
-            .iter_mut()
-            .map(DevicePartition::take_failure)
-            .unzip();
+        let (mut outcomes, codes): (Vec<_>, Vec<u64>) =
+            partitions.iter_mut().map(DevicePartition::take_failure).unzip();
         let Some((rank, code)) = first_nonzero(&codes) else {
             return Ok(());
         };
@@ -341,10 +317,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 
     /// Each partition's device ordinal, in rank order.
     pub fn devices(&self) -> Vec<u32> {
-        self.backends()
-            .iter()
-            .map(|partition| partition.sum().device())
-            .collect()
+        self.backends().iter().map(|partition| partition.sum().device()).collect()
     }
 
     /// The device layer's knobs on every partition; takes effect from the next layer.
@@ -370,12 +343,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
             .map(|partition| std::mem::take(partition.stats()))
             .collect();
         let (scatter_ns, gather_ns, layers) = self.take_driver_laps();
-        PartitionPhaseStats {
-            per_partition,
-            scatter_ns,
-            gather_ns,
-            layers,
-        }
+        PartitionPhaseStats { per_partition, scatter_ns, gather_ns, layers }
     }
 }
 

@@ -140,11 +140,8 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
     pub(super) fn new(prepared: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
         match prepared {
             Prepared::Local(ptm) => {
-                let coordinates: Vec<u32> = ptm
-                    .deltas()
-                    .iter()
-                    .map(|d| span.coordinate_of(d.bucket_delta))
-                    .collect();
+                let coordinates: Vec<u32> =
+                    ptm.deltas().iter().map(|d| span.coordinate_of(d.bucket_delta)).collect();
                 let has_identity = ptm.has_identity();
                 debug_assert!(!has_identity || coordinates[0] == 0);
                 let dense_identity = has_identity && ptm.entry_is_dense(0);
@@ -152,13 +149,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
                 let sort_kernel = SortKernel::for_layer(rest_streams, || {
                     knobs.rows_per_key.unwrap_or_else(|| rest_rows_per_key(ptm))
                 });
-                DeltaPlan::Local {
-                    ptm,
-                    coordinates,
-                    has_identity,
-                    dense_identity,
-                    sort_kernel,
-                }
+                DeltaPlan::Local { ptm, coordinates, has_identity, dense_identity, sort_kernel }
             }
             Prepared::Rotation(rotation) => DeltaPlan::Rotation {
                 rotation,
@@ -207,14 +198,7 @@ pub fn apply_layer_bucketed<const W: usize, T>(
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
-    apply_layer_bucketed_with(
-        sum,
-        prepared,
-        policy,
-        scratch,
-        &NoExtra,
-        LayerKnobs::default(),
-    )
+    apply_layer_bucketed_with(sum, prepared, policy, scratch, &NoExtra, LayerKnobs::default())
 }
 
 /// [`apply_layer_bucketed`] with the partitioned engine's [`ExtraRows`] source and [`LayerKnobs`].
@@ -267,9 +251,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     let identity_order = order.is_identity();
     if !identity_order {
         let buckets = sum.buckets_mut();
-        scratch
-            .staging
-            .resize_with(buckets.len(), BucketColumns::default);
+        scratch.staging.resize_with(buckets.len(), BucketColumns::default);
         for (beta, columns) in buckets.iter_mut().enumerate() {
             scratch.staging[order.position_of(beta as u32) as usize] = std::mem::take(columns);
         }
@@ -285,36 +267,30 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             }
         }
         let workers = &scratch.workers;
-        let chunks: &mut [BucketColumns<W>] = if identity_order {
-            sum.buckets_mut()
-        } else {
-            scratch.staging.as_mut_slice()
-        };
+        let chunks: &mut [BucketColumns<W>] =
+            if identity_order { sum.buckets_mut() } else { scratch.staging.as_mut_slice() };
         if num_cosets < MIN_COSETS_FOR_PARALLEL {
             for (coset_index, chunk) in chunks.chunks_mut(coset_size).enumerate() {
                 let base = coset_index * coset_size;
                 fill_coset::<W, T, X>(chunk, &plan, policy, &mut scratch.task, extra, base, order);
             }
         } else {
-            chunks
-                .par_chunks_mut(coset_size)
-                .enumerate()
-                .for_each(|(coset_index, chunk)| {
-                    let base = coset_index * coset_size;
-                    // `workers` was sized to `current_num_threads()` above, and this closure runs on that pool.
-                    let worker = rayon::current_thread_index()
-                        .expect("the coset loop runs on a Rayon pool worker");
-                    let mut worker_scratch = workers[worker].lock().unwrap();
-                    fill_coset::<W, T, X>(
-                        chunk,
-                        &plan,
-                        policy,
-                        &mut worker_scratch,
-                        extra,
-                        base,
-                        order,
-                    );
-                });
+            chunks.par_chunks_mut(coset_size).enumerate().for_each(|(coset_index, chunk)| {
+                let base = coset_index * coset_size;
+                // `workers` was sized to `current_num_threads()` above, and this closure runs on that pool.
+                let worker = rayon::current_thread_index()
+                    .expect("the coset loop runs on a Rayon pool worker");
+                let mut worker_scratch = workers[worker].lock().unwrap();
+                fill_coset::<W, T, X>(
+                    chunk,
+                    &plan,
+                    policy,
+                    &mut worker_scratch,
+                    extra,
+                    base,
+                    order,
+                );
+            });
         }
     }
     lap!(stamp, scratch.stats.coset_loop_ns);

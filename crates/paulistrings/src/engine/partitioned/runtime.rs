@@ -31,11 +31,7 @@ impl PartitionRuntime {
         let slots = config.resolve()?;
         let mut pools = Vec::with_capacity(slots.len());
         for (rank, slot) in slots.iter().enumerate() {
-            pools.push(build_pool(
-                slot,
-                config.bind_memory,
-                &format!("ps-part{rank}"),
-            )?);
+            pools.push(build_pool(slot, config.bind_memory, &format!("ps-part{rank}"))?);
         }
         // A device group waits for a partner's collective as long as for its wire, `PAULISTRINGS_WIRE_TIMEOUT_S`.
         #[cfg(feature = "cuda")]
@@ -46,12 +42,7 @@ impl PartitionRuntime {
         };
         #[cfg(not(feature = "cuda"))]
         let wait_timeout = DEFAULT_WAIT_TIMEOUT;
-        Ok(Arc::new(Self {
-            slots,
-            pools,
-            bind_memory: config.bind_memory,
-            wait_timeout,
-        }))
+        Ok(Arc::new(Self { slots, pools, bind_memory: config.bind_memory, wait_timeout }))
     }
 
     /// Partitions in the group — always a power of two.

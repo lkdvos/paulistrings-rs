@@ -64,12 +64,7 @@ impl CpuSet {
     #[must_use]
     pub fn intersect(&self, other: &Self) -> Self {
         let other = other.normalized();
-        Self(
-            self.normalized()
-                .into_iter()
-                .filter(|cpu| other.binary_search(cpu).is_ok())
-                .collect(),
-        )
+        Self(self.normalized().into_iter().filter(|cpu| other.binary_search(cpu).is_ok()).collect())
     }
 
     fn is_subset_of(&self, other: &Self) -> bool {
@@ -375,9 +370,7 @@ impl Default for PartitionConfig {
     /// One partition per NUMA node, memory bound to it.
     fn default() -> Self {
         Self {
-            placement: Placement::Auto {
-                max_partitions: None,
-            },
+            placement: Placement::Auto { max_partitions: None },
             bind_memory: true,
             threads_per_partition: None,
         }
@@ -392,10 +385,7 @@ impl PartitionConfig {
             Placement::Explicit(sets) => resolve_explicit(sets)?,
             Placement::Unpinned { partitions } => resolve_unpinned(*partitions)?,
             #[cfg(feature = "cuda")]
-            Placement::Devices {
-                devices,
-                per_device,
-            } => resolve_devices(devices, *per_device)?,
+            Placement::Devices { devices, per_device } => resolve_devices(devices, *per_device)?,
         };
         if let Some(threads) = self.threads_per_partition {
             for slot in &mut slots {
@@ -455,11 +445,8 @@ fn resolve_auto(max_partitions: Option<usize>) -> Vec<PartitionSlot> {
         let take = base + usize::from(partition < remainder);
         let (group, tail) = rest.split_at(take);
         rest = tail;
-        let cpus = group
-            .iter()
-            .fold(CpuSet(Vec::new()), |accumulator, (_, set)| {
-                accumulator.union(set)
-            });
+        let cpus =
+            group.iter().fold(CpuSet(Vec::new()), |accumulator, (_, set)| accumulator.union(set));
         slots.push(PartitionSlot {
             node: (group.len() == 1).then(|| group[0].0),
             threads: cpus.len(),
@@ -486,20 +473,13 @@ fn resolve_explicit(sets: &[CpuSet]) -> Result<Vec<PartitionSlot>, TopologyError
         if let Some(&cpu) = cpus.0.iter().find(|cpu| !allowed.0.contains(cpu)) {
             return Err(TopologyError::CpuNotAllowed(cpu));
         }
-        let mut containing = nodes
-            .iter()
-            .filter(|(_, node)| cpus.is_subset_of(node))
-            .map(|(id, _)| *id);
+        let mut containing =
+            nodes.iter().filter(|(_, node)| cpus.is_subset_of(node)).map(|(id, _)| *id);
         let node = match (containing.next(), containing.next()) {
             (Some(id), None) => Some(id),
             _ => None,
         };
-        slots.push(PartitionSlot {
-            node,
-            threads: cpus.len(),
-            cpus: Some(cpus),
-            device: None,
-        });
+        slots.push(PartitionSlot { node, threads: cpus.len(), cpus: Some(cpus), device: None });
     }
 
     for (i, slot) in slots.iter().enumerate() {
@@ -525,15 +505,7 @@ fn resolve_unpinned(partitions: usize) -> Result<Vec<PartitionSlot>, TopologyErr
         return Err(TopologyError::NotPowerOfTwo(partitions));
     }
     let threads = (available_parallelism() / partitions).max(1);
-    Ok(vec![
-        PartitionSlot {
-            cpus: None,
-            node: None,
-            threads,
-            device: None,
-        };
-        partitions
-    ])
+    Ok(vec![PartitionSlot { cpus: None, node: None, threads, device: None }; partitions])
 }
 
 /// The largest power of two `<= n`, and 1 for `n == 0`.

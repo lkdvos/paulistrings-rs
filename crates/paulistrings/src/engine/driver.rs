@@ -98,10 +98,7 @@ pub(crate) struct PartitionContext<'a, const W: usize> {
 /// Why a channel's preparation declines, shared by the host panic and the device's `GpuError::Unsupported`.
 pub(crate) const DECLINED_PREPARATION: &str = "support above MAX_LOCAL_SUPPORT (2) qubits is \
      unsupported except for PauliRotation, and a channel must not write outside its declared support";
-const _: () = assert!(
-    MAX_LOCAL_SUPPORT == 2,
-    "DECLINED_PREPARATION names the value"
-);
+const _: () = assert!(MAX_LOCAL_SUPPORT == 2, "DECLINED_PREPARATION names the value");
 
 /// The channel's preparation, or the unpartitioned engine's hard error naming the partition and layer.
 fn prepare_or_panic<const W: usize>(
@@ -134,12 +131,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
     X: Transport,
     B: PartitionBackend<W, T>,
 {
-    let PartitionContext {
-        rows,
-        rank,
-        size,
-        tracing,
-    } = context;
+    let PartitionContext { rows, rank, size, tracing } = context;
     let num_layers = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);
     let group_size = transport.size();
@@ -211,10 +203,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
 
         if finalizes {
             policy_calls.store(0, Ordering::Relaxed);
-            let counting = CountingCollectives {
-                inner: transport,
-                calls: &policy_calls,
-            };
+            let counting = CountingCollectives { inner: transport, calls: &policy_calls };
             local.finalize_layer(policy, &counting);
             collectives += policy_calls.load(Ordering::Relaxed);
         }

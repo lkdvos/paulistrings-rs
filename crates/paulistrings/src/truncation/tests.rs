@@ -71,10 +71,7 @@ fn assert_partitioned_approx_top_n<const W: usize>(
 ) {
     let got = partitioned_finalize(&ApproxTopN(n), input, pbits);
     assert_eq!(got.len(), n.min(input.len()), "{what}: kept count");
-    let in_rank_order: Vec<_> = split(input, pbits)
-        .iter()
-        .flat_map(storage_triples)
-        .collect();
+    let in_rank_order: Vec<_> = split(input, pbits).iter().flat_map(storage_triples).collect();
     let mut want = first_n_by_rank(&in_rank_order, n, octave_rank);
     want.sort_unstable_by_key(|&(x, z, _)| (x, z));
     assert_eq!(canonical_triples(&got), want, "{what}: kept set");
@@ -188,11 +185,8 @@ fn a_per_term_policy_finalizes_to_a_no_op() {
         assert_same_terms(&got, &input, &format!("threshold P=2^{pbits}"));
         let got = partitioned_finalize(&WeightCutoff(0), &input, pbits);
         assert_same_terms(&got, &input, &format!("weight P=2^{pbits}"));
-        let got = partitioned_finalize(
-            &And(CoefficientThreshold(1e9), WeightCutoff(0)),
-            &input,
-            pbits,
-        );
+        let got =
+            partitioned_finalize(&And(CoefficientThreshold(1e9), WeightCutoff(0)), &input, pbits);
         assert_same_terms(&got, &input, &format!("and P=2^{pbits}"));
     }
 }
@@ -249,10 +243,7 @@ fn collapse_sample_partitioned_draws_one_string_by_weight() {
         let rows = PartitionRows::<2>::from_seed(8, pbits, PSEED);
         let owners: std::collections::HashSet<u32> =
             keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
-        assert!(
-            owners.len() > 1,
-            "P=2^{pbits}: the fixture must span partitions"
-        );
+        assert!(owners.len() > 1, "P=2^{pbits}: the fixture must span partitions");
 
         let mut counts = [0usize; 4];
         for seed in 0..500u64 {
@@ -308,10 +299,7 @@ fn exact_top_n_runs_at_one_partition_only() {
     }))
     .expect_err("TopN above one partition must panic");
     let message = panic.downcast_ref::<String>().expect("a formatted message");
-    assert!(
-        message.contains("not yet supported") && message.contains("ApproxTopN"),
-        "{message}"
-    );
+    assert!(message.contains("not yet supported") && message.contains("ApproxTopN"), "{message}");
 }
 
 /// `supports_partitioned` is `false` exactly for a layer pass with no collective form, looking through `And`.
@@ -325,10 +313,7 @@ fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
     assert!(supports(ApproxTopN(10)));
     assert!(supports(CollapseSample::new(10, 1)));
     assert!(supports(And(CoefficientThreshold(1e-3), ApproxTopN(10))));
-    assert!(supports(Or::new(
-        WeightCutoff(10),
-        CoefficientThreshold(1e-3)
-    )));
+    assert!(supports(Or::new(WeightCutoff(10), CoefficientThreshold(1e-3))));
     assert!(!supports(TopN(10)));
     assert!(!supports(And(CoefficientThreshold(1e-3), TopN(10))));
     assert!(!supports(HalfDone));
@@ -342,8 +327,5 @@ fn assert_supports_partitions_rejects_exact_top_n_above_one_partition() {
     let panic = std::panic::catch_unwind(|| assert_supports_partitions::<1, _>(&TopN(10), 2))
         .expect_err("TopN on two partitions must panic");
     let message = panic.downcast_ref::<String>().expect("a formatted message");
-    assert!(
-        message.contains("not yet supported") && message.contains("ApproxTopN"),
-        "{message}"
-    );
+    assert!(message.contains("not yet supported") && message.contains("ApproxTopN"), "{message}");
 }

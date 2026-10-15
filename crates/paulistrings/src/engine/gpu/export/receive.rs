@@ -23,11 +23,7 @@ pub(super) fn stage_receive<const W: usize>(
         export,
         buckets,
         blocks.iter().map(|block| {
-            (
-                block.header.num_buckets,
-                &block.offsets[..],
-                block.header.rows as usize,
-            )
+            (block.header.num_buckets, &block.offsets[..], block.header.rows as usize)
         }),
     );
     if export.received_max_segment > MAX_RECEIVED_SEGMENT {
@@ -50,12 +46,10 @@ pub(super) fn stage_receive<const W: usize>(
 /// Whether this rank's wire can carry the group, so a failure it can predict is a no vote rather than an error after a yes.
 pub(super) fn wire_ready<const W: usize>(export: &DeviceExport<W>) -> Result<(), GpuError> {
     match &export.wire {
-        None => Err(GpuError::Unsupported(
-            "a remote layer on a partition without a device wire",
-        )),
-        Some(wire) if !wire.is_healthy() => Err(GpuError::Wire(
-            "an exchange on a failed or aborted device wire",
-        )),
+        None => Err(GpuError::Unsupported("a remote layer on a partition without a device wire")),
+        Some(wire) if !wire.is_healthy() => {
+            Err(GpuError::Wire("an exchange on a failed or aborted device wire"))
+        }
         Some(_) => Ok(()),
     }
 }
@@ -65,9 +59,7 @@ pub(super) fn discard_received<const W: usize>(
     export: &mut DeviceExport<W>,
 ) -> Result<u64, GpuError> {
     let n = export.offsets_host.len();
-    export
-        .stream
-        .memset_zeros(&mut export.received_offsets.slice_mut(0..n))?;
+    export.stream.memset_zeros(&mut export.received_offsets.slice_mut(0..n))?;
     export.received_rows = 0;
     export.received_max_segment = 0;
     Ok(0)
@@ -92,9 +84,7 @@ fn lay_out<'a, const W: usize>(
             num_buckets as usize, buckets,
             "a partner sent a block indexed by {num_buckets} buckets where this partition has {buckets}"
         );
-        export
-            .offsets_host
-            .extend_from_slice(&offsets[..buckets + 1]);
+        export.offsets_host.extend_from_slice(&offsets[..buckets + 1]);
         max_segment = offsets[..buckets + 1]
             .windows(2)
             .map(|w| (w[1] - w[0]) as usize)
@@ -109,10 +99,7 @@ fn lay_out<'a, const W: usize>(
 
 /// Received rows over every block in positions `lo..hi` of the concatenated `K × (buckets + 1)` offsets.
 pub(super) fn rows_between(offsets: &[u32], buckets: usize, lo: usize, hi: usize) -> usize {
-    offsets
-        .chunks_exact(buckets + 1)
-        .map(|block| (block[hi] - block[lo]) as usize)
-        .sum()
+    offsets.chunks_exact(buckets + 1).map(|block| (block[hi] - block[lo]) as usize).sum()
 }
 
 /// The largest chunk's received rows when `buckets` positions are cut into `2^log2` equal chunks.
@@ -210,10 +197,7 @@ pub(crate) fn receive_chunk<const W: usize>(
     #[cfg(any(test, feature = "test-utils"))]
     if r.is_ok() && scratch.export.fail_after_chunk == Some(chunk) {
         scratch.export.fail_after_chunk = None;
-        return Err(GpuError::OutOfMemory {
-            device: Some(sum.device()),
-            bytes: None,
-        });
+        return Err(GpuError::OutOfMemory { device: Some(sum.device()), bytes: None });
     }
     r
 }
@@ -229,14 +213,12 @@ fn move_chunk<const W: usize>(
 ) -> Result<usize, GpuError> {
     let buckets = sum.hash.num_buckets();
     let stream = &sum.stream;
-    let (lo, hi) = (
-        pending.map.bound(chunk) as usize,
-        pending.map.bound(chunk + 1) as usize,
-    );
+    let (lo, hi) = (pending.map.bound(chunk) as usize, pending.map.bound(chunk + 1) as usize);
     let n = chunk_layout(&export.offsets_host, buckets, lo, hi, &mut export.base_host);
-    let wire = export.wire.clone().ok_or(GpuError::Unsupported(
-        "a remote layer on a partition without a device wire",
-    ))?;
+    let wire = export
+        .wire
+        .clone()
+        .ok_or(GpuError::Unsupported("a remote layer on a partition without a device wire"))?;
     let DeviceExport {
         received_base,
         received_x,
@@ -256,10 +238,7 @@ fn move_chunk<const W: usize>(
     let mut group = WireGroup::new();
     for op in sends {
         let (q, j) = own[op.delta];
-        let block = &send[q]
-            .as_ref()
-            .expect("a payload for every partner")
-            .blocks[j];
+        let block = &send[q].as_ref().expect("a payload for every partner").blocks[j];
         let (r0, r1) = op.rows;
         let elements = op.column.elements_per_row::<W>();
         match op.column {
@@ -269,11 +248,9 @@ fn move_chunk<const W: usize>(
             WireColumn::Z => {
                 group.send(block.z.slice(r0 * elements..r1 * elements), op.peer, stream)
             }
-            WireColumn::Coefficient => group.send(
-                block.coefficient.slice(r0 * elements..r1 * elements),
-                op.peer,
-                stream,
-            ),
+            WireColumn::Coefficient => {
+                group.send(block.coefficient.slice(r0 * elements..r1 * elements), op.peer, stream)
+            }
         }
     }
     let receive_parts = |column: WireColumn| -> Vec<(usize, u32)> {
@@ -284,16 +261,8 @@ fn move_chunk<const W: usize>(
             .map(|op| ((op.rows.1 - op.rows.0) * elements, op.peer))
             .collect()
     };
-    group.receive_parts(
-        received_x.slice_mut(0..n * W),
-        &receive_parts(WireColumn::X),
-        stream,
-    );
-    group.receive_parts(
-        received_z.slice_mut(0..n * W),
-        &receive_parts(WireColumn::Z),
-        stream,
-    );
+    group.receive_parts(received_x.slice_mut(0..n * W), &receive_parts(WireColumn::X), stream);
+    group.receive_parts(received_z.slice_mut(0..n * W), &receive_parts(WireColumn::Z), stream);
     group.receive_parts(
         received_coefficient.slice_mut(0..2 * n),
         &receive_parts(WireColumn::Coefficient),

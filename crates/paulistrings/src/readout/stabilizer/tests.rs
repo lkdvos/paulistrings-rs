@@ -52,10 +52,7 @@ fn anticommuting_generators_are_rejected() {
     let g = [gen_of::<1>("XI"), gen_of::<1>("ZI")];
     assert_eq!(
         StabilizerState::<1>::from_generators(2, &g).unwrap_err(),
-        StabilizerError::NotCommuting {
-            first: 0,
-            second: 1
-        },
+        StabilizerError::NotCommuting { first: 0, second: 1 },
     );
 }
 
@@ -93,42 +90,27 @@ fn wrong_generator_count_is_rejected() {
     let g = [gen_of::<1>("ZI")];
     assert_eq!(
         StabilizerState::<1>::from_generators(2, &g).unwrap_err(),
-        StabilizerError::GeneratorCount {
-            expected: 2,
-            found: 1
-        },
+        StabilizerError::GeneratorCount { expected: 2, found: 1 },
     );
     let g3 = [gen_of::<1>("ZI"), gen_of::<1>("IZ"), gen_of::<1>("ZZ")];
     assert_eq!(
         StabilizerState::<1>::from_generators(2, &g3).unwrap_err(),
-        StabilizerError::GeneratorCount {
-            expected: 2,
-            found: 3
-        },
+        StabilizerError::GeneratorCount { expected: 2, found: 3 },
     );
 }
 
 #[test]
 fn a_generator_outside_num_qubits_is_rejected() {
-    let g = [
-        (PauliString::<1>::z(0), false),
-        (PauliString::<1>::z(5), false),
-    ];
+    let g = [(PauliString::<1>::z(0), false), (PauliString::<1>::z(5), false)];
     assert_eq!(
         StabilizerState::<1>::from_generators(2, &g).unwrap_err(),
-        StabilizerError::QubitOutOfRange {
-            generator: 1,
-            num_qubits: 2
-        },
+        StabilizerError::QubitOutOfRange { generator: 1, num_qubits: 2 },
     );
 }
 
 #[test]
 fn errors_display_without_panicking() {
-    let e = StabilizerError::NotCommuting {
-        first: 0,
-        second: 1,
-    };
+    let e = StabilizerError::NotCommuting { first: 0, second: 1 };
     assert!(e.to_string().contains("anticommute"));
 }
 
@@ -175,10 +157,7 @@ fn the_contraction_is_linear_and_keeps_the_imaginary_part() {
     let bell = state::<1>(2, &["XX", "ZZ"]);
     let got = sum.expectation_stabilizer(&bell);
     // (2 + i) + 0.5 - (4 + 2i) = -1.5 - i
-    assert!(
-        (got - Complex64::new(-1.5, -1.0)).norm() < 1e-12,
-        "{got} vs -1.5 - 1i",
-    );
+    assert!((got - Complex64::new(-1.5, -1.0)).norm() < 1e-12, "{got} vs -1.5 - 1i",);
 }
 
 #[test]
@@ -218,11 +197,7 @@ fn brute_force_group<const W: usize>(
             0,
             "subset {subset:b} of commuting Hermitian generators is not Hermitian",
         );
-        let sign = if neg ^ (phase == Phase::MINUS_ONE) {
-            -1.0
-        } else {
-            1.0
-        };
+        let sign = if neg ^ (phase == Phase::MINUS_ONE) { -1.0 } else { 1.0 };
         assert!(
             out.insert((key.x, key.z), sign).is_none(),
             "subset {subset:b} repeats a group element: generators are dependent",
@@ -275,10 +250,7 @@ fn cluster_state_contraction_matches_the_brute_force_group_w1() {
         let sum = rand_sum::<1>(3000, n, seed);
         let got = sum.expectation_stabilizer(&stab);
         let want = brute_force_expectation(&sum, &gens);
-        assert!(
-            (got - want).norm() < 1e-12,
-            "seed {seed:#x}: {got} vs {want} (brute-force group)",
-        );
+        assert!((got - want).norm() < 1e-12, "seed {seed:#x}: {got} vs {want} (brute-force group)",);
     }
 }
 
@@ -317,11 +289,7 @@ fn sign_of_agrees_with_the_brute_force_group_over_every_pauli() {
         for z in 0..full {
             let key = PauliString::<1> { x: [x], z: [z] };
             let want = group.get(&([x], [z])).copied().unwrap_or(0.0);
-            assert_eq!(
-                expectation_of(&stab, &key),
-                want,
-                "x={x:#b} z={z:#b}: {want} expected",
-            );
+            assert_eq!(expectation_of(&stab, &key), want, "x={x:#b} z={z:#b}: {want} expected",);
         }
     }
     // Sanity: the group really is 2^n of the 4^n Paulis.

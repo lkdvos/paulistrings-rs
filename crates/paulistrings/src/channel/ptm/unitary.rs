@@ -62,13 +62,16 @@ fn assert_unitary<const N: usize>(constructor: &str, u: &[[Complex64; N]; N]) {
             let identity = if i == j { ONE } else { ZERO };
             (product[i][j] - identity).norm()
         })
-        .fold(0.0, |largest: f64, entry| {
-            if entry > largest || entry.is_nan() {
-                entry
-            } else {
-                largest
-            }
-        });
+        .fold(
+            0.0,
+            |largest: f64, entry| {
+                if entry > largest || entry.is_nan() {
+                    entry
+                } else {
+                    largest
+                }
+            },
+        );
     assert!(
         deviation <= UNITARITY_TOLERANCE,
         "PtmChannel::{constructor}: the matrix is not unitary (largest entry of U†U − I is {deviation:e}, tolerance {UNITARITY_TOLERANCE:e})"

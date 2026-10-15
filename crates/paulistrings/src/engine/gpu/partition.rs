@@ -126,22 +126,14 @@ impl<const W: usize> DevicePartition<W> {
     pub(crate) fn take_failure(&mut self) -> (Result<(), GpuError>, u64) {
         let layer = self.failed_layer.take();
         let own = self.take_error();
-        let code = if own.is_err() {
-            layer.unwrap_or(0) as u64 + 1
-        } else {
-            0
-        };
+        let code = if own.is_err() { layer.unwrap_or(0) as u64 + 1 } else { 0 };
         (own, code)
     }
 
     /// Refuse every later call after the group's first failure, `(rank, layer)`, dropping the wire now rather than at a finalize against failed peers.
     pub(crate) fn poison(&mut self, rank: usize, layer: usize) {
         self.poison = Some((rank, layer));
-        if let Some(wire) = self
-            .scratch
-            .as_ref()
-            .and_then(|scratch| scratch.export.wire.as_ref())
-        {
+        if let Some(wire) = self.scratch.as_ref().and_then(|scratch| scratch.export.wire.as_ref()) {
             wire.abort();
         }
     }
@@ -262,12 +254,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
             return failed_counts(plan, size);
         }
         timed!(let (started, before) = (std::time::Instant::now(), scratch.stats));
-        let layer = DeviceLayer {
-            prepared,
-            plan,
-            keep: &self.keep,
-            target_bits: self.hash.bits(),
-        };
+        let layer = DeviceLayer { prepared, plan, keep: &self.keep, target_bits: self.hash.bits() };
         let result = apply_layer_device(sum, &layer, scratch, transport);
         timed!(fold_layer_stats(
             scratch,
@@ -334,10 +321,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
 
 /// A failed or skipped layer's counts: nothing moved, but the remote-delta count the group agrees on.
 fn failed_counts(plan: &PartitionPlan, size: u32) -> LayerExchangeCounts {
-    LayerExchangeCounts {
-        remote_deltas: plan.remote.len(),
-        ..LayerExchangeCounts::none(size)
-    }
+    LayerExchangeCounts { remote_deltas: plan.remote.len(), ..LayerExchangeCounts::none(size) }
 }
 
 /// The rest of one device layer's [`PhaseStats`], its kernel times and laps having landed directly: the driving thread's wall over the fused path, and the host counters a device layer stands in for (`benchmarks/PROFILING.md` contract (a)).

@@ -22,14 +22,8 @@ impl<const W: usize> TruncationPolicy<W> for NoTruncation {}
 /// any observable does).
 fn assert_same_keys<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: term count");
-    let got: Vec<_> = canonical_triples(got)
-        .into_iter()
-        .map(|(x, z, _)| (x, z))
-        .collect();
-    let want: Vec<_> = canonical_triples(want)
-        .into_iter()
-        .map(|(x, z, _)| (x, z))
-        .collect();
+    let got: Vec<_> = canonical_triples(got).into_iter().map(|(x, z, _)| (x, z)).collect();
+    let want: Vec<_> = canonical_triples(want).into_iter().map(|(x, z, _)| (x, z)).collect();
     assert_eq!(got, want, "{what}: keys diverged");
 }
 
@@ -73,10 +67,7 @@ fn weight_cutoff_drops_high_weight_terms() {
     );
     assert!(out.len() < input.len(), "nothing was dropped");
     for i in 0..out.len() {
-        let p = PauliString::<1> {
-            x: bucket(&out, 0).0[i],
-            z: bucket(&out, 0).1[i],
-        };
+        let p = PauliString::<1> { x: bucket(&out, 0).0[i], z: bucket(&out, 0).1[i] };
         assert!(p.weight() <= 2, "kept a weight-{} term", p.weight());
     }
 }
@@ -102,16 +93,10 @@ fn rotation_round_trips_via_heisenberg_on_a_single_term() {
     assert_eq!(fwd.len(), 2, "rotation should fan out to two terms");
     let back = paulistrings::propagate(&circuit, fwd, &NoTruncation, Direction::Heisenberg);
     // Back to X with coefficient 1; the Y component cancels.
-    let xs: Vec<usize> = (0..back.len())
-        .filter(|&i| bucket(&back, 0).2[i].norm() > 1e-9)
-        .collect();
+    let xs: Vec<usize> = (0..back.len()).filter(|&i| bucket(&back, 0).2[i].norm() > 1e-9).collect();
     assert_eq!(xs.len(), 1, "expected one surviving term, got {back:?}");
     let i = xs[0];
-    assert_eq!(
-        (bucket(&back, 0).0[i], bucket(&back, 0).1[i]),
-        ([0b100], [0]),
-        "should be X(2)"
-    );
+    assert_eq!((bucket(&back, 0).0[i], bucket(&back, 0).1[i]), ([0b100], [0]), "should be X(2)");
     assert!((bucket(&back, 0).2[i] - Complex64::new(1.0, 0.0)).norm() < 1e-12);
 }
 
@@ -151,12 +136,8 @@ fn residual_growth_without_a_threshold_matches_the_naive_oracle() {
 fn an_empty_circuit_returns_the_input_bit_for_bit() {
     let input = rand_sum::<2>(300, 128, 0x5D);
     let expect = input.clone();
-    let out = paulistrings::propagate(
-        &Circuit::<2>::new(128),
-        input,
-        &NoTruncation,
-        Direction::Forward,
-    );
+    let out =
+        paulistrings::propagate(&Circuit::<2>::new(128), input, &NoTruncation, Direction::Forward);
     assert_eq!(out.to_arrays(), expect.to_arrays());
 }
 
@@ -266,10 +247,7 @@ fn ising_step_channels(lx: usize, ly: usize, dt: f64) -> Vec<Box<dyn Channel<1>>
     }
     for y in 0..ly {
         for x in 0..lx {
-            chans.push(Box::new(PauliRotation::new(
-                PauliString::<1>::x(idx(x, y)),
-                2.0 * dt,
-            )));
+            chans.push(Box::new(PauliRotation::new(PauliString::<1>::x(idx(x, y)), 2.0 * dt)));
         }
     }
     chans
@@ -328,11 +306,7 @@ fn ising_quench_trajectory_matches_the_naive_oracle() {
 
         let a = expectation_plus(&bucketed);
         let b = expectation_plus(&reference);
-        assert!(
-            (a - b).abs() < 1e-11,
-            "step {step}: m_x {a} vs {b} (delta {:e})",
-            (a - b).abs(),
-        );
+        assert!((a - b).abs() < 1e-11, "step {step}: m_x {a} vs {b} (delta {:e})", (a - b).abs(),);
     }
 }
 
@@ -380,10 +354,7 @@ fn ising_3x3_with_binding_top_n_keeps_the_naive_oracles_count() {
             &format!("step {step}"),
         );
     }
-    assert!(
-        binding,
-        "TopN never bound; the test would not prove anything"
-    );
+    assert!(binding, "TopN never bound; the test would not prove anything");
 }
 
 /// The same quench *with* `TopN` active, which is what the shipped example does.

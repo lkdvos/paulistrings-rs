@@ -27,10 +27,7 @@ fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
         for (r, o) in out.iter().enumerate() {
-            assert!(
-                matches!(o, Err(GpuError::Unsupported(_))),
-                "size {size} rank {r}: {o:?}"
-            );
+            assert!(matches!(o, Err(GpuError::Unsupported(_))), "size {size} rank {r}: {o:?}");
         }
     }
 }
@@ -43,14 +40,9 @@ fn a_stale_error_is_returned_by_the_next_call() {
     let circuit = crate::test_support::random_circuit::<1>(8, 4, 0x57A2, true);
     let transport = InProcessTransport::group(1).pop().expect("one rank");
     let mut split = GpuDistributedSum::scatter_to_device(&input, transport, 0).expect("scatter");
-    split
-        .backend_mut()
-        .record(Err(GpuError::Unsupported("a stale error")));
+    split.backend_mut().record(Err(GpuError::Unsupported("a stale error")));
     let stale = split.propagate(&circuit, BuiltinTruncation::Keep, Direction::Forward);
-    assert!(
-        matches!(stale, Err(GpuError::Unsupported("a stale error"))),
-        "{stale:?}"
-    );
+    assert!(matches!(stale, Err(GpuError::Unsupported("a stale error"))), "{stale:?}");
     let got = split.gather().expect("gather").expect("rank 0");
     crate::test_support::assert_same_terms(&got, &input, "no layer ran");
     split
@@ -121,12 +113,7 @@ mod protocol {
 
         /// The host oracle and the norm its policy dropped.
         fn want_discarding(&self) -> (PauliSum<W>, f64) {
-            propagate_discarding(
-                self.circuit,
-                self.input.clone(),
-                &self.policy,
-                self.direction,
-            )
+            propagate_discarding(self.circuit, self.input.clone(), &self.policy, self.direction)
         }
 
         /// Every rank scatters onto device 0 over its wire, runs `setup`, propagates and gathers; its outcome and the most receive chunks a layer moved in.
@@ -181,9 +168,7 @@ mod protocol {
 
     /// Rank 0's gathered sum, every other rank having succeeded with nothing.
     fn rank0<const W: usize>(out: Vec<(Outcome<W>, u32)>) -> PauliSum<W> {
-        let mut out = out
-            .into_iter()
-            .map(|(o, _)| o.expect("every rank succeeds"));
+        let mut out = out.into_iter().map(|(o, _)| o.expect("every rank succeeds"));
         let got = out.next().unwrap().expect("rank 0 gathers");
         assert!(out.all(|o| o.is_none()), "only rank 0 gathers");
         got
@@ -226,10 +211,7 @@ mod protocol {
         for direction in [Direction::Forward, Direction::Heisenberg] {
             for size in [1u32, 2, 4] {
                 let what = format!("ranks={size} {direction:?}");
-                let run = Run {
-                    direction,
-                    ..Run::new(&input, seeded_rows(8, size), &dense)
-                };
+                let run = Run { direction, ..Run::new(&input, seeded_rows(8, size), &dense) };
                 run.check(size, &format!("w1 dense {what}"));
                 let run = Run {
                     direction,
@@ -276,10 +258,7 @@ mod protocol {
         let circuit = su4_chain::<1>(10);
         for direction in [Direction::Forward, Direction::Heisenberg] {
             for size in [2u32, 4] {
-                let run = Run {
-                    direction,
-                    ..Run::new(&input, seeded_rows(10, size), &circuit)
-                };
+                let run = Run { direction, ..Run::new(&input, seeded_rows(10, size), &circuit) };
                 let want = run.want();
                 let mut plain = 0u64;
                 for (cap, least) in [(usize::MAX, 1u64), (128, 3)] {
@@ -290,11 +269,7 @@ mod protocol {
                     assert_eq!(got.len(), want.len(), "{what}: term count");
                     assert_terms_close(&got, &want, 1e-11, &what);
                     let groups = tally.groups();
-                    assert_eq!(
-                        groups % u64::from(size),
-                        0,
-                        "{what}: every rank posts every group"
-                    );
+                    assert_eq!(groups % u64::from(size), 0, "{what}: every rank posts every group");
                     if cap == usize::MAX {
                         plain = groups;
                         assert!(plain > 0, "{what}: the circuit must cross");
@@ -315,10 +290,7 @@ mod protocol {
         crate::require_cuda!();
         let circuit = su4_chain::<1>(10);
         let input = rand_sum::<1>(1_500, 10, 0xC4B5);
-        for (size, caps) in [
-            (2u32, vec![usize::MAX, 128]),
-            (4, vec![usize::MAX, 512, 256, 128]),
-        ] {
+        for (size, caps) in [(2u32, vec![usize::MAX, 128]), (4, vec![usize::MAX, 512, 256, 128])] {
             let run = Run::new(&input, seeded_rows(10, size), &circuit);
             let setup = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 split.set_layer_options(capped(caps[split.rank() as usize]));
@@ -326,10 +298,7 @@ mod protocol {
             let out = run.on(wired(size).0, &setup);
             let chunks: Vec<u32> = out.iter().map(|&(_, chunks)| chunks).collect();
             let what = format!("ranks={size} caps={caps:?}");
-            assert!(
-                chunks[0] > 1,
-                "{what}: the tightest cap forces chunks, got {chunks:?}"
-            );
+            assert!(chunks[0] > 1, "{what}: the tightest cap forces chunks, got {chunks:?}");
             assert!(chunks.iter().all(|&c| c == chunks[0]), "{what}: {chunks:?}");
             assert_terms_close(&rank0(out), &run.want(), 1e-11, &what);
         }
@@ -346,29 +315,16 @@ mod protocol {
             let setup = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 split.set_layer_options(capped(8));
                 if split.rank() == culprit {
-                    let plan = FaultPlan {
-                        after_chunk: Some(1),
-                        ..FaultPlan::default()
-                    };
+                    let plan = FaultPlan { after_chunk: Some(1), ..FaultPlan::default() };
                     set_fault_plan(split, culprit as usize, plan);
                 }
             };
             let start = Instant::now();
             let out = Run::new(&input, seeded_rows(10, size), &circuit).on(wired(size).0, &setup);
             assert!(start.elapsed() < Duration::from_secs(60));
-            assert!(
-                out[culprit as usize].1 > 1,
-                "ranks={size}: {:?}",
-                out[culprit as usize].1
-            );
+            assert!(out[culprit as usize].1 > 1, "ranks={size}: {:?}", out[culprit as usize].1);
             agreed(&errors(out), culprit, |e| {
-                matches!(
-                    e,
-                    GpuError::OutOfMemory {
-                        device: Some(0),
-                        ..
-                    }
-                )
+                matches!(e, GpuError::OutOfMemory { device: Some(0), .. })
             });
         }
     }
@@ -382,10 +338,7 @@ mod protocol {
         for size in [2u32, 4] {
             let fail = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 if split.rank() == 1 {
-                    let plan = FaultPlan {
-                        at_layer: Some(2),
-                        ..FaultPlan::default()
-                    };
+                    let plan = FaultPlan { at_layer: Some(2), ..FaultPlan::default() };
                     set_fault_plan(split, 1, plan);
                 }
             };
@@ -411,10 +364,7 @@ mod protocol {
             let culprit = size - 1;
             let oom = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                 if split.rank() == culprit {
-                    let plan = FaultPlan {
-                        receive_growth: true,
-                        ..FaultPlan::default()
-                    };
+                    let plan = FaultPlan { receive_growth: true, ..FaultPlan::default() };
                     set_fault_plan(split, culprit as usize, plan);
                 }
             };
@@ -425,15 +375,7 @@ mod protocol {
                 0,
                 "a no vote posts nothing, and the culprit votes no from then on"
             );
-            agreed(&errs, culprit, |e| {
-                matches!(
-                    e,
-                    GpuError::OutOfMemory {
-                        device: Some(0),
-                        ..
-                    }
-                )
-            });
+            agreed(&errs, culprit, |e| matches!(e, GpuError::OutOfMemory { device: Some(0), .. }));
         }
     }
 
@@ -446,20 +388,12 @@ mod protocol {
         let one_segment = |n: usize| {
             let mut acc = crate::pauli_sum::accumulator::BuildAccumulator::<1>::new(64);
             for (x, z, coeff) in x0_terms_identity_on_q63(n, 0xF1 + n as u64).iter() {
-                let p = crate::pauli_string::PauliString::<1> {
-                    x: *x,
-                    z: [z[0] | 1 << 63],
-                };
+                let p = crate::pauli_string::PauliString::<1> { x: *x, z: [z[0] | 1 << 63] };
                 acc.add_term(p, coeff);
             }
-            let input = acc
-                .finalize()
-                .with_hash(crate::pauli_sum::hash::Gf2Hash::new(64, 0, 0xF0));
+            let input = acc.finalize().with_hash(crate::pauli_sum::hash::Gf2Hash::new(64, 0, 0xF0));
             let run = Run {
-                options: PropagateOptions {
-                    target_bucket_len: 1 << 20,
-                    min_buckets: 1 << 20,
-                },
+                options: PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 },
                 ..Run::new(&input, rows_reading_z63(), &c)
             };
             let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
@@ -474,11 +408,7 @@ mod protocol {
         };
         let (fits, groups) = one_segment(MAX_BUCKET_LEN);
         assert_eq!(groups, 2, "one group per rank");
-        assert_eq!(
-            rank0(fits).len(),
-            2 * MAX_BUCKET_LEN,
-            "every term splits into two"
-        );
+        assert_eq!(rank0(fits).len(), 2 * MAX_BUCKET_LEN, "every term splits into two");
         let (over, groups) = one_segment(MAX_BUCKET_LEN + 1);
         assert_eq!(groups, 0, "the receiver voted no before any row moved");
         let errs = errors(over);
@@ -509,10 +439,7 @@ mod protocol {
                 let (group, tally) = over_wires(transports, wires);
                 let arm = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
                     if split.rank() == culprit {
-                        let plan = FaultPlan {
-                            wire: Some(fault),
-                            ..FaultPlan::default()
-                        };
+                        let plan = FaultPlan { wire: Some(fault), ..FaultPlan::default() };
                         set_fault_plan(split, culprit as usize, plan);
                     }
                 };
@@ -520,11 +447,7 @@ mod protocol {
                 let out = Run::new(&input, seeded_rows(8, size), &dense).on(group, &arm);
                 let what = format!("size {size} {fault:?}");
                 assert!(start.elapsed() < Duration::from_secs(60), "{what}");
-                let posted = if fault == WireFault::Post {
-                    size - 1
-                } else {
-                    size
-                };
+                let posted = if fault == WireFault::Post { size - 1 } else { size };
                 assert_eq!(
                     tally.groups(),
                     u64::from(posted),
@@ -537,10 +460,7 @@ mod protocol {
                             "{what}: {e:?}"
                         );
                     } else {
-                        assert!(
-                            matches!(e, GpuError::Timeout { .. }),
-                            "{what}: rank {r}: {e:?}"
-                        );
+                        assert!(matches!(e, GpuError::Timeout { .. }), "{what}: rank {r}: {e:?}");
                     }
                 }
             }
@@ -572,11 +492,8 @@ mod protocol {
         for size in [2u32, 4] {
             for (warm_up, culprit) in [(false, 1), (true, 1), (false, 0), (true, size - 1)] {
                 let (aborted, made) = (AtomicU32::new(0), AtomicU32::new(0));
-                let own = if warm_up {
-                    "injected warm-up failure"
-                } else {
-                    "injected init failure"
-                };
+                let own =
+                    if warm_up { "injected warm-up failure" } else { "injected init failure" };
                 let out: Vec<Result<u32, String>> = std::thread::scope(|s| {
                     let hs: Vec<_> = InProcessTransport::group(size)
                         .into_iter()
@@ -703,14 +620,8 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         wire: crate::engine::gpu::wire::PeerWire,
     ) -> Result<Self, GpuError> {
         use crate::engine::gpu::wire::DeviceWire;
-        assert_eq!(
-            (wire.rank(), wire.size()),
-            (transport.rank(), transport.size())
-        );
-        let devices = (
-            super::super::driver::device_runtime(device),
-            GpuLayerOptions::default(),
-        );
+        assert_eq!((wire.rank(), wire.size()), (transport.rank(), transport.size()));
+        let devices = (super::super::driver::device_runtime(device), GpuLayerOptions::default());
         Self::scatter_then(sum, transport, devices, rows, move |_, part| {
             part.scratch_mut().export.wire = Some(std::sync::Arc::new(wire));
             Ok(())

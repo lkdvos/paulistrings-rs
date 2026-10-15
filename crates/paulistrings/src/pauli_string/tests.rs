@@ -80,12 +80,8 @@ mod props {
     use proptest::prelude::*;
 
     fn arb_pauli_w2() -> impl Strategy<Value = PauliString<2>> {
-        (any::<u64>(), any::<u64>(), any::<u64>(), any::<u64>()).prop_map(|(x0, x1, z0, z1)| {
-            PauliString::<2> {
-                x: [x0, x1],
-                z: [z0, z1],
-            }
-        })
+        (any::<u64>(), any::<u64>(), any::<u64>(), any::<u64>())
+            .prop_map(|(x0, x1, z0, z1)| PauliString::<2> { x: [x0, x1], z: [z0, z1] })
     }
 
     proptest! {
@@ -130,10 +126,7 @@ mod props {
 
 #[test]
 fn qubit_mask_packs_across_words() {
-    assert_eq!(
-        qubit_mask::<2>([0, 63, 64, 69], 70),
-        [1 | 1 << 63, 1 | 1 << 5]
-    );
+    assert_eq!(qubit_mask::<2>([0, 63, 64, 69], 70), [1 | 1 << 63, 1 | 1 << 5]);
 }
 
 #[test]
@@ -203,11 +196,7 @@ fn constructor_crosses_word_boundary() {
 
 #[test]
 fn single_qubit_commutation() {
-    let (x, y, z) = (
-        PauliString::<1>::x(0),
-        PauliString::<1>::y(0),
-        PauliString::<1>::z(0),
-    );
+    let (x, y, z) = (PauliString::<1>::x(0), PauliString::<1>::y(0), PauliString::<1>::z(0));
     assert!(!x.commutes_with(&z));
     assert!(!x.commutes_with(&y));
     assert!(x.commutes_with(&x));
@@ -309,26 +298,16 @@ fn is_within_zero_qubits_only_identity() {
 /// At `num_qubits = 64·W` every bit is in range.
 #[test]
 fn is_within_full_capacity_accepts_anything() {
-    let p = PauliString::<1> {
-        x: [!0u64],
-        z: [!0u64],
-    };
+    let p = PauliString::<1> { x: [!0u64], z: [!0u64] };
     assert!(p.is_within(64));
-    let q = PauliString::<2> {
-        x: [!0u64; 2],
-        z: [!0u64; 2],
-    };
+    let q = PauliString::<2> { x: [!0u64; 2], z: [!0u64; 2] };
     assert!(q.is_within(128));
 }
 
 /// At `num_qubits = 50`, bit 49 is the highest valid one.
 #[test]
 fn is_within_boundary_inside_word() {
-    for p in [
-        PauliString::<1>::x,
-        PauliString::<1>::z,
-        PauliString::<1>::y,
-    ] {
+    for p in [PauliString::<1>::x, PauliString::<1>::z, PauliString::<1>::y] {
         assert!(p(49).is_within(50));
         assert!(!p(50).is_within(50));
     }
@@ -337,10 +316,7 @@ fn is_within_boundary_inside_word() {
 /// At `num_qubits = 64` with `W = 2`, word 0 may be anything and a single bit in word 1 trips it.
 #[test]
 fn is_within_word_boundary() {
-    let p = PauliString::<2> {
-        x: [!0u64, 0],
-        z: [!0u64, 0],
-    };
+    let p = PauliString::<2> { x: [!0u64, 0], z: [!0u64, 0] };
     assert!(p.is_within(64));
     assert!(!PauliString::<2>::x(64).is_within(64));
     assert!(!PauliString::<2>::z(64).is_within(64));

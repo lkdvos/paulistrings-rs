@@ -75,10 +75,7 @@ pub fn key_delta_masks<const W: usize>(
     channel: &dyn Channel<W>,
     hash: &crate::Gf2Hash<W>,
 ) -> Vec<([u64; W], [u64; W])> {
-    channel
-        .prepare(hash, false)
-        .expect("a built-in always prepares")
-        .key_delta_masks()
+    channel.prepare(hash, false).expect("a built-in always prepares").key_delta_masks()
 }
 
 /// One channel application, normalized the way the merge phase would leave it: exact-ish zeros dropped, rows sorted by key.
@@ -111,9 +108,7 @@ pub fn raw_outputs<const W: usize, C: Channel<W> + ?Sized>(
     } else {
         ch.apply(&p.x, &p.z, coeff, &mut out);
     }
-    out.terms()
-        .map(|(x, z, c)| (PauliString::<W> { x, z }, c))
-        .collect()
+    out.terms().map(|(x, z, c)| (PauliString::<W> { x, z }, c)).collect()
 }
 
 /// The engine's differential channel net at `W = 1`: every built-in channel class, on an 8-qubit key space.
@@ -135,14 +130,8 @@ pub fn differential_channels_w1() -> Vec<(&'static str, Box<dyn Channel<1>>)> {
         ("swap", Box::new(PtmChannel::swap(1, 5))),
         ("depolarizing", Box::new(PtmChannel::depolarizing(2, 0.07))),
         ("dephasing", Box::new(PtmChannel::dephasing(2, 0.07))),
-        (
-            "amp_damping",
-            Box::new(PtmChannel::amplitude_damping(2, 0.3)),
-        ),
-        (
-            "rot_z",
-            Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41)),
-        ),
+        ("amp_damping", Box::new(PtmChannel::amplitude_damping(2, 0.3))),
+        ("rot_z", Box::new(PauliRotation::new(PauliString::<1>::z(2), 0.41))),
         (
             "rot_zz",
             Box::new(PauliRotation::new(
@@ -205,14 +194,8 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
         ("s@64", Box::new(PtmChannel::phase_gate(64))),
         ("cnot@60,70", Box::new(PtmChannel::cnot(60, 70))),
         ("swap@0,127", Box::new(PtmChannel::swap(0, 127))),
-        (
-            "amp_damping@70",
-            Box::new(PtmChannel::amplitude_damping(70, 0.25)),
-        ),
-        (
-            "rot_y@70",
-            Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33)),
-        ),
+        ("amp_damping@70", Box::new(PtmChannel::amplitude_damping(70, 0.25))),
+        ("rot_y@70", Box::new(PauliRotation::new(PauliString::<2>::y(70), 0.33))),
         (
             "rot_zz_cross_word",
             Box::new(PauliRotation::new(
@@ -225,10 +208,7 @@ pub fn differential_channels_w2() -> Vec<(&'static str, Box<dyn Channel<2>>)> {
             )),
         ),
         // Dense SU(4), support straddling the word boundary — the dense-PTM run shape at `W = 2`.
-        (
-            "haar_su4_cross_word",
-            Box::new(PtmChannel::unitary_2q(60, 70, haar_su4_matrix())),
-        ),
+        ("haar_su4_cross_word", Box::new(PtmChannel::unitary_2q(60, 70, haar_su4_matrix()))),
     ]
 }
 

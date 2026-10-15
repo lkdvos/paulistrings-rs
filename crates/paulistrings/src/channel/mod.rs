@@ -30,11 +30,7 @@ impl<const W: usize> OutputBuffer<W> {
     }
 
     pub(crate) fn new() -> Self {
-        Self {
-            x: Vec::new(),
-            z: Vec::new(),
-            coeff: Vec::new(),
-        }
+        Self { x: Vec::new(), z: Vec::new(), coeff: Vec::new() }
     }
 
     /// Forget every term, keeping the storage.
@@ -48,11 +44,7 @@ impl<const W: usize> OutputBuffer<W> {
     pub(crate) fn terms(
         &self,
     ) -> impl ExactSizeIterator<Item = ([u64; W], [u64; W], Complex64)> + '_ {
-        self.x
-            .iter()
-            .zip(&self.z)
-            .zip(&self.coeff)
-            .map(|((&x, &z), &coeff)| (x, z, coeff))
+        self.x.iter().zip(&self.z).zip(&self.coeff).map(|((&x, &z), &coeff)| (x, z, coeff))
     }
 }
 

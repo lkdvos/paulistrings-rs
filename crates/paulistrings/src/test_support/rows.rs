@@ -86,11 +86,9 @@ pub fn count_remote_deltas<const W: usize>(
     (0..n)
         .map(|k| if adjoint { n - 1 - k } else { k })
         .map(|index| {
-            let prepared = circuit.channels[index]
-                .prepare(hash, adjoint)
-                .unwrap_or_else(|| {
-                    panic!("count_remote_deltas: layer {index} declined preparation")
-                });
+            let prepared = circuit.channels[index].prepare(hash, adjoint).unwrap_or_else(|| {
+                panic!("count_remote_deltas: layer {index} declined preparation")
+            });
             let plan = PartitionPlan::new(&prepared, rows, 0);
             let local = plan.local_entries.iter().filter(|b| **b).count();
             (local, plan.remote.len())

@@ -95,10 +95,7 @@ impl Report {
         Self {
             cpu_numa: record[0],
             count,
-            pci: record[2..2 + shown]
-                .iter()
-                .map(|&value| decode(value))
-                .collect(),
+            pci: record[2..2 + shown].iter().map(|&value| decode(value)).collect(),
             numa: record[2 + MAX_DEVICES..2 + MAX_DEVICES + shown]
                 .iter()
                 .map(|&value| decode(value).and_then(|n| u32::try_from(n).ok()))
@@ -116,9 +113,7 @@ impl Report {
 fn own_report(count: usize) -> Report {
     let cpu_numa = sysfs_numa_nodes(&allowed_cpus())
         .iter()
-        .try_fold(0u64, |mask, (node, _)| {
-            (*node < 64).then(|| mask | 1 << node)
-        })
+        .try_fold(0u64, |mask, (node, _)| (*node < 64).then(|| mask | 1 << node))
         .unwrap_or(0);
     let shown = count.min(MAX_DEVICES);
     let pci: Vec<Option<(u32, u32, u32)>> = (0..shown as u32).map(device_pci).collect();
@@ -139,9 +134,7 @@ fn own_report(count: usize) -> Report {
 /// Local rank `local`'s device from the node's gathered reports.
 fn pick_for(local: usize, reports: &[Report]) -> u32 {
     let me = &reports[local];
-    let shared = me
-        .devices()
-        .is_some_and(|mine| reports.iter().all(|r| r.devices() == Some(mine)));
+    let shared = me.devices().is_some_and(|mine| reports.iter().all(|r| r.devices() == Some(mine)));
     if shared {
         let masks: Vec<u64> = reports.iter().map(|r| r.cpu_numa).collect();
         assign_devices(&masks, &me.numa)[local]
@@ -160,11 +153,7 @@ fn mask_list(mask: u64) -> String {
     if mask == 0 {
         return "unknown".to_string();
     }
-    (0..64)
-        .filter(|&n| on_node(mask, n))
-        .map(|n| n.to_string())
-        .collect::<Vec<_>>()
-        .join(",")
+    (0..64).filter(|&n| on_node(mask, n)).map(|n| n.to_string()).collect::<Vec<_>>().join(",")
 }
 
 /// Each rank's device from each rank's CPU NUMA mask (`0` unknown) and each device's NUMA node: a maximum matching onto `ceil(ranks / devices)` slots per device on the rank's own nodes, every other rank on the least-loaded device, lowest ordinal first.
@@ -223,9 +212,7 @@ fn assign_devices(ranks: &[u64], devices: &[Option<u32>]) -> Vec<u32> {
         load[device] += 1;
         *unplaced = Some(device as u32);
     }
-    pick.into_iter()
-        .map(|placed| placed.expect("every rank placed"))
-        .collect()
+    pick.into_iter().map(|placed| placed.expect("every rank placed")).collect()
 }
 
 /// Device `ordinal`'s PCI `(domain, bus, device)`, `None` when the driver cannot say.
@@ -238,9 +225,7 @@ fn device_pci(ordinal: u32) -> Option<(u32, u32, u32)> {
     let dev = result::device::get(i32::try_from(ordinal).ok()?).ok()?;
     // SAFETY: `dev` came from `result::device::get`.
     let attr = |a| {
-        unsafe { result::device::get_attribute(dev, a) }
-            .ok()
-            .and_then(|v| u32::try_from(v).ok())
+        unsafe { result::device::get_attribute(dev, a) }.ok().and_then(|v| u32::try_from(v).ok())
     };
     Some((
         attr(A::CU_DEVICE_ATTRIBUTE_PCI_DOMAIN_ID)?,
@@ -261,10 +246,7 @@ fn pci_numa_node(name: &str) -> Option<u32> {
 }
 
 fn parse_numa_node(text: &str) -> Option<u32> {
-    text.trim()
-        .parse::<i64>()
-        .ok()
-        .and_then(|n| u32::try_from(n).ok())
+    text.trim().parse::<i64>().ok().and_then(|n| u32::try_from(n).ok())
 }
 
 #[cfg(test)]

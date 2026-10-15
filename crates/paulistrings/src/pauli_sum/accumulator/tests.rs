@@ -67,10 +67,7 @@ fn finalize_gives_one_bucket_at_or_below_1024_terms() {
     // 1024 distinct single-qubit-word keys on 11 qubits (x-patterns 1..=1024).
     let mut accumulator = BuildAccumulator::<1>::new(11);
     for k in 1..=1024u64 {
-        accumulator.add_term(
-            PauliString::<1> { x: [k], z: [0] },
-            Complex64::new(1.0, 0.0),
-        );
+        accumulator.add_term(PauliString::<1> { x: [k], z: [0] }, Complex64::new(1.0, 0.0));
     }
     let s = accumulator.finalize();
     assert_eq!(s.len(), 1024);
@@ -84,10 +81,7 @@ fn finalize_picks_desired_bits_above() {
     use crate::pauli_sum::storage::{desired_bits, DEFAULT_MIN_BUCKETS};
     let mut accumulator = BuildAccumulator::<1>::new(12);
     for k in 1..=1500u64 {
-        accumulator.add_term(
-            PauliString::<1> { x: [k], z: [0] },
-            Complex64::new(1.0, 0.0),
-        );
+        accumulator.add_term(PauliString::<1> { x: [k], z: [0] }, Complex64::new(1.0, 0.0));
     }
     let s = accumulator.finalize();
     assert_eq!(s.len(), 1500);

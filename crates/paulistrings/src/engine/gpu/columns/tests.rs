@@ -18,11 +18,7 @@ fn reserve_of_an_absurd_term_count_is_out_of_memory() {
         }
         other => panic!("expected OutOfMemory, got {other:?}"),
     }
-    assert_eq!(
-        columns.term_capacity(),
-        1,
-        "a failed reserve leaves the columns untouched"
-    );
+    assert_eq!(columns.term_capacity(), 1, "a failed reserve leaves the columns untouched");
 }
 
 #[test]
@@ -30,10 +26,7 @@ fn reserve_past_the_u32_index_range_is_unsupported() {
     crate::require_cuda!();
     let s = stream();
     let mut columns = DeviceColumns::<1>::with_capacity(&s, 0, 1, 1).expect("tiny alloc");
-    assert!(matches!(
-        columns.reserve(1usize << 33, 1),
-        Err(GpuError::Unsupported(_))
-    ));
+    assert!(matches!(columns.reserve(1usize << 33, 1), Err(GpuError::Unsupported(_))));
 }
 
 #[test]
@@ -61,13 +54,7 @@ fn reserve_keeps_the_live_terms_and_csr() {
     assert_eq!(s.clone_dtoh(&columns.z.slice(0..6)).unwrap(), z);
     assert_eq!(s.clone_dtoh(&columns.coeff.slice(0..6)).unwrap(), c);
     assert_eq!(s.clone_dtoh(&columns.fingerprint.slice(0..3)).unwrap(), g);
-    assert_eq!(
-        s.clone_dtoh(&columns.start.slice(0..3)).unwrap(),
-        vec![0, 1, 3]
-    );
-    assert_eq!(
-        s.clone_dtoh(&columns.lengths.slice(0..2)).unwrap(),
-        vec![1, 2]
-    );
+    assert_eq!(s.clone_dtoh(&columns.start.slice(0..3)).unwrap(), vec![0, 1, 3]);
+    assert_eq!(s.clone_dtoh(&columns.lengths.slice(0..2)).unwrap(), vec![1, 2]);
     assert_eq!((columns.len, columns.buckets), (3, 2));
 }

@@ -105,18 +105,13 @@ impl<const W: usize> LocalPtm<W> {
     /// Whether entry `index` has a nonzero amplitude on every support pattern; `amplitude` is sized `LOCAL_DIM` but only `4^k` entries are populated.
     pub(crate) fn entry_is_dense(&self, index: usize) -> bool {
         let dim = 1usize << (2 * self.k());
-        self.deltas[index].amplitude[..dim]
-            .iter()
-            .all(|a| *a != ZERO)
+        self.deltas[index].amplitude[..dim].iter().all(|a| *a != ZERO)
     }
 
     /// Entries with a nonzero amplitude on some support pattern: the rows-per-term fanout a device block is sized by.
     #[cfg(any(feature = "cuda", test))]
     pub(crate) fn emitting_entries(&self) -> usize {
-        self.deltas
-            .iter()
-            .filter(|d| d.amplitude.iter().any(|a| *a != ZERO))
-            .count()
+        self.deltas.iter().filter(|d| d.amplitude.iter().any(|a| *a != ZERO)).count()
     }
 
     /// Whether the first entry is the identity delta.
@@ -163,11 +158,7 @@ impl<const W: usize> LocalPtm<W> {
 
     /// A copy keeping the entries flagged in `keep`, one flag per entry.
     pub(crate) fn retain_entries(&self, keep: &[bool]) -> LocalPtm<W> {
-        debug_assert_eq!(
-            keep.len(),
-            self.deltas.len(),
-            "retain_entries: one flag per delta entry",
-        );
+        debug_assert_eq!(keep.len(), self.deltas.len(), "retain_entries: one flag per delta entry",);
         LocalPtm {
             qubits: self.qubits,
             k: self.k,
@@ -197,11 +188,7 @@ impl<const W: usize> LocalPtm<W> {
                 live &= live - 1;
             }
         }
-        Some(LocalPtm {
-            qubits,
-            k: k as u8,
-            deltas: Vec::new(),
-        })
+        Some(LocalPtm { qubits, k: k as u8, deltas: Vec::new() })
     }
 
     /// One entry per local delta that `table` reaches, ascending.

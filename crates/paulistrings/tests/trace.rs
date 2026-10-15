@@ -18,20 +18,12 @@ mod one_partition {
 
     /// Each layer's input count; a plain run's records hold one partition.
     fn terms_in(trace: &PartitionTrace) -> Vec<usize> {
-        trace
-            .layers
-            .iter()
-            .map(|layer| one(&layer.terms_in))
-            .collect()
+        trace.layers.iter().map(|layer| one(&layer.terms_in)).collect()
     }
 
     /// Each layer's output count.
     fn terms_out(trace: &PartitionTrace) -> Vec<usize> {
-        trace
-            .layers
-            .iter()
-            .map(|layer| one(&layer.terms_out))
-            .collect()
+        trace.layers.iter().map(|layer| one(&layer.terms_out)).collect()
     }
 
     fn one<T: Copy>(per_partition: &[T]) -> T {
@@ -210,12 +202,7 @@ mod one_partition {
     /// same one `propagate` (which never enables the trace) produces.
     fn check_trace_does_not_change_the_result<const W: usize>() {
         let circuit = three_layer_circuit::<W>();
-        let want = propagate(
-            &circuit,
-            x0_observable::<W>(),
-            &AlwaysKeep,
-            Direction::Forward,
-        );
+        let want = propagate(&circuit, x0_observable::<W>(), &AlwaysKeep, Direction::Forward);
 
         let mut scratch = LayerScratch::<W>::new();
         scratch.enable_trace();
@@ -328,23 +315,14 @@ mod partitioned {
         let mut c = Circuit::<1>::new(NQ);
         c.push(PtmChannel::hadamard(0));
         c.push(PtmChannel::cnot(1, 2));
-        c.push(PauliRotation::new(
-            PauliString::<1> {
-                x: [0],
-                z: [0b100110],
-            },
-            0.31,
-        ));
+        c.push(PauliRotation::new(PauliString::<1> { x: [0], z: [0b100110] }, 0.31));
         c.push(PauliRotation::new(wide_gen(), 0.17));
         c
     }
 
     /// `X₀ Z₁ X₂ Z₃` — weight 4, so `prepare` takes the `Prepared::Rotation` arm.
     fn wide_gen() -> PauliString<1> {
-        PauliString::<1> {
-            x: [0b0101],
-            z: [0b1010],
-        }
+        PauliString::<1> { x: [0b0101], z: [0b1010] }
     }
 
     /// One row seeing the `x` bit of qubit 0, which [`wide_gen`] carries: the
@@ -378,14 +356,8 @@ mod partitioned {
 
         let trace = ps.take_trace().expect("tracing is on");
         assert_eq!(trace.layers.len(), circuit.len());
-        assert_eq!(
-            trace.local_layers() + trace.remote_layers(),
-            trace.layers.len(),
-        );
-        assert!(
-            trace.remote_layers() > 0,
-            "these rows should make some delta cross: {trace:?}",
-        );
+        assert_eq!(trace.local_layers() + trace.remote_layers(), trace.layers.len(),);
+        assert!(trace.remote_layers() > 0, "these rows should make some delta cross: {trace:?}",);
         for (k, layer) in trace.layers.iter().enumerate() {
             assert_eq!(layer.terms_in.len(), 4, "layer {k}");
             assert_eq!(layer.terms_out.len(), 4, "layer {k}");
@@ -399,10 +371,7 @@ mod partitioned {
             // Sent and received rows balance across the group.
             let sent: u64 = layer.rows_sent.iter().flat_map(|r| r.iter()).sum();
             let received: u64 = layer.rows_received.iter().sum();
-            assert_eq!(
-                sent, received,
-                "layer {k}: sent {sent} but received {received}"
-            );
+            assert_eq!(sent, received, "layer {k}: sent {sent} but received {received}");
             // A purely local layer moves nothing; a remote one moves something for
             // a sum this dense.
             if layer.remote_deltas == 0 {
@@ -420,15 +389,9 @@ mod partitioned {
         }
 
         // Draining leaves tracing enabled with an empty record set.
-        assert_eq!(
-            ps.take_trace(),
-            Some(paulistrings::PartitionTrace::default()),
-        );
+        assert_eq!(ps.take_trace(), Some(paulistrings::PartitionTrace::default()),);
         ps.propagate(&circuit, &KeepAll, Direction::Forward);
-        assert_eq!(
-            ps.take_trace().expect("still tracing").layers.len(),
-            circuit.len(),
-        );
+        assert_eq!(ps.take_trace().expect("still tracing").layers.len(), circuit.len(),);
     }
 
     /// A single wide rotation whose generator crosses: exactly the terms that
@@ -449,10 +412,7 @@ mod partitioned {
 
         let mut ps = PartitionedSum::scatter_with(
             sum,
-            ScatterOptions {
-                runtime,
-                rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()),
-            },
+            ScatterOptions { runtime, rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()) },
         );
         ps.enable_trace();
         ps.propagate(&circuit, &KeepAll, Direction::Forward);
@@ -513,10 +473,7 @@ mod partitioned {
         let sum = low_weight_sum::<1>(3_000, NQ, 2, 0x6);
         let mut ps = PartitionedSum::scatter_with(
             sum,
-            ScatterOptions {
-                runtime,
-                rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()),
-            },
+            ScatterOptions { runtime, rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()) },
         );
         assert!(
             ps.partition(0).len() > 2 * ps.partition(1).len(),
@@ -526,10 +483,7 @@ mod partitioned {
         );
 
         // A fine bucket policy, so the count actually moves over four layers.
-        let options = PropagateOptions {
-            target_bucket_len: 32,
-            min_buckets: 16,
-        };
+        let options = PropagateOptions { target_bucket_len: 32, min_buckets: 16 };
         let before = ps.bits();
         ps.enable_trace();
         ps.propagate_with(&circuit(), &KeepAll, Direction::Forward, options);
@@ -553,10 +507,7 @@ mod partitioned {
             assert!(layer.bits >= prev, "layer {k}: bits fell from {prev}");
             // A host partition refines one doubling per pass.
             assert!(
-                layer
-                    .refine_passes
-                    .iter()
-                    .all(|&passes| passes == u32::from(layer.bits - prev)),
+                layer.refine_passes.iter().all(|&passes| passes == u32::from(layer.bits - prev)),
                 "layer {k}: {:?} refine passes from {prev} to {} bits",
                 layer.refine_passes,
                 layer.bits

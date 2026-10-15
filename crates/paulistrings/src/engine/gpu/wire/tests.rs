@@ -98,16 +98,12 @@ fn a_skeleton_whose_offsets_miss_its_header_is_refused() {
     assert!(r.is_err());
     let mut wide = skeletons_of::<1>(0xC4, 1, 8);
     wide.blocks[0].header.width = 2;
-    assert!(
-        std::panic::catch_unwind(|| byte_round_trip(&wide, BlockSkeletons::default())).is_err()
-    );
+    assert!(std::panic::catch_unwind(|| byte_round_trip(&wide, BlockSkeletons::default())).is_err());
     let mut descending = skeletons_of::<1>(0xC5, 1, 2);
     descending.blocks[0].offsets = vec![0, 5, 3];
     descending.blocks[0].header.rows = 3;
-    assert!(
-        std::panic::catch_unwind(|| byte_round_trip(&descending, BlockSkeletons::default()))
-            .is_err()
-    );
+    assert!(std::panic::catch_unwind(|| byte_round_trip(&descending, BlockSkeletons::default()))
+        .is_err());
 }
 
 /// The pieces rank `me` sends to `to` as `(chunk, column, k, rows)`, and those `to` receives from `me`.
@@ -139,10 +135,8 @@ fn group_schedules(
         }
         o
     };
-    let offsets: Vec<Vec<Vec<u32>>> = counts
-        .iter()
-        .map(|per_k| per_k.iter().map(csr).collect())
-        .collect();
+    let offsets: Vec<Vec<Vec<u32>>> =
+        counts.iter().map(|per_k| per_k.iter().map(csr).collect()).collect();
     (0..size)
         .map(|r| {
             let partners: Vec<u32> = pds.iter().map(|&pd| r ^ pd).collect();
@@ -236,16 +230,9 @@ fn a_group_records_its_ops_in_posting_order_with_carved_ranges() {
     let mut destination = stream.alloc_zeros::<u64>(10).expect("alloc");
     let mut group = WireGroup::new();
     group.send(source.slice(2..6), 3, &stream);
-    group.receive_parts(
-        destination.as_view_mut(),
-        &[(4, 1), (0, 2), (5, 1)],
-        &stream,
-    );
+    group.receive_parts(destination.as_view_mut(), &[(4, 1), (0, 2), (5, 1)], &stream);
     let ops = group.ops();
-    let shape: Vec<_> = ops
-        .iter()
-        .map(|op| (op.kind(), op.peer(), op.bytes()))
-        .collect();
+    let shape: Vec<_> = ops.iter().map(|op| (op.kind(), op.peer(), op.bytes())).collect();
     assert_eq!(
         shape,
         [

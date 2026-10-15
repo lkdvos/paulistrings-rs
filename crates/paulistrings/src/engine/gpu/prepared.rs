@@ -136,11 +136,7 @@ impl<const W: usize> DevicePrepared<W> {
         }
         let mut received_slot = vec![NO_REMOTE; 16];
         for (k, r) in remote.iter().enumerate() {
-            assert!(
-                r.entry < entries,
-                "remote entry {} outside the table",
-                r.entry
-            );
+            assert!(r.entry < entries, "remote entry {} outside the table", r.entry);
             received_slot[r.entry] = k as u32;
         }
         let mut out = Self {
@@ -203,9 +199,7 @@ impl<const W: usize> DevicePrepared<W> {
     /// Whether two of `entries` can emit one key: they must reach a common output pattern, since `v ⊕ d_a = w ⊕ d_b` puts both rows on one pattern.
     pub(crate) fn entries_can_collide(&self, entries: &[usize]) -> bool {
         let out: Vec<u32> = entries.iter().map(|&e| self.output_patterns(e)).collect();
-        out.iter()
-            .enumerate()
-            .any(|(i, a)| out[i + 1..].iter().any(|b| a & b != 0))
+        out.iter().enumerate().any(|(i, a)| out[i + 1..].iter().any(|b| a & b != 0))
     }
 
     /// The table restricted to `entries`, renumbered `0..entries.len()` in that order, every entry sourced from a local bucket.
@@ -231,9 +225,7 @@ impl<const W: usize> DevicePrepared<W> {
             t.masks.push(self.masks[e]);
         }
         t.received_entries = 0;
-        t.fanout = (0..t.entries)
-            .filter(|&j| t.nonzero_patterns[j] != 0)
-            .count();
+        t.fanout = (0..t.entries).filter(|&j| t.nonzero_patterns[j] != 0).count();
         t.key_preserving = false;
         t.permutation = false;
         t.entry_of.fill(NO_ENTRY);

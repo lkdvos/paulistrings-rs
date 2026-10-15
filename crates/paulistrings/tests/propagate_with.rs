@@ -53,12 +53,8 @@ fn check_equivalence<const W: usize>() {
     assert_terms_close(&via_scratch, &reference, 1e-12, "default options");
 
     // Reusing the scratch, with whatever high-water state the first call left behind, must not change a second, different propagation.
-    let ref2 = propagate(
-        &circuit,
-        rand_sum_real::<W>(2000, 8, 0xBEEF),
-        &AlwaysKeep,
-        Direction::Forward,
-    );
+    let ref2 =
+        propagate(&circuit, rand_sum_real::<W>(2000, 8, 0xBEEF), &AlwaysKeep, Direction::Forward);
     let via2 = propagate_with(
         &circuit,
         rand_sum_real::<W>(2000, 8, 0xBEEF),
@@ -85,14 +81,8 @@ const QUBITS: usize = 127;
 /// Four ZZ rotations on disjoint pairs, a cheap fanout-2 layer.
 fn zz_circuit() -> Circuit<2> {
     let mut circuit = Circuit::<2>::new(QUBITS);
-    for (k, (i, j)) in [(0usize, 1usize), (5, 9), (40, 71), (100, 126)]
-        .into_iter()
-        .enumerate()
-    {
-        let mut gen = PauliString::<2> {
-            x: [0u64; 2],
-            z: [0u64; 2],
-        };
+    for (k, (i, j)) in [(0usize, 1usize), (5, 9), (40, 71), (100, 126)].into_iter().enumerate() {
+        let mut gen = PauliString::<2> { x: [0u64; 2], z: [0u64; 2] };
         gen.z[i / 64] |= 1u64 << (i % 64);
         gen.z[j / 64] |= 1u64 << (j % 64);
         circuit.push(PauliRotation::<2>::new(gen, 0.2 + 0.1 * k as f64));
@@ -119,10 +109,7 @@ fn target_bucket_len_controls_the_partition() {
     let fine = run(sum.clone(), PropagateOptions::default());
     let coarse = run(
         sum,
-        PropagateOptions {
-            target_bucket_len: 64 * DEFAULT_TARGET_BUCKET_LEN,
-            min_buckets: 16,
-        },
+        PropagateOptions { target_bucket_len: 64 * DEFAULT_TARGET_BUCKET_LEN, min_buckets: 16 },
     );
     assert!(
         coarse.num_buckets() < fine.num_buckets(),
@@ -140,13 +127,8 @@ fn min_buckets_floor_binds_above_the_target() {
     // Sized so the resident count stays inside `[min_buckets * MIN_TERMS_PER_TASK, min_buckets * target_bucket_len] = [8192, 131072]` for the whole run: worth splitting, and the floor sets the count.
     let sum = rand_sum::<2>(20_000, QUBITS, 0x5EED_0003);
     let fine = run(sum.clone(), PropagateOptions::default());
-    let target_only = run(
-        sum,
-        PropagateOptions {
-            target_bucket_len: 65_536,
-            ..Default::default()
-        },
-    );
+    let target_only =
+        run(sum, PropagateOptions { target_bucket_len: 65_536, ..Default::default() });
     assert_eq!(
         fine.num_buckets(),
         DEFAULT_MIN_BUCKETS,
@@ -164,10 +146,7 @@ fn min_buckets_floor_binds_above_the_target() {
 fn min_buckets_below_16_panics() {
     run(
         rand_sum::<2>(10, QUBITS, 1),
-        PropagateOptions {
-            min_buckets: 15,
-            ..PropagateOptions::default()
-        },
+        PropagateOptions { min_buckets: 15, ..PropagateOptions::default() },
     );
 }
 
@@ -176,19 +155,13 @@ fn min_buckets_below_16_panics() {
 fn zero_target_bucket_len_panics() {
     run(
         rand_sum::<2>(10, QUBITS, 1),
-        PropagateOptions {
-            target_bucket_len: 0,
-            ..PropagateOptions::default()
-        },
+        PropagateOptions { target_bucket_len: 0, ..PropagateOptions::default() },
     );
 }
 
 #[test]
 fn validate_accepts_the_defaults_and_the_bounds() {
     assert_eq!(PropagateOptions::default().validate(), Ok(()));
-    let bounds = PropagateOptions {
-        target_bucket_len: 1,
-        min_buckets: 16,
-    };
+    let bounds = PropagateOptions { target_bucket_len: 1, min_buckets: 16 };
     assert_eq!(bounds.validate(), Ok(()));
 }

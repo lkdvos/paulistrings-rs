@@ -94,10 +94,9 @@ impl GpuError {
     /// `e` with an out-of-memory result attributed to `device` and a request of `bytes`.
     pub(crate) fn from_alloc(e: cudarc::driver::DriverError, device: u32, bytes: u64) -> Self {
         match GpuError::from(e) {
-            GpuError::OutOfMemory { .. } => GpuError::OutOfMemory {
-                device: Some(device),
-                bytes: Some(bytes),
-            },
+            GpuError::OutOfMemory { .. } => {
+                GpuError::OutOfMemory { device: Some(device), bytes: Some(bytes) }
+            }
             other => other,
         }
     }
@@ -107,10 +106,7 @@ impl From<cudarc::driver::DriverError> for GpuError {
     /// `CUDA_ERROR_OUT_OF_MEMORY` maps to [`GpuError::OutOfMemory`] with neither `device` nor `bytes`, since the driver error carries neither.
     fn from(e: cudarc::driver::DriverError) -> Self {
         if e.0 == cudarc::driver::sys::CUresult::CUDA_ERROR_OUT_OF_MEMORY {
-            GpuError::OutOfMemory {
-                device: None,
-                bytes: None,
-            }
+            GpuError::OutOfMemory { device: None, bytes: None }
         } else {
             GpuError::Driver(e)
         }

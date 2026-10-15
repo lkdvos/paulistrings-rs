@@ -23,14 +23,8 @@ fn ranks_all_on_one_socket_fill_its_devices_then_take_distinct_remote_ones() {
 
 #[test]
 fn more_ranks_than_devices_share_evenly_and_locally() {
-    assert_eq!(
-        assign_devices(&[N0, N1, N0, N1, N0, N1, N0, N1], &A100),
-        [0, 2, 1, 3, 0, 2, 1, 3]
-    );
-    assert_eq!(
-        assign_devices(&[N0, N0, N0], &[Some(0), Some(1)]),
-        [0, 0, 1]
-    );
+    assert_eq!(assign_devices(&[N0, N1, N0, N1, N0, N1, N0, N1], &A100), [0, 2, 1, 3, 0, 2, 1, 3]);
+    assert_eq!(assign_devices(&[N0, N0, N0], &[Some(0), Some(1)]), [0, 0, 1]);
 }
 
 #[test]
@@ -70,20 +64,14 @@ fn a_report_round_trips_through_its_record() {
 #[test]
 fn ranks_seeing_the_same_devices_are_matched_by_numa() {
     let pci = [0x07 << 8, 0x0b << 8, 0x48 << 8, 0x4c << 8];
-    let node: Vec<Report> = [N0, N1, N0, N1]
-        .iter()
-        .map(|&m| report(m, &pci, &A100))
-        .collect();
+    let node: Vec<Report> = [N0, N1, N0, N1].iter().map(|&m| report(m, &pci, &A100)).collect();
     let picks: Vec<u32> = (0..4).map(|l| pick_for(l, &node)).collect();
     assert_eq!(picks, [0, 2, 1, 3]);
 }
 
 #[test]
 fn ranks_seeing_different_devices_take_the_modulo_of_their_own() {
-    let node = [
-        report(N1, &[0x07 << 8], &[Some(0)]),
-        report(N0, &[0x48 << 8], &[Some(1)]),
-    ];
+    let node = [report(N1, &[0x07 << 8], &[Some(0)]), report(N0, &[0x48 << 8], &[Some(1)])];
     assert_eq!(pick_for(0, &node), 0);
     assert_eq!(pick_for(1, &node), 0);
 }
@@ -110,19 +98,14 @@ fn a_missing_pci_device_has_no_numa_node() {
 #[test]
 fn the_visible_devices_have_a_pci_address_and_a_valid_numa_node() {
     crate::require_cuda!();
-    let nodes: Vec<u32> = sysfs_numa_nodes(&allowed_cpus())
-        .iter()
-        .map(|(n, _)| *n as u32)
-        .collect();
+    let nodes: Vec<u32> =
+        sysfs_numa_nodes(&allowed_cpus()).iter().map(|(n, _)| *n as u32).collect();
     let r = own_report(device_count());
     assert_eq!(r.pci.len(), device_count().min(MAX_DEVICES));
     for (pci, numa) in r.pci.iter().zip(&r.numa) {
         assert!(pci.is_some(), "a visible device has a PCI address");
         if let Some(n) = numa {
-            assert!(
-                nodes.is_empty() || nodes.contains(n),
-                "device NUMA {n} is not in {nodes:?}"
-            );
+            assert!(nodes.is_empty() || nodes.contains(n), "device NUMA {n} is not in {nodes:?}");
         }
     }
 }

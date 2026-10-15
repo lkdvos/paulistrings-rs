@@ -63,17 +63,15 @@ impl PartitionRowPolicy {
                 PartitionRows::from_seed(num_qubits, bits, seed.unwrap_or(default_seed))
             }
             Self::Cut(blocks) => PartitionRows::cut(num_qubits, blocks),
-            Self::SeededExcluding {
-                seed,
-                exclude_x,
-                exclude_z,
-            } => PartitionRows::from_seed_excluding(
-                num_qubits,
-                bits,
-                seed.unwrap_or(default_seed),
-                &mask(exclude_x),
-                &mask(exclude_z),
-            ),
+            Self::SeededExcluding { seed, exclude_x, exclude_z } => {
+                PartitionRows::from_seed_excluding(
+                    num_qubits,
+                    bits,
+                    seed.unwrap_or(default_seed),
+                    &mask(exclude_x),
+                    &mask(exclude_z),
+                )
+            }
         }
     }
 }
@@ -226,13 +224,8 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         let runtime = &*self.runtime;
         let transport = &self.transport;
         let rank = transport.rank() as usize;
-        let fingerprint = run_fingerprint(
-            circuit.channels.len(),
-            direction,
-            options,
-            self.rows.num_qubits(),
-            W,
-        );
+        let fingerprint =
+            run_fingerprint(circuit.channels.len(), direction, options, self.rows.num_qubits(), W);
         let frame = DriverFrame {
             parts: std::slice::from_mut(&mut self.local),
             rows: &self.rows,
@@ -322,11 +315,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
              domains-per-rank hybrids are not implemented",
             runtime.num_partitions(),
         );
-        rows.assert_splits(
-            sum.hash(),
-            sum.num_qubits(),
-            1usize << group_bits(transport.size()),
-        );
+        rows.assert_splits(sum.hash(), sum.num_qubits(), 1usize << group_bits(transport.size()));
 
         let started = Instant::now();
         let local = {
@@ -431,9 +420,7 @@ pub(crate) fn gather_share<const W: usize, X: Transport>(
     local: &PauliSum<W>,
     transport: &X,
 ) -> Option<PauliSum<W>> {
-    let lens: Vec<u64> = (0..local.num_buckets())
-        .map(|b| local.bucket_len(b) as u64)
-        .collect();
+    let lens: Vec<u64> = (0..local.num_buckets()).map(|b| local.bucket_len(b) as u64).collect();
     let (x, z, coeff) = local.to_arrays();
     let parts: Vec<&[u8]> = vec![
         bytemuck::cast_slice(&lens),
@@ -489,10 +476,7 @@ fn decode_column<T: bytemuck::Pod>(bytes: &[u8], len: usize, what: &str) -> Vec<
         len * stride,
         bytes.len(),
     );
-    bytes
-        .chunks_exact(stride)
-        .map(bytemuck::pod_read_unaligned)
-        .collect()
+    bytes.chunks_exact(stride).map(bytemuck::pod_read_unaligned).collect()
 }
 
 /// [`decode_column`] for `[u64; W]` rows, which are not `Pod` at a generic `W`.

@@ -47,13 +47,9 @@ impl fmt::Display for StabilizerError {
                 "a stabilizer state on {expected} qubits needs exactly {expected} generators, \
                  got {found}",
             ),
-            Self::QubitOutOfRange {
-                generator,
-                num_qubits,
-            } => write!(
-                f,
-                "generator {generator} acts on a qubit at or beyond index {num_qubits}",
-            ),
+            Self::QubitOutOfRange { generator, num_qubits } => {
+                write!(f, "generator {generator} acts on a qubit at or beyond index {num_qubits}",)
+            }
             Self::NotCommuting { first, second } => write!(
                 f,
                 "generators {first} and {second} anticommute; stabilizer generators must \
@@ -90,11 +86,7 @@ fn columns(num_qubits: usize) -> Vec<Column> {
     let mut columns = Vec::with_capacity(2 * num_qubits);
     for is_z in [false, true] {
         for q in 0..num_qubits {
-            columns.push(Column {
-                word: q / 64,
-                mask: 1u64 << (q % 64),
-                is_z,
-            });
+            columns.push(Column { word: q / 64, mask: 1u64 << (q % 64), is_z });
         }
     }
     columns
@@ -142,19 +134,13 @@ impl<const W: usize> StabilizerState<W> {
         }
         for (i, (key, _)) in generators.iter().enumerate() {
             if !key.is_within(num_qubits) {
-                return Err(StabilizerError::QubitOutOfRange {
-                    generator: i,
-                    num_qubits,
-                });
+                return Err(StabilizerError::QubitOutOfRange { generator: i, num_qubits });
             }
         }
         for i in 0..generators.len() {
             for j in (i + 1)..generators.len() {
                 if !generators[i].0.commutes_with(&generators[j].0) {
-                    return Err(StabilizerError::NotCommuting {
-                        first: i,
-                        second: j,
-                    });
+                    return Err(StabilizerError::NotCommuting { first: i, second: j });
                 }
             }
         }
@@ -187,20 +173,14 @@ impl<const W: usize> StabilizerState<W> {
                 );
                 row.1 ^= negative ^ (phase == Phase::MINUS_ONE);
             }
-            rows.push(Row {
-                key,
-                negative,
-                pivot: column,
-            });
+            rows.push(Row { key, negative, pivot: column });
             if rows.len() == num_qubits {
                 break;
             }
         }
 
         if rows.len() < num_qubits {
-            return Err(StabilizerError::Dependent {
-                generator: work[rows.len()].2,
-            });
+            return Err(StabilizerError::Dependent { generator: work[rows.len()].2 });
         }
         Ok(Self { num_qubits, rows })
     }
@@ -249,13 +229,11 @@ impl<const W: usize> PauliSum<W> {
             self.num_qubits(),
             state.num_qubits(),
         );
-        self.sum_over_terms(
-            |x, z, coeff| match state.sign_of(&PauliString::<W> { x: *x, z: *z }) {
-                None => Complex64::new(0.0, 0.0),
-                Some(false) => coeff,
-                Some(true) => -coeff,
-            },
-        )
+        self.sum_over_terms(|x, z, coeff| match state.sign_of(&PauliString::<W> { x: *x, z: *z }) {
+            None => Complex64::new(0.0, 0.0),
+            Some(false) => coeff,
+            Some(true) => -coeff,
+        })
     }
 }
 

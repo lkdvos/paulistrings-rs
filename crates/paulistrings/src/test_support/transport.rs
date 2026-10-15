@@ -38,12 +38,7 @@ impl CallLog {
 
     /// How many of the calls so far were `call`.
     pub fn count(&self, call: &str) -> usize {
-        self.0
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|&&c| c == call)
-            .count()
+        self.0.lock().unwrap().iter().filter(|&&c| c == call).count()
     }
 }
 
@@ -62,10 +57,7 @@ impl LoggingTransport {
             std::time::Duration::from_secs(120),
         )
         .into_iter()
-        .map(|inner| Self {
-            inner,
-            log: CallLog::default(),
-        })
+        .map(|inner| Self { inner, log: CallLog::default() })
         .collect()
     }
 }
@@ -145,21 +137,14 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
     let base = rand_sum::<1>(n, 64, seed);
     let mut acc = BuildAccumulator::<1>::new(64);
     for (x, z, c) in base.iter() {
-        let p = PauliString::<1> {
-            x: [(x[0] | 1) & !(1u64 << 63)],
-            z: [z[0] & !(1u64 << 63)],
-        };
+        let p = PauliString::<1> { x: [(x[0] | 1) & !(1u64 << 63)], z: [z[0] & !(1u64 << 63)] };
         acc.add_term(p, c);
     }
     let out = acc.finalize();
     assert_eq!(out.len(), n, "fixture: the terms must stay distinct");
-    let zz = PauliString::<1> {
-        x: [0],
-        z: [1 | (1u64 << 63)],
-    };
+    let zz = PauliString::<1> { x: [0], z: [1 | (1u64 << 63)] };
     assert!(
-        out.iter()
-            .all(|(x, z, _)| !PauliString::<1> { x: *x, z: *z }.commutes_with(&zz)),
+        out.iter().all(|(x, z, _)| !PauliString::<1> { x: *x, z: *z }.commutes_with(&zz)),
         "fixture: every term must anticommute with Z₀Z₆₃ or the layer exports fewer than {n} rows"
     );
     out

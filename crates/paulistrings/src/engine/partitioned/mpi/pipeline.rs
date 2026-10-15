@@ -72,11 +72,7 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
             }
         }
         Self {
-            inner: Mutex::new(PipelineInner {
-                requests,
-                slot_of,
-                done: Vec::new(),
-            }),
+            inner: Mutex::new(PipelineInner { requests, slot_of, done: Vec::new() }),
             remaining,
             driving: Mutex::new(false),
             wake: Condvar::new(),
@@ -94,11 +90,7 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
     /// As the driver, `MPI_Waitsome` until chunk `k` completes or nothing is outstanding, announcing every chunk that completes.
     fn drive_until(&self, k: usize) {
         let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-        let PipelineInner {
-            requests,
-            slot_of,
-            done,
-        } = &mut *inner;
+        let PipelineInner { requests, slot_of, done } = &mut *inner;
         while !self.complete(k) && requests.incomplete() > 0 {
             requests.wait_some(done);
             let mut completed = false;
@@ -123,10 +115,7 @@ impl<'a, 'c> ChunkPipeline<'a, 'c> {
         let mut driving = self.lock_driving();
         while !self.complete(k) {
             if *driving {
-                driving = self
-                    .wake
-                    .wait(driving)
-                    .unwrap_or_else(PoisonError::into_inner);
+                driving = self.wake.wait(driving).unwrap_or_else(PoisonError::into_inner);
                 continue;
             }
             *driving = true;

@@ -14,10 +14,7 @@ fn rand_low_weight_sum<const W: usize>(
     let mut rng = Xs64::new(seed);
     let mut accumulator = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for _ in 0..n {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
         for _ in 0..weight {
             let q = (rng.next_u64() as usize) % num_qubits;
             let bit = 1u64 << (q % 64);
@@ -99,9 +96,8 @@ fn coarsen_merges_the_pair_i_and_i_plus_new_b() {
     let h = Gf2Hash::<1>::new(64, 6, 0xC0DE);
     let mut b = sum.clone().with_hash(h);
     let new_nb = b.num_buckets() / 2;
-    let expect: Vec<usize> = (0..new_nb)
-        .map(|i| b.bucket_len(i) + b.bucket_len(i + new_nb))
-        .collect();
+    let expect: Vec<usize> =
+        (0..new_nb).map(|i| b.bucket_len(i) + b.bucket_len(i + new_nb)).collect();
 
     b.coarsen();
     for (i, &want) in expect.iter().enumerate() {
@@ -159,12 +155,7 @@ fn rebucket_never_shrinks() {
     assert_eq!(b.num_buckets(), 1024);
     b.rebucket(256, 1);
     b.assert_invariants();
-    assert_eq!(
-        b.num_buckets(),
-        1024,
-        "rebucket shrank from 1024 to {} buckets",
-        b.num_buckets(),
-    );
+    assert_eq!(b.num_buckets(), 1024, "rebucket shrank from 1024 to {} buckets", b.num_buckets(),);
     assert_same_sum(&sum, &b);
 }
 
@@ -176,11 +167,7 @@ fn rebucket_is_a_no_op_when_already_at_the_target() {
     let mut b = sum.clone().with_hash(h);
     let before = b.num_buckets();
     b.rebucket(100, 1);
-    assert_eq!(
-        b.num_buckets(),
-        before,
-        "rebucket moved when already on target"
-    );
+    assert_eq!(b.num_buckets(), before, "rebucket moved when already on target");
 }
 
 #[test]
@@ -211,18 +198,11 @@ fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
     let mut b = sum.with_hash(h);
     b.rebucket(256, 8);
     let grown_bits = b.hash().bits();
-    assert!(
-        grown_bits > 0,
-        "sanity: rebucket should have grown from 0 bits"
-    );
+    assert!(grown_bits > 0, "sanity: rebucket should have grown from 0 bits");
 
     b.retain(|_, _, c| c.re > 0.995);
     b.assert_invariants();
-    assert!(
-        b.len() < 512,
-        "sanity: shrink did not reduce len enough ({})",
-        b.len(),
-    );
+    assert!(b.len() < 512, "sanity: shrink did not reduce len enough ({})", b.len(),);
 
     b.rebucket(256, 8);
     assert_eq!(
@@ -242,11 +222,7 @@ fn rebucket_respects_the_parallelism_floor() {
     // Target far above n, but the floor still demands 32 buckets.
     b.rebucket(1 << 20, 32);
     b.assert_invariants();
-    assert!(
-        b.num_buckets() >= 32,
-        "floor not respected: {} buckets",
-        b.num_buckets(),
-    );
+    assert!(b.num_buckets() >= 32, "floor not respected: {} buckets", b.num_buckets(),);
 }
 
 #[test]
@@ -378,10 +354,7 @@ fn retain_filters_in_place_and_keeps_invariants() {
                 want_c.push(c);
             }
         }
-        assert!(
-            !want_x.is_empty(),
-            "predicate kept nothing; test is vacuous"
-        );
+        assert!(!want_x.is_empty(), "predicate kept nothing; test is vacuous");
         assert_eq!(b.len(), want_x.len(), "bits={bits} length");
         let got = sorted_triples(&b);
         for (i, t) in got.iter().enumerate() {
@@ -445,10 +418,7 @@ fn overlap_of_a_small_sum_with_a_many_bucket_sum() {
         .step_by(331)
         .enumerate()
         .map(|(k, &(x, z, _))| (PauliString { x, z }, Complex64::new(1.0 + k as f64, -0.5)))
-        .chain(std::iter::once((
-            PauliString::<1>::x(39),
-            Complex64::new(9.0, 0.0),
-        )))
+        .chain(std::iter::once((PauliString::<1>::x(39), Complex64::new(9.0, 0.0))))
         .collect();
     let small = b10_build::<1>(40, &picked);
     assert_eq!(small.num_buckets(), 1);
@@ -457,15 +427,9 @@ fn overlap_of_a_small_sum_with_a_many_bucket_sum() {
         let want = picked.iter().fold(Complex64::new(0.0, 0.0), |acc, (p, c)| {
             acc + c.conj() * big.get(&p.x, &p.z).unwrap_or_default()
         });
-        assert!(
-            want.norm() > 0.0,
-            "picked keys miss the big sum; test is vacuous"
-        );
+        assert!(want.norm() > 0.0, "picked keys miss the big sum; test is vacuous");
         let got = small.overlap(&big);
-        assert!(
-            (got - want).norm() <= 1e-12 * want.norm(),
-            "seed {seed:#x}: {got} vs {want}"
-        );
+        assert!((got - want).norm() <= 1e-12 * want.norm(), "seed {seed:#x}: {got} vs {want}");
         let got = big.overlap(&small);
         assert!(
             (got - want.conj()).norm() <= 1e-12 * want.norm(),
@@ -509,11 +473,7 @@ fn with_hash_only_changes_partition() {
         moved.assert_invariants();
         assert_eq!(moved.len(), a.len(), "bits={bits} seed={seed} length");
         assert_eq!(moved.num_buckets(), 1usize << bits);
-        assert_eq!(
-            sorted_triples(&moved),
-            want,
-            "bits={bits} seed={seed}: term multiset changed",
-        );
+        assert_eq!(sorted_triples(&moved), want, "bits={bits} seed={seed}: term multiset changed",);
     }
 }
 
@@ -567,11 +527,7 @@ fn add_cancels_to_nothing() {
     let bn = neg.clone().with_hash(Gf2Hash::<1>::new(40, 2, 0x40D));
     let got = ba.add(&bn);
     got.assert_invariants();
-    assert!(
-        got.is_empty(),
-        "{} terms survived exact cancellation",
-        got.len()
-    );
+    assert!(got.is_empty(), "{} terms survived exact cancellation", got.len());
 }
 
 #[test]
@@ -733,21 +689,13 @@ fn add_mixed_cancellation_and_merge() {
     let a = PauliSum::<1>::from_sorted_columns(
         vec![[0u64], [1u64], [2u64]],
         vec![[0u64], [0u64], [0u64]],
-        vec![
-            Complex64::new(1.0, 0.0),
-            Complex64::new(2.0, 0.0),
-            Complex64::new(3.0, 0.0),
-        ],
+        vec![Complex64::new(1.0, 0.0), Complex64::new(2.0, 0.0), Complex64::new(3.0, 0.0)],
         4,
     );
     let b = PauliSum::<1>::from_sorted_columns(
         vec![[0u64], [1u64], [3u64]],
         vec![[0u64], [0u64], [0u64]],
-        vec![
-            Complex64::new(-1.0, 0.0),
-            Complex64::new(0.5, 0.0),
-            Complex64::new(4.0, 0.0),
-        ],
+        vec![Complex64::new(-1.0, 0.0), Complex64::new(0.5, 0.0), Complex64::new(4.0, 0.0)],
         4,
     );
     let r = a.add(&b);
@@ -757,11 +705,7 @@ fn add_mixed_cancellation_and_merge() {
     assert_eq!(rz, vec![[0u64], [0u64], [0u64]]);
     assert_eq!(
         rc,
-        vec![
-            Complex64::new(2.5, 0.0),
-            Complex64::new(3.0, 0.0),
-            Complex64::new(4.0, 0.0),
-        ]
+        vec![Complex64::new(2.5, 0.0), Complex64::new(3.0, 0.0), Complex64::new(4.0, 0.0),]
     );
     r.assert_invariants();
 }
@@ -781,11 +725,7 @@ fn assert_same_columns<const W: usize>(got: &PauliSum<W>, want: &PauliSum<W>, wh
     let (wx, wz, wc) = want.to_arrays();
     assert_eq!(gx.len(), wx.len(), "{what}: term count");
     for i in 0..wx.len() {
-        assert_eq!(
-            (gx[i], gz[i], gc[i]),
-            (wx[i], wz[i], wc[i]),
-            "{what}: term {i} differs",
-        );
+        assert_eq!((gx[i], gz[i], gc[i]), (wx[i], wz[i], wc[i]), "{what}: term {i} differs",);
     }
 }
 
@@ -797,9 +737,7 @@ fn check_split_merge<const W: usize>(
     pbits: u8,
     what: &str,
 ) {
-    let s = sum
-        .clone()
-        .with_hash(Gf2Hash::<W>::new(num_qubits, bits, 0xBEEF));
+    let s = sum.clone().with_hash(Gf2Hash::<W>::new(num_qubits, bits, 0xBEEF));
     let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, 0x5EED);
     let p = rows.num_partitions();
 
@@ -808,25 +746,10 @@ fn check_split_merge<const W: usize>(
     for r in 0..p as u32 {
         let part = s.filter_partition(&rows, r);
         part.assert_invariants();
-        assert_eq!(
-            part.num_buckets(),
-            s.num_buckets(),
-            "{what}: part {r} bucket count",
-        );
-        assert!(
-            part.hash().same_rows_as(s.hash()),
-            "{what}: part {r} hash rows",
-        );
-        assert_eq!(
-            part.hash().bits(),
-            s.hash().bits(),
-            "{what}: part {r} hash bits",
-        );
-        assert_eq!(
-            part.num_qubits(),
-            s.num_qubits(),
-            "{what}: part {r} num_qubits",
-        );
+        assert_eq!(part.num_buckets(), s.num_buckets(), "{what}: part {r} bucket count",);
+        assert!(part.hash().same_rows_as(s.hash()), "{what}: part {r} hash rows",);
+        assert_eq!(part.hash().bits(), s.hash().bits(), "{what}: part {r} hash bits",);
+        assert_eq!(part.num_qubits(), s.num_qubits(), "{what}: part {r} num_qubits",);
         if !part.is_empty() {
             assert_eq!(
                 part.partition_rank_of_all(&rows),
@@ -841,11 +764,7 @@ fn check_split_merge<const W: usize>(
 
     let back = PauliSum::<W>::merge_partitions(parts);
     back.assert_invariants();
-    assert_eq!(
-        back.num_buckets(),
-        s.num_buckets(),
-        "{what}: merged bucket count",
-    );
+    assert_eq!(back.num_buckets(), s.num_buckets(), "{what}: merged bucket count",);
     assert_same_columns(&back, &s, what);
 }
 
@@ -919,10 +838,7 @@ fn merge_partitions_of_three_parts_keeps_every_term() {
     let s = rand_sum_real::<1>(400, 64, 0xDA).with_hash(Gf2Hash::<1>::new(64, 3, 0xBEEF));
     let rows = PartitionRows::<1>::from_seed(64, 2, 0x5EED);
     let parts: Vec<PauliSum<1>> = (0..3u32).map(|r| s.filter_partition(&rows, r)).collect();
-    assert!(
-        parts.iter().all(|p| !p.is_empty()),
-        "every part must hold terms"
-    );
+    assert!(parts.iter().all(|p| !p.is_empty()), "every part must hold terms");
     let back = PauliSum::<1>::merge_partitions(parts.clone());
     back.assert_invariants();
     assert_eq!(back.len(), parts.iter().map(|p| p.len()).sum::<usize>());
@@ -1111,14 +1027,7 @@ mod props {
     /// A random `PauliSum<2>` of at most 8 terms with small coefficients, deduplicated through a `BTreeMap`.
     fn arb_pauli_sum_w2() -> impl Strategy<Value = PauliSum<2>> {
         prop::collection::vec(
-            (
-                any::<u64>(),
-                any::<u64>(),
-                any::<u64>(),
-                any::<u64>(),
-                -4.0f64..4.0,
-                -4.0f64..4.0,
-            ),
+            (any::<u64>(), any::<u64>(), any::<u64>(), any::<u64>(), -4.0f64..4.0, -4.0f64..4.0),
             0..8,
         )
         .prop_map(|entries| {
@@ -1176,11 +1085,6 @@ impl<const W: usize> PauliSum<W> {
     ) -> Self {
         let n = coeff.len();
         let hash = Gf2Hash::new(num_qubits, 0, DEFAULT_HASH_SEED);
-        Self {
-            buckets: vec![BucketColumns { x, z, coeff }],
-            hash,
-            num_qubits,
-            len: n,
-        }
+        Self { buckets: vec![BucketColumns { x, z, coeff }], hash, num_qubits, len: n }
     }
 }

@@ -15,14 +15,8 @@ fn parse_accepts_ranges_and_singletons() {
 #[test]
 fn parse_rejects_malformed_lists() {
     assert!(matches!(CpuSet::parse(""), Err(TopologyError::EmptySet)));
-    assert!(matches!(
-        CpuSet::parse("a"),
-        Err(TopologyError::InvalidCpuList(_))
-    ));
-    assert!(matches!(
-        CpuSet::parse("7-3"),
-        Err(TopologyError::InvalidCpuList(_))
-    ));
+    assert!(matches!(CpuSet::parse("a"), Err(TopologyError::InvalidCpuList(_))));
+    assert!(matches!(CpuSet::parse("7-3"), Err(TopologyError::InvalidCpuList(_))));
 }
 
 #[test]
@@ -68,14 +62,8 @@ fn unpinned_placement_requires_a_power_of_two() {
         placement: Placement::Unpinned { partitions: 3 },
         ..PartitionConfig::default()
     };
-    assert!(matches!(
-        cfg.resolve(),
-        Err(TopologyError::NotPowerOfTwo(3))
-    ));
-    assert!(matches!(
-        cfg.num_partitions(),
-        Err(TopologyError::NotPowerOfTwo(3))
-    ));
+    assert!(matches!(cfg.resolve(), Err(TopologyError::NotPowerOfTwo(3))));
+    assert!(matches!(cfg.num_partitions(), Err(TopologyError::NotPowerOfTwo(3))));
 }
 
 #[test]
@@ -100,19 +88,13 @@ fn unpinned_placement_resolves_to_unpinned_slots() {
 #[test]
 fn threads_per_partition_overrides_a_device_pool() {
     let cfg = PartitionConfig {
-        placement: Placement::Devices {
-            devices: vec![0],
-            per_device: 2,
-        },
+        placement: Placement::Devices { devices: vec![0], per_device: 2 },
         ..PartitionConfig::default()
     };
     for slot in cfg.resolve().unwrap() {
         assert_eq!(slot.threads, DEVICE_PARTITION_THREADS);
     }
-    let cfg = PartitionConfig {
-        threads_per_partition: Some(7),
-        ..cfg
-    };
+    let cfg = PartitionConfig { threads_per_partition: Some(7), ..cfg };
     for slot in cfg.resolve().unwrap() {
         assert_eq!((slot.threads, slot.device), (7, Some(0)));
     }
@@ -181,9 +163,7 @@ fn auto_placement_is_a_power_of_two_of_disjoint_sets() {
 #[test]
 fn auto_placement_honours_max_partitions() {
     let cfg = PartitionConfig {
-        placement: Placement::Auto {
-            max_partitions: Some(1),
-        },
+        placement: Placement::Auto { max_partitions: Some(1) },
         ..PartitionConfig::default()
     };
     assert_eq!(cfg.resolve().unwrap().len(), 1);
@@ -197,12 +177,8 @@ fn a_pinned_pool_runs_every_worker_on_the_pinned_cpu() {
         return;
     }
     let cpu = allowed.0[0];
-    let slot = PartitionSlot {
-        cpus: Some(CpuSet(vec![cpu])),
-        node: None,
-        threads: 2,
-        device: None,
-    };
+    let slot =
+        PartitionSlot { cpus: Some(CpuSet(vec![cpu])), node: None, threads: 2, device: None };
     let pool = build_pool(&slot, false, "test-pinned").unwrap();
     let seen: Vec<Option<usize>> = pool.broadcast(|_| current_cpu());
     assert_eq!(seen.len(), 2);
@@ -215,12 +191,7 @@ fn a_pinned_pool_runs_every_worker_on_the_pinned_cpu() {
 
 #[test]
 fn an_unpinned_pool_builds_and_runs() {
-    let slot = PartitionSlot {
-        cpus: None,
-        node: None,
-        threads: 2,
-        device: None,
-    };
+    let slot = PartitionSlot { cpus: None, node: None, threads: 2, device: None };
     let pool = build_pool(&slot, false, "test-unpinned").unwrap();
     assert_eq!(pool.install(|| (0..100).sum::<usize>()), 4950);
 }
@@ -257,9 +228,7 @@ fn current_cpu() -> Option<usize> {
 
 #[test]
 fn prev_power_of_two_rounds_down_and_floors_at_one() {
-    let got: Vec<usize> = [0, 1, 2, 3, 4, 5, 7, 8, 9, 64, 65]
-        .into_iter()
-        .map(prev_power_of_two)
-        .collect();
+    let got: Vec<usize> =
+        [0, 1, 2, 3, 4, 5, 7, 8, 9, 64, 65].into_iter().map(prev_power_of_two).collect();
     assert_eq!(got, vec![1, 1, 2, 2, 4, 4, 4, 8, 8, 64, 64]);
 }

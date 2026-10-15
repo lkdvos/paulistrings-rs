@@ -20,10 +20,7 @@ pub(crate) struct ScanScratch {
 
 impl ScanScratch {
     pub(crate) fn new(stream: &Arc<CudaStream>) -> Result<Self, GpuError> {
-        Ok(Self {
-            block_sum: stream.alloc_zeros(1)?,
-            block_max: stream.alloc_zeros(1)?,
-        })
+        Ok(Self { block_sum: stream.alloc_zeros(1)?, block_max: stream.alloc_zeros(1)? })
     }
 }
 
@@ -72,21 +69,14 @@ pub(crate) fn exclusive_scan(
             .arg(&mut *out)
             .arg(&n32)
             .arg(&mut *total_max)
-            .launch(LaunchConfig {
-                grid_dim: (1, 1, 1),
-                block_dim: block,
-                shared_mem_bytes: 0,
-            })?;
-        stream
-            .launch_builder(&kernels.scan_add)
-            .arg(&mut *out)
-            .arg(&*block_sum)
-            .arg(&n32)
-            .launch(LaunchConfig {
+            .launch(LaunchConfig { grid_dim: (1, 1, 1), block_dim: block, shared_mem_bytes: 0 })?;
+        stream.launch_builder(&kernels.scan_add).arg(&mut *out).arg(&*block_sum).arg(&n32).launch(
+            LaunchConfig {
                 grid_dim: ((n as u32).div_ceil(SCAN_THREADS).max(1), 1, 1),
                 block_dim: block,
                 shared_mem_bytes: 0,
-            })?;
+            },
+        )?;
     }
     Ok(())
 }

@@ -21,12 +21,7 @@ pub(crate) struct DeviceBlock<const W: usize> {
 impl<const W: usize> DeviceBlock<W> {
     fn new(stream: &Arc<CudaStream>) -> Result<Self, GpuError> {
         Ok(Self {
-            header: BlockHeader {
-                num_buckets: 0,
-                rows: 0,
-                width: W as u32,
-                entry: 0,
-            },
+            header: BlockHeader { num_buckets: 0, rows: 0, width: W as u32, entry: 0 },
             offsets: Vec::new(),
             x: stream.alloc_zeros(W)?,
             z: stream.alloc_zeros(W)?,
@@ -73,14 +68,7 @@ impl<const W: usize> DeviceBlock<W> {
         let bytes = (rows * (2 * W + 2) * 8) as u64;
         grow_keep(stream, &mut self.x, rows * W, live * W, ordinal, bytes)?;
         grow_keep(stream, &mut self.z, rows * W, live * W, ordinal, bytes)?;
-        grow_keep(
-            stream,
-            &mut self.coefficient,
-            2 * rows,
-            2 * live,
-            ordinal,
-            bytes,
-        )
+        grow_keep(stream, &mut self.coefficient, 2 * rows, 2 * live, ordinal, bytes)
     }
 
     pub(crate) fn rows(&self) -> usize {

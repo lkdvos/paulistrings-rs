@@ -38,9 +38,8 @@ fn concurrent_waiters_each_see_their_chunk_complete() {
 
     for round in 0..20usize {
         let len = 256 << (round % 11);
-        let send: Vec<Vec<u8>> = (0..CHUNKS * PIECES)
-            .map(|i| vec![(i + round) as u8; len])
-            .collect();
+        let send: Vec<Vec<u8>> =
+            (0..CHUNKS * PIECES).map(|i| vec![(i + round) as u8; len]).collect();
         let mut recv: Vec<Vec<u8>> = vec![vec![0; len]; CHUNKS * PIECES];
         ::mpi::request::multiple_scope(2 * CHUNKS * PIECES, |scope, requests| {
             let mut slot_of = Vec::new();

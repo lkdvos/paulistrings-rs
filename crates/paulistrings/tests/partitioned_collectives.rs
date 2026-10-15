@@ -32,10 +32,7 @@ const TOL: f64 = 1e-11;
 /// Fine enough that the bucket count tracks the term count instead of sitting
 /// on the `min_buckets` floor — which is what makes the *lag* observable.
 fn fine() -> PropagateOptions {
-    PropagateOptions {
-        target_bucket_len: 32,
-        min_buckets: 16,
-    }
+    PropagateOptions { target_bucket_len: 32, min_buckets: 16 }
 }
 
 fn config(partitions: usize) -> PartitionConfig {
@@ -89,10 +86,7 @@ fn exchange_free_layers_are_collective_free() {
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter_with(
         rand_sum_real::<1>(600, NQ, 0xC01),
-        ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(cut_rows()),
-        },
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(cut_rows()) },
     );
     ps.enable_trace();
     ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
@@ -111,10 +105,7 @@ fn exchange_free_layers_are_collective_free() {
     );
     // And the win is real, not marginal: fewer than one collective per four
     // layers, where the unconditional schedule spent one per layer.
-    assert!(
-        got * 4 < layers,
-        "{got} collectives over {layers} layers is not a schedule",
-    );
+    assert!(got * 4 < layers, "{got} collectives over {layers} layers is not a schedule",);
 
     // Every layer that did talk to the group either exchanged or was on the
     // fixed layer-index schedule — never "because my own share grew".
@@ -137,10 +128,7 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
     let runtime = PartitionRuntime::new(&config(1)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter_with(
         rand_sum_real::<1>(400, NQ, 0xC02),
-        ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(PartitionRows::<1>::none(NQ)),
-        },
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(PartitionRows::<1>::none(NQ)) },
     );
     let before = ps.bits();
     ps.enable_trace();
@@ -153,12 +141,8 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
     let mut prev = before;
     let mut grew = false;
     for (k, layer) in trace.layers.iter().enumerate() {
-        let want = desired_bits(
-            layer.terms_in[0],
-            fine().target_bucket_len,
-            fine().min_buckets,
-        )
-        .max(prev);
+        let want =
+            desired_bits(layer.terms_in[0], fine().target_bucket_len, fine().min_buckets).max(prev);
         assert_eq!(
             layer.bits, want,
             "layer {k}: P = 1 must rebucket every layer ({} terms in)",
@@ -208,10 +192,7 @@ fn a_remote_layer_after_a_long_local_run_agrees_first() {
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter_with(
         lopsided_start(),
-        ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(cut_rows()),
-        },
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(cut_rows()) },
     );
     ps.enable_trace();
     ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
@@ -231,20 +212,13 @@ fn a_remote_layer_after_a_long_local_run_agrees_first() {
     assert!(
         lagged,
         "fixture must reach an off-schedule layer where the partitions disagree about bits: {:?}",
-        trace
-            .layers
-            .iter()
-            .map(|l| l.terms_in.clone())
-            .collect::<Vec<_>>(),
+        trace.layers.iter().map(|l| l.terms_in.clone()).collect::<Vec<_>>(),
     );
 
     // The crossing layer is the last one, and it agreed before it exchanged.
     let last = trace.layers.last().expect("layers");
     assert!(last.remote_deltas > 0, "the last layer must cross");
-    assert!(
-        last.collectives > 0,
-        "a remote layer must agree the bucket count before it exchanges",
-    );
+    assert!(last.collectives > 0, "a remote layer must agree the bucket count before it exchanges",);
     assert!(last.rows_received.iter().sum::<u64>() > 0, "rows must move");
 }
 
@@ -256,24 +230,16 @@ fn the_lagged_schedule_still_matches_propagate() {
     let circuit = steps(2, 0.1);
     let sum = rand_sum_real::<1>(400, NQ, 0xC04);
     let policy = WeightCutoff(3);
-    let quarters: Vec<Vec<usize>> = (0..4)
-        .map(|b| (b * 8..(b + 1) * 8).collect::<Vec<usize>>())
-        .collect();
+    let quarters: Vec<Vec<usize>> =
+        (0..4).map(|b| (b * 8..(b + 1) * 8).collect::<Vec<usize>>()).collect();
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
         let want = propagate(&circuit, sum.clone(), &policy, direction);
         for &p in &[2usize, 4] {
-            let rows = if p == 2 {
-                cut_rows()
-            } else {
-                PartitionRows::<1>::cut(NQ, &quarters)
-            };
+            let rows = if p == 2 { cut_rows() } else { PartitionRows::<1>::cut(NQ, &quarters) };
             let runtime = PartitionRuntime::new(&config(p)).expect("topology resolves");
             let mut ps = PartitionedSum::scatter_with(
                 sum.clone(),
-                ScatterOptions {
-                    runtime,
-                    rows: ScatterRows::Explicit(rows),
-                },
+                ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
             );
             ps.propagate(&circuit, &policy, direction);
             let got = ps.into_gathered();

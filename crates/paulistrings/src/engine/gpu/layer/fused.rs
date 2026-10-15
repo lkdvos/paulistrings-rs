@@ -51,16 +51,8 @@ pub(in crate::engine::gpu) fn fused_variant(
     let record_capacity = records_max.max(threads).next_power_of_two();
     let variant = &kernels.layer[(record_capacity / threads).trailing_zeros() as usize];
     debug_assert_eq!(variant.items * threads, record_capacity);
-    let func = if dense {
-        &variant.segscan
-    } else {
-        &variant.serial
-    };
-    (
-        func,
-        record_capacity,
-        layer_shared_bytes(record_capacity, w),
-    )
+    let func = if dense { &variant.segscan } else { &variant.serial };
+    (func, record_capacity, layer_shared_bytes(record_capacity, w))
 }
 
 /// The table-side buffers one fused-layer launch reads: the counts and segment starts sized for `table`'s upload.
@@ -103,11 +95,7 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
     let (func, smem) = kernel;
     let e32 = table.entries as u32;
     let b32 = sum.hash.num_buckets() as u32;
-    let FusedOut {
-        arena,
-        rows_per_position,
-        fallback,
-    } = out;
+    let FusedOut { arena, rows_per_position, fallback } = out;
     // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds the batch's pre-dedup rows, `rows_per_position` has `b` entries, `fused` is `table`'s upload with `counts`/`segment_start` sized for it, and the received columns hold every row `table.received_slot` names.
     unsafe {
         sum.stream

@@ -29,10 +29,7 @@ fn support_crosses_a_word_boundary_w2() {
     gen.mul_assign(&PauliString::<2>::y(64));
     let rot = PauliRotation::new(gen, 0.3);
     // Qubit 70 (word 1, bit 6) lands in mask[1], alongside qubit 64 (bit 0).
-    assert_eq!(
-        Channel::<2>::support(&rot),
-        [1u64 << 5, (1u64 << 0) | (1u64 << 6)]
-    );
+    assert_eq!(Channel::<2>::support(&rot), [1u64 << 5, (1u64 << 0) | (1u64 << 6)]);
     assert_eq!(rot.weight(), 3);
 }
 
@@ -61,10 +58,7 @@ fn rotation_support_is_generator_mask() {
     let mut gen = PauliString::<2>::z(3);
     gen.mul_assign(&PauliString::<2>::x(70));
     let rot = PauliRotation::new(gen, 0.7);
-    assert_eq!(
-        Channel::<2>::support(&rot),
-        [gen.x[0] | gen.z[0], gen.x[1] | gen.z[1]]
-    );
+    assert_eq!(Channel::<2>::support(&rot), [gen.x[0] | gen.z[0], gen.x[1] | gen.z[1]]);
 }
 
 /// `weight()` is the popcount of the generator's support mask, at any generator weight (including above `MAX_LOCAL_SUPPORT`).

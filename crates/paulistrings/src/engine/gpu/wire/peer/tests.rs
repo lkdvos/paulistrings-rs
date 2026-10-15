@@ -41,10 +41,8 @@ fn every_pair_exchanges_in_posting_order() {
             .flat_map(|&q| (0..2).map(move |m| (q, m)))
             .map(|(q, m)| (q, stream.clone_htod(&msg(me, q, m)).expect("upload")))
             .collect();
-        let parts: Vec<(usize, u32)> = peers
-            .iter()
-            .flat_map(|&q| (0..2).map(move |m| (msg(q, me, m).len(), q)))
-            .collect();
+        let parts: Vec<(usize, u32)> =
+            peers.iter().flat_map(|&q| (0..2).map(move |m| (msg(q, me, m).len(), q))).collect();
         let total: usize = parts.iter().map(|p| p.0).sum();
         let mut destination = stream.alloc_zeros::<u64>(total).expect("alloc");
         let mut group = WireGroup::new();
@@ -55,10 +53,8 @@ fn every_pair_exchanges_in_posting_order() {
         group.post(&wire).expect("post");
         wire.wait(&stream).expect("wait");
         let got = stream.clone_dtoh(&destination).expect("download");
-        let want: Vec<u64> = peers
-            .iter()
-            .flat_map(|&q| (0..2).flat_map(move |m| msg(q, me, m)))
-            .collect();
+        let want: Vec<u64> =
+            peers.iter().flat_map(|&q| (0..2).flat_map(move |m| msg(q, me, m))).collect();
         assert_eq!(got, want, "rank {me}");
     });
     for r in out {
@@ -83,8 +79,7 @@ fn an_unmatched_receive_panics_naming_both_ranks() {
     });
     let msgs = panics(out);
     assert!(
-        msgs.iter()
-            .all(|m| m.contains("rank 0 posts 1 receives from rank 1, which posts 0 sends")),
+        msgs.iter().all(|m| m.contains("rank 0 posts 1 receives from rank 1, which posts 0 sends")),
         "{msgs:?}"
     );
 }

@@ -43,21 +43,11 @@ fn test_devices() -> Vec<u32> {
 fn config(partitions: usize) -> PartitionConfig {
     let devices = test_devices();
     let placement = if devices.len() > 1 && devices.len() == partitions {
-        Placement::Devices {
-            devices,
-            per_device: 1,
-        }
+        Placement::Devices { devices, per_device: 1 }
     } else {
-        Placement::Devices {
-            devices: vec![devices[0]],
-            per_device: partitions,
-        }
+        Placement::Devices { devices: vec![devices[0]], per_device: partitions }
     };
-    PartitionConfig {
-        placement,
-        bind_memory: false,
-        threads_per_partition: None,
-    }
+    PartitionConfig { placement, bind_memory: false, threads_per_partition: None }
 }
 
 /// A split of `sum` over `p` partitions.
@@ -182,13 +172,7 @@ fn a_rotation_crossing_the_partition_agrees() {
             circuit.push(PtmChannel::hadamard((k + 3) % nq));
         }
         check(&circuit, &sum, &KeepAll, "crossing zz", &[p]);
-        check(
-            &circuit,
-            &sum,
-            &ApproxTopN(3_000),
-            "crossing zz approx",
-            &[p],
-        );
+        check(&circuit, &sum, &ApproxTopN(3_000), "crossing zz approx", &[p]);
     }
 }
 
@@ -200,9 +184,8 @@ fn cut_rows_agree() {
     let sum = spread_magnitudes(&rand_sum_real::<1>(1_500, nq, 0xC077), 40, 0xC077);
     let circuit = trotter_circuit::<1>(nq, THETA);
     for p in [2usize, 4] {
-        let blocks: Vec<Vec<usize>> = (0..p)
-            .map(|k| (k * nq / p..(k + 1) * nq / p).collect())
-            .collect();
+        let blocks: Vec<Vec<usize>> =
+            (0..p).map(|k| (k * nq / p..(k + 1) * nq / p).collect()).collect();
         let rows = PartitionRows::<1>::cut(nq, &blocks);
         for direction in [Direction::Forward, Direction::Heisenberg] {
             let (want, discarded) =
@@ -218,14 +201,9 @@ fn cut_rows_agree() {
             )
             .expect("scatter");
             split.enable_trace();
-            split
-                .propagate(&circuit, ApproxTopN(2_500), direction)
-                .expect("propagate");
+            split.propagate(&circuit, ApproxTopN(2_500), direction).expect("propagate");
             let trace = split.take_trace().expect("tracing on");
-            assert!(
-                trace.remote_layers() > 0,
-                "P={p}: a cut still crosses somewhere"
-            );
+            assert!(trace.remote_layers() > 0, "P={p}: a cut still crosses somewhere");
             let got = split.gather().expect("gather");
             let what = format!("cut P={p} {direction:?}");
             assert_runs_agree(ApproxTopN(2_500), discarded, &got, &want, TOL, &what);
@@ -248,19 +226,9 @@ fn edge_cases() {
         assert_terms_close(&got, &want, TOL, &format!("single term P={p}"));
 
         let sum = rand_sum::<1>(300, 6, 0x9AA2);
-        let got = run(
-            &Circuit::<1>::new(6),
-            &sum,
-            &KeepAll,
-            Direction::Heisenberg,
-            p,
-        )
-        .expect("zero layers");
-        assert_eq!(
-            got.to_arrays(),
-            sum.to_arrays(),
-            "P={p}: a zero-layer circuit is the identity"
-        );
+        let got = run(&Circuit::<1>::new(6), &sum, &KeepAll, Direction::Heisenberg, p)
+            .expect("zero layers");
+        assert_eq!(got.to_arrays(), sum.to_arrays(), "P={p}: a zero-layer circuit is the identity");
     }
 }
 
@@ -274,14 +242,9 @@ fn one_partition_and_gpu_pauli_sum_both_match_the_host() {
         let (host, discarded) =
             propagate_discarding(&circuit, sum.clone(), &ApproxTopN(4_000), direction);
         let mut dev = GpuPartitionedSum::from_host(&sum, test_devices()[0]).expect("upload");
-        dev.propagate(&circuit, ApproxTopN(4_000), direction)
-            .expect("device");
+        dev.propagate(&circuit, ApproxTopN(4_000), direction).expect("device");
         let resident = dev.gather().expect("download");
-        assert_eq!(
-            resident.len(),
-            host.len(),
-            "GpuPauliSum {direction:?}: term count"
-        );
+        assert_eq!(resident.len(), host.len(), "GpuPauliSum {direction:?}: term count");
         assert_runs_agree(
             ApproxTopN(4_000),
             discarded,
@@ -317,9 +280,7 @@ fn repeated_propagate_on_one_split() {
     for (i, c) in circuits.iter().enumerate() {
         let (next, d) = propagate_discarding(c, host, &ApproxTopN(10_000), Direction::Heisenberg);
         (host, discarded) = (next, discarded + d);
-        split
-            .propagate(c, ApproxTopN(10_000), Direction::Heisenberg)
-            .expect("propagate");
+        split.propagate(c, ApproxTopN(10_000), Direction::Heisenberg).expect("propagate");
         assert_eq!(split.len(), host.len(), "call {i}");
         assert_runs_agree(
             ApproxTopN(10_000),
@@ -337,10 +298,7 @@ fn options_are_honoured() {
     require_cuda!();
     let circuit = random_circuit::<1>(6, 12, 0x9AA1, true);
     let sum = rand_sum::<1>(300, 6, 0x9AA2);
-    let options = PropagateOptions {
-        target_bucket_len: 32,
-        min_buckets: 16,
-    };
+    let options = PropagateOptions { target_bucket_len: 32, min_buckets: 16 };
     let want = propagate_with(
         &circuit,
         sum.clone(),
@@ -351,9 +309,7 @@ fn options_are_honoured() {
     );
     for &p in &PS {
         let mut split = split_of(&sum, p);
-        split
-            .propagate_with(&circuit, KeepAll, Direction::Forward, options)
-            .expect("propagate");
+        split.propagate_with(&circuit, KeepAll, Direction::Forward, options).expect("propagate");
         assert_terms_close(
             &split.gather().expect("gather"),
             &want,
@@ -378,9 +334,7 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
             ..GpuLayerOptions::default()
         });
         split.enable_trace();
-        split
-            .propagate(&circuit, ApproxTopN(6_000), Direction::Forward)
-            .expect("propagate");
+        split.propagate(&circuit, ApproxTopN(6_000), Direction::Forward).expect("propagate");
         let trace = split.take_trace().expect("tracing on");
         assert_eq!(trace.layers.len(), circuit.len());
         assert!(trace.remote_layers() > 0 && trace.local_layers() > 0);
@@ -406,12 +360,8 @@ fn trace_is_consistent_and_remote_layers_run_at_the_agreed_bits() {
             last.device.iter().all(Option::is_some),
             "P={p}: every partition is a device partition"
         );
-        let (want, discarded) = propagate_discarding(
-            &circuit,
-            sum.clone(),
-            &ApproxTopN(6_000),
-            Direction::Forward,
-        );
+        let (want, discarded) =
+            propagate_discarding(&circuit, sum.clone(), &ApproxTopN(6_000), Direction::Forward);
         assert_runs_agree(
             ApproxTopN(6_000),
             discarded,
@@ -433,20 +383,10 @@ fn several_deltas_to_one_partner_agree() {
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     let mut split = split_of(&sum, 2);
     split.enable_trace();
-    split
-        .propagate(&circuit, KeepAll, Direction::Forward)
-        .expect("propagate");
+    split.propagate(&circuit, KeepAll, Direction::Forward).expect("propagate");
     let trace = split.take_trace().expect("tracing on");
-    let widest = trace
-        .layers
-        .iter()
-        .map(|l| l.remote_deltas)
-        .max()
-        .unwrap_or(0);
-    assert!(
-        widest >= 2,
-        "the SU(4) layers must ship at least two remote deltas to the partner"
-    );
+    let widest = trace.layers.iter().map(|l| l.remote_deltas).max().unwrap_or(0);
+    assert!(widest >= 2, "the SU(4) layers must ship at least two remote deltas to the partner");
     let first = split.gather().expect("gather");
     assert_eq!(first.len(), want.len(), "term count");
     assert_terms_close(&first, &want, TOL, "several deltas");
@@ -460,28 +400,16 @@ fn an_injected_failure_poisons_the_split_and_the_partners_finish() {
     let sum = rand_sum::<1>(400, 8, 0x1F02);
     for p in [2usize, 4] {
         let mut split = split_of(&sum, p);
-        let plan = FaultPlan {
-            at_layer: Some(2),
-            ..FaultPlan::default()
-        };
+        let plan = FaultPlan { at_layer: Some(2), ..FaultPlan::default() };
         set_fault_plan(&mut split, 1, plan);
         let r = split.propagate(&circuit, KeepAll, Direction::Forward);
         assert!(
-            matches!(
-                r,
-                Err(GpuError::Unsupported("injected before the exchange"))
-            ),
+            matches!(r, Err(GpuError::Unsupported("injected before the exchange"))),
             "P={p}: {r:?}"
         );
         let again = split.propagate(&circuit, KeepAll, Direction::Forward);
-        assert!(
-            matches!(again, Err(GpuError::Poisoned { rank: 1, layer: 2 })),
-            "P={p}: {again:?}"
-        );
-        assert!(
-            matches!(split.gather(), Err(GpuError::Poisoned { .. })),
-            "P={p}: gather"
-        );
+        assert!(matches!(again, Err(GpuError::Poisoned { rank: 1, layer: 2 })), "P={p}: {again:?}");
+        assert!(matches!(split.gather(), Err(GpuError::Poisoned { .. })), "P={p}: gather");
     }
 }
 
@@ -511,9 +439,7 @@ fn an_empty_partition_ships_empty_blocks_and_merges_what_it_receives() {
         },
     )
     .expect("scatter");
-    split
-        .propagate(&circuit, KeepAll, Direction::Forward)
-        .expect("propagate");
+    split.propagate(&circuit, KeepAll, Direction::Forward).expect("propagate");
     let got = split.gather().expect("gather");
     assert_eq!(got.len(), want.len());
     assert_terms_close(&got, &want, TOL, "empty partition");
@@ -526,10 +452,7 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
     const MAX_BUCKET_LEN: usize = 4096;
     let mut circuit = Circuit::<1>::new(64);
     circuit.push(zz_rotation::<1>(0, 63, 0.3));
-    let options = PropagateOptions {
-        target_bucket_len: 1 << 20,
-        min_buckets: 1 << 20,
-    };
+    let options = PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 };
     let input = x0_terms_identity_on_q63(MAX_BUCKET_LEN + MAX_BUCKET_LEN / 2, 0xF3);
     let seed = input.hash().seed();
     let input = with_hash(input, paulistrings::Gf2Hash::new(64, 1, seed));
@@ -561,10 +484,7 @@ fn a_received_block_above_the_tag_limit_is_merged_when_every_segment_fits() {
         .expect("a block over two fitting segments is merged");
     let trace = split.take_trace().expect("tracing on");
     let sent: u64 = trace.layers[0].rows_sent[0].iter().sum();
-    assert!(
-        sent as usize > MAX_BUCKET_LEN,
-        "fixture: {sent} rows in one block"
-    );
+    assert!(sent as usize > MAX_BUCKET_LEN, "fixture: {sent} rows in one block");
     let got = split.gather().expect("gather");
     assert_eq!(got.len(), want.len());
     assert_terms_close(&got, &want, TOL, "block of 6144 rows over two segments");
@@ -577,10 +497,7 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
     use paulistrings::test_support::haar_su4_matrix;
     // One bucket in, so the scatter keeps one bucket and the agreement stays there under the capped proposal.
     let sum = rand_sum::<1>(20_000, 10, 0x1F03);
-    let sum = with_hash(
-        sum.clone(),
-        paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()),
-    );
+    let sum = with_hash(sum.clone(), paulistrings::Gf2Hash::new(10, 0, sum.hash().seed()));
     let mut circuit = Circuit::<1>::new(10);
     circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
     let mut split = split_of(&sum, 2);
@@ -589,10 +506,7 @@ fn an_agreed_count_below_the_devices_need_is_unsupported() {
         max_bits: 0,
         ..GpuLayerOptions::default()
     });
-    let options = PropagateOptions {
-        target_bucket_len: 1 << 20,
-        min_buckets: 1 << 20,
-    };
+    let options = PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 };
     let r = split.propagate_with(&circuit, KeepAll, Direction::Forward, options);
     assert!(matches!(r, Err(GpuError::Unsupported(_))), "{r:?}");
 }
@@ -605,12 +519,8 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     let sum = spread_magnitudes(&rand_sum::<1>(2_000, nq, 0x1F04), 40, 0x1F04);
     let circuit = random_circuit::<1>(nq, 20, 0x1F05, true);
     let rows = PartitionRows::<1>::cut(nq, &[(0..3).collect(), (3..16).collect()]);
-    let (want, discarded) = propagate_discarding(
-        &circuit,
-        sum.clone(),
-        &ApproxTopN(8_000),
-        Direction::Forward,
-    );
+    let (want, discarded) =
+        propagate_discarding(&circuit, sum.clone(), &ApproxTopN(8_000), Direction::Forward);
     let runtime = PartitionRuntime::new(&config(2)).expect("placement");
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &sum,
@@ -622,9 +532,7 @@ fn uneven_cut_partitions_keep_equal_bits_across_seventeen_layers() {
     )
     .expect("scatter");
     split.enable_trace();
-    split
-        .propagate(&circuit, ApproxTopN(8_000), Direction::Forward)
-        .expect("propagate");
+    split.propagate(&circuit, ApproxTopN(8_000), Direction::Forward).expect("propagate");
     let trace = split.take_trace().expect("tracing on");
     assert_eq!(trace.layers.len(), 20);
     assert!(trace.local_layers() > 0);
@@ -664,9 +572,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
     )
     .expect("scatter");
     split.enable_trace();
-    split
-        .propagate(&circuit, ApproxTopN(20_000), Direction::Forward)
-        .expect("propagate");
+    split.propagate(&circuit, ApproxTopN(20_000), Direction::Forward).expect("propagate");
     let trace = split.take_trace().expect("tracing on");
     // The partition deltas a layer can realize are those of its channel's key-delta masks; every other partner pair must show zero.
     let rows = PartitionRows::<1>::cut(nq, &blocks);
@@ -693,10 +599,7 @@ fn cut_rows_at_p4_leave_never_exchanging_pairs_at_zero() {
             }
         }
     }
-    assert!(
-        zero_pairs > 0 && sent > 0,
-        "the fixture has both idle pairs and traffic"
-    );
+    assert!(zero_pairs > 0 && sent > 0, "the fixture has both idle pairs and traffic");
     let (want, discarded) =
         propagate_discarding(&circuit, sum, &ApproxTopN(20_000), Direction::Forward);
     assert_runs_agree(
@@ -717,25 +620,13 @@ fn traced_rows<const W: usize>(
     premerge: bool,
 ) -> (u64, Vec<u64>, PauliSum<W>) {
     let mut split = split_of(sum, p);
-    split.set_layer_options(GpuLayerOptions {
-        premerge,
-        ..GpuLayerOptions::default()
-    });
+    split.set_layer_options(GpuLayerOptions { premerge, ..GpuLayerOptions::default() });
     split.enable_trace();
-    split
-        .propagate(circuit, KeepAll, Direction::Forward)
-        .expect("propagate");
+    split.propagate(circuit, KeepAll, Direction::Forward).expect("propagate");
     let trace = split.take_trace().expect("tracing on");
-    let per_layer: Vec<u64> = trace
-        .layers
-        .iter()
-        .map(|l| l.rows_sent.iter().flatten().sum())
-        .collect();
-    (
-        trace.total_rows_exchanged(),
-        per_layer,
-        split.gather().expect("gather"),
-    )
+    let per_layer: Vec<u64> =
+        trace.layers.iter().map(|l| l.rows_sent.iter().flatten().sum()).collect();
+    (trace.total_rows_exchanged(), per_layer, split.gather().expect("gather"))
 }
 
 fn premerge_case<const W: usize>(nq: usize, n: usize, seed: u64) {
@@ -750,10 +641,7 @@ fn premerge_case<const W: usize>(nq: usize, n: usize, seed: u64) {
             assert_eq!(got.len(), want.len(), "{what} {tag}: term count");
             assert_terms_close(got, &want, TOL, &format!("{what} {tag}"));
         }
-        assert!(
-            merged < plain,
-            "{what}: {merged} rows merged against {plain}"
-        );
+        assert!(merged < plain, "{what}: {merged} rows merged against {plain}");
         for (k, (m, u)) in merged_layers.iter().zip(&plain_layers).enumerate() {
             assert!(m <= u, "{what} layer {k}: {m} rows merged against {u}");
         }
@@ -785,10 +673,7 @@ fn premerge_with_exactly_cancelling_rows_agrees() {
         let (x, z) = (x[0], z[0]);
         let swap = |v: u64| (v & !0b11) | ((v & 1) << 1) | ((v >> 1) & 1);
         let v = paulistrings::PauliString::<1> { x: [x], z: [z] };
-        let w = paulistrings::PauliString::<1> {
-            x: [swap(x)],
-            z: [swap(z)],
-        };
+        let w = paulistrings::PauliString::<1> { x: [swap(x)], z: [swap(z)] };
         if v == w {
             continue;
         }
@@ -835,11 +720,7 @@ fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
         .iter()
         .map(|&(a, b)| {
             let mut c = Circuit::<W>::new(nq);
-            c.push(PtmChannel::unitary_2q(
-                a,
-                b,
-                paulistrings::test_support::haar_su4_matrix(),
-            ));
+            c.push(PtmChannel::unitary_2q(a, b, paulistrings::test_support::haar_su4_matrix()));
             c
         })
         .collect();
@@ -854,9 +735,7 @@ fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
             split.enable_trace();
             let mut widest = 0u32;
             for (k, c) in layers.iter().enumerate() {
-                split
-                    .propagate(c, KeepAll, Direction::Forward)
-                    .expect("propagate");
+                split.propagate(c, KeepAll, Direction::Forward).expect("propagate");
                 let layer = split.take_trace().unwrap().layers.pop().unwrap();
                 for r in 0..p {
                     if cap == usize::MAX && layer.rows_received[r] > 0 {
@@ -870,16 +749,11 @@ fn chunked_receive_case<const W: usize>(nq: usize, n: usize, seed: u64) {
             if cap == usize::MAX {
                 continue;
             }
-            assert!(
-                widest >= 3,
-                "{what}: the widest receive moved in {widest} chunks"
-            );
+            assert!(widest >= 3, "{what}: the widest receive moved in {widest} chunks");
             for direction in [Direction::Forward, Direction::Heisenberg] {
                 let whole = propagate(&circuit, sum.clone(), &KeepAll, direction);
                 let mut split = capped_split(&sum, p, cap);
-                split
-                    .propagate(&circuit, KeepAll, direction)
-                    .expect("propagate");
+                split.propagate(&circuit, KeepAll, direction).expect("propagate");
                 let got = split.gather().expect("gather");
                 assert_eq!(got.len(), whole.len(), "{what} {direction:?}: term count");
                 assert_terms_close(&got, &whole, TOL, &format!("{what} {direction:?}"));
@@ -909,23 +783,11 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
     let circuit = su4_chain::<1>(10);
     for p in [2usize, 4] {
         let mut split = capped_split(&sum, p, recv_bytes::<1>(128));
-        let plan = FaultPlan {
-            after_chunk: Some(1),
-            ..FaultPlan::default()
-        };
+        let plan = FaultPlan { after_chunk: Some(1), ..FaultPlan::default() };
         set_fault_plan(&mut split, 1, plan);
         split.enable_trace();
         let r = split.propagate(&circuit, KeepAll, Direction::Forward);
-        assert!(
-            matches!(
-                r,
-                Err(GpuError::OutOfMemory {
-                    device: Some(0),
-                    ..
-                })
-            ),
-            "P={p}: {r:?}"
-        );
+        assert!(matches!(r, Err(GpuError::OutOfMemory { device: Some(0), .. })), "P={p}: {r:?}");
         let trace = split.take_trace().unwrap();
         let failing = trace
             .layers
@@ -938,10 +800,7 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
             "P={p}: the failing layer must have had more than one chunk, got {failing:?}"
         );
         let again = split.propagate(&circuit, KeepAll, Direction::Forward);
-        assert!(
-            matches!(again, Err(GpuError::Poisoned { rank: 1, .. })),
-            "P={p}: {again:?}"
-        );
+        assert!(matches!(again, Err(GpuError::Poisoned { rank: 1, .. })), "P={p}: {again:?}");
     }
 }
 
@@ -970,9 +829,7 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
         split.enable_trace();
         let mut c = Circuit::<1>::new(nq);
         c.push(PtmChannel::hadamard(local));
-        split
-            .propagate(&c, KeepAll, Direction::Forward)
-            .expect("local H");
+        split.propagate(&c, KeepAll, Direction::Forward).expect("local H");
         let layer = split.take_trace().unwrap().layers.pop().unwrap();
         for rank in 0..p {
             let device = layer.device[rank].unwrap();
@@ -980,9 +837,7 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
         }
         let mut c = Circuit::<1>::new(nq);
         c.push(PtmChannel::hadamard(remote));
-        split
-            .propagate(&c, KeepAll, Direction::Forward)
-            .expect("crossing H");
+        split.propagate(&c, KeepAll, Direction::Forward).expect("crossing H");
         let layer = split.take_trace().unwrap().layers.pop().unwrap();
         for rank in 0..p {
             let device = layer.device[rank].unwrap();
@@ -995,12 +850,7 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
         both.push(PtmChannel::hadamard(local));
         both.push(PtmChannel::hadamard(remote));
         let want = propagate(&both, sum.clone(), &KeepAll, Direction::Forward);
-        assert_terms_close(
-            &split.gather().unwrap(),
-            &want,
-            TOL,
-            &format!("P={p} two H"),
-        );
+        assert_terms_close(&split.gather().unwrap(), &want, TOL, &format!("P={p} two H"));
     }
 }
 
@@ -1037,10 +887,7 @@ fn approx_top_n_keeps_exactly_n_across_device_partitions() {
             assert_eq!(got_above.len(), host_above.len(), "{what}: terms above");
             for (g, h) in got_above.iter().zip(&host_above) {
                 assert_eq!((g.0, g.1), (h.0, h.1), "{what}: key above the boundary");
-                assert!(
-                    (g.2 - h.2).norm() < TOL,
-                    "{what}: coefficient above the boundary"
-                );
+                assert!((g.2 - h.2).norm() < TOL, "{what}: coefficient above the boundary");
             }
         }
     }

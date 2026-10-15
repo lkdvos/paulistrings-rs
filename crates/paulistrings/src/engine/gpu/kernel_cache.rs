@@ -77,10 +77,8 @@ pub(crate) fn store(dir: &Path, source: &str, options: &CompileOptions, ptx_text
         return;
     }
     let path = dir.join(entry_name(source, options));
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or_default();
+    let unique =
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
     let temporary = dir.join(format!(".tmp-{}-{unique}", std::process::id()));
     if fs::write(&temporary, ptx_text).is_err() {
         let _ = fs::remove_file(&temporary);

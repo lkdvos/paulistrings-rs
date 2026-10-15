@@ -28,10 +28,7 @@ impl<B> PartitionWork<B> {
     where
         B: PartitionStorage<W>,
     {
-        Self {
-            local: local.detach(),
-            rows: Vec::with_capacity(if tracing { layers } else { 0 }),
-        }
+        Self { local: local.detach(), rows: Vec::with_capacity(if tracing { layers } else { 0 }) }
     }
 }
 
@@ -66,11 +63,7 @@ pub(super) struct DriverLaps {
 #[cfg(feature = "phase-timing")]
 impl DriverLaps {
     pub(super) fn new(scatter_ns: u64) -> Self {
-        Self {
-            scatter_ns,
-            gather_ns: std::sync::atomic::AtomicU64::new(0),
-            layers: 0,
-        }
+        Self { scatter_ns, gather_ns: std::sync::atomic::AtomicU64::new(0), layers: 0 }
     }
 
     pub(super) fn lap_gather(&self, ns: u64) {
@@ -106,12 +99,8 @@ impl<const W: usize, T: TruncationPolicy<W> + ?Sized> LayerRun<'_, W, T> {
         work: &mut PartitionWork<B>,
         transport: &X,
     ) {
-        let context = PartitionContext {
-            rows: self.rows,
-            rank,
-            size: self.size,
-            tracing: self.tracing,
-        };
+        let context =
+            PartitionContext { rows: self.rows, rank, size: self.size, tracing: self.tracing };
         run_layers(
             self.circuit,
             self.policy,
@@ -174,15 +163,8 @@ impl<const W: usize, B: PartitionStorage<W>> DriverFrame<'_, W, B> {
                 .iter_mut()
                 .map(|part| PartitionWork::take(part, num_layers, tracing))
                 .collect();
-            let layers = LayerRun {
-                circuit,
-                policy,
-                direction,
-                options,
-                rows: self.rows,
-                size,
-                tracing,
-            };
+            let layers =
+                LayerRun { circuit, policy, direction, options, rows: self.rows, size, tracing };
             let done = run(items, &layers);
             assert_eq!(done.len(), self.parts.len(), "one work item per partition");
             let mut traced = Vec::with_capacity(if tracing { done.len() } else { 0 });

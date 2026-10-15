@@ -1,22 +1,11 @@
 use super::*;
 
-static COUNT: Knob<usize> = Knob::new(
-    "PAULISTRINGS_TEST_KNOB_NEVER_SET",
-    "paulistrings::propagate",
-    parse_positive,
-    || 8,
-);
+static COUNT: Knob<usize> =
+    Knob::new("PAULISTRINGS_TEST_KNOB_NEVER_SET", "paulistrings::propagate", parse_positive, || 8);
 
 #[test]
 fn unset_empty_and_unparsable_values_fall_back_to_the_default() {
-    for raw in [
-        None,
-        Some(""),
-        Some("  "),
-        Some("0"),
-        Some("-2"),
-        Some("many"),
-    ] {
+    for raw in [None, Some(""), Some("  "), Some("0"), Some("-2"), Some("many")] {
         assert_eq!(COUNT.resolve(raw), 8, "{raw:?}");
     }
 }

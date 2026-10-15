@@ -11,11 +11,7 @@ impl<const W: usize> PauliSum<W> {
         assert!(num_qubits <= 64 * W, "num_qubits must fit in W*64 bits");
         let mut accumulator = crate::pauli_sum::accumulator::BuildAccumulator::<W>::new(num_qubits);
         for (s, c) in terms {
-            assert_eq!(
-                s.len(),
-                num_qubits,
-                "all pauli strings must have the same length",
-            );
+            assert_eq!(s.len(), num_qubits, "all pauli strings must have the same length",);
             let mut x = [0u64; W];
             let mut z = [0u64; W];
             for (i, label) in s.chars().enumerate() {

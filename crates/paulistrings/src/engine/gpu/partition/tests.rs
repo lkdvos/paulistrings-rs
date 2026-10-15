@@ -67,11 +67,7 @@ fn a_lone_partition_runs_exact_topn_with_no_collective() {
         let mut part = part(&input, &tree);
         PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
         part.take_error().expect("device layer pass");
-        assert_eq!(
-            reductions(&device),
-            0,
-            "{tree:?}: exact TopN has no collective form"
-        );
+        assert_eq!(reductions(&device), 0, "{tree:?}: exact TopN has no collective form");
         let mut want_sum = input.clone();
         <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut want_sum);
         assert_eq!(part.len(), want_sum.len(), "{tree:?}: len");
@@ -110,13 +106,6 @@ fn a_failed_partition_still_enters_the_reduction() {
     let group = one_rank();
     PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &group);
     assert_eq!(reductions(&group), 2);
-    assert!(matches!(
-        part.take_error(),
-        Err(GpuError::Unsupported("injected"))
-    ));
-    assert_eq!(
-        part.len(),
-        input.len(),
-        "a failed partition keeps its terms"
-    );
+    assert!(matches!(part.take_error(), Err(GpuError::Unsupported("injected"))));
+    assert_eq!(part.len(), input.len(), "a failed partition keeps its terms");
 }

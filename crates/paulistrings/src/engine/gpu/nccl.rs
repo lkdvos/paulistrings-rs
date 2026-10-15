@@ -47,10 +47,7 @@ fn poll_until(
 }
 
 fn nccl_error(e: NcclError, what: impl Into<String>) -> GpuError {
-    GpuError::Nccl {
-        code: e.0 as i32,
-        what: what.into(),
-    }
+    GpuError::Nccl { code: e.0 as i32, what: what.into() }
 }
 
 /// The communicator handle and whether it may still be used.
@@ -145,20 +142,13 @@ impl NcclComm {
     /// **Collective over the communicator**, after the group has agreed that every [`init`](Self::init) succeeded.
     pub(crate) fn warm_up(&self, stream: &Arc<CudaStream>) -> Result<(), GpuError> {
         let (me, size) = (self.rank, self.size);
-        let peers: Vec<u32> = if size == 1 {
-            vec![0]
-        } else {
-            (0..size).filter(|&peer| peer != me).collect()
-        };
+        let peers: Vec<u32> =
+            if size == 1 { vec![0] } else { (0..size).filter(|&peer| peer != me).collect() };
         let out = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut back = stream.alloc_zeros::<u8>(peers.len() * WARM_UP_BYTES)?;
         let mut group = WireGroup::new();
         for (i, &peer) in peers.iter().enumerate() {
-            group.send(
-                out.slice(i * WARM_UP_BYTES..(i + 1) * WARM_UP_BYTES),
-                peer,
-                stream,
-            );
+            group.send(out.slice(i * WARM_UP_BYTES..(i + 1) * WARM_UP_BYTES), peer, stream);
         }
         let parts: Vec<(usize, u32)> = peers.iter().map(|&peer| (WARM_UP_BYTES, peer)).collect();
         group.receive_parts(back.as_view_mut(), &parts, stream);
@@ -183,10 +173,7 @@ impl NcclComm {
             .name(format!("nccl-abort-{rank}"))
             .spawn(move || abort_now(comm, rank, &owned));
         match spawned {
-            Ok(handle) => ABORTS
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(handle),
+            Ok(handle) => ABORTS.lock().unwrap_or_else(PoisonError::into_inner).push(handle),
             Err(e) => {
                 log::warn!(
                     target: GPU_LOG_TARGET,
@@ -255,9 +242,7 @@ impl NcclComm {
         waiting_on: &'static str,
     ) -> Result<(), GpuError> {
         let timeout = raw.timeout;
-        if poll_until(timeout, || {
-            self.check_async_locked(raw, what).map(|busy| !busy)
-        })? {
+        if poll_until(timeout, || self.check_async_locked(raw, what).map(|busy| !busy))? {
             return Ok(());
         }
         Self::abort_locked(raw, self.rank, &self.context);
@@ -285,9 +270,8 @@ impl DeviceWire for NcclComm {
             Self::abort_locked(&mut raw, self.rank, &self.context);
             return Err(GpuError::Wire("an injected wire post failure"));
         }
-        if let Some(op) = ops
-            .iter()
-            .find(|op| op.peer() >= self.size || op.stream().context() != &self.context)
+        if let Some(op) =
+            ops.iter().find(|op| op.peer() >= self.size || op.stream().context() != &self.context)
         {
             return Err(GpuError::Nccl {
                 code: sys::ncclResult_t::ncclInvalidArgument as i32,
@@ -357,9 +341,7 @@ impl DeviceWire for NcclComm {
             return Ok(());
         }
         Self::abort_locked(&mut raw, self.rank, &self.context);
-        Err(GpuError::Timeout {
-            what: "an NCCL group to complete",
-        })
+        Err(GpuError::Timeout { what: "an NCCL group to complete" })
     }
 
     /// Abort the communicator if it is still live; idempotent, and returns at once.
@@ -385,11 +367,7 @@ impl DeviceWire for NcclComm {
 impl Drop for NcclComm {
     /// Shut down, then, as the last communicator of the process (or in any test), join the abort threads within the wait bound.
     fn drop(&mut self) {
-        let bound = self
-            .raw
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .timeout;
+        let bound = self.raw.get_mut().unwrap_or_else(PoisonError::into_inner).timeout;
         self.shut_down();
         let last = LIVE.fetch_sub(1, Ordering::Relaxed) == 1;
         if last || cfg!(test) {
@@ -469,10 +447,7 @@ fn reap_aborts(bound: Duration) {
             "{} NCCL abort(s) still running after {bound:?}",
             pending.len()
         );
-        ABORTS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend(pending);
+        ABORTS.lock().unwrap_or_else(PoisonError::into_inner).extend(pending);
     }
 }
 

@@ -41,11 +41,9 @@ use output::{json_line, print_cell_line, print_json, print_table};
 fn run<const W: usize>(cfg: &Config) {
     match cfg.truncation {
         TruncSpec::Keep => run_cells::<W, _, _>(cfg, &KeepAll, Some(&KeepAll)),
-        TruncSpec::Coefficient(t) => run_cells::<W, _, _>(
-            cfg,
-            &CoefficientThreshold(t),
-            Some(&CoefficientThreshold(t)),
-        ),
+        TruncSpec::Coefficient(t) => {
+            run_cells::<W, _, _>(cfg, &CoefficientThreshold(t), Some(&CoefficientThreshold(t)))
+        }
         TruncSpec::TopN(n) => run_cells::<W, _, ApproxTopN>(cfg, &TopN(n), None),
         TruncSpec::ApproxTopN(n) => run_cells::<W, _, _>(cfg, &ApproxTopN(n), Some(&ApproxTopN(n))),
     }
@@ -59,14 +57,10 @@ where
     let mut sidecar = cfg.json_out.as_ref().map(|path| {
         // Under `--mpi` every rank writes its own file, suffixed by rank, to avoid interleaving.
         let path = mpi_sidecar_path(path, cfg);
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .unwrap_or_else(|e| {
-                eprintln!("phase_breakdown: cannot open --json-out '{path}': {e}");
-                std::process::exit(2);
-            })
+        std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap_or_else(|e| {
+            eprintln!("phase_breakdown: cannot open --json-out '{path}': {e}");
+            std::process::exit(2);
+        })
     });
 
     // A device cell has no thread axis: one cell per layer, `--threads[0]` echoed into the row.

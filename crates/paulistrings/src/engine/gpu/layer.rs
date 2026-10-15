@@ -223,10 +223,7 @@ impl<const W: usize> LayerScratch<W> {
     #[cfg(feature = "phase-timing")]
     pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<usize, GpuError> {
         if self.next_event == self.events.len() {
-            self.events.push(
-                sum.context
-                    .new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?,
-            );
+            self.events.push(sum.context.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?);
         }
         let i = self.next_event;
         self.events[i].record(&sum.stream)?;
@@ -281,8 +278,7 @@ impl<const W: usize> LayerScratch<W> {
             self.order.rebuild(&Gf2Span::new(&key.1, key.0), true);
             let order = &self.order;
             self.bucket_at_host.clear();
-            self.bucket_at_host
-                .extend((0..b as u32).map(|position| order.bucket_at(position)));
+            self.bucket_at_host.extend((0..b as u32).map(|position| order.bucket_at(position)));
             grow(stream, &mut self.bucket_at, b, ordinal)?;
         }
         grow(stream, &mut self.counts, b * e, ordinal)?;
@@ -463,20 +459,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch: &mut LayerScratch<W>,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
-    let &DeviceLayer {
-        prepared,
-        plan,
-        keep,
-        target_bits,
-    } = layer;
+    let &DeviceLayer { prepared, plan, keep, target_bits } = layer;
     let size = transport.size();
     let mut table = DevicePrepared::new(prepared, &sum.hash, &sum.fingerprints, &plan.remote);
     let has_remote = plan.has_remote();
     debug_assert_eq!(table.received_entries, plan.remote.len());
-    scratch.record = DeviceLayerRecord {
-        dense: table.dense,
-        ..DeviceLayerRecord::default()
-    };
+    scratch.record = DeviceLayerRecord { dense: table.dense, ..DeviceLayerRecord::default() };
     scratch.refine_passes = 0;
     scratch.receive_chunks = 0;
     scratch.export.received_rows = 0;
@@ -521,9 +509,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     };
     if n_in.saturating_mul(table.fanout.max(1)) >= u32::MAX as usize {
         pair(scratch, sum.hash.bits());
-        return Err(GpuError::Unsupported(
-            "more than 2^32 pre-dedup records in one layer",
-        ));
+        return Err(GpuError::Unsupported("more than 2^32 pre-dedup records in one layer"));
     }
     // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (engine/driver.rs).
     let max_bits = if solo {
@@ -532,14 +518,9 @@ fn apply_layer_body<const W: usize, X: Transport>(
         target_bits.max(sum.hash.bits())
     };
     let want = if solo {
-        gpu_desired_bits(
-            n_in,
-            table.fanout,
-            scratch.options.records_per_block,
-            sum.hash.bits(),
-        )
-        .min(max_bits)
-        .max(target_bits)
+        gpu_desired_bits(n_in, table.fanout, scratch.options.records_per_block, sum.hash.bits())
+            .min(max_bits)
+            .max(target_bits)
     } else {
         target_bits
     };
@@ -554,9 +535,8 @@ fn apply_layer_body<const W: usize, X: Transport>(
     let mut counts = LayerExchangeCounts::none(size);
     // Oversize blocks and over-long source buckets are known from the count table; a lone partition refines one more bit, which halves both.
     let (records, records_max) = loop {
-        let counted = scratch
-            .upload_table(sum, &table)
-            .and_then(|()| scratch.count_local(sum, &table));
+        let counted =
+            scratch.upload_table(sum, &table).and_then(|()| scratch.count_local(sum, &table));
         if let Err(e) = counted {
             pair(scratch, sum.hash.bits());
             return Err(e);
@@ -594,11 +574,10 @@ fn apply_layer_body<const W: usize, X: Transport>(
     scratch.record.record_capacity = record_capacity as u32;
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
-    let chunk_starts: Vec<usize> = scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
-        (0..p.map.chunks())
-            .map(|c| p.map.bound(c) as usize)
-            .collect()
-    });
+    let chunk_starts: Vec<usize> =
+        scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
+            (0..p.map.chunks()).map(|c| p.map.bound(c) as usize).collect()
+        });
     let (batches, max_batch_rows) = arena_batches::<W>(
         &scratch.segment_start_host,
         scratch.options.arena_bytes,
@@ -687,9 +666,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         out.len = running as usize;
         let need = (running + batch_out) as usize;
         if need > out.term_capacity() {
-            let grown = (2 * out.term_capacity())
-                .max(need)
-                .min((records as usize).max(need));
+            let grown = (2 * out.term_capacity()).max(need).min((records as usize).max(need));
             out.reserve(grown, b)?;
         }
         // SAFETY: arguments match `k_compact` in compact.cu; `out` holds `running + batch_out` terms.

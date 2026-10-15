@@ -128,10 +128,7 @@ pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
         if send[q].is_none() {
             send[q] = Some(export.skeleton());
         }
-        send[q]
-            .as_mut()
-            .expect("just set")
-            .push_empty(r.entry as u32, 1 << bits);
+        send[q].as_mut().expect("just set").push_empty(r.entry as u32, 1 << bits);
     }
     let received = transport.exchange(send, &mut export.skeletons);
     export.skeletons.extend(received.into_iter().flatten());
@@ -167,10 +164,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
         }
     };
     tally!(scratch.stats.export_ns, t_export.elapsed().as_nanos());
-    tally!(
-        scratch.stats.rows_exported,
-        counts.rows_sent.iter().sum::<u64>()
-    );
+    tally!(scratch.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
     let buckets = sum.hash.num_buckets();
     let cap_rows = receive_cap_rows::<W>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
@@ -199,18 +193,13 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
                 let own_off: Vec<&[u32]> = own
                     .iter()
                     .map(|&(q, j)| {
-                        send[q]
-                            .as_ref()
-                            .expect("a payload for every partner")
-                            .blocks[j]
+                        send[q].as_ref().expect("a payload for every partner").blocks[j]
                             .offsets
                             .as_slice()
                     })
                     .collect();
-                let received_offsets: Vec<&[u32]> = blocks
-                    .iter()
-                    .map(|block| block.offsets.as_slice())
-                    .collect();
+                let received_offsets: Vec<&[u32]> =
+                    blocks.iter().map(|block| block.offsets.as_slice()).collect();
                 let ops = schedule(&partners, &own_off, &received_offsets, &map);
                 (Ok(export.received_rows as u64), Some((map, own, ops)))
             }
@@ -220,14 +209,7 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     export.skeletons.extend(received.into_iter().flatten());
     match ops {
         Some((map, own, ops)) => {
-            export.pending = Some(PendingReceive {
-                map,
-                next: 0,
-                send,
-                own,
-                ops,
-                failed: false,
-            });
+            export.pending = Some(PendingReceive { map, next: 0, send, own, ops, failed: false });
         }
         None => export.sends.extend(send.into_iter().flatten()),
     }
@@ -252,12 +234,7 @@ fn paired_blocks<'a, const W: usize>(
     received: &'a [Option<BlockSkeletons<W>>],
 ) -> Vec<&'a Skeleton> {
     (0..plan.remote.len())
-        .map(|k| {
-            (
-                plan.remote[k].partner as usize,
-                plan.received_block_index(k),
-            )
-        })
+        .map(|k| (plan.remote[k].partner as usize, plan.received_block_index(k)))
         .map(|(q, j)| {
             received[q]
                 .as_ref()

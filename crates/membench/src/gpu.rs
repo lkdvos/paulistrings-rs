@@ -5,11 +5,8 @@ use cudarc::driver::{CudaContext, LaunchConfig, PushKernelArg};
 use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 
 const SOURCE: &str = include_str!("../kernels/membench.cu");
-const CFG: LaunchConfig = LaunchConfig {
-    grid_dim: (8192, 1, 1),
-    block_dim: (256, 1, 1),
-    shared_mem_bytes: 0,
-};
+const CFG: LaunchConfig =
+    LaunchConfig { grid_dim: (8192, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 };
 
 fn text(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -26,11 +23,7 @@ pub fn run(
     let (major, minor) = ctx.compute_capability().map_err(text)?;
     // `arch` wants a `&'static str`; one leaked string per run.
     let arch = Box::leak(format!("compute_{major}{minor}").into_boxed_str());
-    let options = CompileOptions {
-        arch: Some(arch),
-        fmad: Some(false),
-        ..Default::default()
-    };
+    let options = CompileOptions { arch: Some(arch), fmad: Some(false), ..Default::default() };
     let ptx = compile_ptx_with_opts(SOURCE, options).map_err(|e| format!("nvrtc: {e}"))?;
     let module = ctx.load_module(ptx).map_err(text)?;
     let f = |name: &str| module.load_function(name).map_err(text);
@@ -45,21 +38,13 @@ pub fn run(
     // SAFETY: argument lists match the `extern "C"` signatures in membench.cu; every array holds `n` elements.
     unsafe {
         for (arr, v) in [(&mut a, 1.0f64), (&mut b, 2.0), (&mut c, 0.5)] {
-            let launched = stream
-                .launch_builder(&write)
-                .arg(arr)
-                .arg(&v)
-                .arg(&n64)
-                .launch(CFG);
+            let launched = stream.launch_builder(&write).arg(arr).arg(&v).arg(&n64).launch(CFG);
             launched.map_err(text)?;
         }
     }
     stream.synchronize().map_err(text)?;
     let scalar = 3.0f64;
-    let new_event = || {
-        ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))
-            .map_err(text)
-    };
+    let new_event = || ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT)).map_err(text);
     let (t0, t1) = (new_event()?, new_event()?);
 
     let mut results = Vec::new();
@@ -93,12 +78,7 @@ pub fn run(
                     }
                     _ => {
                         let mut l = stream.launch_builder(&triad);
-                        l.arg(&mut a)
-                            .arg(&b)
-                            .arg(&c)
-                            .arg(&scalar)
-                            .arg(&n64)
-                            .launch(CFG)
+                        l.arg(&mut a).arg(&b).arg(&c).arg(&scalar).arg(&n64).launch(CFG)
                     }
                 }
             };

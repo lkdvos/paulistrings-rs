@@ -38,9 +38,7 @@ fn mpi_error(err: MpiError) -> PyErr {
 /// `comm` is duck-typed — anything mpi4py's `_sizeof`/`_handleof` accept. The handle is duplicated, so ownership stays with Python.
 pub fn transport_from_comm(py: Python<'_>, comm: &Bound<'_, PyAny>) -> PyResult<MpiTransport> {
     let mpi = py.import_bound("mpi4py.MPI").map_err(|err| {
-        PyRuntimeError::new_err(format!(
-            "comm= needs mpi4py, which could not be imported: {err}"
-        ))
+        PyRuntimeError::new_err(format!("comm= needs mpi4py, which could not be imported: {err}"))
     })?;
 
     if !mpi.call_method0("Is_initialized")?.extract::<bool>()? {
@@ -139,11 +137,7 @@ pub struct MpiOutcome<const W: usize> {
 
 impl MpiRun {
     pub fn new(transport: MpiTransport, rows: PartitionRowPolicy, gather: bool) -> Self {
-        Self {
-            transport,
-            rows,
-            gather,
-        }
+        Self { transport, rows, gather }
     }
 
     /// Scatter, propagate, and take this rank's answer. **Collective**, and so is the `collapses` reduction, which every rank enters alike since the policy is replicated.
@@ -156,11 +150,7 @@ impl MpiRun {
         options: PropagateOptions,
         traced: bool,
     ) -> Result<MpiOutcome<W>, TopologyError> {
-        let Self {
-            transport,
-            rows,
-            gather,
-        } = self;
+        let Self { transport, rows, gather } = self;
         let scatter_options = ScatterOptions {
             runtime: PartitionRuntime::new(&default_config())?,
             rows: ScatterRows::Policy(rows),
@@ -179,14 +169,7 @@ impl MpiRun {
         let out = harvest(&split, gather);
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
-        Ok(MpiOutcome {
-            sum: out,
-            rank,
-            size,
-            trace,
-            collapses,
-            device: None,
-        })
+        Ok(MpiOutcome { sum: out, rank, size, trace, collapses, device: None })
     }
 }
 
@@ -208,9 +191,7 @@ fn agreed_collapses(
 fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
     if gather {
         // Collective; `Some` on rank 0 only.
-        split
-            .gather()
-            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
+        split.gather().unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
     } else {
         split.local().clone()
     }
@@ -222,10 +203,7 @@ fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize, u64
     let mut codes = vec![0u64; collectives.size() as usize];
     codes[collectives.rank() as usize] = code;
     collectives.allreduce_sum_u64(&mut codes);
-    codes
-        .iter()
-        .position(|&code| code != 0)
-        .map(|rank| (rank, codes[rank]))
+    codes.iter().position(|&code| code != 0).map(|rank| (rank, codes[rank]))
 }
 
 /// This rank's device pick `local`, agreed over `transport`'s group, so a rank that cannot use its device fails the call on every rank. **Collective.**
@@ -250,11 +228,7 @@ pub fn agree_device(
                 "{shown}: rank {rank} cannot use its CUDA device, so no rank runs (rank {rank} \
                  raises the reason)"
             );
-            Err(if code == 1 {
-                PyValueError::new_err(msg)
-            } else {
-                PyRuntimeError::new_err(msg)
-            })
+            Err(if code == 1 { PyValueError::new_err(msg) } else { PyRuntimeError::new_err(msg) })
         }
     }
 }
@@ -283,12 +257,7 @@ impl MpiGpuRun {
         gather: bool,
         device: u32,
     ) -> Self {
-        Self {
-            transport,
-            rows,
-            gather,
-            device,
-        }
+        Self { transport, rows, gather, device }
     }
 
     /// Scatter, propagate and take this rank's answer. **Collective**; every error is agreed over the group, and so is the `collapses` reduction.
@@ -302,12 +271,7 @@ impl MpiGpuRun {
         traced: bool,
     ) -> Result<MpiOutcome<W>, MpiGpuFailure> {
         use paulistrings::gpu::MpiGpuSum;
-        let Self {
-            transport,
-            rows,
-            gather,
-            device,
-        } = self;
+        let Self { transport, rows, gather, device } = self;
         use paulistrings::gpu::{GpuError, GpuScatterOptions};
         // Agreed, so a rank whose placement fails does not leave its peers in the scatter's collectives.
         let placed = GpuScatterOptions::new(&[device]);
@@ -317,10 +281,9 @@ impl MpiGpuRun {
             (Ok(_), Some((rank, _))) => {
                 return Err(MpiGpuFailure::Gpu(GpuError::Poisoned { rank, layer: 0 }))
             }
-            (Ok(options), None) => GpuScatterOptions {
-                rows: ScatterRows::Policy(rows.clone()),
-                ..options
-            },
+            (Ok(options), None) => {
+                GpuScatterOptions { rows: ScatterRows::Policy(rows.clone()), ..options }
+            }
         };
         let mut split = MpiGpuSum::<W>::scatter_to_device_with(sum, transport, scatter)
             .map_err(MpiGpuFailure::Gpu)?;
@@ -328,9 +291,7 @@ impl MpiGpuRun {
             split.enable_trace();
         }
         let before = collapse_count(policy);
-        split
-            .propagate_with(circuit, policy, direction, options)
-            .map_err(MpiGpuFailure::Gpu)?;
+        split.propagate_with(circuit, policy, direction, options).map_err(MpiGpuFailure::Gpu)?;
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
         let trace = traced.then(|| split.take_trace().unwrap_or_default());
@@ -351,13 +312,6 @@ impl MpiGpuRun {
         };
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
-        Ok(MpiOutcome {
-            sum: out,
-            rank,
-            size,
-            trace,
-            collapses,
-            device: Some(device),
-        })
+        Ok(MpiOutcome { sum: out, rank, size, trace, collapses, device: Some(device) })
     }
 }

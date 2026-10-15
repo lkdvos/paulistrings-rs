@@ -65,17 +65,13 @@ struct Rendezvous {
 impl Rendezvous {
     /// Why `rank`, at `generation` of `kind` with `len` values, cannot complete it in step with its partners, if it cannot.
     fn mismatch(&self, rank: u32, generation: u64, kind: CallKind, len: usize) -> Option<String> {
-        let (partner, theirs) = self
-            .arrivals
-            .iter()
-            .enumerate()
-            .find(|&(partner, theirs)| {
-                partner != rank as usize
-                    && (theirs.generation > generation
-                        || theirs.generation == generation
-                            && (theirs.kind != Some(kind)
-                                || kind != CallKind::Exchange && theirs.values.len() != len))
-            })?;
+        let (partner, theirs) = self.arrivals.iter().enumerate().find(|&(partner, theirs)| {
+            partner != rank as usize
+                && (theirs.generation > generation
+                    || theirs.generation == generation
+                        && (theirs.kind != Some(kind)
+                            || kind != CallKind::Exchange && theirs.values.len() != len))
+        })?;
         if theirs.generation == generation && theirs.kind == Some(kind) {
             return Some(format!(
                 "{}: partition {partner} contributed {} values, this partition {len}",
@@ -160,9 +156,7 @@ impl GroupState {
 
     /// The state, ignoring poison: every panic below is raised after the guard is dropped, so the state is consistent.
     fn lock(&self) -> MutexGuard<'_, Rendezvous> {
-        self.rendezvous
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.rendezvous.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Wake every waiter, then panic with `message`, so a partner out of step learns of it without waiting for this endpoint's drop.
@@ -234,11 +228,8 @@ impl GroupState {
             if let Some(message) = state.mismatch(rank, generation, kind, buffer.len()) {
                 self.fail(state, message);
             }
-            let behind = state
-                .arrivals
-                .iter()
-                .enumerate()
-                .filter(|(_, a)| a.generation < generation);
+            let behind =
+                state.arrivals.iter().enumerate().filter(|(_, a)| a.generation < generation);
             if let Some((partner, _)) = behind.clone().find(|(_, a)| a.departed) {
                 let message = format!(
                     "partition {partner} terminated before completing the {} (it panicked)",
@@ -384,9 +375,8 @@ impl InProcessTransport {
         body: Box<dyn std::any::Any + Send>,
         op: &str,
     ) {
-        let sender = self.outbox[destination]
-            .as_ref()
-            .expect("a partition has no channel to itself");
+        let sender =
+            self.outbox[destination].as_ref().expect("a partition has no channel to itself");
         if sender.send(Message::new(generation, body)).is_err() {
             panic!("partition {destination} terminated before completing the {op} (it panicked)");
         }
@@ -441,8 +431,7 @@ impl Collectives for InProcessTransport {
         }
         let mut maximum = [u64::from(v)];
         let generation = self.next_generation();
-        self.state
-            .collective(self.rank, generation, CallKind::MaxU8, &mut maximum);
+        self.state.collective(self.rank, generation, CallKind::MaxU8, &mut maximum);
         maximum[0] as u8
     }
 
@@ -451,8 +440,7 @@ impl Collectives for InProcessTransport {
             return;
         }
         let generation = self.next_generation();
-        self.state
-            .collective(self.rank, generation, CallKind::SumU64, buffer);
+        self.state.collective(self.rank, generation, CallKind::SumU64, buffer);
     }
 
     /// The last arriver folds all contributions in rank order from zero and every partition copies that one result, so all get the same bits.
@@ -475,8 +463,7 @@ impl Collectives for InProcessTransport {
             return;
         }
         let generation = self.next_generation();
-        self.state
-            .collective(self.rank, generation, CallKind::Barrier, &mut []);
+        self.state.collective(self.rank, generation, CallKind::Barrier, &mut []);
     }
 }
 
@@ -510,10 +497,7 @@ impl Transport for InProcessTransport {
         } else {
             let generation = self.next_generation();
             // Recorded although it waits on the channels, so a partner in a collective at this generation sees the kind mismatch.
-            drop(
-                self.state
-                    .arrive(self.rank, generation, CallKind::Exchange, &[]),
-            );
+            drop(self.state.arrive(self.rank, generation, CallKind::Exchange, &[]));
             for (destination, payload) in send.into_iter().enumerate() {
                 if destination != self.rank as usize {
                     self.send_to(destination, generation, Box::new(payload), "exchange");

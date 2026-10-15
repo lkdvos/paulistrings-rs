@@ -28,9 +28,7 @@ pub(crate) fn choose_generator<const W: usize>(
     let want_remote = layer == LayerKind::RotationRemote;
     // A dense SU(4) needs all 15 deltas local, so it scans every pair, not just those touching 0.
     let pairs: Vec<(usize, usize)> = if layer == LayerKind::Su4Local {
-        (0..qubits)
-            .flat_map(|q0| ((q0 + 1)..qubits).map(move |q1| (q0, q1)))
-            .collect()
+        (0..qubits).flat_map(|q0| ((q0 + 1)..qubits).map(move |q1| (q0, q1))).collect()
     } else {
         (1..qubits).map(|q| (0, q)).collect()
     };
@@ -49,11 +47,7 @@ pub(crate) fn choose_generator<const W: usize>(
     panic!(
         "phase_breakdown: no {}(q0, q1) layer on {qubits} qubits is {} under these partition \
          rows — try another --partition-seed or more --qubits",
-        if layer == LayerKind::Su4Local {
-            "SU4"
-        } else {
-            "ZZ"
-        },
+        if layer == LayerKind::Su4Local { "SU4" } else { "ZZ" },
         if want_remote { "remote" } else { "local" },
     );
 }
@@ -226,10 +220,8 @@ pub(crate) fn choose_partition_rows<const W: usize>(
         reseed_hash_until_independent(cfg, base, &rows, layer, partitions)
     };
 
-    let remote: Vec<&GeneratorWeight<W>> = gens
-        .iter()
-        .filter(|g| rows.partition_of(&g.mask_x, &g.mask_z) != 0)
-        .collect();
+    let remote: Vec<&GeneratorWeight<W>> =
+        gens.iter().filter(|g| rows.partition_of(&g.mask_x, &g.mask_z) != 0).collect();
     let stats = RowChoiceStats {
         remote_gens: remote.len(),
         remote_weight: remote.iter().map(|g| g.weight).sum(),
@@ -249,9 +241,8 @@ pub(crate) fn reseed_hash_until_independent<const W: usize>(
     let num_qubits = base.num_qubits();
     // Rows can only be independent while they fit in the `2n` key columns.
     let headroom = (2 * num_qubits).saturating_sub(rows.bits() as usize);
-    let probe_bits = INDEPENDENCE_PROBE_BITS
-        .min(B_MAX_BITS)
-        .min(headroom.min(u8::MAX as usize) as u8);
+    let probe_bits =
+        INDEPENDENCE_PROBE_BITS.min(B_MAX_BITS).min(headroom.min(u8::MAX as usize) as u8);
     let independent_at =
         |seed: u64| rows.is_independent_of(&Gf2Hash::<W>::new(num_qubits, probe_bits, seed));
     let seed = base.hash().seed();

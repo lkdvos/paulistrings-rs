@@ -30,22 +30,10 @@ fn debug_name_through_dyn_trims_path_and_generics() {
         ),
         (Box::new(PtmChannel::depolarizing(0, 0.1)), "depolarizing"),
         (Box::new(PtmChannel::dephasing(0, 0.1)), "dephasing"),
-        (
-            Box::new(PtmChannel::pauli_channel(0, 0.1, 0.1, 0.1)),
-            "pauli_channel",
-        ),
-        (
-            Box::new(PtmChannel::depolarizing_2q(0, 1, 0.1)),
-            "depolarizing_2q",
-        ),
-        (
-            Box::new(PtmChannel::amplitude_damping(0, 0.1)),
-            "amplitude_damping",
-        ),
-        (
-            Box::new(crate::test_support::IdentityChannel),
-            "IdentityChannel",
-        ),
+        (Box::new(PtmChannel::pauli_channel(0, 0.1, 0.1, 0.1)), "pauli_channel"),
+        (Box::new(PtmChannel::depolarizing_2q(0, 1, 0.1)), "depolarizing_2q"),
+        (Box::new(PtmChannel::amplitude_damping(0, 0.1)), "amplitude_damping"),
+        (Box::new(crate::test_support::IdentityChannel), "IdentityChannel"),
     ];
     for (channel, expected) in &channels {
         assert_eq!(channel.debug_name(), *expected);

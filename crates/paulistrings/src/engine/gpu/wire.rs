@@ -33,12 +33,10 @@ pub enum WireFault {
 const DEFAULT_WIRE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// `PAULISTRINGS_WIRE_TIMEOUT_S`, the bound on every wait of an NCCL or peer wire and on every in-process collective of a device group, in seconds.
-static WIRE_TIMEOUT: Knob<Duration> = Knob::new(
-    "PAULISTRINGS_WIRE_TIMEOUT_S",
-    GPU_LOG_TARGET,
-    parse_timeout,
-    || DEFAULT_WIRE_TIMEOUT,
-);
+static WIRE_TIMEOUT: Knob<Duration> =
+    Knob::new("PAULISTRINGS_WIRE_TIMEOUT_S", GPU_LOG_TARGET, parse_timeout, || {
+        DEFAULT_WIRE_TIMEOUT
+    });
 
 /// [`WIRE_TIMEOUT`]'s value.
 pub(crate) fn wire_timeout() -> Duration {
@@ -47,10 +45,7 @@ pub(crate) fn wire_timeout() -> Duration {
 
 /// A positive, finite number of seconds.
 fn parse_timeout(text: &str) -> Option<Duration> {
-    text.parse::<f64>()
-        .ok()
-        .filter(|s| s.is_finite() && *s > 0.0)
-        .map(Duration::from_secs_f64)
+    text.parse::<f64>().ok().filter(|s| s.is_finite() && *s > 0.0).map(Duration::from_secs_f64)
 }
 
 /// Which way a [`WireOp`] moves bytes.
@@ -163,13 +158,7 @@ impl<'a> WireGroup<'a> {
         stream: &'a CudaStream,
         guard: SyncOnDrop<'a>,
     ) {
-        self.ops.push(WireOp {
-            kind,
-            peer,
-            address,
-            bytes,
-            stream,
-        });
+        self.ops.push(WireOp { kind, peer, address, bytes, stream });
         self.guards.push(guard);
     }
 
@@ -247,12 +236,7 @@ impl<const W: usize> BlockSkeletons<W> {
     /// Append an empty block for remote-delta `entry` over `b` positions.
     pub(crate) fn push_empty(&mut self, entry: u32, b: usize) {
         self.blocks.push(Skeleton {
-            header: BlockHeader {
-                num_buckets: b as u32,
-                rows: 0,
-                width: W as u32,
-                entry,
-            },
+            header: BlockHeader { num_buckets: b as u32, rows: 0, width: W as u32, entry },
             offsets: vec![0; b + 1],
         });
     }
@@ -371,14 +355,9 @@ pub(crate) fn schedule(
 ) -> Vec<ScheduledOp> {
     assert_eq!(partners.len(), own.len());
     assert_eq!(partners.len(), received.len());
-    let own_rows: Vec<Vec<usize>> = own
-        .iter()
-        .map(|offsets| chunk_rows_of(offsets, map))
-        .collect();
-    let received_rows: Vec<Vec<usize>> = received
-        .iter()
-        .map(|offsets| chunk_rows_of(offsets, map))
-        .collect();
+    let own_rows: Vec<Vec<usize>> = own.iter().map(|offsets| chunk_rows_of(offsets, map)).collect();
+    let received_rows: Vec<Vec<usize>> =
+        received.iter().map(|offsets| chunk_rows_of(offsets, map)).collect();
     let mut peers: Vec<u32> = partners.to_vec();
     peers.sort_unstable();
     peers.dedup();
@@ -386,11 +365,7 @@ pub(crate) fn schedule(
     for chunk in 0..map.chunks() {
         for &peer in &peers {
             for column in WireColumn::ALL {
-                for (k, _) in partners
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &partner)| partner == peer)
-                {
+                for (k, _) in partners.iter().enumerate().filter(|&(_, &partner)| partner == peer) {
                     let rows = (own_rows[k][chunk], own_rows[k][chunk + 1]);
                     if rows.1 > rows.0 {
                         ops.push(ScheduledOp {

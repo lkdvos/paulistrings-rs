@@ -174,12 +174,8 @@ pub(crate) fn compile_ptx(
     #[cfg(any(test, feature = "test-utils"))]
     NVRTC_COMPILES.with(|count| count.set(count.get() + 1));
     let start = std::time::Instant::now();
-    let ptx = compile_ptx_with_opts(source.clone(), compile_options.clone()).map_err(|e| {
-        GpuError::Compile {
-            width: w,
-            log: e.to_string(),
-        }
-    })?;
+    let ptx = compile_ptx_with_opts(source.clone(), compile_options.clone())
+        .map_err(|e| GpuError::Compile { width: w, log: e.to_string() })?;
     log::debug!(
         target: GPU_LOG_TARGET,
         "kernels W={w} {arch}: NVRTC compile in {:.2} s",
@@ -234,11 +230,7 @@ pub(crate) fn kernel_set_with_options(
     extra_options: &[String],
 ) -> Result<Arc<KernelSet>, GpuError> {
     let key = (ordinal, w, extra_options.to_vec());
-    if let Some(set) = cache()
-        .lock()
-        .expect("kernel cache mutex poisoned")
-        .get(&key)
-    {
+    if let Some(set) = cache().lock().expect("kernel cache mutex poisoned").get(&key) {
         return Ok(set.clone());
     }
     let context = device::context(ordinal)?;
@@ -273,11 +265,7 @@ pub(crate) fn kernel_set_with_options(
             )
             .map_err(GpuError::from)?;
         }
-        layer.push(LayerVariant {
-            items,
-            serial,
-            segscan,
-        });
+        layer.push(LayerVariant { items, serial, segscan });
         items *= 2;
     }
     if layer.is_empty() {
@@ -313,10 +301,7 @@ pub(crate) fn kernel_set_with_options(
         layer,
         threads,
     });
-    cache()
-        .lock()
-        .expect("kernel cache mutex poisoned")
-        .insert(key, set.clone());
+    cache().lock().expect("kernel cache mutex poisoned").insert(key, set.clone());
     Ok(set)
 }
 

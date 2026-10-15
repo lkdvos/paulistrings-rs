@@ -59,10 +59,7 @@ impl<'a> Lowered<'a> {
         }
         let coefficient = CoefficientThreshold(coefficient.unwrap_or(-1.0));
         match weight {
-            None => Self::Coefficient(WithFilter {
-                filter: coefficient,
-                tree,
-            }),
+            None => Self::Coefficient(WithFilter { filter: coefficient, tree }),
             Some(k) => Self::CoefficientAndWeight(WithFilter {
                 filter: And(coefficient, WeightCutoff(k)),
                 tree,

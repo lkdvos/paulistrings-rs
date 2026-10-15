@@ -13,12 +13,7 @@ pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {
     let hc = Complex64::new(0.5, -0.5);
     let one = Complex64::new(1.0, 0.0);
     let zero = Complex64::new(0.0, 0.0);
-    [
-        [one, zero, zero, zero],
-        [zero, h, hc, zero],
-        [zero, hc, h, zero],
-        [zero, zero, zero, one],
-    ]
+    [[one, zero, zero, zero], [zero, h, hc, zero], [zero, hc, h, zero], [zero, zero, zero, one]]
 }
 
 /// One draw of Haar-random SU(4), as a 4×4 unitary in the computational basis.
@@ -132,10 +127,7 @@ pub fn random_circuit<const W: usize>(
             6 => circuit.push(PauliRotation::new(PauliString::<W>::z(q0), 0.37)),
             7 => circuit.push(zz_rotation::<W>(q0, q1, 0.21)),
             8 => {
-                let mut gen = PauliString::<W> {
-                    x: [0u64; W],
-                    z: [0u64; W],
-                };
+                let mut gen = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
                 set_x(&mut gen, q0);
                 set_z(&mut gen, wrap(q0, 1));
                 set_x(&mut gen, wrap(q0, 2));
@@ -201,10 +193,7 @@ pub fn zz_rotation<const W: usize>(
     q1: usize,
     theta: f64,
 ) -> crate::channel::rotation::PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
+    let mut gen = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
     for q in [q0, q1] {
         gen.z[q / 64] |= 1u64 << (q % 64);
     }

@@ -84,8 +84,7 @@ fn retain_matches<const W: usize>() {
             let (mut dev, mut scratch) = device(&sum);
             retain_at_edge_device(&mut dev, &mut scratch, edge, quota).expect("retain");
             assert_eq!(dev.len(), want.len(), "{what} n={n}: len");
-            dev.assert_invariants_device()
-                .unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
+            dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download");
             assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: terms");
             if let EdgeDecision::Boundary { .. } = edge {
@@ -122,22 +121,13 @@ fn top_n_matches<const W: usize>() {
     use crate::truncation::TopN;
     for (what, sum) in fixtures::<W>() {
         let len = sum.len();
-        for n in [
-            0usize,
-            1,
-            len / 3,
-            len / 2,
-            len.saturating_sub(1),
-            len,
-            len + 5,
-        ] {
+        for n in [0usize, 1, len / 3, len / 2, len.saturating_sub(1), len, len + 5] {
             let mut want = sum.clone();
             TopN(n).finalize_layer(&mut want);
             let (mut dev, mut scratch) = device(&sum);
             top_n_device(&mut dev, &mut scratch, n).expect("top n");
             assert_eq!(dev.len(), want.len(), "{what} n={n}: len");
-            dev.assert_invariants_device()
-                .unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
+            dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download");
             assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: terms");
         }
@@ -170,14 +160,7 @@ fn top_n_tie_rules_match_the_host_on_device() {
         ("fits exactly", real([5.0, 4.0, 3.0, 3.0, 2.0, 1.0]), 4, 4),
         (
             "all tied",
-            six([
-                (2.0, 0.0),
-                (-2.0, 0.0),
-                (0.0, 2.0),
-                (0.0, -2.0),
-                (2.0, 0.0),
-                (-2.0, 0.0),
-            ]),
+            six([(2.0, 0.0), (-2.0, 0.0), (0.0, 2.0), (0.0, -2.0), (2.0, 0.0), (-2.0, 0.0)]),
             3,
             3,
         ),
@@ -190,10 +173,6 @@ fn top_n_tie_rules_match_the_host_on_device() {
         let (mut dev, mut scratch) = device(&sum);
         top_n_device(&mut dev, &mut scratch, n).expect("top n");
         dev.assert_invariants_device().unwrap();
-        assert_eq!(
-            dev.to_host().unwrap().to_arrays(),
-            want.to_arrays(),
-            "{what}"
-        );
+        assert_eq!(dev.to_host().unwrap().to_arrays(), want.to_arrays(), "{what}");
     }
 }

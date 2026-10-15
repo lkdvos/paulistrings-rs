@@ -41,10 +41,7 @@ fn reductions_and_barrier_agree_on_every_rank() {
                 })
             })
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+        handles.into_iter().map(|h| h.join().expect("rank thread panicked")).collect()
     });
 
     results.sort_by_key(|(rank, _, _)| *rank);
@@ -137,22 +134,15 @@ fn a_desynchronized_partition_is_caught_by_the_generation_stamp() {
         let in_step = scope.spawn(move || {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || one.barrier()))
         });
-        (
-            desynced.join().expect("rank 0 thread"),
-            in_step.join().expect("rank 1 thread"),
-        )
+        (desynced.join().expect("rank 0 thread"), in_step.join().expect("rank 1 thread"))
     });
 
     let in_step = panic_message(
-        in_step
-            .expect_err("the in-step rank must reject the mismatched generation")
-            .as_ref(),
+        in_step.expect_err("the in-step rank must reject the mismatched generation").as_ref(),
     );
     assert!(in_step.contains("collective order mismatch"), "{in_step}");
     let desynced = panic_message(
-        desynced
-            .expect_err("the desynchronized rank waits for a call nobody makes")
-            .as_ref(),
+        desynced.expect_err("the desynchronized rank waits for a call nobody makes").as_ref(),
     );
     assert!(desynced.contains("terminated"), "{desynced}");
 }
@@ -201,14 +191,9 @@ fn on_every_rank<O: Send>(size: u32, f: impl Fn(&InProcessTransport) -> O + Send
     let group = InProcessTransport::group(size);
     let f = &f;
     std::thread::scope(|scope| {
-        let handles: Vec<_> = group
-            .into_iter()
-            .map(|transport| scope.spawn(move || f(&transport)))
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+        let handles: Vec<_> =
+            group.into_iter().map(|transport| scope.spawn(move || f(&transport))).collect();
+        handles.into_iter().map(|h| h.join().expect("rank thread panicked")).collect()
     })
 }
 
@@ -243,9 +228,8 @@ fn gather_to_root_collects_every_ranks_parts_in_rank_order() {
         let got = on_every_rank(size, |transport| {
             let rank = transport.rank();
             // Rank `r` sends `r + 1` parts, part `j` being `r + 1` copies of `10 · r + j`.
-            let owned: Vec<Vec<u8>> = (0..=rank)
-                .map(|j| vec![(10 * rank + j) as u8; rank as usize + 1])
-                .collect();
+            let owned: Vec<Vec<u8>> =
+                (0..=rank).map(|j| vec![(10 * rank + j) as u8; rank as usize + 1]).collect();
             let parts: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
             transport.gather_to_root(parts)
         });
@@ -331,10 +315,7 @@ fn a_partner_that_departs_during_the_wait_fails_the_waiter_promptly() {
     });
 
     assert!(message.contains("partition 1 terminated"), "{message}");
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "the waiter took {elapsed:?}"
-    );
+    assert!(elapsed < Duration::from_secs(2), "the waiter took {elapsed:?}");
 }
 
 /// A partner arriving long after the waiter's spin is waited for on the condvar.
@@ -352,10 +333,7 @@ fn a_partner_arriving_after_the_spin_completes_the_sum() {
     });
     assert_eq!(results, vec![3, 3]);
     let elapsed = started.elapsed();
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "completion must wake the waiter, took {elapsed:?}"
-    );
+    assert!(elapsed < Duration::from_secs(2), "completion must wake the waiter, took {elapsed:?}");
 }
 
 /// A partner that neither arrives nor leaves trips the backstop.
@@ -366,10 +344,9 @@ fn a_silent_partner_trips_the_timeout() {
     let zero = group.pop().expect("rank 0");
 
     let started = Instant::now();
-    let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        zero.allreduce_sum_u64(&mut [1])
-    }))
-    .expect_err("nobody else arrives");
+    let payload =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| zero.allreduce_sum_u64(&mut [1])))
+            .expect_err("nobody else arrives");
     let elapsed = started.elapsed();
     let message = panic_message(payload.as_ref());
     assert!(message.contains("no response in 200ms"), "{message}");
@@ -417,17 +394,11 @@ fn an_exchange_against_a_collective_is_caught() {
             transport.barrier();
         }
     });
+    assert!(messages.iter().all(Option::is_some), "both ranks must panic: {messages:?}");
     assert!(
-        messages.iter().all(Option::is_some),
-        "both ranks must panic: {messages:?}"
-    );
-    assert!(
-        messages
-            .iter()
-            .flatten()
-            .any(|m| m.contains("collective order mismatch")
-                && m.contains("exchange")
-                && m.contains("barrier")),
+        messages.iter().flatten().any(|m| m.contains("collective order mismatch")
+            && m.contains("exchange")
+            && m.contains("barrier")),
         "{messages:?}",
     );
 }
@@ -450,9 +421,6 @@ fn on_every_rank_caught(
                 })
             })
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread"))
-            .collect()
+        handles.into_iter().map(|h| h.join().expect("rank thread")).collect()
     })
 }

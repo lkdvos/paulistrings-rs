@@ -100,10 +100,7 @@ impl PropagateOptions {
 
 impl Default for PropagateOptions {
     fn default() -> Self {
-        Self {
-            target_bucket_len: DEFAULT_TARGET_BUCKET_LEN,
-            min_buckets: DEFAULT_MIN_BUCKETS,
-        }
+        Self { target_bucket_len: DEFAULT_TARGET_BUCKET_LEN, min_buckets: DEFAULT_MIN_BUCKETS }
     }
 }
 
@@ -130,14 +127,7 @@ where
     T: TruncationPolicy<W> + ?Sized,
 {
     let mut scratch = LayerScratch::<W>::new();
-    propagate_with(
-        circuit,
-        sum,
-        policy,
-        direction,
-        &mut scratch,
-        PropagateOptions::default(),
-    )
+    propagate_with(circuit, sum, policy, direction, &mut scratch, PropagateOptions::default())
 }
 
 /// [`propagate`] with a caller-held [`LayerScratch`] and [`PropagateOptions`].
@@ -176,21 +166,8 @@ where
         local: HostPartition::with_layer_scratch(sum, std::mem::take(scratch)),
         rows: Vec::with_capacity(if tracing { num_channels } else { 0 }),
     };
-    let context = PartitionContext {
-        rows: &rows,
-        rank: 0,
-        size: 1,
-        tracing,
-    };
-    run_layers(
-        circuit,
-        policy,
-        direction,
-        options,
-        context,
-        &mut work,
-        &SoloTransport,
-    );
+    let context = PartitionContext { rows: &rows, rank: 0, size: 1, tracing };
+    run_layers(circuit, policy, direction, options, context, &mut work, &SoloTransport);
     let (sum, layer_scratch) = work.local.into_parts();
     *scratch = layer_scratch;
     if let Some(trace) = scratch.trace.as_mut() {

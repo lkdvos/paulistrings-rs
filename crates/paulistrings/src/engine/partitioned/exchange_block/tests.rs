@@ -44,26 +44,15 @@ fn the_early_and_bulk_parts_partition_the_wire() {
     for bits in [0u8, 1, 4, 5] {
         for blocks in [1usize, 3] {
             let mut payload = payload_of::<2>(bits, blocks, 0xB1A5 + u64::from(bits));
-            let all: Vec<Vec<u8>> = payload
-                .byte_parts()
-                .into_iter()
-                .map(<[u8]>::to_vec)
-                .collect();
+            let all: Vec<Vec<u8>> = payload.byte_parts().into_iter().map(<[u8]>::to_vec).collect();
             for chunks in [1usize, 2, 3, 8, 64] {
                 let map = map_of(bits, &[0], chunks);
-                let early: Vec<Vec<u8>> = payload
-                    .early_parts()
-                    .into_iter()
-                    .map(<[u8]>::to_vec)
-                    .collect();
+                let early: Vec<Vec<u8>> =
+                    payload.early_parts().into_iter().map(<[u8]>::to_vec).collect();
                 assert_eq!(early.len(), 2 * blocks);
                 for b in 0..blocks {
                     assert_eq!(early[2 * b], all[PARTS_PER_BLOCK * b], "block {b} header");
-                    assert_eq!(
-                        early[2 * b + 1],
-                        all[PARTS_PER_BLOCK * b + 1],
-                        "block {b} offsets",
-                    );
+                    assert_eq!(early[2 * b + 1], all[PARTS_PER_BLOCK * b + 1], "block {b} offsets",);
                 }
 
                 let bulk = payload.bulk_parts(&map);
@@ -74,10 +63,8 @@ fn the_early_and_bulk_parts_partition_the_wire() {
                     let want = &all[PARTS_PER_BLOCK * (i / 3) + 2 + i % 3];
                     assert_eq!(&joined, want, "part {i} at {chunks} chunks");
                 }
-                let want_lens: Vec<Vec<usize>> = bulk
-                    .iter()
-                    .map(|p| p.iter().map(|c| c.len()).collect())
-                    .collect();
+                let want_lens: Vec<Vec<usize>> =
+                    bulk.iter().map(|p| p.iter().map(|c| c.len()).collect()).collect();
                 let got_lens: Vec<Vec<usize>> = payload
                     .bulk_receive_into(&map)
                     .iter()
@@ -101,9 +88,7 @@ fn fill<const W: usize>(block: &mut ExchangeBlock<W>, seed: u64) {
     for _ in 0..block.rows() {
         block.x.push(std::array::from_fn(|_| next()));
         block.z.push(std::array::from_fn(|_| next()));
-        block
-            .coeff
-            .push(Complex64::new(next() as f64 * 1e-18, next() as f64 * 1e-18));
+        block.coeff.push(Complex64::new(next() as f64 * 1e-18, next() as f64 * 1e-18));
     }
 }
 
@@ -112,15 +97,7 @@ fn with_counts_builds_offsets_and_reserves_the_columns() {
     let block = ExchangeBlock::<2>::with_counts(3, &[2, 0, 5, 1]);
 
     assert_eq!(block.offsets, vec![0, 2, 2, 7, 8]);
-    assert_eq!(
-        block.header,
-        BlockHeader {
-            num_buckets: 4,
-            rows: 8,
-            width: 2,
-            entry: 3,
-        }
-    );
+    assert_eq!(block.header, BlockHeader { num_buckets: 4, rows: 8, width: 2, entry: 3 });
     assert_eq!(block.rows(), 8);
     assert_eq!(block.num_buckets(), 4);
     assert_eq!(block.x.len(), 8);
@@ -208,11 +185,7 @@ fn byte_parts_are_five_borrowed_views_per_block() {
 
 /// `byte_parts` on the sender, `receive_into` + `finish_receive` on a fresh receiver.
 fn wire_round_trip<const W: usize>(payload: &PartnerPayload<W>) -> PartnerPayload<W> {
-    let sent: Vec<Vec<u8>> = payload
-        .byte_parts()
-        .into_iter()
-        .map(<[u8]>::to_vec)
-        .collect();
+    let sent: Vec<Vec<u8>> = payload.byte_parts().into_iter().map(<[u8]>::to_vec).collect();
     let lens: Vec<usize> = sent.iter().map(Vec::len).collect();
     let mut back = PartnerPayload::<W>::default();
     for (view, bytes) in back.receive_into(&lens).into_iter().zip(&sent) {
@@ -253,16 +226,13 @@ fn a_block_encoded_at_another_width_is_rejected() {
 
 /// Small random payloads: 0–2 blocks, 1–4 source buckets, 0–3 rows each.
 fn arb_payload<const W: usize>() -> impl Strategy<Value = PartnerPayload<W>> {
-    let block = (
-        0u32..8,
-        proptest::collection::vec(0u32..4, 1..5),
-        any::<u64>(),
-    )
-        .prop_map(|(entry, counts, seed)| {
+    let block = (0u32..8, proptest::collection::vec(0u32..4, 1..5), any::<u64>()).prop_map(
+        |(entry, counts, seed)| {
             let mut block = ExchangeBlock::<W>::with_counts(entry, &counts);
             fill(&mut block, seed);
             block
-        });
+        },
+    );
     proptest::collection::vec(block, 0..3).prop_map(|blocks| PartnerPayload { blocks })
 }
 

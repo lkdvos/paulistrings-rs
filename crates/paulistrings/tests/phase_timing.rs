@@ -27,10 +27,7 @@ fn stats_sum_approximates_total() {
     }
     let sum = rand_sum_real::<1>(20_000, 32, 0x51A75);
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .expect("pool");
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().expect("pool");
     let mut scratch = LayerScratch::<1>::new();
     let out = pool.install(|| {
         propagate_with(
@@ -49,22 +46,14 @@ fn stats_sum_approximates_total() {
     assert!(stats.cosets > 0, "coset tasks must be counted: {stats:?}");
     assert!(stats.runs >= stats.cosets);
     assert!(stats.terms_in > 0 && stats.terms_out > 0);
-    assert_eq!(
-        stats.rescale_ns, 0,
-        "no key-preserving layer in this circuit"
-    );
+    assert_eq!(stats.rescale_ns, 0, "no key-preserving layer in this circuit");
     assert!(stats.coset_loop_ns > 0);
 
     // Busy time is measured strictly inside the coset-loop wall interval, so
     // on one thread it is bounded by it; and the gap (loop dispatch, scratch
     // lookup) should be small. 0.5 is deliberately loose to avoid flakes.
     let busy = stats.busy_total_ns();
-    assert!(
-        busy <= stats.coset_loop_ns,
-        "busy {} > wall {}",
-        busy,
-        stats.coset_loop_ns
-    );
+    assert!(busy <= stats.coset_loop_ns, "busy {} > wall {}", busy, stats.coset_loop_ns);
     assert!(
         busy * 2 >= stats.coset_loop_ns,
         "busy {} < half of wall {}",
@@ -145,10 +134,7 @@ fn partitioned_stats_are_attributed() {
     // A weight-4 rotation whose generator carries `X` on qubit 0, and one
     // partition row seeing exactly that bit — so the generator pass is remote
     // and every layer exports.
-    let gen = PauliString::<1> {
-        x: [0b0101],
-        z: [0b1010],
-    };
+    let gen = PauliString::<1> { x: [0b0101], z: [0b1010] };
     let mut circuit = Circuit::<1>::new(16);
     for _ in 0..3 {
         circuit.push(PauliRotation::new(gen, 0.3));
@@ -160,10 +146,7 @@ fn partitioned_stats_are_attributed() {
     let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
     let mut split = PartitionedSum::scatter_with(
         sum,
-        ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(rows),
-        },
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
     );
 
     let started = std::time::Instant::now();
@@ -214,10 +197,7 @@ fn partitioned_stats_are_attributed() {
 #[test]
 fn distributed_stats_are_attributed() {
     // The same remote-generator circuit and partition row as `partitioned_stats_are_attributed`.
-    let gen = PauliString::<1> {
-        x: [0b0101],
-        z: [0b1010],
-    };
+    let gen = PauliString::<1> { x: [0b0101], z: [0b1010] };
     let mut circuit = Circuit::<1>::new(16);
     for _ in 0..3 {
         circuit.push(PauliRotation::new(gen, 0.3));
@@ -236,10 +216,7 @@ fn distributed_stats_are_attributed() {
                     let mut split = DistributedSum::scatter_with(
                         sum,
                         transport,
-                        ScatterOptions {
-                            runtime,
-                            rows: ScatterRows::Explicit(rows),
-                        },
+                        ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
                     );
 
                     let started = std::time::Instant::now();
@@ -254,10 +231,7 @@ fn distributed_stats_are_attributed() {
                 })
             })
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread"))
-            .collect::<Vec<_>>()
+        handles.into_iter().map(|h| h.join().expect("rank thread")).collect::<Vec<_>>()
     });
 
     assert_eq!(per_rank.len(), 2);
@@ -265,10 +239,7 @@ fn distributed_stats_are_attributed() {
         assert_eq!(stats.layers, 3, "rank {rank}: {stats:?}");
         assert_eq!(stats.per_partition.len(), 1, "rank {rank}: {stats:?}");
         assert!(stats.scatter_ns > 0, "rank {rank}: {stats:?}");
-        assert_eq!(
-            stats.gather_ns, 0,
-            "rank {rank}: nothing gathered yet: {stats:?}"
-        );
+        assert_eq!(stats.gather_ns, 0, "rank {rank}: nothing gathered yet: {stats:?}");
 
         let p = &stats.per_partition[0];
         assert_eq!(p.layers, 3, "rank {rank}: {p:?}");
@@ -324,10 +295,7 @@ fn device_stats_land_on_their_fields() {
     use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
     use paulistrings::{ApproxTopN, PartitionConfig, Placement};
     paulistrings::require_cuda!();
-    let gen = PauliString::<1> {
-        x: [0b0101],
-        z: [0b1010],
-    };
+    let gen = PauliString::<1> { x: [0b0101], z: [0b1010] };
     let mut circuit = Circuit::<1>::new(16);
     for _ in 0..3 {
         circuit.push(PauliRotation::new(gen, 0.3));
@@ -335,23 +303,16 @@ fn device_stats_land_on_their_fields() {
     let sum = rand_sum_real::<1>(20_000, 16, 0x9A18);
 
     let mut one = GpuPartitionedSum::from_host(&sum, 0).expect("upload");
-    one.propagate(&circuit, ApproxTopN(15_000), Direction::Forward)
-        .expect("propagate");
+    one.propagate(&circuit, ApproxTopN(15_000), Direction::Forward).expect("propagate");
     let stats = one.take_stats();
     let p = &stats.per_partition[0];
     assert_eq!(p.layers, 3, "{p:?}");
-    assert!(
-        p.gather_ns > 0 && p.merge_ns > 0 && p.compact_ns > 0,
-        "{p:?}"
-    );
+    assert!(p.gather_ns > 0 && p.merge_ns > 0 && p.compact_ns > 0, "{p:?}");
     assert!(p.truncate_ns > 0 && p.finalize_ns > 0, "{p:?}");
     assert_eq!((p.export_ns, p.export_kernel_ns), (0, 0), "{p:?}");
 
     let config = PartitionConfig {
-        placement: Placement::Devices {
-            devices: vec![0],
-            per_device: 2,
-        },
+        placement: Placement::Devices { devices: vec![0], per_device: 2 },
         bind_memory: false,
         threads_per_partition: None,
     };
@@ -361,17 +322,9 @@ fn device_stats_land_on_their_fields() {
         layer: GpuLayerOptions::default(),
     };
     let mut split = GpuPartitionedSum::scatter_to_devices_with(&sum, options).expect("scatter");
-    split
-        .propagate(&circuit, KeepAll, Direction::Forward)
-        .expect("propagate");
+    split.propagate(&circuit, KeepAll, Direction::Forward).expect("propagate");
     for (rank, p) in split.take_stats().per_partition.iter().enumerate() {
-        assert!(
-            p.export_ns > 0 && p.export_kernel_ns > 0,
-            "partition {rank}: {p:?}"
-        );
-        assert!(
-            p.rows_exported > 0 && p.recv_rows > 0,
-            "partition {rank}: {p:?}"
-        );
+        assert!(p.export_ns > 0 && p.export_kernel_ns > 0, "partition {rank}: {p:?}");
+        assert!(p.rows_exported > 0 && p.recv_rows > 0, "partition {rank}: {p:?}");
     }
 }

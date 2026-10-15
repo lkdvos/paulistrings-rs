@@ -99,11 +99,7 @@ impl<const W: usize> GpuSum<W> {
         ordinal: u32,
         extra_options: &[String],
     ) -> Result<Self, GpuError> {
-        Self::upload(
-            sum,
-            ordinal,
-            module::kernel_set_with_options(ordinal, W, extra_options)?,
-        )
+        Self::upload(sum, ordinal, module::kernel_set_with_options(ordinal, W, extra_options)?)
     }
 
     fn upload(sum: &PauliSum<W>, ordinal: u32, kernels: Arc<KernelSet>) -> Result<Self, GpuError> {
@@ -137,9 +133,8 @@ impl<const W: usize> GpuSum<W> {
         columns.len = n;
         columns.buckets = b;
 
-        let hash_rows = stream.clone_htod(&flat_rows::<W>(
-            (0..B_MAX_BITS as usize).map(|i| hash.row(i)),
-        ))?;
+        let hash_rows =
+            stream.clone_htod(&flat_rows::<W>((0..B_MAX_BITS as usize).map(|i| hash.row(i))))?;
         let fingerprints = FingerprintRows::<W>::new(hash.seed());
         let fingerprint_rows = stream.clone_htod(&fingerprints.flat())?;
         launch_fingerprint(
@@ -209,11 +204,7 @@ impl<const W: usize> GpuSum<W> {
             staging.z.slice(extent * W),
             staging.coeff.slice(2 * extent),
         );
-        Ok(PauliSum::from_buckets(
-            buckets,
-            self.hash.clone(),
-            self.num_qubits,
-        ))
+        Ok(PauliSum::from_buckets(buckets, self.hash.clone(), self.num_qubits))
     }
 
     /// Total number of terms.
@@ -353,11 +344,7 @@ impl<const W: usize> GpuSum<W> {
         }
         let stream = &self.stream;
         let mut bad = stream.clone_htod(&[0u32, 0, 0, 0, u32::MAX])?;
-        let (bits32, b32, nq32) = (
-            u32::from(self.hash.bits()),
-            b as u32,
-            self.num_qubits as u32,
-        );
+        let (bits32, b32, nq32) = (u32::from(self.hash.bits()), b as u32, self.num_qubits as u32);
         let columns = &self.columns;
         // SAFETY: arguments match `k_check_invariants` in invariants.cu.
         unsafe {
@@ -400,10 +387,7 @@ impl<const W: usize> GpuSum<W> {
         spans.sort_unstable();
         for w in spans.windows(2) {
             if w[0].0 + w[0].1 > w[1].0 {
-                return Ok(Err(format!(
-                    "GpuSum: buckets {} and {} overlap",
-                    w[0].2, w[1].2
-                )));
+                return Ok(Err(format!("GpuSum: buckets {} and {} overlap", w[0].2, w[1].2)));
             }
         }
         if let Some(&(first, len, i)) = spans.last() {

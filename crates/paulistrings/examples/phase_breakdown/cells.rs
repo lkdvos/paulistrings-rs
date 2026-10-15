@@ -101,10 +101,7 @@ pub(crate) fn read_proc_status_kb() -> (u64, u64) {
 }
 
 pub(crate) fn parse_kb_field(s: &str) -> u64 {
-    s.split_whitespace()
-        .next()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(0)
+    s.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0)
 }
 
 impl CellResult {
@@ -130,10 +127,7 @@ impl CellResult {
             partition_cpus: cfg.partition_cpus.label(),
             pin_memory: cfg.bind_memory,
             gen_qubits: (0, 1),
-            initial: cfg
-                .initial
-                .unwrap_or_else(|| Initial::default_for(layer))
-                .label(),
+            initial: cfg.initial.unwrap_or_else(|| Initial::default_for(layer)).label(),
             partition_rows: cfg.partition_rows.label(),
             row_stats: RowChoiceStats::default(),
             partitioned: None,
@@ -163,16 +157,8 @@ pub(crate) fn note_generator(layer: LayerKind, gen_qubits: (usize, usize), group
     if !layer.picks_generator() {
         return;
     }
-    let gate = if layer == LayerKind::Su4Local {
-        "SU4"
-    } else {
-        "ZZ"
-    };
-    let class = if layer == LayerKind::RotationRemote {
-        "remote"
-    } else {
-        "local"
-    };
+    let gate = if layer == LayerKind::Su4Local { "SU4" } else { "ZZ" };
+    let class = if layer == LayerKind::RotationRemote { "remote" } else { "local" };
     eprintln!(
         "phase_breakdown: note: {} {group} acts on {gate}({}, {}), the smallest pair whose deltas \
          are {class} under these partition rows.",
@@ -225,13 +211,7 @@ where
         (n, wall_ns, scratch.take_stats().per_partition[0])
     });
 
-    CellResult {
-        n,
-        hash_seed,
-        wall_ns,
-        stats,
-        ..CellResult::new(layer, threads, cfg)
-    }
+    CellResult { n, hash_seed, wall_ns, stats, ..CellResult::new(layer, threads, cfg) }
 }
 
 /// One partitioned cell: [`run_cell`] through `PartitionedSum`, scattered outside the timed region.
@@ -279,21 +259,13 @@ where
     let hash_seed = base.hash().seed();
     let mut split = PartitionedSum::scatter_with(
         base,
-        ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(rows),
-        },
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
     );
     split.enable_trace();
     let (n, wall_ns) = warm_up_then_time(
         &mut split,
         |split| {
-            split.propagate_with(
-                &circuit,
-                policy,
-                Direction::Forward,
-                PropagateOptions::default(),
-            )
+            split.propagate_with(&circuit, policy, Direction::Forward, PropagateOptions::default())
         },
         |split| {
             let _ = (split.take_trace(), split.take_stats());
@@ -379,22 +351,14 @@ where
     let world = SimpleCommunicator::world();
     let transport = MpiTransport::from_communicator(&world);
     let hash_seed = base.hash().seed();
-    let scatter_options = ScatterOptions {
-        runtime,
-        rows: ScatterRows::Explicit(rows),
-    };
+    let scatter_options = ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) };
     let mut split = DistributedSum::scatter_with(base, transport, scatter_options);
     split.enable_trace();
     // The barrier makes the timed call start together on every rank.
     let (n, wall_ns) = warm_up_then_time(
         &mut split,
         |split| {
-            split.propagate_with(
-                &circuit,
-                policy,
-                Direction::Forward,
-                PropagateOptions::default(),
-            )
+            split.propagate_with(&circuit, policy, Direction::Forward, PropagateOptions::default())
         },
         |split| {
             let _ = (split.take_trace(), split.take_stats());
@@ -516,15 +480,7 @@ pub(crate) fn summarize_partitions(
         terms_in,
         imbalance,
         imbalance_by_layer: trace.imbalance(),
-        terms_by_layer: trace
-            .layers
-            .iter()
-            .map(|layer| layer.terms_in.iter().sum())
-            .collect(),
-        coset_loop_ns: per_partition
-            .per_partition
-            .iter()
-            .map(|s| s.coset_loop_ns)
-            .collect(),
+        terms_by_layer: trace.layers.iter().map(|layer| layer.terms_in.iter().sum()).collect(),
+        coset_loop_ns: per_partition.per_partition.iter().map(|s| s.coset_loop_ns).collect(),
     }
 }

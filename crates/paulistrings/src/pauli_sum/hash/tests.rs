@@ -13,10 +13,7 @@ fn xor<const W: usize>(a: &PauliString<W>, b: &PauliString<W>) -> PauliString<W>
 }
 
 fn rand_key<const W: usize>(rng: &mut Xs64, num_qubits: usize) -> PauliString<W> {
-    let mut p = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
+    let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
     for w in 0..W {
         let mask = word_mask(num_qubits, w);
         p.x[w] = rng.next_u64() & mask;
@@ -38,10 +35,7 @@ fn low_weight_key<const W: usize>(
     num_qubits: usize,
     weight: usize,
 ) -> PauliString<W> {
-    let mut p = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
+    let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
     for _ in 0..weight {
         let q = (rng.next_u64() as usize) % num_qubits;
         let bit = 1u64 << (q % 64);
@@ -208,10 +202,7 @@ fn different_seeds_give_different_hashes() {
         .filter(|p| bucket(&a, p) != bucket(&b, p))
         .count();
     // Two independent hashes agree on a given key with probability 2^-10.
-    assert!(
-        differs > 400,
-        "expected most keys to hash differently, got {differs}/500"
-    );
+    assert!(differs > 400, "expected most keys to hash differently, got {differs}/500");
 }
 
 #[test]
@@ -219,10 +210,7 @@ fn no_row_masks_to_zero_even_at_one_qubit() {
     // At num_qubits = 1 a naive draw gives an all-zero row 1/4 of the time.
     let h = Gf2Hash::<1>::new(1, 2, 0x1);
     for i in 0..B_MAX_BITS as usize {
-        assert!(
-            (h.row(i).0[0] | h.row(i).1[0]) != 0,
-            "row {i} masked to zero",
-        );
+        assert!((h.row(i).0[0] | h.row(i).1[0]) != 0, "row {i} masked to zero",);
     }
 }
 
@@ -243,9 +231,7 @@ fn xorshift64_step(mut x: u64) -> u64 {
 
 /// Row `j` of `M` as a mask: bit `j` of `M·v` is the parity of `xorshift64_row(j) & v`.
 fn xorshift64_row(j: u32) -> u64 {
-    (0..64).fold(0u64, |row, k| {
-        row | (((xorshift64_step(1u64 << k) >> j) & 1) << k)
-    })
+    (0..64).fold(0u64, |row, k| row | (((xorshift64_step(1u64 << k) >> j) & 1) << k))
 }
 
 /// Consecutive outputs of a linear generator satisfy `rows_z = M·rows_x` word for word under every seed.
@@ -295,13 +281,8 @@ fn xorshift_kernel_deltas_do_not_share_bucket_zero() {
 /// 64 rows over 64 qubits as a fingerprint must separate the 18 337 keys of weight ≤ 2; a random linear map collides on some pair with probability ~2^-37.
 #[test]
 fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
-    let matrix = Gf2Matrix::<1>::draw(
-        64,
-        64,
-        crate::pauli_sum::storage::DEFAULT_HASH_SEED,
-        &[0],
-        &[0],
-    );
+    let matrix =
+        Gf2Matrix::<1>::draw(64, 64, crate::pauli_sum::storage::DEFAULT_HASH_SEED, &[0], &[0]);
     let (rx, rz) = matrix.rows();
     let image = |x: u64, z: u64| {
         (0..64).fold(0u64, |bits, i| {
@@ -415,10 +396,7 @@ fn support_delta_rank_is_monotone_in_bits() {
         for bits in 0..=12u8 {
             let h = Gf2Hash::<2>::new(128, bits, seed);
             let r = crate::test_support::support_delta_rank(&h, &[0, 1]);
-            assert!(
-                r >= last && r <= 4,
-                "seed {seed:#x}: rank went {last} -> {r} at bits {bits}"
-            );
+            assert!(r >= last && r <= 4, "seed {seed:#x}: rank went {last} -> {r} at bits {bits}");
             assert!(r <= bits as usize, "rank {r} exceeds bits {bits}");
             last = r;
         }
@@ -457,21 +435,12 @@ fn order_broken_by_some_delta<const W: usize>(
     bits: u8,
     support: &[usize],
 ) -> bool {
-    let h = Gf2Hash::<W>::new(
-        num_qubits,
-        bits,
-        crate::pauli_sum::storage::DEFAULT_HASH_SEED,
-    );
+    let h = Gf2Hash::<W>::new(num_qubits, bits, crate::pauli_sum::storage::DEFAULT_HASH_SEED);
     // Enumerate the support's delta space: one bit per (qubit, x-or-z).
-    let gens: Vec<PauliString<W>> = support
-        .iter()
-        .flat_map(|&q| [PauliString::<W>::x(q), PauliString::<W>::z(q)])
-        .collect();
+    let gens: Vec<PauliString<W>> =
+        support.iter().flat_map(|&q| [PauliString::<W>::x(q), PauliString::<W>::z(q)]).collect();
     let local = |combo: usize| -> PauliString<W> {
-        let mut d = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut d = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
         for (g, gen) in gens.iter().enumerate() {
             if combo >> g & 1 == 1 {
                 d = xor(&d, gen);
@@ -585,10 +554,7 @@ fn from_seed_is_reproducible_and_seed_dependent() {
 fn excluding_nothing_is_from_seed_and_excluding_avoids() {
     for seed in [0x1u64, 0x5EED] {
         let plain = PartitionRows::<2>::from_seed(100, 4, seed);
-        assert_eq!(
-            PartitionRows::<2>::from_seed_excluding(100, 4, seed, &[0; 2], &[0; 2]),
-            plain
-        );
+        assert_eq!(PartitionRows::<2>::from_seed_excluding(100, 4, seed, &[0; 2], &[0; 2]), plain);
         let (mx, mz) = ([0xFFFF_0000_0000_FFFF, 0b1011], [!0u64, 0]);
         assert!(!plain.avoids(&mx, &mz), "random rows read these columns");
         let rows = PartitionRows::<2>::from_seed_excluding(100, 4, seed, &mx, &mz);
@@ -717,16 +683,7 @@ fn cut_four_blocks_labels_each_block_by_its_index() {
     let (rx, rz) = p.rows();
     assert_eq!(rx, [[0u64], [0u64]]);
     assert_eq!(rz, [[0b1100_1100u64], [0b1111_0000u64]]);
-    for (q, want) in [
-        (0usize, 0u32),
-        (1, 0),
-        (2, 1),
-        (3, 1),
-        (4, 2),
-        (5, 2),
-        (6, 3),
-        (7, 3),
-    ] {
+    for (q, want) in [(0usize, 0u32), (1, 0), (2, 1), (3, 1), (4, 2), (5, 2), (6, 3), (7, 3)] {
         assert_eq!(partition(&p, &PauliString::<1>::z(q)), want, "qubit {q}",);
     }
     // Two odd blocks XOR their labels: Z2·Z4 -> 1 ^ 2 = 3.
@@ -745,10 +702,7 @@ fn cut_leaves_uncovered_qubits_in_the_zero_label() {
 
 #[test]
 fn cut_of_one_block_is_the_trivial_partitioning() {
-    assert_eq!(
-        PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3]]),
-        PartitionRows::<1>::none(4),
-    );
+    assert_eq!(PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3]]), PartitionRows::<1>::none(4),);
 }
 
 #[test]
@@ -802,24 +756,13 @@ fn partition_occupancy_is_balanced_on_low_weight_keys() {
     let mean = target / p.num_partitions(); // 1000
     let max = *counts.iter().max().unwrap();
     let min = *counts.iter().min().unwrap();
-    assert!(
-        max < 2 * mean,
-        "max load {max} vs mean {mean}, counts {counts:?}"
-    );
-    assert!(
-        min > mean / 2,
-        "min load {min} vs mean {mean}, counts {counts:?}"
-    );
+    assert!(max < 2 * mean, "max load {max} vs mean {mean}, counts {counts:?}");
+    assert!(min > mean / 2, "min load {min} vs mean {mean}, counts {counts:?}");
 }
 
 #[test]
 fn seeded_partition_rows_are_independent_of_the_hash() {
-    for seed in [
-        0x1u64,
-        0x5EED,
-        0xBEEF,
-        crate::pauli_sum::storage::DEFAULT_HASH_SEED,
-    ] {
+    for seed in [0x1u64, 0x5EED, 0xBEEF, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
         let h = Gf2Hash::<2>::new(128, 7, seed);
         let p = PartitionRows::<2>::from_seed(128, 3, seed);
         assert!(p.is_independent_of(&h), "seed {seed:#x}");

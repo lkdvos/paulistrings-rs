@@ -10,12 +10,8 @@ fn tags_pack_kind_and_epoch_below_the_guaranteed_tag_bound() {
     // The last epoch before the wrap sits exactly on 32767.
     assert_eq!(MpiTransport::tag(KIND_GATHER_PART + 12, EPOCHS - 1), 32767);
     for epoch in 0..EPOCHS {
-        for kind in [
-            KIND_EXCHANGE_HEADER,
-            KIND_EXCHANGE_PART,
-            KIND_GATHER_HEADER,
-            KIND_GATHER_PART,
-        ] {
+        for kind in [KIND_EXCHANGE_HEADER, KIND_EXCHANGE_PART, KIND_GATHER_HEADER, KIND_GATHER_PART]
+        {
             let tag = MpiTransport::tag(kind, epoch);
             assert!((0..=32767).contains(&tag), "epoch {epoch} kind {kind}");
             assert_eq!(tag & 0xf, kind);
@@ -103,15 +99,7 @@ fn a_truncated_header_is_rejected() {
 fn chunk_counts_agree_with_slice_chunks_at_the_boundaries() {
     let buf = vec![0u8; 4096];
     for chunk in [1usize, 2, 3, 1024, 4095, 4096, 4097] {
-        for len in [
-            0,
-            1,
-            chunk.saturating_sub(1),
-            chunk,
-            chunk + 1,
-            2 * chunk,
-            2 * chunk + 1,
-        ] {
+        for len in [0, 1, chunk.saturating_sub(1), chunk, chunk + 1, 2 * chunk, 2 * chunk + 1] {
             if len > buf.len() {
                 continue;
             }

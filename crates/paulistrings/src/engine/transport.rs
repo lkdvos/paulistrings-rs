@@ -157,8 +157,7 @@ pub trait Transport: Collectives {
 
     /// The blocking [`exchange_layer`](Self::exchange_layer) under an empty `ChunkMap`, for payloads whose every part is early.
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
-        self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ())
-            .0
+        self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ()).0
     }
 
     /// Collect every partition's `parts` on rank 0: `Some(v)` there with `v[q]` partition `q`'s parts, `None` elsewhere; one collective.
@@ -176,19 +175,13 @@ pub trait Transport: Collectives {
             return None;
         }
 
-        let mut received = self.exchange(
-            (0..size).map(|_| None).collect::<Vec<Option<ByteParts>>>(),
-            &mut Vec::new(),
-        );
+        let mut received = self
+            .exchange((0..size).map(|_| None).collect::<Vec<Option<ByteParts>>>(), &mut Vec::new());
         let mut mine = Some(mine);
         Some(
             (0..size)
                 .map(|q| {
-                    let got = if q == ROOT {
-                        mine.take()
-                    } else {
-                        received[q].take()
-                    };
+                    let got = if q == ROOT { mine.take() } else { received[q].take() };
                     got.unwrap_or_else(|| {
                         panic!(
                             "gather_to_root: partition {q} sent nothing (it must send its \
@@ -234,10 +227,7 @@ impl Transport for SoloTransport {
         P: Payload,
         F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
     {
-        debug_assert!(
-            send.iter().all(Option::is_none),
-            "a group of one sends to no one"
-        );
+        debug_assert!(send.iter().all(Option::is_none), "a group of one sends to no one");
         let result = body(&send, &AlreadyHere);
         (send, result)
     }

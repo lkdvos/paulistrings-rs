@@ -15,10 +15,7 @@ fn table<const W: usize>(channel: &dyn Channel<W>, nq: usize) -> DevicePrepared<
 #[test]
 fn classification_and_fanout_per_table() {
     let cnot = table::<1>(&PtmChannel::cnot(1, 3), 8);
-    assert_eq!(
-        (cnot.fanout, cnot.dense, cnot.key_preserving),
-        (cnot.entries, false, false)
-    );
+    assert_eq!((cnot.fanout, cnot.dense, cnot.key_preserving), (cnot.entries, false, false));
     assert!(cnot.entries > 1);
     let zz = table::<1>(&zz_rotation::<1>(1, 3, 0.3), 8);
     assert_eq!((zz.fanout, zz.dense), (2, false));
@@ -32,10 +29,7 @@ fn classification_and_fanout_per_table() {
     gen.z[1] |= 1 << 2;
     gen.x[0] |= 1 << 40;
     let rot = table::<2>(&PauliRotation::new(gen, 0.7), 128);
-    assert_eq!(
-        (rot.mode, rot.entries, rot.fanout, rot.dense),
-        (1, 2, 2, false)
-    );
+    assert_eq!((rot.mode, rot.entries, rot.fanout, rot.dense), (1, 2, 2, false));
     assert_eq!(rot.mask[4..6], gen.x);
     assert_eq!(rot.mask[6..8], gen.z);
     assert_eq!(rot.bucket_deltas().len(), 2);
@@ -53,9 +47,7 @@ fn received_entries_disable_the_rescale_path_and_leave_the_local_span() {
     let prepared = channel.prepare(&hash, false).unwrap();
     let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
-    let Prepared::Local(ptm) = &prepared else {
-        unreachable!()
-    };
+    let Prepared::Local(ptm) = &prepared else { unreachable!() };
     let retained = ptm.retain_entries(&plan.local_entries);
     assert!(
         retained.is_key_preserving() || plan.remote.is_empty(),
@@ -81,10 +73,7 @@ fn collisions_between_entries_follow_the_output_patterns() {
     assert!(!cnot.entries_can_collide(&all(&cnot)));
     let su4 = table::<1>(&PtmChannel::unitary_2q(1, 3, haar_su4_matrix()), 8);
     assert!(su4.entries_can_collide(&all(&su4)));
-    assert!(
-        !su4.entries_can_collide(&[3]),
-        "one entry cannot collide with itself"
-    );
+    assert!(!su4.entries_can_collide(&[3]), "one entry cannot collide with itself");
     let swap = table::<1>(&PtmChannel::unitary_2q(1, 3, sqrt_swap_matrix()), 8);
     assert!(swap.entries_can_collide(&all(&swap)));
     let mut gen = PauliString::<2>::x(3);
@@ -111,9 +100,8 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
         assert!(t.permutation && !t.key_preserving, "{name}");
         let dim = 1usize << (2 * t.support_size);
         for s in 0..LOCAL_DIM {
-            let emitting: Vec<usize> = (0..t.entries)
-                .filter(|&e| (t.nonzero_patterns[e] >> s) & 1 != 0)
-                .collect();
+            let emitting: Vec<usize> =
+                (0..t.entries).filter(|&e| (t.nonzero_patterns[e] >> s) & 1 != 0).collect();
             if s < dim {
                 assert_eq!(emitting, vec![t.entry_of[s] as usize], "{name} pattern {s}");
             } else {
@@ -129,10 +117,7 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
             3,
             [
                 [Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0)],
-                [
-                    Complex64::new(0.0, 0.0),
-                    Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-                ],
+                [Complex64::new(0.0, 0.0), Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4)],
             ],
         ),
         8,
@@ -166,29 +151,15 @@ fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
     let su4 = table::<2>(&PtmChannel::unitary_2q(1, 70, haar_su4_matrix()), 128);
     let pick = [9usize, 2, 14];
     let r = su4.restrict(&pick);
-    assert_eq!(
-        (r.entries, r.received_entries, r.key_preserving),
-        (3, 0, false)
-    );
+    assert_eq!((r.entries, r.received_entries, r.key_preserving), (3, 0, false));
     assert_eq!(r.dense, su4.dense);
     for (j, &e) in pick.iter().enumerate() {
         let a = LOCAL_DIM * 2;
-        assert_eq!(
-            r.amplitude[j * a..(j + 1) * a],
-            su4.amplitude[e * a..(e + 1) * a]
-        );
+        assert_eq!(r.amplitude[j * a..(j + 1) * a], su4.amplitude[e * a..(e + 1) * a]);
         assert_eq!(r.mask[j * 4..(j + 1) * 4], su4.mask[e * 4..(e + 1) * 4]);
         assert_eq!(
-            (
-                r.nonzero_patterns[j],
-                r.bucket_delta[j],
-                r.fingerprint_delta[j]
-            ),
-            (
-                su4.nonzero_patterns[e],
-                su4.bucket_delta[e],
-                su4.fingerprint_delta[e]
-            )
+            (r.nonzero_patterns[j], r.bucket_delta[j], r.fingerprint_delta[j]),
+            (su4.nonzero_patterns[e], su4.bucket_delta[e], su4.fingerprint_delta[e])
         );
     }
     assert!(r.received_slot.iter().all(|&k| k == NO_REMOTE));
@@ -203,24 +174,17 @@ fn rehash_tracks_the_hash_and_gm_is_the_fingerprint_of_the_mask() {
     let prepared = channel.prepare(&hash, false).unwrap();
     let fingerprints = FingerprintRows::new(hash.seed());
     let mut t = DevicePrepared::new(&prepared, &hash, &fingerprints, &[]);
-    let Prepared::Local(ptm) = &prepared else {
-        unreachable!()
-    };
+    let Prepared::Local(ptm) = &prepared else { unreachable!() };
     for (e, d) in ptm.deltas().iter().enumerate() {
         assert_eq!(t.bucket_delta[e], d.bucket_delta);
-        assert_eq!(
-            t.fingerprint_delta[e],
-            fingerprints.fingerprint(&d.mask_x, &d.mask_z)
-        );
+        assert_eq!(t.fingerprint_delta[e], fingerprints.fingerprint(&d.mask_x, &d.mask_z));
     }
     let mut refined = hash.clone();
     refined.refine();
     refined.refine();
     t.rehash(&refined);
     let refined_prepared = channel.prepare(&refined, false).unwrap();
-    let Prepared::Local(refined_ptm) = &refined_prepared else {
-        unreachable!()
-    };
+    let Prepared::Local(refined_ptm) = &refined_prepared else { unreachable!() };
     for (e, d) in refined_ptm.deltas().iter().enumerate() {
         assert_eq!(t.bucket_delta[e], d.bucket_delta);
     }

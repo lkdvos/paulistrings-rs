@@ -40,10 +40,7 @@ fn parse_args() -> Result<Args, String> {
         threads: 1,
         mib: DEFAULT_MIB,
         reps: DEFAULT_REPS,
-        kernels: vec!["read", "write", "copy", "triad"]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+        kernels: vec!["read", "write", "copy", "triad"].into_iter().map(String::from).collect(),
         device: None,
     };
     let mut it = std::env::args().skip(1);

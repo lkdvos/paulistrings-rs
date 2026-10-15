@@ -35,10 +35,7 @@ pub(crate) fn run_cell_gpu<const W: usize>(
 
     let partitions = devices.len() * cfg.gpu_partitions;
     let config = PartitionConfig {
-        placement: Placement::Devices {
-            devices: devices.to_vec(),
-            per_device: cfg.gpu_partitions,
-        },
+        placement: Placement::Devices { devices: devices.to_vec(), per_device: cfg.gpu_partitions },
         bind_memory: false,
         threads_per_partition: None,
     };
@@ -77,12 +74,7 @@ pub(crate) fn run_cell_gpu<const W: usize>(
         &mut split,
         |split| {
             split
-                .propagate_with(
-                    &circuit,
-                    policy,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                )
+                .propagate_with(&circuit, policy, Direction::Forward, PropagateOptions::default())
                 .unwrap_or_else(|e| fail("propagate", e))
         },
         |split| {
@@ -108,11 +100,7 @@ pub(crate) fn run_cell_gpu<const W: usize>(
         gen_qubits,
         row_stats,
         partitioned: Some(summary),
-        device: Some(DeviceCellStats {
-            devices: devices.to_vec(),
-            upload_ns,
-            download_ns,
-        }),
+        device: Some(DeviceCellStats { devices: devices.to_vec(), upload_ns, download_ns }),
         ..CellResult::new(layer, threads, cfg)
     }
 }
@@ -149,10 +137,7 @@ pub(crate) fn run_cell_mpi_gpu<const W: usize>(
     let (rank, ranks) = world_rank();
     let world = SimpleCommunicator::world();
     let fail = |what: &str, e: GpuError| -> ! {
-        eprintln!(
-            "phase_breakdown: rank {rank}: {} on its device: {what}: {e}",
-            layer.name()
-        );
+        eprintln!("phase_breakdown: rank {rank}: {} on its device: {what}: {e}", layer.name());
         std::process::exit(2);
     };
     let device = match spec {
@@ -186,12 +171,7 @@ pub(crate) fn run_cell_mpi_gpu<const W: usize>(
         &mut split,
         |split| {
             split
-                .propagate_with(
-                    &circuit,
-                    policy,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                )
+                .propagate_with(&circuit, policy, Direction::Forward, PropagateOptions::default())
                 .unwrap_or_else(|e| fail("propagate", e))
         },
         |split| {
@@ -219,11 +199,7 @@ pub(crate) fn run_cell_mpi_gpu<const W: usize>(
         row_stats,
         partitioned: Some(summary),
         mpi: Some((rank, ranks)),
-        device: Some(DeviceCellStats {
-            devices: vec![device],
-            upload_ns,
-            download_ns,
-        }),
+        device: Some(DeviceCellStats { devices: vec![device], upload_ns, download_ns }),
         ..CellResult::new(layer, threads, cfg)
     }
 }

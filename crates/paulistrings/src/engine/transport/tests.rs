@@ -36,10 +36,7 @@ fn the_destination_order_is_a_bijection() {
             seen[p as usize] = true;
             assert_eq!(order.bucket_at(p), beta, "bucket_at is not the inverse");
         }
-        assert!(
-            seen.iter().all(|&s| s),
-            "bits={bits} left a position unfilled"
-        );
+        assert!(seen.iter().all(|&s| s), "bits={bits} left a position unfilled");
     }
 }
 

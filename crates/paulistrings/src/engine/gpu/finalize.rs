@@ -55,8 +55,7 @@ fn octave_histogram_device<const W: usize>(
 /// Clear `sum` on device.
 fn clear_device<const W: usize>(sum: &mut GpuSum<W>) -> Result<(), GpuError> {
     let buckets = sum.hash.num_buckets();
-    sum.stream
-        .memset_zeros(&mut sum.columns.lengths.slice_mut(0..buckets))?;
+    sum.stream.memset_zeros(&mut sum.columns.lengths.slice_mut(0..buckets))?;
     sum.columns.len = 0;
     sum.debug_check();
     Ok(())
@@ -128,11 +127,7 @@ fn radix_select_bits<const W: usize>(
     let mut remaining: u64 = n as u64;
     for pass in 0u32..8 {
         let shift = 56 - 8 * pass;
-        let fixed_mask: u64 = if pass == 0 {
-            0
-        } else {
-            u64::MAX << (64 - 8 * pass)
-        };
+        let fixed_mask: u64 = if pass == 0 { 0 } else { u64::MAX << (64 - 8 * pass) };
         stream.memset_zeros(&mut scratch.radix_histogram)?;
         // SAFETY: arguments match `k_radix_histogram` in truncate.cu; `radix_histogram` holds 256 entries.
         unsafe {
@@ -214,12 +209,7 @@ fn retain_device<const W: usize>(
     out.buckets = 0;
     out.reserve(extent, buckets)?;
     grow(&stream, &mut scratch.counts, buckets, ordinal)?;
-    grow(
-        &stream,
-        &mut scratch.destination_offsets,
-        buckets + 1,
-        ordinal,
-    )?;
+    grow(&stream, &mut scratch.destination_offsets, buckets + 1, ordinal)?;
     let buckets_u32 = buckets as u32;
     timed!(let started = scratch.event(sum)?);
     // SAFETY: arguments match `k_boundary_counts` in truncate.cu; `counts` holds `buckets` entries.

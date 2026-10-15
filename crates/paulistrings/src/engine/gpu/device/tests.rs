@@ -15,10 +15,8 @@ fn nccl_available_never_panics() {
 #[cfg(feature = "mpi")]
 #[test]
 fn nccl_available_true_with_module_on_path() {
-    let module_on_path = std::env::var("LD_LIBRARY_PATH")
-        .unwrap_or_default()
-        .split(':')
-        .any(|dir| {
+    let module_on_path =
+        std::env::var("LD_LIBRARY_PATH").unwrap_or_default().split(':').any(|dir| {
             std::fs::read_dir(dir)
                 .map(|entries| {
                     entries

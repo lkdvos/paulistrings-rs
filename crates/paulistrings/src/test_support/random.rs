@@ -56,10 +56,7 @@ pub fn rand_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> Pauli
     let mut rng = Xs64::new(seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for _ in 0..n {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
         for w in 0..W {
             let m = word_mask(num_qubits, w);
             p.x[w] = rng.next_u64() & m;
@@ -78,10 +75,7 @@ pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
     let mut rng = Xs64::new(seed);
     let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
     for _ in 0..n {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
         for w in 0..W {
             let m = word_mask(num_qubits, w);
             p.x[w] = rng.next_u64() & m;
@@ -96,10 +90,7 @@ pub fn rand_sum_real<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
 /// A dense random key with no masking: all `W` `x` words first, then all `W` `z` words.
 /// Valid only when `num_qubits` is a multiple of 64 (every bit set must be a live qubit or `BuildAccumulator` rejects the term); word-major draw order disagrees with [`rand_sum`]'s per-word interleave from `W = 2` up.
 pub fn rand_pauli<const W: usize>(rng: &mut Xs64) -> PauliString<W> {
-    PauliString::<W> {
-        x: rng.next_array::<W>(),
-        z: rng.next_array::<W>(),
-    }
+    PauliString::<W> { x: rng.next_array::<W>(), z: rng.next_array::<W>() }
 }
 
 /// `n` dense random terms built from [`rand_pauli`] — the benchmark input recipe, seeds pinned by the committed criterion baselines. Distinct stream from [`rand_sum`]; see [`rand_pauli`] for why.
@@ -124,10 +115,7 @@ fn low_weight_pauli<const W: usize>(
     num_qubits: usize,
     weight: usize,
 ) -> PauliString<W> {
-    let mut p = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
+    let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
     for _ in 0..weight {
         let q = (rng.next_u64() as usize) % num_qubits;
         let word = q / 64;
@@ -217,9 +205,7 @@ pub fn with_zero_coefficients<const W: usize>(sum: &PauliSum<W>, every: usize) -
             columns.x.extend_from_slice(x);
             columns.z.extend_from_slice(z);
             for &c in c {
-                columns
-                    .coeff
-                    .push(if i.is_multiple_of(every) { ZERO } else { c });
+                columns.coeff.push(if i.is_multiple_of(every) { ZERO } else { c });
                 i += 1;
             }
             columns
@@ -232,10 +218,7 @@ pub fn with_zero_coefficients<const W: usize>(sum: &PauliSum<W>, every: usize) -
 /// The other terms keep the layer from being trivial.
 pub fn cancellation_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::new(num_qubits);
-    let identity = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
+    let identity = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
     acc.add_term(identity, Complex64::new(-0.5, 0.0));
     acc.add_term(PauliString::<W>::z(0), Complex64::new(1.0, 0.0));
     acc.add_term(PauliString::<W>::x(0), Complex64::new(0.25, 0.25));

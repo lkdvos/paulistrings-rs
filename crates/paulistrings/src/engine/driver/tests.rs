@@ -48,9 +48,7 @@ fn a_partition_holding_other_bucket_bits_fails_the_debug_check_everywhere() {
         assert_bucket_bits_agree(transport, bits, 5);
     });
     for (rank, outcome) in outcomes.iter().enumerate() {
-        let message = outcome
-            .as_deref()
-            .unwrap_or_else(|| panic!("rank {rank} passed"));
+        let message = outcome.as_deref().unwrap_or_else(|| panic!("rank {rank} passed"));
         assert!(
             message.contains(&format!(
                 "partition {rank}, layer 5: the partitions hold between 7 and 8 bucket bits"

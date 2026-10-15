@@ -8,11 +8,7 @@ type SortFn<const W: usize> = fn(&mut BucketColumns<W>, &mut SortScratch<W>);
 
 /// Owned columns from slices.
 fn columns<const W: usize>(x: &[[u64; W]], z: &[[u64; W]], c: &[Complex64]) -> BucketColumns<W> {
-    BucketColumns {
-        x: x.to_vec(),
-        z: z.to_vec(),
-        coeff: c.to_vec(),
-    }
+    BucketColumns { x: x.to_vec(), z: z.to_vec(), coeff: c.to_vec() }
 }
 
 /// Assert the contract above for `kernel` on one run.
@@ -26,42 +22,24 @@ fn assert_sort_contract<const W: usize>(
     let mut sorted = columns(x, z, c);
     let mut scratch = SortScratch::<W>::default();
     kernel(&mut sorted, &mut scratch);
-    let BucketColumns {
-        x: gx,
-        z: gz,
-        coeff: gc,
-    } = sorted;
+    let BucketColumns { x: gx, z: gz, coeff: gc } = sorted;
 
     assert_eq!(gx.len(), x.len(), "{what}: row count changed");
     assert_eq!(gz.len(), z.len(), "{what}: row count changed");
     assert_eq!(gc.len(), c.len(), "{what}: row count changed");
     for i in 1..gx.len() {
-        assert!(
-            (gx[i - 1], gz[i - 1]) <= (gx[i], gz[i]),
-            "{what}: not ascending at row {i}",
-        );
+        assert!((gx[i - 1], gz[i - 1]) <= (gx[i], gz[i]), "{what}: not ascending at row {i}",);
     }
     // Coefficient bits break ties, so the multiset comparison is exact.
     let key =
         |(a, b, v): &([u64; W], [u64; W], Complex64)| (*a, *b, v.re.to_bits(), v.im.to_bits());
-    let mut want: Vec<([u64; W], [u64; W], Complex64)> = x
-        .iter()
-        .zip(z)
-        .zip(c)
-        .map(|((&a, &b), &v)| (a, b, v))
-        .collect();
-    let mut got: Vec<([u64; W], [u64; W], Complex64)> = gx
-        .iter()
-        .zip(&gz)
-        .zip(&gc)
-        .map(|((&a, &b), &v)| (a, b, v))
-        .collect();
+    let mut want: Vec<([u64; W], [u64; W], Complex64)> =
+        x.iter().zip(z).zip(c).map(|((&a, &b), &v)| (a, b, v)).collect();
+    let mut got: Vec<([u64; W], [u64; W], Complex64)> =
+        gx.iter().zip(&gz).zip(&gc).map(|((&a, &b), &v)| (a, b, v)).collect();
     want.sort_by_key(key);
     got.sort_by_key(key);
-    assert_eq!(
-        got, want,
-        "{what}: output is not a permutation of the input"
-    );
+    assert_eq!(got, want, "{what}: output is not a permutation of the input");
 }
 
 /// Xorshift64, local so the fixtures share no draw order with `test_support`.
@@ -169,11 +147,7 @@ fn sort_fixtures<const W: usize>(
     push("thin_window", thin, 0x28);
 
     // A constant nonzero high part above the varying bits, which masking a shifted window must not reorder.
-    let hi = if num_qubits >= 64 {
-        1u64 << 63
-    } else {
-        1 << (num_qubits - 1)
-    };
+    let hi = if num_qubits >= 64 { 1u64 << 63 } else { 1 << (num_qubits - 1) };
     let biased: Vec<([u64; W], [u64; W])> = (0..300u64)
         .map(|i| {
             let mut kx = [0u64; W];
@@ -219,19 +193,10 @@ fn the_two_sort_kernels_reduce_to_the_same_sum() {
         let mut sorted = columns(x, z, c);
         let mut scratch = SortScratch::<W>::default();
         kernel(&mut sorted, &mut scratch);
-        let empty = ColumnsRef {
-            x: &[],
-            z: &[],
-            coeff: &[],
-        };
+        let empty = ColumnsRef { x: &[], z: &[], coeff: &[] };
         let mut out = BucketColumns::default();
         merge_identity_and_rest(empty, sorted.view(), &mut out, &AlwaysKeep);
-        out.x
-            .into_iter()
-            .zip(out.z)
-            .zip(out.coeff)
-            .map(|((a, b), v)| (a, b, v))
-            .collect()
+        out.x.into_iter().zip(out.z).zip(out.coeff).map(|((a, b), v)| (a, b, v)).collect()
     }
     for (label, x, z, c) in sort_fixtures::<1>(64) {
         assert_eq!(
@@ -322,13 +287,12 @@ fn merge_reference<const W: usize, T: TruncationPolicy<W> + ?Sized>(
             .collect();
     rows.sort_by_key(|&(x, z, _)| (x, z));
     let (sx, sz, scratch): (Vec<_>, Vec<_>, Vec<_>) =
-        rows.into_iter()
-            .fold((vec![], vec![], vec![]), |(mut x, mut z, mut c), r| {
-                x.push(r.0);
-                z.push(r.1);
-                c.push(r.2);
-                (x, z, c)
-            });
+        rows.into_iter().fold((vec![], vec![], vec![]), |(mut x, mut z, mut c), r| {
+            x.push(r.0);
+            z.push(r.1);
+            c.push(r.2);
+            (x, z, c)
+        });
     reduce_sorted(&sx, &sz, &scratch, policy)
 }
 
@@ -337,16 +301,8 @@ fn run_merge<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     b: (&[[u64; W]], &[[u64; W]], &[Complex64]),
     policy: &T,
 ) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
-    let identity = ColumnsRef {
-        x: a.0,
-        z: a.1,
-        coeff: a.2,
-    };
-    let rest = ColumnsRef {
-        x: b.0,
-        z: b.1,
-        coeff: b.2,
-    };
+    let identity = ColumnsRef { x: a.0, z: a.1, coeff: a.2 };
+    let rest = ColumnsRef { x: b.0, z: b.1, coeff: b.2 };
     let mut out = BucketColumns::default();
     merge_identity_and_rest(identity, rest, &mut out, policy);
     (out.x, out.z, out.coeff)
@@ -377,10 +333,8 @@ fn merge_matches_concat_sort_reduce() {
         rest_keys.sort_unstable();
         let b_x: Vec<[u64; 1]> = rest_keys.iter().map(|&k| [k]).collect();
         let b_z: Vec<[u64; 1]> = rest_keys.iter().map(|&k| [k >> 1]).collect();
-        let b_c: Vec<Complex64> = rest_keys
-            .iter()
-            .map(|_| Complex64::new((next() % 9) as f64 - 4.0, 0.0))
-            .collect();
+        let b_c: Vec<Complex64> =
+            rest_keys.iter().map(|_| Complex64::new((next() % 9) as f64 - 4.0, 0.0)).collect();
 
         let got = run_merge((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
         let want = merge_reference((&a_x, &a_z, &a_c), (&b_x, &b_z, &b_c), &AlwaysKeep);
@@ -416,10 +370,7 @@ mod key_order {
     }
 
     fn string<const W: usize>() -> impl Strategy<Value = PauliString<W>> {
-        (
-            proptest::array::uniform::<_, W>(word()),
-            proptest::array::uniform::<_, W>(word()),
-        )
+        (proptest::array::uniform::<_, W>(word()), proptest::array::uniform::<_, W>(word()))
             .prop_map(|(x, z)| PauliString { x, z })
     }
 
@@ -431,10 +382,7 @@ mod key_order {
         let one = Complex64::new(1.0, 0.0);
         let mut rest = columns(&[b.x, a.x], &[b.z, a.z], &[one, one]);
         sort_by_comparison(&mut rest, &mut SortScratch::default());
-        let sorted = PauliString {
-            x: rest.x[0],
-            z: rest.z[0],
-        };
+        let sorted = PauliString { x: rest.x[0], z: rest.z[0] };
         prop_assert_eq!(sorted, a.min(b));
 
         let (x, z, _) = run_merge(
@@ -442,11 +390,8 @@ mod key_order {
             (&[b.x], &[b.z], &[Complex64::new(2.0, 0.0)]),
             &AlwaysKeep,
         );
-        let emitted: Vec<PauliString<W>> = x
-            .iter()
-            .zip(&z)
-            .map(|(&x, &z)| PauliString { x, z })
-            .collect();
+        let emitted: Vec<PauliString<W>> =
+            x.iter().zip(&z).map(|(&x, &z)| PauliString { x, z }).collect();
         let want = match order {
             std::cmp::Ordering::Less => vec![a, b],
             std::cmp::Ordering::Equal => vec![a],

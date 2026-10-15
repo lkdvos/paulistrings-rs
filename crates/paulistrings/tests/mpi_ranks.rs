@@ -95,10 +95,8 @@ fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
     for round in 0..3 {
         for q in 0..nq {
-            circuit.push(PauliRotation::new(
-                PauliString::<W>::x(q),
-                0.21 + 0.01 * f64::from(round),
-            ));
+            circuit
+                .push(PauliRotation::new(PauliString::<W>::x(q), 0.21 + 0.01 * f64::from(round)));
         }
     }
     circuit.push(zz_rotation::<W>(nq / 2 - 1, nq / 2, 0.33));
@@ -109,9 +107,7 @@ fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
 /// [`local_run_then_one_crossing`] one remote layer at any rank count.
 fn block_cut<const W: usize>(nq: usize, size: usize) -> PartitionRows<W> {
     let per = nq / size;
-    let blocks: Vec<Vec<usize>> = (0..size)
-        .map(|b| (b * per..(b + 1) * per).collect())
-        .collect();
+    let blocks: Vec<Vec<usize>> = (0..size).map(|b| (b * per..(b + 1) * per).collect()).collect();
     PartitionRows::<W>::cut(nq, &blocks)
 }
 
@@ -158,8 +154,7 @@ impl Runner<'_> {
 
         let send = [u64::from(failed)];
         let mut total = [0u64];
-        self.world
-            .all_reduce_into(&send[..], &mut total[..], SystemOperation::sum());
+        self.world.all_reduce_into(&send[..], &mut total[..], SystemOperation::sum());
         if self.rank == 0 {
             if total[0] == 0 {
                 println!("ok       {name}");
@@ -269,9 +264,7 @@ impl Runner<'_> {
                 let mut split = MpiGpuSum::scatter_to_device_with(sum, transport, options)
                     .expect("device scatter");
                 assert_eq!(split.device(), device);
-                split
-                    .propagate(circuit, policy, direction)
-                    .expect("device propagate");
+                split.propagate(circuit, policy, direction).expect("device propagate");
                 split.gather().expect("device gather")
             }
         }
@@ -379,13 +372,7 @@ fn main() {
         std::process::exit(2);
     }
 
-    let mut r = Runner {
-        world: &world,
-        rank,
-        size,
-        failures: 0,
-        cases: 0,
-    };
+    let mut r = Runner { world: &world, rank, size, failures: 0, cases: 0 };
     run_collectives(&mut r);
     run_matrix(&mut r, Backend::Host);
     run_host_cases(&mut r);
@@ -418,11 +405,7 @@ fn run_collectives(r: &mut Runner) {
         transport.allreduce_sum_f64(&mut buf);
 
         let want0 = 0.1 * (size * (size + 1) / 2) as f64;
-        assert!(
-            (buf[0] - want0).abs() < 1e-12,
-            "slot 0: {} vs {want0}",
-            buf[0]
-        );
+        assert!((buf[0] - want0).abs() < 1e-12, "slot 0: {} vs {want0}", buf[0]);
         for (q, v) in buf[1..].iter().enumerate() {
             assert_eq!(*v, q as f64 + 0.5, "slot {q} is one rank's and exact");
         }
@@ -431,11 +414,7 @@ fn run_collectives(r: &mut Runner) {
         let mine = bits.clone();
         transport.allreduce_sum_u64(&mut bits);
         for (got, own) in bits.iter().zip(&mine) {
-            assert_eq!(
-                *got,
-                own.wrapping_mul(size as u64),
-                "ranks disagree on the bits"
-            );
+            assert_eq!(*got, own.wrapping_mul(size as u64), "ranks disagree on the bits");
         }
     });
 }
@@ -469,14 +448,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
         let circuit = trotter_circuit::<1>(16, THETA);
         assert!(circuit.len() >= 20, "the bits collective must move");
         let sum = spread_magnitudes(&rand_sum_real::<1>(800, 16, 0xA004), 40, 0xA004);
-        r.both_directions(
-            backend,
-            &circuit,
-            &sum,
-            &ApproxTopN(1_500),
-            SEED,
-            "w1 trotter",
-        );
+        r.both_directions(backend, &circuit, &sum, &ApproxTopN(1_500), SEED, "w1 trotter");
     });
 
     r.case(&format!("{tag}w2 haar su(4)"), |r| {
@@ -488,14 +460,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
     r.case(&format!("{tag}w2 trotter, 32 layers"), |r| {
         let circuit = trotter_circuit::<2>(16, THETA);
         let sum = spread_magnitudes(&rand_sum_real::<2>(600, 16, 0xA006), 40, 0xA006);
-        r.both_directions(
-            backend,
-            &circuit,
-            &sum,
-            &ApproxTopN(1_200),
-            SEED,
-            "w2 trotter",
-        );
+        r.both_directions(backend, &circuit, &sum, &ApproxTopN(1_200), SEED, "w2 trotter");
     });
 
     r.case(&format!("{tag}single cuts"), |r| {
@@ -556,11 +521,7 @@ fn run_matrix(r: &mut Runner, backend: Backend) {
         let sum = rand_sum_real::<1>(400, 12, 0xA020);
         let circuit = single_rotation::<1>(12);
         // A group of one has no boundary to cross; the plain differential still runs.
-        let seed = if r.size == 1 {
-            SEED
-        } else {
-            all_remote_seed(&circuit, &sum, r.size)
-        };
+        let seed = if r.size == 1 { SEED } else { all_remote_seed(&circuit, &sum, r.size) };
         r.both_directions(backend, &circuit, &sum, &KeepAll, seed, "all-remote");
     });
 
@@ -595,30 +556,9 @@ fn run_host_cases(r: &mut Runner) {
         let sum = spread_magnitudes(&rand_sum::<1>(250, 8, 0xA007), 40, 0xA007);
 
         r.both_directions(backend, &circuit, &sum, &KeepAll, SEED, "policy none");
-        r.both_directions(
-            backend,
-            &circuit,
-            &sum,
-            &CoefficientThreshold(1e-9),
-            SEED,
-            "policy eps",
-        );
-        r.both_directions(
-            backend,
-            &circuit,
-            &sum,
-            &WeightCutoff(4),
-            SEED,
-            "policy weight",
-        );
-        r.both_directions(
-            backend,
-            &circuit,
-            &sum,
-            &ApproxTopN(3_000),
-            SEED,
-            "policy approx",
-        );
+        r.both_directions(backend, &circuit, &sum, &CoefficientThreshold(1e-9), SEED, "policy eps");
+        r.both_directions(backend, &circuit, &sum, &WeightCutoff(4), SEED, "policy weight");
+        r.both_directions(backend, &circuit, &sum, &ApproxTopN(3_000), SEED, "policy approx");
         r.both_directions(
             backend,
             &circuit,
@@ -702,10 +642,7 @@ fn run_host_cases(r: &mut Runner) {
         let config = r.config();
         let runtime = PartitionRuntime::new(&config).expect("topology resolves");
         let transport = MpiTransport::from_communicator(r.world);
-        let options = ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(rows),
-        };
+        let options = ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) };
         let mut split = DistributedSum::scatter_with(sum.clone(), transport, options);
         split.enable_trace();
         split.propagate(&circuit, &WeightCutoff(4), Direction::Forward);
@@ -749,9 +686,8 @@ fn run_host_cases(r: &mut Runner) {
         const NQ: usize = 16;
         let size = r.size as usize;
         let per = NQ / size;
-        let blocks: Vec<Vec<usize>> = (0..size)
-            .map(|b| (b * per..(b + 1) * per).collect())
-            .collect();
+        let blocks: Vec<Vec<usize>> =
+            (0..size).map(|b| (b * per..(b + 1) * per).collect()).collect();
 
         // One `Z` per qubit: a single-`Z` key has odd z-weight in exactly the
         // block holding that qubit, so its rank is that block's index.
@@ -770,10 +706,7 @@ fn run_host_cases(r: &mut Runner) {
         split.assert_invariants();
 
         let (_, z, _) = split.local().to_arrays();
-        let mut held: Vec<usize> = z
-            .iter()
-            .map(|row| row[0].trailing_zeros() as usize)
-            .collect();
+        let mut held: Vec<usize> = z.iter().map(|row| row[0].trailing_zeros() as usize).collect();
         held.sort_unstable();
         assert_eq!(held, blocks[r.rank as usize], "rank {}'s block", r.rank);
 
@@ -803,14 +736,7 @@ fn run_host_cases(r: &mut Runner) {
             PropagateOptions::default(),
             r.world,
         );
-        r.compare(
-            &circuit,
-            &sum,
-            &KeepAll,
-            Direction::Forward,
-            got,
-            "propagate_mpi",
-        );
+        r.compare(&circuit, &sum, &KeepAll, Direction::Forward, got, "propagate_mpi");
     });
 
     r.case("a one-byte chunk size still delivers", |r| {
@@ -852,57 +778,47 @@ fn run_host_cases(r: &mut Runner) {
         let out = std::panic::catch_unwind(AssertUnwindSafe(|| {
             split.propagate(&circuit, &KeepAll, Direction::Forward);
         }));
-        assert!(
-            out.is_err(),
-            "rank {} accepted a circuit its peers do not have",
-            r.rank,
-        );
+        assert!(out.is_err(), "rank {} accepted a circuit its peers do not have", r.rank,);
     });
 
     // ---- sampling truncation ------------------------------------------------
-    r.case(
-        "collapse sample keeps one bounded unit-norm trajectory",
-        |r| {
-            use paulistrings::test_support::{collapsing_circuit, z0_sum};
-            use paulistrings::CollapseSample;
-            const CACHE: usize = 6;
-            let (circuit, input) = (collapsing_circuit(), z0_sum());
+    r.case("collapse sample keeps one bounded unit-norm trajectory", |r| {
+        use paulistrings::test_support::{collapsing_circuit, z0_sum};
+        use paulistrings::CollapseSample;
+        const CACHE: usize = 6;
+        let (circuit, input) = (collapsing_circuit(), z0_sum());
 
-            for seed in 0..4u64 {
-                // One policy per process, as a launcher gives each rank its own.
-                let policy = CollapseSample::new(CACHE, seed);
-                let transport = MpiTransport::from_communicator(r.world);
-                let mut split = DistributedSum::scatter_with(
-                    input.clone(),
-                    transport,
-                    unpinned_scatter(1, 2, SEED),
-                );
-                split.propagate(&circuit, &policy, Direction::Heisenberg);
-                assert!(split.len() <= CACHE, "seed {seed}: {} terms", split.len());
-                let got = split.gather();
-                if r.rank == 0 {
-                    assert!(
-                        policy.collapses() >= 1,
-                        "seed {seed}: rank 0 counts collapses"
+        for seed in 0..4u64 {
+            // One policy per process, as a launcher gives each rank its own.
+            let policy = CollapseSample::new(CACHE, seed);
+            let transport = MpiTransport::from_communicator(r.world);
+            let mut split = DistributedSum::scatter_with(
+                input.clone(),
+                transport,
+                unpinned_scatter(1, 2, SEED),
+            );
+            split.propagate(&circuit, &policy, Direction::Heisenberg);
+            assert!(split.len() <= CACHE, "seed {seed}: {} terms", split.len());
+            let got = split.gather();
+            if r.rank == 0 {
+                assert!(policy.collapses() >= 1, "seed {seed}: rank 0 counts collapses");
+                let got = got.expect("rank 0 gathers");
+                let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
+                assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: {norm}");
+                if r.size == 1 {
+                    let want = propagate(
+                        &circuit,
+                        input.clone(),
+                        &CollapseSample::new(CACHE, seed),
+                        Direction::Heisenberg,
                     );
-                    let got = got.expect("rank 0 gathers");
-                    let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
-                    assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: {norm}");
-                    if r.size == 1 {
-                        let want = propagate(
-                            &circuit,
-                            input.clone(),
-                            &CollapseSample::new(CACHE, seed),
-                            Direction::Heisenberg,
-                        );
-                        assert_terms_close(&got, &want, 1e-12, "one rank is propagate");
-                    }
-                } else {
-                    assert_eq!(policy.collapses(), 0, "only rank 0 counts");
+                    assert_terms_close(&got, &want, 1e-12, "one rank is propagate");
                 }
+            } else {
+                assert_eq!(policy.collapses(), 0, "only rank 0 counts");
             }
-        },
-    );
+        }
+    });
 
     // ---- expectation values, read out without a gather --------------------
     r.case("local expectations sum to the whole sum's", |r| {
@@ -915,24 +831,17 @@ fn run_host_cases(r: &mut Runner) {
             DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, SEED));
         split.propagate(&circuit, &KeepAll, Direction::Forward);
 
-        let mine = split
-            .local()
-            .expectation_product(&ProductBasis::uniform(PauliAxis::Z));
+        let mine = split.local().expectation_product(&ProductBasis::uniform(PauliAxis::Z));
         // The scalar goes through the communicator directly — the pattern a
         // caller uses for its own observables.
         let send = [mine.re, mine.im];
         let mut total = [0.0f64; 2];
-        r.world
-            .all_reduce_into(&send[..], &mut total[..], SystemOperation::sum());
+        r.world.all_reduce_into(&send[..], &mut total[..], SystemOperation::sum());
         let got = Complex64::new(total[0], total[1]);
 
         let oracle = propagate(&circuit, sum, &KeepAll, Direction::Forward);
         let want = oracle.expectation_product(&ProductBasis::uniform(PauliAxis::Z));
-        assert!(
-            (got - want).norm() < 1e-9,
-            "rank {}: expectation {got} vs {want}",
-            r.rank,
-        );
+        assert!((got - want).norm() < 1e-9, "rank {}: expectation {got} vs {want}", r.rank,);
 
         // And the collective term count agrees with the oracle's, on every
         // rank — `len` is the whole sum's, `local().len()` this rank's share.
@@ -953,11 +862,7 @@ mod device {
     /// The number of ranks for which `flag` holds. **Collective.**
     fn count(r: &Runner, flag: bool) -> u64 {
         let mut total = [0u64];
-        r.world.all_reduce_into(
-            &[u64::from(flag)][..],
-            &mut total[..],
-            SystemOperation::sum(),
-        );
+        r.world.all_reduce_into(&[u64::from(flag)][..], &mut total[..], SystemOperation::sum());
         total[0]
     }
 
@@ -1003,31 +908,21 @@ mod device {
 
         run_matrix(r, Backend::Device);
 
-        r.case(
-            "propagate_mpi_gpu is the persistent device driver in one call",
-            |r| {
-                let circuit = cnot_ring::<1>(10);
-                let sum = rand_sum::<1>(300, 10, 0xB015);
-                let got = propagate_mpi_gpu(
-                    &circuit,
-                    &sum,
-                    KeepAll,
-                    Direction::Forward,
-                    PropagateOptions::default(),
-                    r.world,
-                    None,
-                )
-                .expect("device run");
-                r.compare(
-                    &circuit,
-                    &sum,
-                    &KeepAll,
-                    Direction::Forward,
-                    got,
-                    "propagate_mpi_gpu",
-                );
-            },
-        );
+        r.case("propagate_mpi_gpu is the persistent device driver in one call", |r| {
+            let circuit = cnot_ring::<1>(10);
+            let sum = rand_sum::<1>(300, 10, 0xB015);
+            let got = propagate_mpi_gpu(
+                &circuit,
+                &sum,
+                KeepAll,
+                Direction::Forward,
+                PropagateOptions::default(),
+                r.world,
+                None,
+            )
+            .expect("device run");
+            r.compare(&circuit, &sum, &KeepAll, Direction::Forward, got, "propagate_mpi_gpu");
+        });
 
         // Four disjoint dense two-qubit layers: a rank sends each partner several blocks whose row counts differ across layers, so an out-of-order per-partner match would not silently agree.
         r.case("device several distinct-size blocks per partner", |r| {

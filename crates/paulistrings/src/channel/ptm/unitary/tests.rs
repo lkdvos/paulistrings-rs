@@ -20,10 +20,7 @@ where
 {
     let k = qubits.len();
     for s in 0..(1usize << (2 * k)) {
-        let mut p = PauliString::<W> {
-            x: [0u64; W],
-            z: [0u64; W],
-        };
+        let mut p = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
         for (j, &q) in qubits.iter().enumerate() {
             let bit = 1u64 << (q % 64);
             if (s >> (2 * j)) & 1 == 1 {
@@ -39,12 +36,7 @@ where
         for (u, v) in ga.iter().zip(gb.iter()) {
             assert_eq!(u.0, v.0, "{what}: s={s} x key");
             assert_eq!(u.1, v.1, "{what}: s={s} z key");
-            assert!(
-                (u.2 - v.2).norm() < TOL,
-                "{what}: s={s} coeff {} vs {}",
-                u.2,
-                v.2,
-            );
+            assert!((u.2 - v.2).norm() < TOL, "{what}: s={s} coeff {} vs {}", u.2, v.2,);
         }
     }
 }
@@ -114,13 +106,7 @@ fn adjoint_reads_the_table_transposed_and_round_trips() {
     // T gate: not self-adjoint.
     let t = PtmChannel::unitary_1q(
         2,
-        [
-            [ONE, ZERO],
-            [
-                ZERO,
-                Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4),
-            ],
-        ],
+        [[ONE, ZERO], [ZERO, Complex64::from_polar(1.0, std::f64::consts::FRAC_PI_4)]],
     );
     for basis in [
         PauliString::<1>::identity(),

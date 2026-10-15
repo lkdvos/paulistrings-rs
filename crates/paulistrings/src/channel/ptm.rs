@@ -84,10 +84,7 @@ impl PtmKind {
 #[derive(Clone, Debug)]
 enum PtmStorage {
     /// A Clifford: input `s` goes to `image[s]` with coefficient `-1` where bit `s` of `negated` is set, `+1` otherwise.
-    SignedPermutation {
-        image: [u8; LOCAL_DIM],
-        negated: u16,
-    },
+    SignedPermutation { image: [u8; LOCAL_DIM], negated: u16 },
     /// A Pauli-diagonal channel: input `s` keeps its key and is scaled by `scale[s]`.
     Diagonal { scale: Box<[f64]> },
     /// Everything else, ascending by `(input, output)`.
@@ -122,9 +119,7 @@ impl PtmChannel {
 
     /// The support qubits, in constructor order.
     pub fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
-        self.qubits[..self.num_support_qubits as usize]
-            .iter()
-            .map(|&q| q as usize)
+        self.qubits[..self.num_support_qubits as usize].iter().map(|&q| q as usize)
     }
 
     /// The adjoint channel, whose PTM is this one's transpose.
@@ -138,14 +133,9 @@ impl PtmChannel {
                     inverse[t] = s as u8;
                     inverse_negated |= ((negated >> s) & 1) << t;
                 }
-                PtmStorage::SignedPermutation {
-                    image: inverse,
-                    negated: inverse_negated,
-                }
+                PtmStorage::SignedPermutation { image: inverse, negated: inverse_negated }
             }
-            PtmStorage::Diagonal { scale } => PtmStorage::Diagonal {
-                scale: scale.clone(),
-            },
+            PtmStorage::Diagonal { scale } => PtmStorage::Diagonal { scale: scale.clone() },
             PtmStorage::Sparse { entries } => {
                 let mut transposed: Vec<((u8, u8), Complex64)> = entries
                     .iter()
@@ -155,11 +145,7 @@ impl PtmChannel {
                 sparse_storage(transposed)
             }
         };
-        Self {
-            storage,
-            adjoint: !self.adjoint,
-            ..*self
-        }
+        Self { storage, adjoint: !self.adjoint, ..*self }
     }
 
     /// `4^k` for `k` support qubits.
@@ -216,11 +202,7 @@ impl PtmChannel {
                     (s, image[s] as usize)
                 };
                 let (new_x, new_z) = self.with_local_index(x, z, t);
-                let signed = if (negated >> source) & 1 == 1 {
-                    -coeff
-                } else {
-                    coeff
-                };
+                let signed = if (negated >> source) & 1 == 1 { -coeff } else { coeff };
                 out.push(new_x, new_z, signed);
             }
             PtmStorage::Diagonal { scale } => out.push(*x, *z, coeff * scale[s]),
@@ -287,21 +269,14 @@ fn sparse_storage(entries: Vec<((u8, u8), Complex64)>) -> PtmStorage {
         entries: entries
             .into_iter()
             .filter(|&(_, amplitude)| amplitude != ZERO)
-            .map(|((input, output), amplitude)| SparseEntry {
-                input,
-                output,
-                amplitude,
-            })
+            .map(|((input, output), amplitude)| SparseEntry { input, output, amplitude })
             .collect(),
     }
 }
 
 /// Panics unless the two support qubits differ.
 fn assert_distinct(constructor: &str, q0: usize, q1: usize) {
-    assert!(
-        q0 != q1,
-        "PtmChannel::{constructor}: the two qubits must differ (both are {q0})"
-    );
+    assert!(q0 != q1, "PtmChannel::{constructor}: the two qubits must differ (both are {q0})");
 }
 
 /// Panics unless `value` lies in `[0, 1]`.
@@ -352,11 +327,7 @@ impl<const W: usize> Channel<W> for PtmChannel {
         adjoint: bool,
         _: PrepareToken,
     ) -> Option<Prepared<W>> {
-        Some(Prepared::from_transfer_matrix(
-            &self.support(),
-            &self.transfer_matrix(adjoint),
-            hash,
-        ))
+        Some(Prepared::from_transfer_matrix(&self.support(), &self.transfer_matrix(adjoint), hash))
     }
 }
 

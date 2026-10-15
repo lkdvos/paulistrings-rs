@@ -86,10 +86,7 @@ fn on_ranks<T: Send>(size: u32, f: impl Fn(InProcessTransport) -> T + Sync) -> V
             .into_iter()
             .map(|transport| scope.spawn(move || f(transport)))
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+        handles.into_iter().map(|h| h.join().expect("rank thread panicked")).collect()
     })
 }
 
@@ -160,12 +157,7 @@ fn trotter_matches_propagate_w1() {
     let circuit = trotter_circuit::<1>(24, THETA);
     let sum = spread_magnitudes(&rand_sum_real::<1>(1_200, 24, 0x0D15), 40, 0x0D15);
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter approx w1");
-    check(
-        &circuit,
-        &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(2_000)),
-        "trotter and w1",
-    );
+    check(&circuit, &sum, &And(CoefficientThreshold(1e-9), ApproxTopN(2_000)), "trotter and w1");
 }
 
 #[test]
@@ -226,10 +218,7 @@ fn builtin_truncation_tree_matches_propagate() {
     use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(24, THETA);
     let sum = spread_magnitudes(&rand_sum_real::<1>(1_200, 24, 0x0D17), 40, 0x0D17);
-    let tree = T::And(
-        Box::new(T::Coefficient(1e-9)),
-        Box::new(T::ApproxTopN(2_000)),
-    );
+    let tree = T::And(Box::new(T::Coefficient(1e-9)), Box::new(T::ApproxTopN(2_000)));
     check(&circuit, &sum, &tree, "trotter tree w1");
 }
 
@@ -331,10 +320,7 @@ fn the_trace_is_this_ranks_view_of_every_layer() {
 
     // The depolarizing layers are key-preserving, so no rank exchanges there.
     for (rank, trace) in &traces {
-        assert!(
-            trace.local_layers() > 0,
-            "rank {rank}: the noise layers exchange nothing",
-        );
+        assert!(trace.local_layers() > 0, "rank {rank}: the noise layers exchange nothing",);
     }
 }
 
@@ -428,10 +414,7 @@ fn local_z_qubits<const W: usize, X: paulistrings::Transport>(
     split: &DistributedSum<W, X>,
 ) -> Vec<usize> {
     let (_, z, _) = split.local().to_arrays();
-    let mut qubits: Vec<usize> = z
-        .iter()
-        .map(|row| row[0].trailing_zeros() as usize)
-        .collect();
+    let mut qubits: Vec<usize> = z.iter().map(|row| row[0].trailing_zeros() as usize).collect();
     qubits.sort_unstable();
     qubits
 }
@@ -476,10 +459,7 @@ fn scatter_splits_by_the_sums_own_seed() {
                 })
             })
             .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("rank thread panicked"))
-            .collect()
+        handles.into_iter().map(|h| h.join().expect("rank thread panicked")).collect()
     });
 
     for (rank, &(want, got)) in seen.iter().enumerate() {
@@ -535,16 +515,9 @@ fn collapse_sample_trajectories_over_ranks() {
             let policy = CollapseSample::new(CACHE, seed);
             let got = distributed(&circuit, &input, &policy, Direction::Heisenberg, size);
             assert!(policy.collapses() >= 1, "seed {seed} ranks={size}");
-            assert!(
-                got.len() <= CACHE,
-                "seed {seed} ranks={size}: {} terms",
-                got.len()
-            );
+            assert!(got.len() <= CACHE, "seed {seed} ranks={size}: {} terms", got.len());
             let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
-            assert!(
-                (norm - 1.0).abs() < 1e-12,
-                "seed {seed} ranks={size}: {norm}"
-            );
+            assert!((norm - 1.0).abs() < 1e-12, "seed {seed} ranks={size}: {norm}");
         }
     }
 }
@@ -567,24 +540,17 @@ fn collapse_sample_distributed_picks_by_weight() {
         paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
     let owners: std::collections::HashSet<u32> =
         keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
-    assert!(
-        owners.len() > 1,
-        "ranks={size}: the fixture must span ranks"
-    );
+    assert!(owners.len() > 1, "ranks={size}: the fixture must span ranks");
 
-    let runtimes: Vec<_> = (0..size)
-        .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1)).unwrap())
-        .collect();
+    let runtimes: Vec<_> =
+        (0..size).map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1)).unwrap()).collect();
     let mut counts = [0usize; 4];
     for seed in 0..250u64 {
         let policy = CollapseSample::new(3, seed);
         let gathered = on_ranks(size, |transport| {
             use paulistrings::Collectives;
             let runtime = runtimes[transport.rank() as usize].clone();
-            let options = ScatterOptions {
-                runtime,
-                rows: ScatterRows::Explicit(rows.clone()),
-            };
+            let options = ScatterOptions { runtime, rows: ScatterRows::Explicit(rows.clone()) };
             let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
             split.propagate(&circuit, &policy, Direction::Forward);
             assert!(split.local().len() <= 1);

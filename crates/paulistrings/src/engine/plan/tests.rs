@@ -33,20 +33,14 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
     // A Z row on qubit 1 reads the generator's z-bit there, which is set.
     let rows = z_row(1);
     let prepared = prep_of(&PauliRotation::new(gen, 0.41));
-    let Prepared::Rotation(r) = &prepared else {
-        panic!("expected Rotation")
-    };
+    let Prepared::Rotation(r) = &prepared else { panic!("expected Rotation") };
 
     let plan = PartitionPlan::new(&prepared, &rows, 1);
     assert_eq!(plan.local_entries, vec![true, false]);
     assert_eq!(plan.local_bucket_deltas, vec![0]);
     assert_eq!(
         plan.remote,
-        vec![RemoteDelta {
-            entry: 1,
-            partner: 0,
-            bucket_delta: r.bucket_delta_generator,
-        }],
+        vec![RemoteDelta { entry: 1, partner: 0, bucket_delta: r.bucket_delta_generator }],
     );
     assert_eq!(plan.rest_streams_total, 1);
 }
@@ -54,19 +48,9 @@ fn a_rotation_whose_generator_crosses_is_one_remote_delta() {
 /// A remote delta's block is its rank among the partner's remote deltas, on both the sending and the receiving side.
 #[test]
 fn block_indices_count_within_each_partner() {
-    let remote = |entry: usize, partner: u32| RemoteDelta {
-        entry,
-        partner,
-        bucket_delta: 0,
-    };
+    let remote = |entry: usize, partner: u32| RemoteDelta { entry, partner, bucket_delta: 0 };
     let plan = PartitionPlan {
-        remote: vec![
-            remote(1, 1),
-            remote(2, 3),
-            remote(4, 1),
-            remote(5, 3),
-            remote(7, 1),
-        ],
+        remote: vec![remote(1, 1), remote(2, 3), remote(4, 1), remote(5, 3), remote(7, 1)],
         ..PartitionPlan::default()
     };
     let received: Vec<usize> = (0..5).map(|k| plan.received_block_index(k)).collect();

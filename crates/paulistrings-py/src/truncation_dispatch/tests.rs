@@ -23,13 +23,9 @@ fn sampler() -> BuiltinTruncation {
 #[test]
 fn trees_lower_to_their_conjunction_of_filters() {
     let keep_all = Some("CoefficientThreshold(-1.0)".to_string());
-    for passes_only in [
-        T::Keep,
-        T::TopN(9),
-        T::ApproxTopN(9),
-        sampler(),
-        and(T::ApproxTopN(9), sampler()),
-    ] {
+    for passes_only in
+        [T::Keep, T::TopN(9), T::ApproxTopN(9), sampler(), and(T::ApproxTopN(9), sampler())]
+    {
         assert_eq!(filter_of(&passes_only), keep_all, "{passes_only:?}");
     }
     let coefficient = Some("CoefficientThreshold(0.001)".to_string());
@@ -46,11 +42,7 @@ fn trees_lower_to_their_conjunction_of_filters() {
         Some("And(CoefficientThreshold(-1.0), WeightCutoff(3))")
     );
     assert_eq!(
-        filter_of(&and(
-            and(T::Weight(3), T::ApproxTopN(9)),
-            T::Coefficient(1e-3)
-        ))
-        .as_deref(),
+        filter_of(&and(and(T::Weight(3), T::ApproxTopN(9)), T::Coefficient(1e-3))).as_deref(),
         Some("And(CoefficientThreshold(0.001), WeightCutoff(3))")
     );
 }
@@ -73,17 +65,13 @@ fn the_layer_passes_and_partitioned_support_are_the_trees() {
     let Lowered::Coefficient(lowered) = Lowered::of(&tree) else {
         panic!("a coefficient and a pass lower");
     };
-    assert!(<WithFilter<_> as TruncationPolicy<1>>::finalizes_layer(
-        &lowered
-    ));
+    assert!(<WithFilter<_> as TruncationPolicy<1>>::finalizes_layer(&lowered));
     assert!(!<WithFilter<_> as TruncationPolicy<1>>::supports_partitioned(&lowered));
     let lowered_keep = Lowered::of(&T::Keep);
     let Lowered::Coefficient(lowered_keep) = lowered_keep else {
         panic!("Keep lowers");
     };
-    assert!(!<WithFilter<_> as TruncationPolicy<1>>::finalizes_layer(
-        &lowered_keep
-    ));
+    assert!(!<WithFilter<_> as TruncationPolicy<1>>::finalizes_layer(&lowered_keep));
 }
 
 #[test]

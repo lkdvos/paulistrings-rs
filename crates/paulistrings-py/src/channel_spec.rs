@@ -32,9 +32,7 @@ impl Axis {
 
 /// An `N x N` complex matrix as the schema's JSON-native form: rows of `[re, im]` pairs.
 fn matrix_to_json<const N: usize>(m: &[[Complex64; N]; N]) -> Vec<Vec<Vec<f64>>> {
-    m.iter()
-        .map(|row| row.iter().map(|c| vec![c.re, c.im]).collect())
-        .collect()
+    m.iter().map(|row| row.iter().map(|c| vec![c.re, c.im]).collect()).collect()
 }
 
 /// The conjugate transpose, i.e. the matrix of the adjoint unitary.
@@ -219,9 +217,7 @@ impl ChannelSpec {
             Self::AmplitudeDamping { gamma, .. } => {
                 d.set_item("gamma", *gamma)?;
             }
-            Self::PauliChannel {
-                px, py: p_y, pz, ..
-            } => {
+            Self::PauliChannel { px, py: p_y, pz, .. } => {
                 d.set_item("px", *px)?;
                 d.set_item("py", *p_y)?;
                 d.set_item("pz", *pz)?;
@@ -260,31 +256,18 @@ impl ChannelSpec {
             | Self::Swap { .. } => self.clone(),
             Self::S { qubit } => Self::Sdg { qubit: *qubit },
             Self::Sdg { qubit } => Self::S { qubit: *qubit },
-            Self::Rz { theta, qubit } => Self::Rz {
-                theta: -*theta,
-                qubit: *qubit,
-            },
-            Self::Rx { theta, qubit } => Self::Rx {
-                theta: -*theta,
-                qubit: *qubit,
-            },
-            Self::Ry { theta, qubit } => Self::Ry {
-                theta: -*theta,
-                qubit: *qubit,
-            },
-            Self::PauliRotationN { theta, paulis } => Self::PauliRotationN {
-                theta: -*theta,
-                paulis: paulis.clone(),
-            },
-            Self::Unitary1Q { qubit, matrix } => Self::Unitary1Q {
-                qubit: *qubit,
-                matrix: dagger(matrix),
-            },
-            Self::Unitary2Q { q0, q1, matrix } => Self::Unitary2Q {
-                q0: *q0,
-                q1: *q1,
-                matrix: dagger(matrix),
-            },
+            Self::Rz { theta, qubit } => Self::Rz { theta: -*theta, qubit: *qubit },
+            Self::Rx { theta, qubit } => Self::Rx { theta: -*theta, qubit: *qubit },
+            Self::Ry { theta, qubit } => Self::Ry { theta: -*theta, qubit: *qubit },
+            Self::PauliRotationN { theta, paulis } => {
+                Self::PauliRotationN { theta: -*theta, paulis: paulis.clone() }
+            }
+            Self::Unitary1Q { qubit, matrix } => {
+                Self::Unitary1Q { qubit: *qubit, matrix: dagger(matrix) }
+            }
+            Self::Unitary2Q { q0, q1, matrix } => {
+                Self::Unitary2Q { q0: *q0, q1: *q1, matrix: dagger(matrix) }
+            }
             Self::Depolarize { .. }
             | Self::Dephase { .. }
             | Self::AmplitudeDamping { .. }

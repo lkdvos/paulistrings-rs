@@ -6,16 +6,9 @@ use crate::truncation::{And, Or};
 
 /// Weights 0..3 on one word, and coefficients on both sides of 0.1 and 0.5.
 fn grid() -> Vec<([u64; 1], [u64; 1], Complex64)> {
-    let keys = [
-        ([0u64], [0u64]),
-        ([1], [0]),
-        ([0b01], [0b10]),
-        ([0b011], [0b110]),
-    ];
+    let keys = [([0u64], [0u64]), ([1], [0]), ([0b01], [0b10]), ([0b011], [0b110])];
     let cs = [0.0, 0.05, 0.1, 0.3, 0.5, 2.0].map(|r| Complex64::new(r, -r / 3.0));
-    keys.iter()
-        .flat_map(|&(x, z)| cs.iter().map(move |&c| (x, z, c)))
-        .collect()
+    keys.iter().flat_map(|&(x, z)| cs.iter().map(move |&c| (x, z, c))).collect()
 }
 
 fn assert_keeps_like<P: TruncationPolicy<1>>(tree: &T, builtin: &P, what: &str) {
@@ -55,15 +48,9 @@ fn keep_term_and_the_layer_hint_equal_the_builtin_each_variant_names() {
         "or",
     );
     assert_keeps_like(
-        &and(
-            or(and(T::Coefficient(0.1), T::Weight(2)), T::Weight(1)),
-            T::ApproxTopN(9),
-        ),
+        &and(or(and(T::Coefficient(0.1), T::Weight(2)), T::Weight(1)), T::ApproxTopN(9)),
         &And(
-            Or::new(
-                And(CoefficientThreshold(0.1), WeightCutoff(2)),
-                WeightCutoff(1),
-            ),
+            Or::new(And(CoefficientThreshold(0.1), WeightCutoff(2)), WeightCutoff(1)),
             ApproxTopN(9),
         ),
         "nested",
@@ -87,19 +74,13 @@ fn finalizes_layer_truth_table() {
     assert!(!f(&or(T::Weight(4), T::Coefficient(1e-3))));
     assert!(f(&and(or(T::Weight(4), T::Keep), T::TopN(5))));
     assert!(f(&T::from(CollapseSample::new(4, 1))));
-    assert!(f(&and(
-        T::Coefficient(1e-3),
-        T::from(CollapseSample::new(4, 1))
-    )));
+    assert!(f(&and(T::Coefficient(1e-3), T::from(CollapseSample::new(4, 1)))));
 }
 
 #[test]
 fn every_builtin_converts_node_for_node() {
     let tree = and(T::ApproxTopN(7), or(T::Coefficient(1e-3), T::Weight(2)));
-    let builtin = And(
-        ApproxTopN(7),
-        Or::new(CoefficientThreshold(1e-3), WeightCutoff(2)),
-    );
+    let builtin = And(ApproxTopN(7), Or::new(CoefficientThreshold(1e-3), WeightCutoff(2)));
     assert_eq!(T::from(&builtin), tree);
     assert_eq!(T::from(builtin), tree);
     assert_eq!(T::from(TopN(10)), T::TopN(10));
@@ -120,12 +101,8 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
     assert_terms_close(&got, &want, 1e-12, "host");
     assert!(tree.contains_collapse_sample());
     assert!(tree.supports_partitioned());
-    let T::And(_, leaf) = &twin else {
-        unreachable!()
-    };
-    let T::CollapseSample(s) = &**leaf else {
-        unreachable!()
-    };
+    let T::And(_, leaf) = &twin else { unreachable!() };
+    let T::CollapseSample(s) = &**leaf else { unreachable!() };
     assert_eq!(s.collapses(), 1, "the clone shares the pass counter");
 
     let group = InProcessTransport::group(1);
@@ -151,19 +128,13 @@ fn or_rejects_an_operand_with_a_layer_pass() {
             "{first}"
         );
         let second = T::try_or(T::Weight(1), pass.clone()).unwrap_err();
-        assert!(
-            second.contains("its second operand has a layer pass"),
-            "{second}"
-        );
+        assert!(second.contains("its second operand has a layer pass"), "{second}");
         let both = T::try_or(pass.clone(), pass).unwrap_err();
         assert!(both.contains("both operands have"), "{both}");
     }
     assert_eq!(
         T::try_or(T::Coefficient(0.1), and(T::Weight(1), T::Keep)),
-        Ok(T::Or(
-            Box::new(T::Coefficient(0.1)),
-            Box::new(and(T::Weight(1), T::Keep))
-        ))
+        Ok(T::Or(Box::new(T::Coefficient(0.1)), Box::new(and(T::Weight(1), T::Keep))))
     );
 }
 
@@ -183,20 +154,14 @@ fn converting_a_generic_or_with_a_layer_pass_panics() {
 #[test]
 #[should_panic(expected = "Or combines per-term filters only")]
 fn a_hand_built_or_with_a_layer_pass_panics_in_finalizes_layer() {
-    let tree = and(
-        T::Weight(3),
-        T::Or(Box::new(T::Coefficient(0.1)), Box::new(T::TopN(3))),
-    );
+    let tree = and(T::Weight(3), T::Or(Box::new(T::Coefficient(0.1)), Box::new(T::TopN(3))));
     let _ = <T as TruncationPolicy<1>>::finalizes_layer(&tree);
 }
 
 #[test]
 #[should_panic(expected = "Or combines per-term filters only")]
 fn a_hand_built_or_with_a_layer_pass_panics_in_supports_partitioned() {
-    let tree = T::Or(
-        Box::new(T::from(CollapseSample::new(4, 1))),
-        Box::new(T::Weight(1)),
-    );
+    let tree = T::Or(Box::new(T::from(CollapseSample::new(4, 1))), Box::new(T::Weight(1)));
     let _ = tree.supports_partitioned();
 }
 
@@ -204,14 +169,8 @@ fn a_hand_built_or_with_a_layer_pass_panics_in_supports_partitioned() {
 #[test]
 fn finalize_layer_equals_the_builtin_composition() {
     let input = rand_sum_real::<1>(1500, 32, 0xB117);
-    let tree = and(
-        T::Coefficient(1e-3),
-        and(T::ApproxTopN(900), T::ApproxTopN(400)),
-    );
-    let builtin = And(
-        CoefficientThreshold(1e-3),
-        And(ApproxTopN(900), ApproxTopN(400)),
-    );
+    let tree = and(T::Coefficient(1e-3), and(T::ApproxTopN(900), T::ApproxTopN(400)));
+    let builtin = And(CoefficientThreshold(1e-3), And(ApproxTopN(900), ApproxTopN(400)));
     let mut want = input.clone();
     builtin.finalize_layer(&mut want);
     assert!(want.len() < input.len(), "the fixture must truncate");
@@ -242,8 +201,5 @@ fn supports_partitioned_reflects_the_tree() {
     assert!(supports(&and(T::Coefficient(0.1), T::ApproxTopN(3))));
     assert!(supports(&or(T::Coefficient(0.1), T::Weight(3))));
     assert!(!supports(&T::TopN(3)));
-    assert!(!supports(&and(
-        T::Coefficient(0.1),
-        and(T::Weight(2), T::TopN(3))
-    )));
+    assert!(!supports(&and(T::Coefficient(0.1), and(T::Weight(2), T::TopN(3)))));
 }

@@ -32,32 +32,21 @@ fn sort_by_comparison<const W: usize>(
     let len = x.len();
     debug_assert_eq!(len, z.len());
     debug_assert_eq!(len, c.len());
-    assert!(
-        len <= u32::MAX as usize,
-        "sort: run of {len} rows exceeds u32 row indices"
-    );
+    assert!(len <= u32::MAX as usize, "sort: run of {len} rows exceeds u32 row indices");
     if len < 2 {
         return;
     }
     scratch.permutation.clear();
     scratch.permutation.extend(0..len as u32);
     scratch.permutation.sort_by(|&a, &b| {
-        x[a as usize]
-            .cmp(&x[b as usize])
-            .then_with(|| z[a as usize].cmp(&z[b as usize]))
+        x[a as usize].cmp(&x[b as usize]).then_with(|| z[a as usize].cmp(&z[b as usize]))
     });
     scratch.staging_x.clear();
-    scratch
-        .staging_x
-        .extend(scratch.permutation.iter().map(|&i| x[i as usize]));
+    scratch.staging_x.extend(scratch.permutation.iter().map(|&i| x[i as usize]));
     scratch.staging_z.clear();
-    scratch
-        .staging_z
-        .extend(scratch.permutation.iter().map(|&i| z[i as usize]));
+    scratch.staging_z.extend(scratch.permutation.iter().map(|&i| z[i as usize]));
     scratch.staging_coefficient.clear();
-    scratch
-        .staging_coefficient
-        .extend(scratch.permutation.iter().map(|&i| c[i as usize]));
+    scratch.staging_coefficient.extend(scratch.permutation.iter().map(|&i| c[i as usize]));
     std::mem::swap(x, &mut scratch.staging_x);
     std::mem::swap(z, &mut scratch.staging_z);
     std::mem::swap(c, &mut scratch.staging_coefficient);
@@ -174,10 +163,7 @@ fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut S
     let len = x.len();
     debug_assert_eq!(len, z.len());
     debug_assert_eq!(len, c.len());
-    assert!(
-        len <= u32::MAX as usize,
-        "sort: run of {len} rows exceeds u32 row indices"
-    );
+    assert!(len <= u32::MAX as usize, "sort: run of {len} rows exceeds u32 row indices");
     if len < 2 {
         return;
     }
@@ -191,14 +177,7 @@ fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut S
         return;
     }
 
-    let SortScratch {
-        packed,
-        spare,
-        staging_x,
-        staging_z,
-        staging_coefficient,
-        ..
-    } = scratch;
+    let SortScratch { packed, spare, staging_x, staging_z, staging_coefficient, .. } = scratch;
     packed.clear();
     packed.extend((0..len).map(|i| (((key_word(x, z, word, i) >> shift) & mask) << 32) | i as u64));
     spare.resize(len, 0);
@@ -236,9 +215,7 @@ fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut S
         if j - i > 1 {
             packed[i..j].sort_by(|&left, &right| {
                 let (row_a, row_b) = (left as u32 as usize, right as u32 as usize);
-                x[row_a]
-                    .cmp(&x[row_b])
-                    .then_with(|| z[row_a].cmp(&z[row_b]))
+                x[row_a].cmp(&x[row_b]).then_with(|| z[row_a].cmp(&z[row_b]))
             });
         }
         i = j;
@@ -266,16 +243,8 @@ pub(crate) fn merge_identity_and_rest<const W: usize, T: TruncationPolicy<W> + ?
     out: &mut BucketColumns<W>,
     policy: &T,
 ) {
-    let ColumnsRef {
-        x: a_x,
-        z: a_z,
-        coeff: a_c,
-    } = identity;
-    let ColumnsRef {
-        x: b_x,
-        z: b_z,
-        coeff: b_c,
-    } = rest;
+    let ColumnsRef { x: a_x, z: a_z, coeff: a_c } = identity;
+    let ColumnsRef { x: b_x, z: b_z, coeff: b_c } = rest;
     let (a_len, b_len) = (a_c.len(), b_c.len());
     debug_assert_eq!(a_len, a_x.len());
     debug_assert_eq!(a_len, a_z.len());

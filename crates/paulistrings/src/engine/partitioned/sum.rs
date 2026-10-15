@@ -277,10 +277,7 @@ impl<const W: usize> PartitionedSum<W> {
 
     /// `⟨ψ|O|ψ⟩` in the product state `basis`, the partitions' own values added in rank order.
     pub fn expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
-        self.parts
-            .iter()
-            .map(|part| part.sum.expectation_product(basis))
-            .sum()
+        self.parts.iter().map(|part| part.sum.expectation_product(basis)).sum()
     }
 
     /// Drain the phase counters since the last drain, zeroing them; `per_partition` has one entry per partition.

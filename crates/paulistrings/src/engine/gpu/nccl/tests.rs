@@ -17,10 +17,8 @@ fn a_probe_that_never_readies_times_out() {
 
 #[test]
 fn a_probe_error_ends_the_poll() {
-    let err = poll_until(Duration::from_secs(60), || {
-        Err(GpuError::Unsupported("probe"))
-    })
-    .expect_err("the error propagates");
+    let err = poll_until(Duration::from_secs(60), || Err(GpuError::Unsupported("probe")))
+        .expect_err("the error propagates");
     assert!(matches!(err, GpuError::Unsupported("probe")));
 }
 
@@ -89,11 +87,7 @@ fn the_start_is_agreed_for_every_readiness_and_device() {
         cases.push(
             (0..4)
                 .map(|r| {
-                    let id = if mask & 16 != 0 && r == 3 {
-                        1
-                    } else {
-                        r as u64 + 1
-                    };
+                    let id = if mask & 16 != 0 && r == 3 { 1 } else { r as u64 + 1 };
                     ((mask >> r) & 1 == 0, [id, 9])
                 })
                 .collect(),
@@ -101,10 +95,7 @@ fn the_start_is_agreed_for_every_readiness_and_device() {
     }
     for ranks in &cases {
         let got = run(ranks);
-        assert!(
-            got.iter().all(|g| g == &got[0]),
-            "{ranks:?}: ranks disagree: {got:?}"
-        );
+        assert!(got.iter().all(|g| g == &got[0]), "{ranks:?}: ranks disagree: {got:?}");
         let ids: Vec<_> = ranks.iter().map(|r| r.1).collect();
         let shared = (0..ids.len()).any(|i| ids[i + 1..].contains(&ids[i]));
         let can = ranks.iter().all(|r| r.0);
@@ -170,10 +161,7 @@ fn an_aborted_communicator_refuses_every_later_call() {
     assert!(!comm.is_healthy());
     assert!(matches!(comm.warm_up(&stream), Err(GpuError::Nccl { .. })));
     drop(comm);
-    assert!(
-        ABORTS.lock().unwrap().is_empty(),
-        "a test build joins every abort thread at drop"
-    );
+    assert!(ABORTS.lock().unwrap().is_empty(), "a test build joins every abort thread at drop");
 }
 
 /// Message sizes with distinct contents per message, so any receive matched to the wrong send fails on length or content; one is empty.
@@ -213,10 +201,8 @@ fn interleaved_self_sends_match_in_posting_order() {
     assert_eq!((wire.rank(), wire.size()), (0, 1));
     let msgs = messages();
     let sends = upload(&stream, &msgs);
-    let mut receives: Vec<_> = SIZES
-        .iter()
-        .map(|&n| stream.alloc_zeros::<u64>(n + 1).expect("alloc"))
-        .collect();
+    let mut receives: Vec<_> =
+        SIZES.iter().map(|&n| stream.alloc_zeros::<u64>(n + 1).expect("alloc")).collect();
     let mut group = WireGroup::new();
     for ((send, received), &n) in sends.iter().zip(receives.iter_mut()).zip(&SIZES) {
         group.send(send.slice(0..n), 0, &stream);
@@ -227,12 +213,7 @@ fn interleaved_self_sends_match_in_posting_order() {
     wire.wait(&stream).expect("the group completes");
     for (m, (msg, received)) in msgs.iter().zip(&receives).enumerate() {
         let got = stream.clone_dtoh(received).expect("download");
-        assert_eq!(
-            &got[..msg.len()],
-            &msg[..],
-            "message {m} of {} u64",
-            msg.len()
-        );
+        assert_eq!(&got[..msg.len()], &msg[..], "message {m} of {} u64", msg.len());
         assert_eq!(got[msg.len()], 0, "message {m} overran its receive");
     }
     assert!(wire.is_healthy());
@@ -260,12 +241,7 @@ fn self_sends_land_in_one_column_in_posting_order() {
     let got = stream.clone_dtoh(&received).expect("download");
     let mut at = 0;
     for (m, msg) in msgs.iter().enumerate() {
-        assert_eq!(
-            &got[at..at + msg.len()],
-            &msg[..],
-            "message {m} of {} u64",
-            msg.len()
-        );
+        assert_eq!(&got[at..at + msg.len()], &msg[..], "message {m} of {} u64", msg.len());
         at += msg.len();
     }
     assert_eq!(got[total], 0, "nothing lands past the last message");
@@ -283,10 +259,7 @@ fn an_unmatched_self_receive_fails_the_group_and_aborts() {
     let mut group = WireGroup::new();
     group.receive(destination.as_view_mut(), 0, &stream);
     let posted = group.post(&wire);
-    assert!(
-        matches!(posted, Err(GpuError::Nccl { code: 5, .. })),
-        "{posted:?}"
-    );
+    assert!(matches!(posted, Err(GpuError::Nccl { code: 5, .. })), "{posted:?}");
     assert!(!wire.is_healthy());
     assert!(matches!(wire.wait(&stream), Err(GpuError::Nccl { .. })));
 }
@@ -310,10 +283,7 @@ fn a_forced_timeout_returns_within_the_bound_and_aborts() {
     let start = Instant::now();
     let waited = wire.wait(&stream);
     let elapsed = start.elapsed();
-    assert!(
-        matches!(waited, Err(GpuError::Timeout { .. })),
-        "{waited:?}"
-    );
+    assert!(matches!(waited, Err(GpuError::Timeout { .. })), "{waited:?}");
     assert!(elapsed >= bound, "{elapsed:?}");
     assert!(elapsed < Duration::from_secs(30), "{elapsed:?}");
     assert!(!wire.is_healthy());

@@ -71,12 +71,7 @@ impl PartitionPlan {
             Prepared::Rotation(rotation) => {
                 let (generator_x, generator_z) = rotation.generator_mask();
                 classify(0, &[0u64; W], &[0u64; W], rotation.bucket_delta_identity);
-                classify(
-                    1,
-                    &generator_x,
-                    &generator_z,
-                    rotation.bucket_delta_generator,
-                );
+                classify(1, &generator_x, &generator_z, rotation.bucket_delta_generator);
             }
         }
 
@@ -115,10 +110,7 @@ impl PartitionPlan {
 
     fn index_among_partner(&self, remote: usize) -> usize {
         let partner = self.remote[remote].partner;
-        self.remote[..remote]
-            .iter()
-            .filter(|other| other.partner == partner)
-            .count()
+        self.remote[..remote].iter().filter(|other| other.partner == partner).count()
     }
 }
 

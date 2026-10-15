@@ -83,14 +83,9 @@ impl TruncSpec {
             return Ok(TruncSpec::TopN(parse_usize(v, "--truncation topn:<N>")?));
         }
         if let Some(v) = t.strip_prefix("atopn:") {
-            return Ok(TruncSpec::ApproxTopN(parse_usize(
-                v,
-                "--truncation atopn:<N>",
-            )?));
+            return Ok(TruncSpec::ApproxTopN(parse_usize(v, "--truncation atopn:<N>")?));
         }
-        Err(format!(
-            "--truncation expects keep | coeff:<t> | topn:<N> | atopn:<N>, got '{s}'"
-        ))
+        Err(format!("--truncation expects keep | coeff:<t> | topn:<N> | atopn:<N>, got '{s}'"))
     }
 }
 
@@ -123,12 +118,8 @@ impl PartitionCpus {
         if t == "unpinned" {
             return Ok(PartitionCpus::Unpinned);
         }
-        let lists: Vec<String> = t
-            .split(';')
-            .map(str::trim)
-            .filter(|tok| !tok.is_empty())
-            .map(str::to_string)
-            .collect();
+        let lists: Vec<String> =
+            t.split(';').map(str::trim).filter(|tok| !tok.is_empty()).map(str::to_string).collect();
         if lists.is_empty() {
             return Err(
                 "--partition-cpus expects auto | unpinned | '<cpulist>;<cpulist>;...', got an \
@@ -145,9 +136,7 @@ impl PartitionCpus {
     /// The [`Placement`] for one cell of `partitions` partitions.
     pub(crate) fn placement(&self, partitions: usize) -> Placement {
         match self {
-            PartitionCpus::Auto => Placement::Auto {
-                max_partitions: Some(partitions),
-            },
+            PartitionCpus::Auto => Placement::Auto { max_partitions: Some(partitions) },
             PartitionCpus::Unpinned => Placement::Unpinned { partitions },
             PartitionCpus::Explicit(lists) => Placement::Explicit(
                 lists
@@ -215,9 +204,7 @@ impl PartitionRowSpec {
         match s.trim() {
             "random" => Ok(PartitionRowSpec::Random),
             "cut" => Ok(PartitionRowSpec::Cut),
-            other => Err(format!(
-                "--partition-rows expects random | cut, got '{other}'"
-            )),
+            other => Err(format!("--partition-rows expects random | cut, got '{other}'")),
         }
     }
 }
@@ -287,8 +274,7 @@ impl DeviceSpec {
 }
 
 pub(crate) fn parse_usize(s: &str, flag: &str) -> Result<usize, String> {
-    s.parse::<usize>()
-        .map_err(|_| format!("{flag} expects a non-negative integer, got '{s}'"))
+    s.parse::<usize>().map_err(|_| format!("{flag} expects a non-negative integer, got '{s}'"))
 }
 
 pub(crate) fn parse_seed(s: &str) -> Result<u64, String> {
@@ -311,11 +297,7 @@ pub(crate) fn parse_csv_usize(s: &str, flag: &str) -> Result<Vec<usize>, String>
 }
 
 pub(crate) fn parse_csv_layers(s: &str) -> Result<Vec<LayerKind>, String> {
-    s.split(',')
-        .map(str::trim)
-        .filter(|tok| !tok.is_empty())
-        .map(LayerKind::parse)
-        .collect()
+    s.split(',').map(str::trim).filter(|tok| !tok.is_empty()).map(LayerKind::parse).collect()
 }
 
 pub(crate) fn parse_format(s: &str) -> Result<Format, String> {
@@ -352,19 +334,15 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         // The one flag with no value.
         if flag == "--mpi" {
             if cfg!(not(feature = "mpi")) {
-                return Err(
-                    "--mpi needs the `mpi` cargo feature (cargo run --release --features \
+                return Err("--mpi needs the `mpi` cargo feature (cargo run --release --features \
                      phase-timing,mpi --example phase_breakdown)"
-                        .to_string(),
-                );
+                    .to_string());
             }
             mpi = true;
             i += 1;
             continue;
         }
-        let value = args
-            .get(i + 1)
-            .ok_or_else(|| format!("{flag} requires a value"))?;
+        let value = args.get(i + 1).ok_or_else(|| format!("{flag} requires a value"))?;
         match flag {
             "--n" => n = parse_usize(value, "--n")?,
             "--qubits" => qubits = parse_usize(value, "--qubits")?,
@@ -507,9 +485,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
 
     // The device axis: one process, `--gpu-partitions` virtual partitions on one device, no exact selection.
     if gpu_partitions == 0 || !gpu_partitions.is_power_of_two() {
-        return Err(format!(
-            "--gpu-partitions {gpu_partitions} must be a power of two"
-        ));
+        return Err(format!("--gpu-partitions {gpu_partitions} must be a power of two"));
     }
     if gpu_partitions > 1 && device.is_none() {
         return Err("--gpu-partitions needs --device".to_string());
@@ -523,10 +499,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         }
         if mpi {
             if matches!(spec, DeviceSpec::Ordinals(v) if v.len() > 1) {
-                return Err(
-                    "--mpi --device takes one ordinal or 'auto': a rank drives one device"
-                        .to_string(),
-                );
+                return Err("--mpi --device takes one ordinal or 'auto': a rank drives one device"
+                    .to_string());
             }
             if gpu_partitions > 1 {
                 return Err(

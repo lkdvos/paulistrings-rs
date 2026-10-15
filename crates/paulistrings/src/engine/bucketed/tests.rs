@@ -78,19 +78,11 @@ fn trace_is_opt_in_and_drains_on_take() {
     let mut scratch = LayerScratch::<1>::new();
     assert!(scratch.take_trace().is_none(), "off by default");
 
-    let record = PartitionLayerRecord {
-        circuit_index: 3,
-        ..PartitionLayerRecord::default()
-    };
+    let record = PartitionLayerRecord { circuit_index: 3, ..PartitionLayerRecord::default() };
     scratch.enable_trace();
     scratch.trace.as_mut().unwrap().layers.push(record.clone());
     scratch.enable_trace(); // idempotent: must not clear the record
-    assert_eq!(
-        scratch.take_trace(),
-        Some(PartitionTrace {
-            layers: vec![record]
-        })
-    );
+    assert_eq!(scratch.take_trace(), Some(PartitionTrace { layers: vec![record] }));
     assert_eq!(scratch.take_trace(), Some(PartitionTrace::default()));
 }
 
@@ -109,9 +101,7 @@ where
 {
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
     let mut b = input.clone().with_hash(hash);
-    let prepared = channel
-        .prepare(b.hash(), adjoint)
-        .expect("channel could not be prepared");
+    let prepared = channel.prepare(b.hash(), adjoint).expect("channel could not be prepared");
     let mut scratch = LayerScratch::<W>::new();
     apply_layer_bucketed(&mut b, &prepared, policy, &mut scratch);
     b
@@ -300,10 +290,7 @@ fn a_rescale_to_exactly_zero_drops_the_term() {
         (PauliString::<1>::x(0), 1.0),
         (PauliString::<1>::z(1), 0.5),
     ]);
-    let want = build(&[
-        (PauliString::<1>::identity(), 2.0),
-        (PauliString::<1>::z(1), 0.5),
-    ]);
+    let want = build(&[(PauliString::<1>::identity(), 2.0), (PauliString::<1>::z(1), 0.5)]);
     let depolarize = PtmChannel::depolarizing(0, 0.75);
     for bits in [0u8, 2] {
         let got = bucketed_layer(&input, &depolarize, &AlwaysKeep, false, bits, 0x51);
@@ -339,11 +326,7 @@ fn output_agrees_across_bucket_counts_to_fp_tolerance() {
     let rot = PauliRotation::new(PauliString::<1>::z(2), 0.41);
     let cnot = PtmChannel::cnot(1, 5);
     let gu2q = sqrt_swap_w1(1, 5);
-    for channel in [
-        &rot as &dyn Channel<1>,
-        &cnot as &dyn Channel<1>,
-        &gu2q as &dyn Channel<1>,
-    ] {
+    for channel in [&rot as &dyn Channel<1>, &cnot as &dyn Channel<1>, &gu2q as &dyn Channel<1>] {
         let reference = bucketed_layer(&input, channel, &AlwaysKeep, false, 0, 0x51);
         for bits in [1u8, 2, 3, 5, 8, 11] {
             let got = bucketed_layer(&input, channel, &AlwaysKeep, false, bits, 0x51);
@@ -385,11 +368,8 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         "want a multi-member coset so the two visit orders actually differ; got r={}",
         span.dimension()
     );
-    let coordinates: Vec<u32> = ptm
-        .deltas()
-        .iter()
-        .map(|d| span.coordinate_of(d.bucket_delta))
-        .collect();
+    let coordinates: Vec<u32> =
+        ptm.deltas().iter().map(|d| span.coordinate_of(d.bucket_delta)).collect();
     let m = span.coset_size();
 
     // Assemble the rank-0 coset's member columns, ascending by coordinate.
@@ -398,11 +378,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         let p = span.permuted_index(beta) as usize;
         if p < m {
             let (bx, bz, bc) = sum.bucket(beta as usize);
-            old[p] = BucketColumns {
-                x: bx.to_vec(),
-                z: bz.to_vec(),
-                coeff: bc.to_vec(),
-            };
+            old[p] = BucketColumns { x: bx.to_vec(), z: bz.to_vec(), coeff: bc.to_vec() };
         }
     }
 
@@ -449,11 +425,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         |j: usize, run: &GatherRun<1>| -> (Vec<[u64; 1]>, Vec<[u64; 1]>, Vec<Complex64>) {
             let src = &old[j];
             assert_eq!(src.len(), run.identity.len(), "dense id must be 1:1");
-            let identity = ColumnsRef {
-                x: &src.x,
-                z: &src.z,
-                coeff: &run.identity.coeff,
-            };
+            let identity = ColumnsRef { x: &src.x, z: &src.z, coeff: &run.identity.coeff };
             let mut merged = BucketColumns::default();
             merge_identity_and_rest::<1, AlwaysKeep>(
                 identity,
@@ -471,10 +443,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
         assert_eq!(mac.len(), mbc.len(), "run {j}: merged term count diverges");
         for (i, (ca, cb)) in mac.iter().zip(mbc.iter()).enumerate() {
             let d = (ca - cb).norm();
-            assert!(
-                d < TOL,
-                "run {j} term {i}: merged coefficients {ca} vs {cb} (delta {d:e})"
-            );
+            assert!(d < TOL, "run {j} term {i}: merged coefficients {ca} vs {cb} (delta {d:e})");
         }
     }
 }
@@ -495,16 +464,8 @@ fn identity_density_classification() {
     };
     // Dense: every source row emits an id row.
     check(&sqrt_swap_w1(1, 5), true, "gu2q");
-    check(
-        &PauliRotation::new(PauliString::<1>::z(2), 0.3),
-        true,
-        "rot_z",
-    );
-    check(
-        &PtmChannel::amplitude_damping(5, 0.3),
-        true,
-        "amplitude_damping",
-    );
+    check(&PauliRotation::new(PauliString::<1>::z(2), 0.3), true, "rot_z");
+    check(&PtmChannel::amplitude_damping(5, 0.3), true, "amplitude_damping");
     // Sparse: the id amplitude vanishes on some patterns (CNOT: 12 of 16; H: 2 of 4).
     check(&PtmChannel::cnot(1, 4), false, "cnot");
     check(&PtmChannel::hadamard(3), false, "h");
@@ -518,22 +479,14 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         let prepared = channel.prepare(&hash, false).unwrap();
         let span = Gf2Span::new(&prepared.bucket_deltas(), 8);
         match DeltaPlan::new(&prepared, &span, LayerKnobs::default()) {
-            DeltaPlan::Local {
-                ptm,
-                has_identity,
-                sort_kernel,
-                ..
-            } => (
+            DeltaPlan::Local { ptm, has_identity, sort_kernel, .. } => (
                 ptm.deltas().len() - has_identity as usize,
                 sort_kernel == SortKernel::Radix,
                 rest_rows_per_key(ptm),
             ),
             // A wide rotation has one rest stream and never takes the radix kernel.
             DeltaPlan::Rotation { .. } => {
-                assert!(
-                    label.starts_with("rot"),
-                    "{label}: unexpected Rotation plan"
-                );
+                assert!(label.starts_with("rot"), "{label}: unexpected Rotation plan");
                 (1, false, 0.0)
             }
         }
@@ -579,10 +532,7 @@ fn radix_sort_kernel_is_selected_only_for_dense_ptms() {
         assert_eq!(*label, want_label);
         let (streams, radix, rpk) = rest_streams(channel.as_ref(), label);
         assert_eq!(streams, want_streams, "{label}: rest streams");
-        assert!(
-            (rpk - want_rpk).abs() < 1e-9,
-            "{label}: rest_rows_per_key {rpk}, want {want_rpk}",
-        );
+        assert!((rpk - want_rpk).abs() < 1e-9, "{label}: rest_rows_per_key {rpk}, want {want_rpk}",);
         assert_eq!(
             radix, want_radix,
             "{label}: {streams} rest streams, {rpk} rows per key, radix = {radix}",
@@ -618,9 +568,7 @@ fn a_partitioned_plan_reads_the_channel_wide_overlap() {
     keep[0] = true;
     keep[1] = true;
     let local = Prepared::Local(full.retain_entries(&keep));
-    let Prepared::Local(restricted) = &local else {
-        unreachable!()
-    };
+    let Prepared::Local(restricted) = &local else { unreachable!() };
     assert!(
         (rest_rows_per_key(restricted) - 1.0).abs() < 1e-9,
         "the restricted view must be the misleading one, or this test is vacuous",
@@ -642,10 +590,7 @@ fn a_partitioned_plan_reads_the_channel_wide_overlap() {
     );
     // The count override alone is not enough.
     assert!(
-        radix(LayerKnobs {
-            rest_streams: Some(3),
-            ..LayerKnobs::default()
-        }),
+        radix(LayerKnobs { rest_streams: Some(3), ..LayerKnobs::default() }),
         "the restricted PTM really does mislead the overlap arm",
     );
 }
@@ -911,12 +856,7 @@ fn coset_path_is_correct_for_a_non_subspace_delta_set() {
     for bits in [0u8, 2, 5] {
         let got = bucketed_layer(&input, &channel, &AlwaysKeep, false, bits, 0x7EA);
         // Tolerance: three summands per key, summed by the oracle in hash-map order.
-        assert_terms_close(
-            &got,
-            &want,
-            TOL,
-            &format!("non-subspace deltas, bits={bits}"),
-        );
+        assert_terms_close(&got, &want, TOL, &format!("non-subspace deltas, bits={bits}"));
     }
 }
 
@@ -992,9 +932,7 @@ mod extra_rows_tests {
     {
         let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
         let mut b = input.clone().with_hash(hash);
-        let prepared = channel
-            .prepare(b.hash(), false)
-            .expect("channel could not be prepared");
+        let prepared = channel.prepare(b.hash(), false).expect("channel could not be prepared");
         let mut scratch = LayerScratch::<W>::new();
         apply_layer_bucketed_with(
             &mut b,
@@ -1080,17 +1018,11 @@ mod extra_rows_tests {
             let hash = Gf2Hash::<1>::new(8, bits, seed);
 
             let injected = injection_for(&input, &hash);
-            assert!(
-                injected.all().count() >= 6,
-                "{label}: too few injected rows"
-            );
+            assert!(injected.all().count() >= 6, "{label}: too few injected rows");
 
             // Non-vacuity: both the summed and the inserted case occur.
             let plain = bucketed_layer(&input, channel, &AlwaysKeep, false, bits, seed);
-            let collided = injected
-                .all()
-                .filter(|(x, z, _)| plain.get(x, z).is_some())
-                .count();
+            let collided = injected.all().filter(|(x, z, _)| plain.get(x, z).is_some()).count();
             let fresh = injected.all().count() - collided;
             assert!(
                 collided > 0 && fresh > 0,
@@ -1237,10 +1169,7 @@ mod finalize_tests {
         let input = rand_sum::<1>(800, 8, 0x9999);
         let mut flat = input.clone();
         DropNegativeReal.finalize_layer(&mut flat);
-        assert!(
-            flat.len() < input.len(),
-            "the custom policy dropped nothing"
-        );
+        assert!(flat.len() < input.len(), "the custom policy dropped nothing");
 
         for bits in [0u8, 3, 7] {
             let hash = Gf2Hash::<1>::new(8, bits, 0x99);
@@ -1303,10 +1232,7 @@ mod tie_tests {
         let mut ranks: Vec<u64> = input.iter().map(|(_, _, c)| rank(c)).collect();
         ranks.sort_unstable_by(|a, b| b.cmp(a));
         let boundary = ranks[n - 1];
-        canonical_triples(kept)
-            .into_iter()
-            .filter(|t| rank(t.2) > boundary)
-            .collect()
+        canonical_triples(kept).into_iter().filter(|t| rank(t.2) > boundary).collect()
     }
 
     /// `TopN(n)` keeps exactly `n` of a tie-dense sum at every bucket count and hash seed: the same terms above the boundary, and the stable-sort transcription of the rule in each storage order.

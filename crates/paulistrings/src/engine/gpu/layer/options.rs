@@ -34,12 +34,8 @@ pub struct GpuLayerOptions {
 }
 
 /// `PAULISTRINGS_GPU_EXCHANGE_BYTES`, the default of [`GpuLayerOptions::exchange_bytes`]; unbounded when unset.
-static EXCHANGE_BYTES: Knob<usize> = Knob::new(
-    "PAULISTRINGS_GPU_EXCHANGE_BYTES",
-    GPU_LOG_TARGET,
-    parse_bytes,
-    || usize::MAX,
-);
+static EXCHANGE_BYTES: Knob<usize> =
+    Knob::new("PAULISTRINGS_GPU_EXCHANGE_BYTES", GPU_LOG_TARGET, parse_bytes, || usize::MAX);
 
 /// A positive byte count with an optional binary `K`/`M`/`G` suffix.
 pub(super) fn parse_bytes(text: &str) -> Option<usize> {
@@ -49,11 +45,7 @@ pub(super) fn parse_bytes(text: &str) -> Option<usize> {
         Some(b'G' | b'g') => (&text[..text.len() - 1], 30),
         _ => (text, 0),
     };
-    digits
-        .parse::<usize>()
-        .ok()
-        .filter(|&n| n > 0)
-        .and_then(|n| n.checked_mul(1usize << shift))
+    digits.parse::<usize>().ok().filter(|&n| n > 0).and_then(|n| n.checked_mul(1usize << shift))
 }
 
 impl Default for GpuLayerOptions {
@@ -79,10 +71,7 @@ impl GpuLayerOptions {
             return Err("arena_bytes must be at least 1, got 0".to_string());
         }
         if self.max_bits > B_MAX_BITS {
-            return Err(format!(
-                "max_bits must be at most {B_MAX_BITS}, got {}",
-                self.max_bits
-            ));
+            return Err(format!("max_bits must be at most {B_MAX_BITS}, got {}", self.max_bits));
         }
         Ok(())
     }
@@ -102,13 +91,9 @@ pub(crate) fn gpu_desired_bits(
     records_per_block: usize,
     current: u8,
 ) -> u8 {
-    desired_bits(
-        len.saturating_mul(fanout.max(1)),
-        records_per_block.max(1),
-        1,
-    )
-    .max(current)
-    .min(B_MAX_BITS)
+    desired_bits(len.saturating_mul(fanout.max(1)), records_per_block.max(1), 1)
+        .max(current)
+        .min(B_MAX_BITS)
 }
 
 /// The entries `prepared` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.

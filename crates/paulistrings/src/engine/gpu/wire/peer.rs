@@ -87,10 +87,7 @@ impl PeerWire {
     pub(crate) fn group_with_timeout(size: u32, timeout: Duration) -> Vec<PeerWire> {
         let shared = Arc::new(Shared {
             size,
-            state: Mutex::new(State {
-                rounds: BTreeMap::new(),
-                poisoned: None,
-            }),
+            state: Mutex::new(State { rounds: BTreeMap::new(), poisoned: None }),
             condvar: Condvar::new(),
             timeout,
             #[cfg(test)]
@@ -115,10 +112,7 @@ impl PeerWire {
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.shared
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.shared.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Whether `fault` is armed, disarming it.
@@ -155,35 +149,27 @@ impl PeerWire {
                 drop(state);
                 panic!("{msg}");
             }
-            let round = state
-                .rounds
-                .get(&generation)
-                .expect("a posted round stays until every rank left");
+            let round =
+                state.rounds.get(&generation).expect("a posted round stays until every rank left");
             if ready(round) {
                 return Ok(state);
             }
             let elapsed = start.elapsed();
             if elapsed >= self.shared.timeout {
-                let missing: Vec<usize> = (0..round.posted.len())
-                    .filter(|&r| round.posted[r].is_none())
-                    .collect();
+                let missing: Vec<usize> =
+                    (0..round.posted.len()).filter(|&r| round.posted[r].is_none()).collect();
                 log::warn!(
                     target: GPU_LOG_TARGET,
                     "peer wire rank {}: group {generation} timed out waiting for {what} (ranks not posted: {missing:?})",
                     self.rank
                 );
                 self.dead.store(true, Ordering::Relaxed);
-                return Err(GpuError::Timeout {
-                    what: "a peer wire group",
-                });
+                return Err(GpuError::Timeout { what: "a peer wire group" });
             }
             state = self
                 .shared
                 .condvar
-                .wait_timeout(
-                    state,
-                    (self.shared.timeout - elapsed).min(Duration::from_millis(50)),
-                )
+                .wait_timeout(state, (self.shared.timeout - elapsed).min(Duration::from_millis(50)))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
@@ -209,9 +195,7 @@ impl Drop for PeerWire {
         if std::thread::panicking() {
             let mut state = self.lock();
             let rank = self.rank;
-            state
-                .poisoned
-                .get_or_insert_with(|| format!("rank {rank} panicked"));
+            state.poisoned.get_or_insert_with(|| format!("rank {rank} panicked"));
             drop(state);
             self.shared.condvar.notify_all();
         }
@@ -278,10 +262,7 @@ impl DeviceWire for PeerWire {
             });
         }
         let generation = {
-            let mut counter = self
-                .generation
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
+            let mut counter = self.generation.lock().unwrap_or_else(PoisonError::into_inner);
             assert!(
                 counter.1.is_none(),
                 "peer wire, rank {}: a second group posted before the first was waited on",
@@ -307,12 +288,7 @@ impl DeviceWire for PeerWire {
 
     fn wait(&self, stream: &CudaStream) -> Result<(), GpuError> {
         self.alive()?;
-        let pending = self
-            .generation
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .1
-            .take();
+        let pending = self.generation.lock().unwrap_or_else(PoisonError::into_inner).1.take();
         let Some(generation) = pending else {
             stream.synchronize()?;
             return Ok(());
@@ -325,9 +301,7 @@ impl DeviceWire for PeerWire {
         #[cfg(any(test, feature = "test-utils"))]
         if self.faulty(WireFault::Wait) {
             // The peers' copies read this rank's buffers, which its caller reuses as soon as this returns.
-            drop(self.wait_for(state, generation, "the peers' copies", |r| {
-                r.done + 1 >= size
-            })?);
+            drop(self.wait_for(state, generation, "the peers' copies", |r| r.done + 1 >= size)?);
             return Err(self.die("an injected peer wire wait failure"));
         }
         let copies = match check_round(
@@ -368,18 +342,11 @@ impl DeviceWire for PeerWire {
         })();
         let synced = enqueued.and_then(|()| Ok(stream.synchronize()?));
         let mut state = self.lock();
-        state
-            .rounds
-            .get_mut(&generation)
-            .expect("the round is live")
-            .done += 1;
+        state.rounds.get_mut(&generation).expect("the round is live").done += 1;
         self.shared.condvar.notify_all();
         let mut state =
             self.wait_for(state, generation, "every rank's copies", |r| r.done == size)?;
-        let round = state
-            .rounds
-            .get_mut(&generation)
-            .expect("the round is live");
+        let round = state.rounds.get_mut(&generation).expect("the round is live");
         round.left += 1;
         if round.left == size {
             state.rounds.remove(&generation);
@@ -405,10 +372,7 @@ fn check_round(
     stream: usize,
 ) -> Result<Vec<PeerCopy>, String> {
     let mine = round.posted[me].as_ref().expect("every rank posted");
-    if let Some(r) = mine
-        .iter()
-        .find(|p| p.kind == WireOpKind::Receive && p.stream != stream)
-    {
+    if let Some(r) = mine.iter().find(|p| p.kind == WireOpKind::Receive && p.stream != stream) {
         return Err(format!(
             "peer wire: rank {me} waits on another stream than its receive from rank {} was posted on",
             r.peer

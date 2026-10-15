@@ -109,18 +109,9 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
     let h2 = Gf2Hash::<2>::new(128, 7, DEFAULT_HASH_SEED);
     let h1 = Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED);
     let deficient = PtmChannel::unitary_2q(0, 7, haar_su4_matrix());
-    let s2 = Gf2Span::new(
-        &Prepare::<2>::prepare(&channel, &h2, false)
-            .unwrap()
-            .bucket_deltas(),
-        7,
-    );
-    let s1 = Gf2Span::new(
-        &Prepare::<1>::prepare(&deficient, &h1, false)
-            .unwrap()
-            .bucket_deltas(),
-        7,
-    );
+    let s2 = Gf2Span::new(&Prepare::<2>::prepare(&channel, &h2, false).unwrap().bucket_deltas(), 7);
+    let s1 =
+        Gf2Span::new(&Prepare::<1>::prepare(&deficient, &h1, false).unwrap().bucket_deltas(), 7);
     assert_eq!((s2.coset_size(), s2.num_cosets()), (16, 8));
     assert_eq!((s1.coset_size(), s1.num_cosets()), (8, 16));
 }

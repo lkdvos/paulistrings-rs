@@ -30,10 +30,7 @@ fn circuit() -> Circuit<1> {
     let mut zz = PauliString::<1> { x: [0], z: [0b110] };
     zz.z[0] |= 1 << 5;
     c.push(PauliRotation::new(zz, 0.31));
-    let wide = PauliString::<1> {
-        x: [0b1001],
-        z: [0b0110],
-    };
+    let wide = PauliString::<1> { x: [0b1001], z: [0b0110] };
     c.push(PauliRotation::new(wide, 0.17));
     c.push(PtmChannel::phase_gate(3));
     c
@@ -80,9 +77,7 @@ fn a_held_sum_propagates_across_calls() {
 
     // The parts tile the whole: every key sits in exactly its own partition,
     // and the lengths add up.
-    let total: usize = (0..ps.num_partitions())
-        .map(|r| ps.partition(r).len())
-        .sum();
+    let total: usize = (0..ps.num_partitions()).map(|r| ps.partition(r).len()).sum();
     assert_eq!(total, ps.len());
     assert_eq!(ps.rows().num_partitions(), 4);
 
@@ -100,12 +95,8 @@ fn a_runtime_serves_more_than_one_sum() {
 
     for seed in [0x1u64, 0x2] {
         let sum = rand_sum::<1>(300, NQ, seed);
-        let want = propagate(
-            &circuit,
-            sum.clone(),
-            &CoefficientThreshold(1e-10),
-            Direction::Heisenberg,
-        );
+        let want =
+            propagate(&circuit, sum.clone(), &CoefficientThreshold(1e-10), Direction::Heisenberg);
         let mut ps = PartitionedSum::scatter_with(
             sum,
             ScatterOptions {
@@ -113,11 +104,7 @@ fn a_runtime_serves_more_than_one_sum() {
                 rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(ROW_SEED))),
             },
         );
-        ps.propagate(
-            &circuit,
-            &CoefficientThreshold(1e-10),
-            Direction::Heisenberg,
-        );
+        ps.propagate(&circuit, &CoefficientThreshold(1e-10), Direction::Heisenberg);
         assert_terms_close(&ps.into_gathered(), &want, TOL, "reused runtime");
     }
 }
@@ -139,10 +126,7 @@ fn explicit_rows_may_be_lopsided() {
     let rows = partition_rows::<1>(NQ, vec![[1u64 << 13]], vec![[0u64]]);
     let mut ps = PartitionedSum::scatter_with(
         sum,
-        ScatterOptions {
-            runtime,
-            rows: ScatterRows::Explicit(rows),
-        },
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
     );
     ps.assert_invariants();
     assert!(
@@ -155,14 +139,7 @@ fn explicit_rows_may_be_lopsided() {
     ps.propagate(&circuit, &ApproxTopN(200), Direction::Forward);
     ps.assert_invariants();
     let got = ps.into_gathered();
-    assert_runs_agree(
-        ApproxTopN(200),
-        discarded,
-        &got,
-        &want,
-        TOL,
-        "lopsided rows",
-    );
+    assert_runs_agree(ApproxTopN(200), discarded, &got, &want, TOL, "lopsided rows");
 }
 
 /// An empty sum scatters, propagates and gathers.

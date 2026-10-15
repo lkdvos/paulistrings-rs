@@ -46,11 +46,7 @@ fn single_bucket_layer(
         }
         input = accumulator.finalize();
     }
-    let input = input.with_hash(Gf2Hash::new(
-        128,
-        0,
-        crate::pauli_sum::storage::DEFAULT_HASH_SEED,
-    ));
+    let input = input.with_hash(Gf2Hash::new(128, 0, crate::pauli_sum::storage::DEFAULT_HASH_SEED));
     assert_eq!(input.len(), n);
     let mut sum = GpuSum::from_host(&input, 0)?;
     let mut scratch = LayerScratch::new(&sum, options)?;
@@ -58,12 +54,8 @@ fn single_bucket_layer(
     let rows = crate::pauli_sum::hash::PartitionRows::<2>::none(128);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let solo = InProcessTransport::group(1);
-    let layer = DeviceLayer {
-        prepared: &prepared,
-        plan: &plan,
-        keep: &KeepProgram::KEEP,
-        target_bits: 0,
-    };
+    let layer =
+        DeviceLayer { prepared: &prepared, plan: &plan, keep: &KeepProgram::KEEP, target_bits: 0 };
     apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0])?;
     let want = naive_apply_layer(&input, channel, &KeepAll, false);
     assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
@@ -86,12 +78,7 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
     let perm = sixteen_delta_permutation();
     let c = single_bucket_layer(MAX_BUCKET_LEN, false, &perm, options).unwrap();
     assert_eq!(
-        (
-            c.bits,
-            c.refine_passes,
-            c.record.records,
-            c.record.max_block_records
-        ),
+        (c.bits, c.refine_passes, c.record.records, c.record.max_block_records),
         (0, 0, 4096, 4096)
     );
     let c = single_bucket_layer(MAX_BUCKET_LEN + 1, false, &perm, options).unwrap();
@@ -99,9 +86,7 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
 
     // A Haar SU(4) row with a non-identity pattern emits 15 records: the one entry mapping it onto `I⊗I` is exactly zero.
     let su4 = PtmChannel::unitary_2q(0, 1, haar_su4_matrix());
-    let record_cap = crate::engine::gpu::module::kernel_set(0, 2)
-        .unwrap()
-        .layer_cap();
+    let record_cap = crate::engine::gpu::module::kernel_set(0, 2).unwrap().layer_cap();
     let c = single_bucket_layer(record_cap / 15, true, &su4, options).unwrap();
     assert_eq!(
         (
@@ -114,10 +99,7 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
     );
     let c = single_bucket_layer(record_cap / 15 + 1, true, &su4, options).unwrap();
     assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
-    let capped = GpuLayerOptions {
-        max_bits: 0,
-        ..options
-    };
+    let capped = GpuLayerOptions { max_bits: 0, ..options };
     assert!(matches!(
         single_bucket_layer(record_cap / 15 + 1, true, &su4, capped),
         Err(GpuError::Unsupported(_))
@@ -171,11 +153,7 @@ fn records_per_block_scales_with_fanout_and_is_grow_only() {
     assert_eq!(gpu_desired_bits(1_000_000, 1, p, 0), 8);
     assert_eq!(gpu_desired_bits(1_000_000, 2, p, 0), 9);
     assert_eq!(gpu_desired_bits(1_000_000, 16, p, 0), 12);
-    assert_eq!(
-        gpu_desired_bits(1_000_000, 1, p, 11),
-        11,
-        "never below the current bits"
-    );
+    assert_eq!(gpu_desired_bits(1_000_000, 1, p, 11), 11, "never below the current bits");
     assert_eq!(gpu_desired_bits(0, 16, p, 0), 0);
     assert_eq!(gpu_desired_bits(4096, 1, p, 0), 0);
     assert_eq!(gpu_desired_bits(4097, 1, p, 0), 1);
@@ -187,27 +165,15 @@ fn layer_options_validate_their_bounds() {
     assert_eq!(GpuLayerOptions::default().validate(), Ok(()));
     let bad = |options: GpuLayerOptions| options.validate().unwrap_err();
     assert_eq!(
-        bad(GpuLayerOptions {
-            records_per_block: 0,
-            ..GpuLayerOptions::default()
-        }),
+        bad(GpuLayerOptions { records_per_block: 0, ..GpuLayerOptions::default() }),
         "records_per_block must be at least 1, got 0"
     );
     assert_eq!(
-        bad(GpuLayerOptions {
-            arena_bytes: 0,
-            ..GpuLayerOptions::default()
-        }),
+        bad(GpuLayerOptions { arena_bytes: 0, ..GpuLayerOptions::default() }),
         "arena_bytes must be at least 1, got 0"
     );
     assert_eq!(
-        bad(GpuLayerOptions {
-            max_bits: B_MAX_BITS + 1,
-            ..GpuLayerOptions::default()
-        }),
-        format!(
-            "max_bits must be at most {B_MAX_BITS}, got {}",
-            B_MAX_BITS + 1
-        )
+        bad(GpuLayerOptions { max_bits: B_MAX_BITS + 1, ..GpuLayerOptions::default() }),
+        format!("max_bits must be at most {B_MAX_BITS}, got {}", B_MAX_BITS + 1)
     );
 }

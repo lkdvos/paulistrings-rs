@@ -18,18 +18,12 @@ pub struct BuildAccumulator<const W: usize> {
 impl<const W: usize> BuildAccumulator<W> {
     /// New empty accumulator targeting `num_qubits` qubits.
     pub fn new(num_qubits: usize) -> Self {
-        Self {
-            map: HashMap::with_hasher(FxBuildHasher),
-            num_qubits,
-        }
+        Self { map: HashMap::with_hasher(FxBuildHasher), num_qubits }
     }
 
     /// Allocate up-front for at least `capacity` distinct Pauli keys.
     pub fn with_capacity(num_qubits: usize, capacity: usize) -> Self {
-        Self {
-            map: HashMap::with_capacity_and_hasher(capacity, FxBuildHasher),
-            num_qubits,
-        }
+        Self { map: HashMap::with_capacity_and_hasher(capacity, FxBuildHasher), num_qubits }
     }
 
     /// Add `c · p`.

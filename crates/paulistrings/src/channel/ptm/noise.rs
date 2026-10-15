@@ -12,11 +12,7 @@ impl PtmChannel {
     pub fn depolarizing(qubit: usize, p: f64) -> Self {
         assert_probability("depolarizing", "p", p);
         let scale = 1.0 - 4.0 * p / 3.0;
-        Self::diagonal(
-            &[qubit],
-            vec![1.0, scale, scale, scale],
-            PtmKind::Depolarizing,
-        )
+        Self::diagonal(&[qubit], vec![1.0, scale, scale, scale], PtmKind::Depolarizing)
     }
 
     /// Single-qubit dephasing noise with error probability `p`: `X` and `Y` are scaled by `1 - 2p`.
@@ -48,12 +44,7 @@ impl PtmChannel {
         );
         Self::diagonal(
             &[qubit],
-            vec![
-                1.0,
-                1.0 - 2.0 * (py + pz),
-                1.0 - 2.0 * (px + py),
-                1.0 - 2.0 * (px + pz),
-            ],
+            vec![1.0, 1.0 - 2.0 * (py + pz), 1.0 - 2.0 * (px + py), 1.0 - 2.0 * (px + pz)],
             PtmKind::PauliChannel,
         )
     }
@@ -94,13 +85,7 @@ impl PtmChannel {
     }
 
     fn diagonal(qubits: &[usize], scale: Vec<f64>, kind: PtmKind) -> Self {
-        Self::new(
-            qubits,
-            PtmStorage::Diagonal {
-                scale: scale.into_boxed_slice(),
-            },
-            kind,
-        )
+        Self::new(qubits, PtmStorage::Diagonal { scale: scale.into_boxed_slice() }, kind)
     }
 }
 

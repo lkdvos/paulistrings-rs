@@ -227,10 +227,7 @@ impl MpiTransport {
     fn send_gather(&self, parts: &[&[u8]], header_tag: Rank, part_tag: Rank) {
         let header = encode_header(self.rank, 0, parts);
         let header: &[u8] = bytemuck::cast_slice(&header);
-        let sends = 1 + parts
-            .iter()
-            .map(|p| chunk_count(p.len(), self.chunk))
-            .sum::<usize>();
+        let sends = 1 + parts.iter().map(|p| chunk_count(p.len(), self.chunk)).sum::<usize>();
         let peer = self.comm.process_at_rank(ROOT as Rank);
         ::mpi::request::multiple_scope(sends, |scope, requests| {
             requests.add(peer.immediate_send_with_tag(scope, header, header_tag));
@@ -265,25 +262,16 @@ impl MpiTransport {
             let i = requests.add(req);
             note_slot(slot_of, i, SLOT_SEND);
         };
-        post(
-            peer.immediate_send_with_tag(scope, header, tags.header),
-            slot_of,
-        );
+        post(peer.immediate_send_with_tag(scope, header, tags.header), slot_of);
         for part in early {
             for piece in part.chunks(self.chunk) {
-                post(
-                    peer.immediate_send_with_tag(scope, piece, tags.early),
-                    slot_of,
-                );
+                post(peer.immediate_send_with_tag(scope, piece, tags.early), slot_of);
             }
         }
         for k in 0..chunks {
             for part in bulk {
                 for piece in part[k].chunks(self.chunk) {
-                    post(
-                        peer.immediate_send_with_tag(scope, piece, tags.part),
-                        slot_of,
-                    );
+                    post(peer.immediate_send_with_tag(scope, piece, tags.part), slot_of);
                 }
             }
         }
@@ -373,10 +361,8 @@ fn decode_header(
          of u64 words, at least {HEADER_WORDS}",
         bytes.len(),
     );
-    let words: Vec<u64> = bytes
-        .chunks_exact(size_of::<u64>())
-        .map(bytemuck::pod_read_unaligned)
-        .collect();
+    let words: Vec<u64> =
+        bytes.chunks_exact(size_of::<u64>()).map(bytemuck::pod_read_unaligned).collect();
 
     let version = (words[0] & 0xffff_ffff) as u32;
     assert_eq!(
@@ -404,10 +390,7 @@ fn decode_header(
         "rank {this_rank}: rank {expected_src} declared {n_parts} parts in a {}-word header",
         words.len(),
     );
-    words[HEADER_WORDS..]
-        .iter()
-        .map(|&len| len as usize)
-        .collect()
+    words[HEADER_WORDS..].iter().map(|&len| len as usize).collect()
 }
 
 /// Messages a part of `len` bytes is sent in, exactly `slice::chunks(chunk).count()`.
@@ -432,8 +415,7 @@ impl Collectives for MpiTransport {
         }
         let send = [v];
         let mut recv = [0u8];
-        self.comm
-            .all_reduce_into(&send[..], &mut recv[..], SystemOperation::max());
+        self.comm.all_reduce_into(&send[..], &mut recv[..], SystemOperation::max());
         recv[0]
     }
 
@@ -441,14 +423,10 @@ impl Collectives for MpiTransport {
         if self.size == 1 {
             return;
         }
-        let mut scratch = self
-            .scratch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut scratch = self.scratch.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         scratch.clear();
         scratch.extend_from_slice(buffer);
-        self.comm
-            .all_reduce_into(&scratch[..], buffer, SystemOperation::sum());
+        self.comm.all_reduce_into(&scratch[..], buffer, SystemOperation::sum());
     }
 
     /// Not `MPI_Allreduce`, which does not promise every rank the same bits: reduce to the root and broadcast.
@@ -521,22 +499,15 @@ impl Transport for MpiTransport {
             .map(|&q| send[q].as_ref().expect("a partner's payload").byte_parts())
             .collect();
         let chunks = map.chunks();
-        let headers: Vec<Vec<u64>> = all_parts
-            .iter()
-            .map(|p| encode_header(self.rank, map.requested_chunks(), p))
-            .collect();
+        let headers: Vec<Vec<u64>> =
+            all_parts.iter().map(|p| encode_header(self.rank, map.requested_chunks(), p)).collect();
         let early: Vec<Vec<&[u8]>> = partners
             .iter()
             .map(|&q| send[q].as_ref().expect("a partner's payload").early_parts())
             .collect();
         let bulk: Vec<Vec<Vec<&[u8]>>> = partners
             .iter()
-            .map(|&q| {
-                send[q]
-                    .as_ref()
-                    .expect("a partner's payload")
-                    .bulk_parts(map)
-            })
+            .map(|&q| send[q].as_ref().expect("a partner's payload").bulk_parts(map))
             .collect();
 
         // SAFETY: while `body` runs, the `&mut` views MPI fills and the `&[Option<P>]` the body reads alias.
@@ -649,10 +620,8 @@ impl Transport for MpiTransport {
         }
 
         let epoch = self.next_epoch();
-        let (header_tag, part_tag) = (
-            Self::tag(KIND_GATHER_HEADER, epoch),
-            Self::tag(KIND_GATHER_PART, epoch),
-        );
+        let (header_tag, part_tag) =
+            (Self::tag(KIND_GATHER_HEADER, epoch), Self::tag(KIND_GATHER_PART, epoch));
 
         if this_rank != ROOT {
             self.send_gather(&parts, header_tag, part_tag);
@@ -661,10 +630,7 @@ impl Transport for MpiTransport {
 
         let mut buffers: Vec<Vec<Vec<u8>>> = (1..n)
             .map(|src| {
-                self.recv_header(src, header_tag, 0)
-                    .into_iter()
-                    .map(|len| vec![0u8; len])
-                    .collect()
+                self.recv_header(src, header_tag, 0).into_iter().map(|len| vec![0u8; len]).collect()
             })
             .collect();
         let mut views: Vec<(usize, Vec<&mut [u8]>)> = buffers
@@ -687,9 +653,7 @@ impl Transport for MpiTransport {
 /// Under `mpirun --map-by ppr:1:numa --bind-to numa` (or `srun --cpu-bind=ldoms`) that is one NUMA domain; unbound, it is the whole node.
 pub fn default_config() -> PartitionConfig {
     PartitionConfig {
-        placement: Placement::Auto {
-            max_partitions: Some(1),
-        },
+        placement: Placement::Auto { max_partitions: Some(1) },
         bind_memory: true,
         threads_per_partition: None,
     }

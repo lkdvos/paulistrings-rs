@@ -64,17 +64,11 @@ impl<const W: usize> ExchangeBlock<W> {
         self.offsets.push(0u32);
         let mut rows = 0u32;
         for &count in counts {
-            rows = rows
-                .checked_add(count)
-                .expect("exchange block exceeds u32::MAX rows");
+            rows = rows.checked_add(count).expect("exchange block exceeds u32::MAX rows");
             self.offsets.push(rows);
         }
-        self.header = BlockHeader {
-            num_buckets: counts.len() as u32,
-            rows,
-            width: W as u32,
-            entry,
-        };
+        self.header =
+            BlockHeader { num_buckets: counts.len() as u32, rows, width: W as u32, entry };
         self.grow_columns(rows as usize);
     }
 
@@ -129,9 +123,7 @@ pub(crate) fn chunk_rows_of(offsets: &[u32], map: &ChunkMap) -> Vec<usize> {
         map.positions() + 1,
         "the chunk map is built for a different bucket count than the block",
     );
-    (0..=map.chunks())
-        .map(|k| offsets[map.bound(k) as usize] as usize)
-        .collect()
+    (0..=map.chunks()).map(|k| offsets[map.bound(k) as usize] as usize).collect()
 }
 
 /// Cut `column` at `bounds` (row indices) and view each piece as bytes.
@@ -139,10 +131,7 @@ fn chunk_slices<'s, T, F>(column: &'s [T], bounds: &[usize], as_bytes: F) -> Vec
 where
     F: Fn(&'s [T]) -> &'s [u8],
 {
-    bounds
-        .windows(2)
-        .map(|window| as_bytes(&column[window[0]..window[1]]))
-        .collect()
+    bounds.windows(2).map(|window| as_bytes(&column[window[0]..window[1]])).collect()
 }
 
 /// [`chunk_slices`] for the receive side: disjoint mutable pieces, in order.
@@ -200,15 +189,10 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         let key_stride = W * size_of::<u64>();
         self.blocks.truncate(block_count);
         if self.blocks.len() < block_count {
-            self.blocks
-                .resize_with(block_count, ExchangeBlock::<W>::default);
+            self.blocks.resize_with(block_count, ExchangeBlock::<W>::default);
         }
         let mut parts = Vec::with_capacity(lens.len());
-        for (block, lens) in self
-            .blocks
-            .iter_mut()
-            .zip(lens.chunks_exact(PARTS_PER_BLOCK))
-        {
+        for (block, lens) in self.blocks.iter_mut().zip(lens.chunks_exact(PARTS_PER_BLOCK)) {
             assert_eq!(
                 lens[0],
                 size_of::<BlockHeader>(),
@@ -237,13 +221,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             block.grow_columns(rows);
             // Overwritten by the arriving header, which `finish_receive` checks against the columns.
             block.header.rows = rows as u32;
-            let ExchangeBlock {
-                header,
-                offsets,
-                x,
-                z,
-                coeff,
-            } = block;
+            let ExchangeBlock { header, offsets, x, z, coeff } = block;
             parts.push(bytemuck::bytes_of_mut(header));
             parts.push(bytemuck::cast_slice_mut(&mut offsets[..]));
             parts.push(bytemuck::cast_slice_mut(x[..rows].as_flattened_mut()));
@@ -301,12 +279,8 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             let rows = block.rows();
             let (x, z, coeff) = (&block.x[..rows], &block.z[..rows], &block.coeff[..rows]);
             let bounds = chunk_rows_of(&block.offsets, map);
-            parts.push(chunk_slices(x, &bounds, |s| {
-                bytemuck::cast_slice(s.as_flattened())
-            }));
-            parts.push(chunk_slices(z, &bounds, |s| {
-                bytemuck::cast_slice(s.as_flattened())
-            }));
+            parts.push(chunk_slices(x, &bounds, |s| bytemuck::cast_slice(s.as_flattened())));
+            parts.push(chunk_slices(z, &bounds, |s| bytemuck::cast_slice(s.as_flattened())));
             parts.push(chunk_slices(coeff, &bounds, bytemuck::cast_slice));
         }
         parts
@@ -335,11 +309,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             parts.push(chunk_slices_mut(&mut z[..rows], &bounds, |s| {
                 bytemuck::cast_slice_mut(s.as_flattened_mut())
             }));
-            parts.push(chunk_slices_mut(
-                &mut coeff[..rows],
-                &bounds,
-                bytemuck::cast_slice_mut,
-            ));
+            parts.push(chunk_slices_mut(&mut coeff[..rows], &bounds, bytemuck::cast_slice_mut));
         }
         parts
     }

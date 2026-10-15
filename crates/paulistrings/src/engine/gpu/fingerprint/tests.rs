@@ -37,22 +37,12 @@ fn a_single_bit_key_reads_one_column_of_g() {
         let (w, b) = (q / 64, q % 64);
         let mut x = [0u64; 2];
         x[w] = 1 << b;
-        let want_x: u64 = (0..FINGERPRINT_ROWS)
-            .map(|r| ((fingerprints.rows_x[r][w] >> b) & 1) << r)
-            .sum();
-        assert_eq!(
-            fingerprints.fingerprint(&x, &[0, 0]),
-            want_x,
-            "x on qubit {q}"
-        );
-        let want_z: u64 = (0..FINGERPRINT_ROWS)
-            .map(|r| ((fingerprints.rows_z[r][w] >> b) & 1) << r)
-            .sum();
-        assert_eq!(
-            fingerprints.fingerprint(&[0, 0], &x),
-            want_z,
-            "z on qubit {q}"
-        );
+        let want_x: u64 =
+            (0..FINGERPRINT_ROWS).map(|r| ((fingerprints.rows_x[r][w] >> b) & 1) << r).sum();
+        assert_eq!(fingerprints.fingerprint(&x, &[0, 0]), want_x, "x on qubit {q}");
+        let want_z: u64 =
+            (0..FINGERPRINT_ROWS).map(|r| ((fingerprints.rows_z[r][w] >> b) & 1) << r).sum();
+        assert_eq!(fingerprints.fingerprint(&[0, 0], &x), want_z, "z on qubit {q}");
     }
 }
 
@@ -77,10 +67,7 @@ fn fingerprint_is_injective_on_weight_two_keys_at_64_qubits() {
     assert_eq!(keys.len(), 1 + 64 * 3 + 2016 * 9);
     for seed in [DEFAULT_HASH_SEED, 0, 1, 0xF00D, 0xC0FFEE] {
         let fingerprints = FingerprintRows::<1>::new(seed);
-        let mut g: Vec<u64> = keys
-            .iter()
-            .map(|(x, z)| fingerprints.fingerprint(x, z))
-            .collect();
+        let mut g: Vec<u64> = keys.iter().map(|(x, z)| fingerprints.fingerprint(x, z)).collect();
         g.sort_unstable();
         g.dedup();
         assert_eq!(g.len(), keys.len(), "seed {seed:#x}: fingerprint collision");

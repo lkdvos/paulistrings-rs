@@ -11,13 +11,8 @@ fn kernels_compile_for_every_width() {
         compile_ptx(w, "compute_80", &[], kernel_cache::directory())
             .unwrap_or_else(|e| panic!("W={w}: {e}"));
     }
-    compile_ptx(
-        2,
-        "compute_80",
-        &["-DFINGERPRINT_BITS=8".to_string()],
-        kernel_cache::directory(),
-    )
-    .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
+    compile_ptx(2, "compute_80", &["-DFINGERPRINT_BITS=8".to_string()], kernel_cache::directory())
+        .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
 }
 
 #[test]
@@ -46,20 +41,9 @@ fn layer_variants_fit_their_register_budget() {
             for (name, f) in [("serial", &v.serial), ("segscan", &v.segscan)] {
                 let regs = f.get_attribute(CU_FUNC_ATTRIBUTE_NUM_REGS).unwrap();
                 let local = f.get_attribute(CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES).unwrap();
-                println!(
-                    "W={w} items={} {name}: {regs} regs, {local} B local",
-                    v.items
-                );
-                assert!(
-                    regs <= budget,
-                    "W={w} items={} {name}: {regs} regs",
-                    v.items
-                );
-                assert!(
-                    local < 1024,
-                    "W={w} items={} {name}: {local} B local",
-                    v.items
-                );
+                println!("W={w} items={} {name}: {regs} regs, {local} B local", v.items);
+                assert!(regs <= budget, "W={w} items={} {name}: {regs} regs", v.items);
+                assert!(local < 1024, "W={w} items={} {name}: {local} B local", v.items);
             }
         }
     }

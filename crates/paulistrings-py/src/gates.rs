@@ -152,9 +152,7 @@ pub(crate) fn pauli_rotation_spec(
         )));
     }
     if qubits.is_empty() {
-        return Err(PyValueError::new_err(
-            "pauli_rotation: pauli and qubits must be non-empty",
-        ));
+        return Err(PyValueError::new_err("pauli_rotation: pauli and qubits must be non-empty"));
     }
     let mut paulis = Vec::with_capacity(qubits.len());
     for (ch, &qubit) in pauli.chars().zip(qubits.iter()) {

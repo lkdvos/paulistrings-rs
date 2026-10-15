@@ -47,10 +47,7 @@ impl<const W: usize> PauliRotation<W> {
         coeff: Complex64,
         out: &mut OutputBuffer<W>,
     ) {
-        let input = PauliString::<W> {
-            x: *input_x,
-            z: *input_z,
-        };
+        let input = PauliString::<W> { x: *input_x, z: *input_z };
         if input.commutes_with(&self.generator) {
             out.push(*input_x, *input_z, coeff);
             return;

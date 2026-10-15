@@ -14,10 +14,7 @@ pub struct Circuit<const W: usize> {
 impl<const W: usize> Circuit<W> {
     /// Empty circuit on `num_qubits` qubits.
     pub fn new(num_qubits: usize) -> Self {
-        Self {
-            num_qubits,
-            channels: Vec::new(),
-        }
+        Self { num_qubits, channels: Vec::new() }
     }
 
     /// Append a channel to the circuit.

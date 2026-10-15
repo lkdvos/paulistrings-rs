@@ -46,10 +46,7 @@ pub(crate) struct Gf2Span {
 impl Gf2Span {
     /// The span of `deltas` in a `bits`-wide index space; panics if `bits > B_MAX_BITS` or a delta lies outside it.
     pub(crate) fn new(deltas: &[u32], bits: u8) -> Self {
-        assert!(
-            bits <= B_MAX_BITS,
-            "Gf2Span: bits {bits} exceeds B_MAX_BITS {B_MAX_BITS}"
-        );
+        assert!(bits <= B_MAX_BITS, "Gf2Span: bits {bits} exceeds B_MAX_BITS {B_MAX_BITS}");
         let space_mask = if bits == 0 { 0 } else { (1u32 << bits) - 1 };
 
         let mut basis: Vec<u32> = Vec::new();
@@ -82,12 +79,7 @@ impl Gf2Span {
             pivot_mask |= 1 << pivot;
         }
 
-        Self {
-            basis,
-            pivot_mask,
-            bits,
-            nonpivot_mask: space_mask & !pivot_mask,
-        }
+        Self { basis, pivot_mask, bits, nonpivot_mask: space_mask & !pivot_mask }
     }
 
     /// Dimension `r` of the span.
@@ -175,8 +167,7 @@ impl CosetOrder {
         if self.dimension == 0 {
             return;
         }
-        self.permutation
-            .extend((0..self.positions).map(|beta| span.permuted_index(beta)));
+        self.permutation.extend((0..self.positions).map(|beta| span.permuted_index(beta)));
         if with_inverse {
             self.inverse.resize(self.permutation.len(), 0);
             for (beta, &position) in self.permutation.iter().enumerate() {

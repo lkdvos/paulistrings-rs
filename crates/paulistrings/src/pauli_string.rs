@@ -22,10 +22,7 @@ pub struct PauliString<const W: usize> {
 impl<const W: usize> PauliString<W> {
     /// Identity Pauli string (all qubits `I`).
     pub const fn identity() -> Self {
-        Self {
-            x: [0u64; W],
-            z: [0u64; W],
-        }
+        Self { x: [0u64; W], z: [0u64; W] }
     }
 
     /// Single-qubit `X` Pauli on `qubit`.
@@ -163,10 +160,7 @@ pub(crate) fn qubit_mask<const W: usize>(
 ) -> [u64; W] {
     let mut mask = [0u64; W];
     for q in qubits {
-        assert!(
-            q < num_qubits,
-            "qubit {q} is outside the {num_qubits}-qubit register"
-        );
+        assert!(q < num_qubits, "qubit {q} is outside the {num_qubits}-qubit register");
         mask[q / 64] |= 1u64 << (q % 64);
     }
     mask

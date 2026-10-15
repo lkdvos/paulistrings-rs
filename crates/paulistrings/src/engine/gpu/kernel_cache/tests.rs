@@ -16,10 +16,8 @@ impl TempDir {
     fn new(tag: &str) -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = env::temp_dir().join(format!(
-            "paulistrings-kernel-cache-test-{tag}-{}-{n}",
-            std::process::id()
-        ));
+        let dir = env::temp_dir()
+            .join(format!("paulistrings-kernel-cache-test-{tag}-{}-{n}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         Self(dir)
     }
@@ -50,22 +48,13 @@ fn a_different_source_or_option_misses() {
     let o = opts(&["-DW=2"]);
     store(dir, "src-a", &o, "ptx-text-a");
     assert!(lookup(dir, "src-b", &o).is_none(), "different source");
-    assert!(
-        lookup(dir, "src-a", &opts(&["-DW=4"])).is_none(),
-        "different option"
-    );
+    assert!(lookup(dir, "src-a", &opts(&["-DW=4"])).is_none(), "different option");
     let mut other_arch = o.clone();
     other_arch.arch = Some("compute_86");
-    assert!(
-        lookup(dir, "src-a", &other_arch).is_none(),
-        "different arch"
-    );
+    assert!(lookup(dir, "src-a", &other_arch).is_none(), "different arch");
     let mut other_fmad = o.clone();
     other_fmad.fmad = Some(true);
-    assert!(
-        lookup(dir, "src-a", &other_fmad).is_none(),
-        "different fmad"
-    );
+    assert!(lookup(dir, "src-a", &other_fmad).is_none(), "different fmad");
 }
 
 #[test]
@@ -99,10 +88,7 @@ fn a_corrupt_entry_is_a_miss_not_an_error() {
     fs::write(dir.join(entry_name("src-a", &o)), "").unwrap();
     assert!(lookup(dir, "src-a", &o).is_none(), "empty file is a miss");
     store(dir, "src-a", &o, "ptx-text-recompiled");
-    assert_eq!(
-        lookup(dir, "src-a", &o).unwrap().to_src(),
-        "ptx-text-recompiled"
-    );
+    assert_eq!(lookup(dir, "src-a", &o).unwrap().to_src(), "ptx-text-recompiled");
 }
 
 #[test]

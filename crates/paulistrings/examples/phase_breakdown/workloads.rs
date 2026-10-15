@@ -83,10 +83,7 @@ impl LayerKind {
 
     /// Whether the layer's generator qubits are chosen per cell ([`choose_generator`]) rather than fixed at `(0, 1)`.
     pub(crate) fn picks_generator(self) -> bool {
-        matches!(
-            self,
-            LayerKind::RotationLocal | LayerKind::RotationRemote | LayerKind::Su4Local
-        )
+        matches!(self, LayerKind::RotationLocal | LayerKind::RotationRemote | LayerKind::Su4Local)
     }
 }
 
@@ -126,9 +123,7 @@ pub(crate) const THETA_H: f64 = 5.0 * std::f64::consts::PI / 16.0;
 
 /// The bonds of a 1D **open** chain: `n - 1` edges `(i, i+1)`.
 pub(crate) fn chain_edges(num_qubits: usize) -> Vec<(usize, usize)> {
-    (0..num_qubits.saturating_sub(1))
-        .map(|i| (i, i + 1))
-        .collect()
+    (0..num_qubits.saturating_sub(1)).map(|i| (i, i + 1)).collect()
 }
 
 /// Greedy first-fit edge coloring in sorted edge order; a color is a set of disjoint-support
@@ -185,10 +180,8 @@ pub(crate) fn heavy_hex_step_circuit<const W: usize>(
         num_qubits >= HEAVY_HEX_QUBITS,
         "heavy_hex_step_circuit: the lattice needs {HEAVY_HEX_QUBITS} qubits, got {num_qubits}",
     );
-    let zz_order: Vec<(usize, usize)> = edge_coloring(&heavy_hex_127_edges())
-        .into_iter()
-        .flatten()
-        .collect();
+    let zz_order: Vec<(usize, usize)> =
+        edge_coloring(&heavy_hex_127_edges()).into_iter().flatten().collect();
     let mut c = Circuit::<W>::new(num_qubits);
     for _ in 0..steps {
         for q in 0..HEAVY_HEX_QUBITS {

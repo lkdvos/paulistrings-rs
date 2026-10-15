@@ -25,10 +25,7 @@ fn bucketed_expectation_agrees_with_the_flat_version() {
             let h = Gf2Hash::<2>::new(100, bits, 0xE2);
             let b = sum.clone().with_hash(h);
             let got = b.expectation_product(&ProductBasis::uniform(PauliAxis::X));
-            assert!(
-                (got - want).norm() < 1e-9,
-                "weight={weight} bits={bits}: {got} vs {want}",
-            );
+            assert!((got - want).norm() < 1e-9, "weight={weight} bits={bits}: {got} vs {want}",);
         }
     }
 }
@@ -49,12 +46,7 @@ fn bucketed_expectation_covers_all_three_states() {
 fn bucketed_expectation_of_an_empty_sum_is_zero() {
     let h = Gf2Hash::<1>::new(8, 3, 0xE5);
     let b = PauliSum::<1>::empty_with_hash(8, h);
-    assert!(
-        b.expectation_product(&ProductBasis::uniform(PauliAxis::X))
-            .norm()
-            .abs()
-            < 1e-15
-    );
+    assert!(b.expectation_product(&ProductBasis::uniform(PauliAxis::X)).norm().abs() < 1e-15);
 }
 
 #[test]
@@ -68,27 +60,15 @@ fn expectation_of_single_paulis_in_each_product_state() {
     for (pp, ex, ey, ez) in cases {
         let s = build::<1>(8, &[(pp, Complex64::new(1.0, 0.0))]);
         assert!(
-            (s.expectation_product(&ProductBasis::uniform(PauliAxis::X))
-                .re
-                - ex)
-                .abs()
-                < 1e-12,
+            (s.expectation_product(&ProductBasis::uniform(PauliAxis::X)).re - ex).abs() < 1e-12,
             "XPlus for {pp:?}",
         );
         assert!(
-            (s.expectation_product(&ProductBasis::uniform(PauliAxis::Y))
-                .re
-                - ey)
-                .abs()
-                < 1e-12,
+            (s.expectation_product(&ProductBasis::uniform(PauliAxis::Y)).re - ey).abs() < 1e-12,
             "YPlus for {pp:?}",
         );
         assert!(
-            (s.expectation_product(&ProductBasis::uniform(PauliAxis::Z))
-                .re
-                - ez)
-                .abs()
-                < 1e-12,
+            (s.expectation_product(&ProductBasis::uniform(PauliAxis::Z)).re - ez).abs() < 1e-12,
             "ZPlus for {pp:?}",
         );
     }
@@ -111,26 +91,9 @@ fn expectation_of_multi_qubit_products() {
             (yy, Complex64::new(100.0, 0.0)),
         ],
     );
-    assert!(
-        (s.expectation_product(&ProductBasis::uniform(PauliAxis::X))
-            .re
-            - 1.0)
-            .abs()
-            < 1e-12
-    );
-    assert!(
-        (s.expectation_product(&ProductBasis::uniform(PauliAxis::Y))
-            .re
-            - 100.0)
-            .abs()
-            < 1e-12
-    );
-    assert!(
-        s.expectation_product(&ProductBasis::uniform(PauliAxis::Z))
-            .re
-            .abs()
-            < 1e-12
-    );
+    assert!((s.expectation_product(&ProductBasis::uniform(PauliAxis::X)).re - 1.0).abs() < 1e-12);
+    assert!((s.expectation_product(&ProductBasis::uniform(PauliAxis::Y)).re - 100.0).abs() < 1e-12);
+    assert!(s.expectation_product(&ProductBasis::uniform(PauliAxis::Z)).re.abs() < 1e-12);
 }
 
 #[test]
@@ -155,20 +118,8 @@ fn expectation_across_a_word_boundary_w2() {
             (PauliString::<2>::z(70), Complex64::new(9.0, 0.0)),
         ],
     );
-    assert!(
-        (s.expectation_product(&ProductBasis::uniform(PauliAxis::X))
-            .re
-            - 2.0)
-            .abs()
-            < 1e-12
-    );
-    assert!(
-        (s.expectation_product(&ProductBasis::uniform(PauliAxis::Z))
-            .re
-            - 9.0)
-            .abs()
-            < 1e-12
-    );
+    assert!((s.expectation_product(&ProductBasis::uniform(PauliAxis::X)).re - 2.0).abs() < 1e-12);
+    assert!((s.expectation_product(&ProductBasis::uniform(PauliAxis::Z)).re - 9.0).abs() < 1e-12);
 }
 
 /// The `|+…+⟩` expectation against a hand-rolled sum over Z-free terms.
@@ -184,10 +135,7 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
     let mut accumulator =
         crate::pauli_sum::accumulator::BuildAccumulator::<1>::with_capacity(16, 500);
     for _ in 0..500 {
-        let pp = PauliString::<1> {
-            x: [next() & 0xFFFF],
-            z: [next() & 0xFFFF],
-        };
+        let pp = PauliString::<1> { x: [next() & 0xFFFF], z: [next() & 0xFFFF] };
         let c = Complex64::new((next() as i64 as f64) / (i64::MAX as f64), 0.0);
         accumulator.add_term(pp, c);
     }
@@ -199,9 +147,7 @@ fn expectation_xplus_matches_the_hand_rolled_reference() {
             want += sum.bucket(0).2[i].re;
         }
     }
-    let got = sum
-        .expectation_product(&ProductBasis::uniform(PauliAxis::X))
-        .re;
+    let got = sum.expectation_product(&ProductBasis::uniform(PauliAxis::X)).re;
     assert!((got - want).abs() < 1e-12, "{got} vs {want}");
 }
 
@@ -353,10 +299,7 @@ fn an_off_axis_pauli_never_matches<const W: usize>() {
     for (label, pauli) in off_axis {
         let s = PauliSum::<W>::from_strings(&[(pauli, Complex64::new(3.0, -4.0))]);
         let got = s.expectation_product(&basis_from_labels::<W>(&label.to_string()));
-        assert!(
-            got.norm() < 1e-12,
-            "⟨{label}|{pauli}|{label}⟩ = {got}, want 0 (W={W})",
-        );
+        assert!(got.norm() < 1e-12, "⟨{label}|{pauli}|{label}⟩ = {got}, want 0 (W={W})",);
     }
     // Mixed: one off-axis factor kills a term whose other factors match.
     let s = PauliSum::<W>::from_strings(&[("XXX", Complex64::new(1.0, 0.0))]);
@@ -399,10 +342,7 @@ fn labels_across_the_word_boundary_are_independent_w2() {
     for (p, want) in cases {
         let s = build::<2>(128, &[(p, Complex64::new(1.0, 0.0))]);
         let got = s.expectation_product(&basis);
-        assert!(
-            (got - Complex64::new(want, 0.0)).norm() < 1e-12,
-            "{p:?}: got {got}, want {want}",
-        );
+        assert!((got - Complex64::new(want, 0.0)).norm() < 1e-12, "{p:?}: got {got}, want {want}",);
     }
     // Z on both sides of the boundary: (+1)·(-1) = -1.
     let mut z0z64 = PauliString::<2>::z(0);
@@ -423,18 +363,11 @@ fn labelled_expectation_of_an_empty_sum_is_zero() {
 fn uniform_states_agree_with_their_label_spellings<const W: usize>() {
     let num_qubits = 50 * W;
     let sum = rand_sum::<W>(4000, num_qubits, 0xA40 + W as u64);
-    for (state, label) in [
-        (PauliAxis::X, '+'),
-        (PauliAxis::Y, 'r'),
-        (PauliAxis::Z, '0'),
-    ] {
+    for (state, label) in [(PauliAxis::X, '+'), (PauliAxis::Y, 'r'), (PauliAxis::Z, '0')] {
         let want = sum.expectation_product(&ProductBasis::uniform(state));
         let labels: String = std::iter::repeat_n(label, num_qubits).collect();
         let got = sum.expectation_product(&basis_from_labels::<W>(&labels));
-        assert!(
-            (got - want).norm() < 1e-12,
-            "{state:?} vs {label:?}: {got} vs {want} (W={W})",
-        );
+        assert!((got - want).norm() < 1e-12, "{state:?} vs {label:?}: {got} vs {want} (W={W})",);
     }
 }
 
@@ -453,17 +386,12 @@ fn labelled_expectation_agrees_with_the_naive_reference<const W: usize>() {
     let num_qubits = 33 * W;
     let alphabet: Vec<char> = "01+-rl".chars().collect();
     let mut rng = Xs64::new(0xB40 + W as u64);
-    let labels: String = (0..num_qubits)
-        .map(|_| alphabet[(rng.next_u64() % 6) as usize])
-        .collect();
+    let labels: String = (0..num_qubits).map(|_| alphabet[(rng.next_u64() % 6) as usize]).collect();
     for &weight in &[1usize, 2, 3] {
         let sum = low_weight_sum::<W>(3000, num_qubits, weight, 0xB50 + weight as u64);
         let want = naive_labelled_expectation(&sum, &labels);
         let got = sum.expectation_product(&basis_from_labels::<W>(&labels));
-        assert!(
-            (got - want).norm() < 1e-9,
-            "W={W} weight={weight}: {got} vs {want}",
-        );
+        assert!((got - want).norm() < 1e-9, "W={W} weight={weight}: {got} vs {want}",);
     }
 }
 
@@ -482,9 +410,7 @@ fn bucketed_labelled_expectation_agrees_across_partitions() {
     // A partition change must not move the value beyond float re-association.
     let alphabet: Vec<char> = "01+-rl".chars().collect();
     let mut rng = Xs64::new(0xB60);
-    let labels: String = (0..100)
-        .map(|_| alphabet[(rng.next_u64() % 6) as usize])
-        .collect();
+    let labels: String = (0..100).map(|_| alphabet[(rng.next_u64() % 6) as usize]).collect();
     let basis = basis_from_labels::<2>(&labels);
     let sum = low_weight_sum::<2>(20_000, 100, 3, 0xB61);
     let want = sum.expectation_product(&basis);

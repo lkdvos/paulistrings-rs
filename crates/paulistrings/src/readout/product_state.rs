@@ -45,11 +45,7 @@ impl<const W: usize> ProductBasis<W> {
     pub fn uniform(axis: PauliAxis) -> Self {
         let (axis_x, axis_z) = axis.bits();
         let all = |b: bool| if b { [!0u64; W] } else { [0u64; W] };
-        Self {
-            axis_x: all(axis_x),
-            axis_z: all(axis_z),
-            negative: [0u64; W],
-        }
+        Self { axis_x: all(axis_x), axis_z: all(axis_z), negative: [0u64; W] }
     }
 
     /// A basis from per-qubit `(axis, minus)` pairs: item `i` describes qubit `i`, and `minus = true` selects that axis's `-1` eigenstate.
@@ -63,16 +59,9 @@ impl<const W: usize> ProductBasis<W> {
     where
         I: IntoIterator<Item = (PauliAxis, bool)>,
     {
-        let mut out = Self {
-            axis_x: [0u64; W],
-            axis_z: [0u64; W],
-            negative: [0u64; W],
-        };
+        let mut out = Self { axis_x: [0u64; W], axis_z: [0u64; W], negative: [0u64; W] };
         for (q, (axis, minus)) in axes.into_iter().enumerate() {
-            assert!(
-                q < 64 * W,
-                "ProductBasis::from_axes: qubit {q} exceeds the {W}-word width",
-            );
+            assert!(q < 64 * W, "ProductBasis::from_axes: qubit {q} exceeds the {W}-word width",);
             let word = q / 64;
             let bit = 1u64 << (q % 64);
             let (axis_x, axis_z) = axis.bits();

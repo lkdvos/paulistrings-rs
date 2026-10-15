@@ -98,13 +98,7 @@ fn trotter_matches_propagate_w1() {
     let circuit = trotter_circuit::<1>(32, THETA);
     let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A0), 40, 0x71A0);
     check(&circuit, &sum, &ApproxTopN(6_000), "trotter approx", &PS);
-    check(
-        &circuit,
-        &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(6_000)),
-        "trotter and",
-        &PS,
-    );
+    check(&circuit, &sum, &And(CoefficientThreshold(1e-9), ApproxTopN(6_000)), "trotter and", &PS);
 }
 
 /// The same recipe at `W = 2`: two-word keys, one word live.
@@ -121,10 +115,7 @@ fn builtin_truncation_tree_matches_propagate() {
     use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(32, THETA);
     let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A2), 40, 0x71A2);
-    let tree = T::And(
-        Box::new(T::Coefficient(1e-9)),
-        Box::new(T::ApproxTopN(6_000)),
-    );
+    let tree = T::And(Box::new(T::Coefficient(1e-9)), Box::new(T::ApproxTopN(6_000)));
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
@@ -152,13 +143,7 @@ fn random_circuit_matches_propagate_w1() {
     check(&circuit, &sum, &CoefficientThreshold(1e-9), "w1 eps", &PS);
     check(&circuit, &sum, &WeightCutoff(4), "w1 weight", &PS);
     check(&circuit, &sum, &ApproxTopN(1_000), "w1 approx", &PS);
-    check(
-        &circuit,
-        &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(1_000)),
-        "w1 and",
-        &PS,
-    );
+    check(&circuit, &sum, &And(CoefficientThreshold(1e-9), ApproxTopN(1_000)), "w1 and", &PS);
 }
 
 /// A 20-layer random circuit at `W = 2` over 70 qubits: keys straddle the word
@@ -169,13 +154,7 @@ fn random_circuit_matches_propagate_w2() {
     let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0x9BB2), 40, 0x9BB2);
     check(&circuit, &sum, &WeightCutoff(2), "w2 weight", &PS);
     check(&circuit, &sum, &ApproxTopN(4_000), "w2 approx", &PS);
-    check(
-        &circuit,
-        &sum,
-        &And(CoefficientThreshold(1e-9), ApproxTopN(4_000)),
-        "w2 and",
-        &PS,
-    );
+    check(&circuit, &sum, &And(CoefficientThreshold(1e-9), ApproxTopN(4_000)), "w2 and", &PS);
 }
 
 /// `PropagateOptions` reaches the partitioned layer loop: a coarse bucket
@@ -184,10 +163,7 @@ fn random_circuit_matches_propagate_w2() {
 fn options_are_honoured() {
     let circuit = random_circuit::<1>(6, 12, 0x9AA1, true);
     let sum = rand_sum::<1>(300, 6, 0x9AA2);
-    let options = PropagateOptions {
-        target_bucket_len: 32,
-        min_buckets: 16,
-    };
+    let options = PropagateOptions { target_bucket_len: 32, min_buckets: 16 };
     let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
     for &p in &PS {
         let got = propagate_partitioned(
@@ -246,11 +222,7 @@ fn edge_cases() {
             PropagateOptions::default(),
         )
         .expect("topology resolves");
-        assert_eq!(
-            got.to_arrays(),
-            sum.to_arrays(),
-            "P={p}: a zero-layer circuit is the identity",
-        );
+        assert_eq!(got.to_arrays(), sum.to_arrays(), "P={p}: a zero-layer circuit is the identity",);
     }
 }
 
@@ -262,9 +234,7 @@ fn auto_placement_agrees() {
     let circuit = random_circuit::<1>(6, 15, 0x9AA1, true);
     let sum = spread_magnitudes(&rand_sum::<1>(300, 6, 0x9AA2), 40, 0x9AA2);
     let config = PartitionConfig {
-        placement: Placement::Auto {
-            max_partitions: Some(2),
-        },
+        placement: Placement::Auto { max_partitions: Some(2) },
         bind_memory: false,
         threads_per_partition: None,
     };
@@ -279,14 +249,7 @@ fn auto_placement_agrees() {
         PropagateOptions::default(),
     )
     .expect("topology resolves");
-    assert_runs_agree(
-        ApproxTopN(400),
-        discarded,
-        &got,
-        &want,
-        TOL,
-        "auto placement",
-    );
+    assert_runs_agree(ApproxTopN(400), discarded, &got, &want, TOL, "auto placement");
 }
 
 /// A policy with a layer pass and no collective form panics before the first layer.
@@ -370,10 +333,7 @@ fn exact_top_n_above_one_partition_panics_before_the_first_layer() {
         );
     };
     run(&TopN(10));
-    run(&T::And(
-        Box::new(T::Coefficient(1e-9)),
-        Box::new(T::TopN(10)),
-    ));
+    run(&T::And(Box::new(T::Coefficient(1e-9)), Box::new(T::TopN(10))));
     let counting = CountingTopN(AtomicUsize::new(0));
     run(&counting);
     assert_eq!(counting.0.load(Ordering::Relaxed), 0, "no layer may run");
@@ -415,9 +375,7 @@ fn partner_panic_does_not_hang() {
     std::thread::spawn(move || {
         let circuit = random_circuit::<1>(6, 8, 0x9AA1, false);
         let sum = rand_sum::<1>(300, 6, 0x9AA2);
-        let policy = PanicOnLayer {
-            seen: (0..2).map(|_| AtomicUsize::new(0)).collect(),
-        };
+        let policy = PanicOnLayer { seen: (0..2).map(|_| AtomicUsize::new(0)).collect() };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             propagate_partitioned(
                 &circuit,

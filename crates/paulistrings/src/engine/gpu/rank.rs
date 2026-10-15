@@ -41,10 +41,7 @@ fn agree_with<T>(
     result: Result<T, GpuError>,
     discard: impl FnOnce(T),
 ) -> Result<T, GpuError> {
-    match (
-        first_failure(collectives, u64::from(result.is_err())),
-        result,
-    ) {
+    match (first_failure(collectives, u64::from(result.is_err())), result) {
         (_, Err(e)) => Err(e),
         (None, Ok(value)) => Ok(value),
         (Some((rank, _)), Ok(value)) => {
@@ -143,9 +140,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
             started.elapsed().as_secs_f64(),
         );
         let scatter_ns = started.elapsed().as_nanos() as u64;
-        Ok(Self::from_backend(
-            partition, rows, runtime, transport, scatter_ns,
-        ))
+        Ok(Self::from_backend(partition, rows, runtime, transport, scatter_ns))
     }
 
     /// Propagate through `circuit` under `policy` with the default [`PropagateOptions`]. **Collective.**
@@ -241,12 +236,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     pub fn take_stats(&mut self) -> PartitionPhaseStats {
         let per = std::mem::take(self.backend_mut().stats());
         let (scatter_ns, gather_ns, layers) = self.take_driver_laps();
-        PartitionPhaseStats {
-            per_partition: vec![per],
-            scatter_ns,
-            gather_ns,
-            layers,
-        }
+        PartitionPhaseStats { per_partition: vec![per], scatter_ns, gather_ns, layers }
     }
 }
 
@@ -290,11 +280,8 @@ fn start_nccl<const W: usize>(
     use super::nccl::{self, NcclComm};
     use super::wire::DeviceWire;
     let context = partition.sum().context.clone();
-    let device = if super::device::nccl_available() {
-        nccl::device_uuid(&context).ok()
-    } else {
-        None
-    };
+    let device =
+        if super::device::nccl_available() { nccl::device_uuid(&context).ok() } else { None };
     nccl::agree_start(collectives, device.is_some(), device.unwrap_or_default())?;
     let stream = partition.sum().stream.clone();
     let comm = bootstrap(

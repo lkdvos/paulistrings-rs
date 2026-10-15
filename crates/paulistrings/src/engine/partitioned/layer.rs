@@ -22,12 +22,10 @@ use crate::truncation::TruncationPolicy;
 const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
 
 /// `PAULISTRINGS_EXCHANGE_CHUNKS`, else [`DEFAULT_EXCHANGE_CHUNKS`].
-static EXCHANGE_CHUNKS: Knob<usize> = Knob::new(
-    "PAULISTRINGS_EXCHANGE_CHUNKS",
-    PLACEMENT_LOG_TARGET,
-    parse_positive,
-    || DEFAULT_EXCHANGE_CHUNKS,
-);
+static EXCHANGE_CHUNKS: Knob<usize> =
+    Knob::new("PAULISTRINGS_EXCHANGE_CHUNKS", PLACEMENT_LOG_TARGET, parse_positive, || {
+        DEFAULT_EXCHANGE_CHUNKS
+    });
 
 /// The rows this partition received, one block per remote delta, as an [`ExtraRows`] source for the coset loop.
 struct ReceivedRows<'a, const W: usize> {
@@ -105,10 +103,9 @@ impl<const W: usize> ExtraRows<W> for ReceivedRows<'_, W> {
         let position = self.order.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
         self.wait.wait_chunk(self.map.chunk_of_position(position));
-        timed!(self.chunk_wait_ns.fetch_add(
-            start.elapsed().as_nanos() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        ));
+        timed!(self
+            .chunk_wait_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed,));
         for block in &self.blocks {
             let Some(block) = block else { continue };
             let (segment_x, segment_z, segment_coeff) = block.segment(position);
@@ -116,10 +113,9 @@ impl<const W: usize> ExtraRows<W> for ReceivedRows<'_, W> {
             rest.z.extend_from_slice(segment_z);
             rest.coeff.extend_from_slice(segment_coeff);
         }
-        timed!(self.append_ns.fetch_add(
-            start.elapsed().as_nanos() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        ));
+        timed!(self
+            .append_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed,));
     }
 }
 
@@ -188,10 +184,7 @@ where
     state.chunks = ChunkMap::of_order(&order, *EXCHANGE_CHUNKS.get());
     let (send, mut counts) = export_layer(local, prepared, plan, size, &order, &mut state.export);
     lap!(stamp, state.layer.stats.export_ns);
-    tally!(
-        state.layer.stats.rows_exported,
-        counts.rows_sent.iter().sum::<u64>()
-    );
+    tally!(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
     #[cfg(debug_assertions)]
     {
         super::export::debug_assert_exported_partitions(&send, rows);
@@ -227,11 +220,7 @@ where
         order: Some(&order),
     };
 
-    let PartitionState {
-        layer: layer_scratch,
-        export: export_scratch,
-        chunks: map,
-    } = state;
+    let PartitionState { layer: layer_scratch, export: export_scratch, chunks: map } = state;
     timed!(let body_ns = std::cell::Cell::new(0u64));
     timed!(let exchange_start = std::time::Instant::now());
 
@@ -240,11 +229,7 @@ where
         transport.exchange_layer(send, &mut export_scratch.pool, map, |received, wait| {
             timed!(let body_start = std::time::Instant::now());
             #[cfg(debug_assertions)]
-            for block in received
-                .iter()
-                .flatten()
-                .flat_map(|payload| &payload.blocks)
-            {
+            for block in received.iter().flatten().flat_map(|payload| &payload.blocks) {
                 debug_assert_eq!(
                     block.num_buckets() as usize,
                     local.num_buckets(),

@@ -35,8 +35,5 @@ fn uniform_is_in_the_unit_interval_with_mean_one_half() {
     let draws: Vec<f64> = (0..n).map(|_| rng.uniform()).collect();
     assert!(draws.iter().all(|u| (0.0..1.0).contains(u)));
     let mean = draws.iter().sum::<f64>() / n as f64;
-    assert!(
-        (mean - 0.5).abs() < 5.0 * (1.0 / 12.0 / n as f64).sqrt(),
-        "mean {mean}"
-    );
+    assert!((mean - 0.5).abs() < 5.0 * (1.0 / 12.0 / n as f64).sqrt(), "mean {mean}");
 }

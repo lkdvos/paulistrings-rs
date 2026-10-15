@@ -18,9 +18,7 @@ pub(crate) const COLLAPSE_SAMPLE_DEVICE_MSG: &str =
 
 /// Collapses since `before`, both read from `policy` with [`collapse_count`].
 pub(crate) fn collapses_since(policy: &BuiltinTruncation, before: Option<u64>) -> Option<u64> {
-    collapse_count(policy)
-        .zip(before)
-        .map(|(after, before)| after - before)
+    collapse_count(policy).zip(before).map(|(after, before)| after - before)
 }
 
 /// Collapses performed so far by the distinct samplers in `tree`, or `None` if it has none.
@@ -110,10 +108,7 @@ mod tests {
     fn x_sum(n: usize) -> paulistrings::PauliSum<1> {
         let mut acc = BuildAccumulator::<1>::new(n);
         for q in 0..n {
-            acc.add_term(
-                PauliString::<1>::x(q),
-                num_complex::Complex64::new(1.0, 0.0),
-            );
+            acc.add_term(PauliString::<1>::x(q), num_complex::Complex64::new(1.0, 0.0));
         }
         acc.finalize()
     }

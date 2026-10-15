@@ -32,10 +32,7 @@ use std::time::Duration;
 /// `MAX_LOCAL_SUPPORT`: the delta set is still `{0, gen}`, but the `i^k` phase is computed
 /// per term rather than looked up.
 fn wide_rotation<const W: usize>(qubits: [usize; 4], theta: f64) -> PauliRotation<W> {
-    let mut gen = PauliString::<W> {
-        x: [0u64; W],
-        z: [0u64; W],
-    };
+    let mut gen = PauliString::<W> { x: [0u64; W], z: [0u64; W] };
     // Mixed X/Z letters so the generator is not a product of commuting Zs.
     for (i, &q) in qubits.iter().enumerate() {
         let word = q / 64;

@@ -80,14 +80,9 @@ impl Circuit {
 impl Circuit {
     #[new]
     fn new(num_qubits: usize) -> PyResult<Self> {
-        CircuitImpl::new_for(num_qubits)
-            .map(|inner| Self {
-                inner,
-                specs: Vec::new(),
-            })
-            .ok_or_else(|| {
-                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-            })
+        CircuitImpl::new_for(num_qubits).map(|inner| Self { inner, specs: Vec::new() }).ok_or_else(
+            || PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)"),
+        )
     }
 
     #[getter]
@@ -130,10 +125,7 @@ impl Circuit {
         let raw: isize = key.extract().map_err(|_| {
             PyTypeError::new_err(format!(
                 "Circuit indices must be integers or slices, not {}",
-                key.get_type()
-                    .name()
-                    .map(|n| n.to_string())
-                    .unwrap_or_default(),
+                key.get_type().name().map(|n| n.to_string()).unwrap_or_default(),
             ))
         })?;
         let len = self.specs.len() as isize;

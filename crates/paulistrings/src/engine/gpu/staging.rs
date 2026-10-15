@@ -19,11 +19,7 @@ unsafe impl<T: Copy + Sync> Sync for PinnedBuffer<T> {}
 
 impl<T: Copy> PinnedBuffer<T> {
     pub(crate) fn new(context: Arc<CudaContext>) -> Self {
-        Self {
-            context,
-            ptr: std::ptr::null_mut(),
-            capacity: 0,
-        }
+        Self { context, ptr: std::ptr::null_mut(), capacity: 0 }
     }
 
     /// Grow to at least `n` elements, discarding the contents; a no-op when already large enough.
@@ -47,11 +43,7 @@ impl<T: Copy> PinnedBuffer<T> {
     }
 
     pub(crate) fn slice(&self, n: usize) -> &[T] {
-        assert!(
-            n <= self.capacity,
-            "PinnedBuffer: {n} beyond capacity {}",
-            self.capacity
-        );
+        assert!(n <= self.capacity, "PinnedBuffer: {n} beyond capacity {}", self.capacity);
         if n == 0 {
             return &[];
         }
@@ -60,11 +52,7 @@ impl<T: Copy> PinnedBuffer<T> {
     }
 
     pub(crate) fn slice_mut(&mut self, n: usize) -> &mut [T] {
-        assert!(
-            n <= self.capacity,
-            "PinnedBuffer: {n} beyond capacity {}",
-            self.capacity
-        );
+        assert!(n <= self.capacity, "PinnedBuffer: {n} beyond capacity {}", self.capacity);
         if n == 0 {
             return &mut [];
         }

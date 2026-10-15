@@ -21,19 +21,12 @@ impl<T: Debug + Send + Sync> Knob<T> {
         parse: fn(&str) -> Option<T>,
         default: fn() -> T,
     ) -> Self {
-        Self {
-            name,
-            log_target,
-            parse,
-            default,
-            value: OnceLock::new(),
-        }
+        Self { name, log_target, parse, default, value: OnceLock::new() }
     }
 
     /// The effective value, read from the environment on the first call only.
     pub(crate) fn get(&self) -> &T {
-        self.value
-            .get_or_init(|| self.resolve(std::env::var(self.name).ok().as_deref()))
+        self.value.get_or_init(|| self.resolve(std::env::var(self.name).ok().as_deref()))
     }
 
     /// The value `raw` stands for, without touching the environment or the cache; tests call it directly.

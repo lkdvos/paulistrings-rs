@@ -60,11 +60,7 @@ impl<const W: usize> Gf2Matrix<W> {
             rows_x.push(row_x);
             rows_z.push(row_z);
         }
-        Self {
-            rows_x,
-            rows_z,
-            num_qubits,
-        }
+        Self { rows_x, rows_z, num_qubits }
     }
 
     /// Explicit rows, masked to the live columns.
@@ -81,11 +77,7 @@ impl<const W: usize> Gf2Matrix<W> {
                 row_z[w] &= mask;
             }
         }
-        Self {
-            rows_x,
-            rows_z,
-            num_qubits,
-        }
+        Self { rows_x, rows_z, num_qubits }
     }
 
     pub(crate) fn num_rows(&self) -> usize {
@@ -126,10 +118,8 @@ impl<const W: usize> Gf2Matrix<W> {
 
     /// Whether this matrix's first `rows` rows and `other`'s first `other_rows` are jointly GF(2)-independent.
     pub(crate) fn independent_with(&self, rows: usize, other: &Self, other_rows: usize) -> bool {
-        let stacked: Vec<KeyRow<W>> = (0..rows)
-            .map(|i| self.row(i))
-            .chain((0..other_rows).map(|i| other.row(i)))
-            .collect();
+        let stacked: Vec<KeyRow<W>> =
+            (0..rows).map(|i| self.row(i)).chain((0..other_rows).map(|i| other.row(i))).collect();
         gf2_rank_wide(&stacked) == rows + other_rows
     }
 }
@@ -157,10 +147,7 @@ impl<const W: usize> Gf2Hash<W> {
     ///
     /// Panics if `bits > B_MAX_BITS`, or in debug builds if `num_qubits > 64 · W`.
     pub fn new(num_qubits: usize, bits: u8, seed: u64) -> Self {
-        assert!(
-            bits <= B_MAX_BITS,
-            "Gf2Hash: bits {bits} exceeds B_MAX_BITS {B_MAX_BITS}",
-        );
+        assert!(bits <= B_MAX_BITS, "Gf2Hash: bits {bits} exceeds B_MAX_BITS {B_MAX_BITS}",);
         debug_assert!(num_qubits <= 64 * W);
 
         Self {
@@ -206,10 +193,7 @@ impl<const W: usize> Gf2Hash<W> {
     ///
     /// Panics if already at `B_MAX_BITS`.
     pub fn refine(&mut self) {
-        assert!(
-            self.bits < B_MAX_BITS,
-            "Gf2Hash::refine: already at B_MAX_BITS {B_MAX_BITS}",
-        );
+        assert!(self.bits < B_MAX_BITS, "Gf2Hash::refine: already at B_MAX_BITS {B_MAX_BITS}",);
         self.bits += 1;
     }
 
@@ -219,10 +203,7 @@ impl<const W: usize> Gf2Hash<W> {
     ///
     /// Panics if already at a single bucket.
     pub fn coarsen(&mut self) {
-        assert!(
-            self.bits > 0,
-            "Gf2Hash::coarsen: already at a single bucket"
-        );
+        assert!(self.bits > 0, "Gf2Hash::coarsen: already at a single bucket");
         self.bits -= 1;
     }
 
@@ -291,10 +272,7 @@ impl<const W: usize> PartitionRows<W> {
         exclude_x: &[u64; W],
         exclude_z: &[u64; W],
     ) -> Self {
-        assert!(
-            bits <= P_MAX_BITS,
-            "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",
-        );
+        assert!(bits <= P_MAX_BITS, "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",);
         debug_assert!(num_qubits <= 64 * W);
 
         let keeps_a_column = (0..W).any(|w| {
@@ -366,10 +344,7 @@ impl<const W: usize> PartitionRows<W> {
             blocks.len(),
         );
         let bits = blocks.len().trailing_zeros() as u8;
-        assert!(
-            bits <= P_MAX_BITS,
-            "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",
-        );
+        assert!(bits <= P_MAX_BITS, "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",);
         debug_assert!(num_qubits <= 64 * W);
 
         let mut seen = vec![false; num_qubits];
@@ -405,9 +380,7 @@ impl<const W: usize> PartitionRows<W> {
 
     /// The trivial partitioning: one partition, no rows.
     pub fn none(num_qubits: usize) -> Self {
-        Self {
-            matrix: Gf2Matrix::from_rows(num_qubits, Vec::new(), Vec::new()),
-        }
+        Self { matrix: Gf2Matrix::from_rows(num_qubits, Vec::new(), Vec::new()) }
     }
 
     /// Number of partition bits.
@@ -445,8 +418,7 @@ impl<const W: usize> PartitionRows<W> {
 
     /// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent.
     pub fn is_independent_of(&self, hash: &Gf2Hash<W>) -> bool {
-        self.matrix
-            .independent_with(self.matrix.num_rows(), &hash.matrix, hash.bits() as usize)
+        self.matrix.independent_with(self.matrix.num_rows(), &hash.matrix, hash.bits() as usize)
     }
 }
 

@@ -102,15 +102,11 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
 
         // A NaN sorts below every number, so it becomes the boundary only when fewer than `n` terms are finite.
         magnitudes.select_nth_unstable_by(n - 1, |a, b| {
-            b.partial_cmp(a)
-                .unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))
+            b.partial_cmp(a).unwrap_or_else(|| a.is_nan().cmp(&b.is_nan()))
         });
         let boundary = magnitudes[n - 1];
         // Everything above the pivot sits before it after the selection.
-        let above = magnitudes[..n - 1]
-            .par_iter()
-            .filter(|&&m| m > boundary)
-            .count();
+        let above = magnitudes[..n - 1].par_iter().filter(|&&m| m > boundary).count();
 
         MAGNITUDES.set(buffer);
 
@@ -121,8 +117,7 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
                     core::cmp::Ordering::Less
                 } else {
                     // Unordered only against a NaN boundary, which every finite term is above.
-                    m.partial_cmp(&boundary)
-                        .unwrap_or(core::cmp::Ordering::Greater)
+                    m.partial_cmp(&boundary).unwrap_or(core::cmp::Ordering::Greater)
                 }
             },
             n - above,
@@ -165,11 +160,7 @@ pub(crate) fn retain_with_boundary_quota<const W: usize>(
     let boundary_counts: Vec<usize> = (0..sum.num_buckets())
         .into_par_iter()
         .map(|b| {
-            sum.bucket(b)
-                .2
-                .iter()
-                .filter(|c| classify(c.norm_sqr()) == Ordering::Equal)
-                .count()
+            sum.bucket(b).2.iter().filter(|c| classify(c.norm_sqr()) == Ordering::Equal).count()
         })
         .collect();
     let quotas = bucket_quotas(&boundary_counts, quota);
@@ -278,11 +269,7 @@ where
     for bin in (0..APPROX_BINS).rev() {
         let population = hist[bin].into() as usize;
         if kept_above + population > n {
-            return EdgeDecision::Boundary {
-                bin,
-                kept_above,
-                quota: n - kept_above,
-            };
+            return EdgeDecision::Boundary { bin, kept_above, quota: n - kept_above };
         }
         kept_above += population;
     }
@@ -392,12 +379,7 @@ pub struct CollapseSample {
 impl CollapseSample {
     /// A fresh trajectory: collapse above `cache` terms, draws keyed by `seed`.
     pub fn new(cache: usize, seed: u64) -> Self {
-        Self {
-            cache,
-            seed,
-            calls: AtomicU64::new(0),
-            collapses: AtomicU64::new(0),
-        }
+        Self { cache, seed, calls: AtomicU64::new(0), collapses: AtomicU64::new(0) }
     }
 
     /// Collapses performed so far (rank 0's count in partitioned mode).

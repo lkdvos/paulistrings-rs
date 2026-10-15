@@ -39,7 +39,9 @@ enum RowEmitter<'p, const W: usize> {
         entry: &'p DeltaEntry<W>,
     },
     /// The identity pass of a rotation is never remote.
-    Generator { rotation: &'p PreparedRotation<W> },
+    Generator {
+        rotation: &'p PreparedRotation<W>,
+    },
 }
 
 impl<const W: usize> RowEmitter<'_, W> {
@@ -79,10 +81,9 @@ pub(crate) fn export_layer<const W: usize>(
         .remote
         .iter()
         .map(|remote| match prepared {
-            Prepared::Local(ptm) => RowEmitter::Tabulated {
-                ptm,
-                entry: &ptm.deltas()[remote.entry],
-            },
+            Prepared::Local(ptm) => {
+                RowEmitter::Tabulated { ptm, entry: &ptm.deltas()[remote.entry] }
+            }
             Prepared::Rotation(rotation) => {
                 debug_assert_eq!(
                     remote.entry, 1,
@@ -133,35 +134,16 @@ pub(crate) fn export_layer<const W: usize>(
         let block_index = plan.sent_block_index(i);
         blocks_used[partner] = block_index + 1;
         if payload.blocks.len() <= block_index {
-            payload
-                .blocks
-                .resize_with(block_index + 1, ExchangeBlock::<W>::default);
+            payload.blocks.resize_with(block_index + 1, ExchangeBlock::<W>::default);
         }
         let block = &mut payload.blocks[block_index];
         block.set_counts(remote.entry as u32, &scratch.block_counts);
         let rows = block.rows();
         {
-            let ExchangeBlock {
-                ref offsets,
-                ref mut x,
-                ref mut z,
-                ref mut coeff,
-                ..
-            } = *block;
-            let columns = ColumnsMut {
-                x: &mut x[..rows],
-                z: &mut z[..rows],
-                coeff: &mut coeff[..rows],
-            };
-            fill_range(
-                local,
-                &emitters[i],
-                offsets,
-                &scratch.source_of,
-                0,
-                num_buckets,
-                columns,
-            );
+            let ExchangeBlock { ref offsets, ref mut x, ref mut z, ref mut coeff, .. } = *block;
+            let columns =
+                ColumnsMut { x: &mut x[..rows], z: &mut z[..rows], coeff: &mut coeff[..rows] };
+            fill_range(local, &emitters[i], offsets, &scratch.source_of, 0, num_buckets, columns);
         }
         counts.rows_sent[partner] += rows as u64;
         counts.bytes_sent[partner] += block.bytes() as u64;
@@ -214,10 +196,7 @@ fn count_bucket<const W: usize>(
             debug_assert_eq!(out.len(), 1, "a rotation has at most one remote delta");
             let mut anticommuting = 0u32;
             for term in 0..len {
-                let string = PauliString::<W> {
-                    x: bucket_x[term],
-                    z: bucket_z[term],
-                };
+                let string = PauliString::<W> { x: bucket_x[term], z: bucket_z[term] };
                 if !string.commutes_with(&rotation.generator) {
                     anticommuting += 1;
                 }

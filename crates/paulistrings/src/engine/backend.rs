@@ -76,13 +76,7 @@ impl<const W: usize> HostPartition<W> {
     }
 
     pub(crate) fn with_layer_scratch(sum: PauliSum<W>, layer: LayerScratch<W>) -> Self {
-        Self {
-            sum,
-            state: PartitionState {
-                layer,
-                ..PartitionState::default()
-            },
-        }
+        Self { sum, state: PartitionState { layer, ..PartitionState::default() } }
     }
 
     pub(crate) fn into_parts(self) -> (PauliSum<W>, LayerScratch<W>) {

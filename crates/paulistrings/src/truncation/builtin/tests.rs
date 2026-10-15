@@ -30,11 +30,7 @@ fn coefficient_threshold_drops_squares_that_underflow_to_zero() {
 #[test]
 fn coefficient_threshold_negative_epsilon_keeps_everything() {
     let policy = CoefficientThreshold(-1.0);
-    for c in [
-        Complex64::new(0.0, 0.0),
-        Complex64::new(1e-300, 0.0),
-        Complex64::new(3.0, -4.0),
-    ] {
+    for c in [Complex64::new(0.0, 0.0), Complex64::new(1e-300, 0.0), Complex64::new(3.0, -4.0)] {
         assert!(
             <CoefficientThreshold as TruncationPolicy<1>>::keep_term(&policy, &[1], &[0], c),
             "negative epsilon must keep {c}"
@@ -45,14 +41,10 @@ fn coefficient_threshold_negative_epsilon_keeps_everything() {
 /// `finalizes_layer` must agree with which builtins override `finalize_layer`: only `TopN`, plus `And` inheriting from either side; `Or` never does.
 #[test]
 fn layer_finalize_hint_matches_the_builtins() {
-    assert!(
-        !<CoefficientThreshold as TruncationPolicy<1>>::finalizes_layer(&CoefficientThreshold(
-            1e-9
-        ))
-    );
-    assert!(!<WeightCutoff as TruncationPolicy<2>>::finalizes_layer(
-        &WeightCutoff(3)
+    assert!(!<CoefficientThreshold as TruncationPolicy<1>>::finalizes_layer(
+        &CoefficientThreshold(1e-9)
     ));
+    assert!(!<WeightCutoff as TruncationPolicy<2>>::finalizes_layer(&WeightCutoff(3)));
     assert!(<TopN as TruncationPolicy<1>>::finalizes_layer(&TopN(4)));
 
     let cheap = And(CoefficientThreshold(1e-9), WeightCutoff(2));
@@ -186,20 +178,13 @@ fn top_n_treats_underflowing_squares_as_one_tie_group() {
     let mut sum = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
         vec![[0u64]; 6],
-        (1..=6)
-            .map(|i| Complex64::new(i as f64 * 1e-200, 0.0))
-            .collect(),
+        (1..=6).map(|i| Complex64::new(i as f64 * 1e-200, 0.0)).collect(),
         3,
     );
     TopN(3).finalize_layer(&mut sum);
     let (x, _, c) = sum.to_arrays();
     assert_eq!(x, vec![[0u64], [1u64], [2u64]]);
-    assert_eq!(
-        c,
-        (1..=3)
-            .map(|i| Complex64::new(i as f64 * 1e-200, 0.0))
-            .collect::<Vec<_>>()
-    );
+    assert_eq!(c, (1..=3).map(|i| Complex64::new(i as f64 * 1e-200, 0.0)).collect::<Vec<_>>());
     sum.assert_invariants();
 }
 
@@ -294,9 +279,7 @@ fn a_smaller_layer_after_a_larger_one_reads_only_its_own_prefix() {
     let mut small = PauliSum::<1>::from_sorted_columns(
         (0u64..6).map(|i| [i]).collect(),
         vec![[0u64]; 6],
-        (1..=6)
-            .map(|m| Complex64::new(m as f64 / 16.0, 0.0))
-            .collect(),
+        (1..=6).map(|m| Complex64::new(m as f64 / 16.0, 0.0)).collect(),
         3,
     );
     TopN(3).finalize_layer(&mut small);
@@ -305,11 +288,7 @@ fn a_smaller_layer_after_a_larger_one_reads_only_its_own_prefix() {
     assert_eq!(x, vec![[3u64], [4u64], [5u64]]);
     assert_eq!(
         c,
-        vec![
-            Complex64::new(0.25, 0.0),
-            Complex64::new(0.3125, 0.0),
-            Complex64::new(0.375, 0.0),
-        ]
+        vec![Complex64::new(0.25, 0.0), Complex64::new(0.3125, 0.0), Complex64::new(0.375, 0.0),]
     );
 }
 
@@ -317,9 +296,7 @@ fn a_smaller_layer_after_a_larger_one_reads_only_its_own_prefix() {
 #[test]
 fn finalize_layer_runs_inside_a_rayon_job() {
     use crate::test_support::rand_sum;
-    let sums: Vec<PauliSum<1>> = (0..16)
-        .map(|k| rand_sum::<1>(2000, 10, 0xF1A5 + k))
-        .collect();
+    let sums: Vec<PauliSum<1>> = (0..16).map(|k| rand_sum::<1>(2000, 10, 0xF1A5 + k)).collect();
     let want: Vec<usize> = sums.iter().map(|s| s.len().min(500)).collect();
     let got: Vec<usize> = sums
         .into_par_iter()
@@ -537,9 +514,7 @@ fn collapse_sample_is_a_no_op_up_to_the_cache() {
         assert_eq!(sum.to_arrays(), input.to_arrays(), "cache {cache}");
         assert_eq!(policy.collapses(), 0);
     }
-    assert!(<_ as TruncationPolicy<1>>::finalizes_layer(
-        &CollapseSample::new(4, 7)
-    ));
+    assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&CollapseSample::new(4, 7)));
 }
 
 #[test]
@@ -575,9 +550,7 @@ fn check_pick_frequencies<const W: usize>(bits: u8) {
     let keys = four_term_keys::<W>();
     let input = weighted_four_term_sum::<W>(8).with_hash(Gf2Hash::new(8, bits, 0xB0C4));
     if bits > 0 {
-        let used = (0..input.num_buckets())
-            .filter(|&b| input.bucket_len(b) > 0)
-            .count();
+        let used = (0..input.num_buckets()).filter(|&b| input.bucket_len(b) > 0).count();
         assert!(used > 1, "the fixture must span several buckets");
     }
     let mut counts = [0usize; 4];
@@ -599,10 +572,7 @@ fn collapse_sample_draws_by_squared_magnitude() {
 fn collapse_sample_draw_is_a_function_of_the_seed() {
     let input = rand_sum::<1>(4000, 16, 0xC011).with_hash(Gf2Hash::new(16, 5, 0x1234));
     let pick = |threads: usize, seed: u64| {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build()
-            .unwrap();
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
         pool.install(|| {
             let policy = CollapseSample::new(100, seed);
             (0..3)

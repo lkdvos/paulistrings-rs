@@ -116,12 +116,7 @@ pub(super) fn premerge_partner<const W: usize>(
     timed!(let t0 = scratch.event(sum)?);
     {
         let premerge = &mut scratch.export.premerge;
-        grow(
-            &stream,
-            &mut premerge.counts,
-            buckets * partner_entries,
-            ordinal,
-        )?;
+        grow(&stream, &mut premerge.counts, buckets * partner_entries, ordinal)?;
         grow(&stream, &mut premerge.rows, buckets, ordinal)?;
         grow(&stream, &mut premerge.start, buckets + 1, ordinal)?;
         grow(&stream, &mut premerge.rows_per_position, buckets, ordinal)?;
@@ -245,11 +240,7 @@ fn debug_assert_merged_within_unmerged<const W: usize>(
     let partner_entries = blocks.len();
     let mut unmerged = vec![0u32; buckets * partner_entries];
     stream.memcpy_dtoh(
-        &scratch
-            .export
-            .premerge
-            .counts
-            .slice(0..buckets * partner_entries),
+        &scratch.export.premerge.counts.slice(0..buckets * partner_entries),
         &mut unmerged[..],
     )?;
     stream.synchronize()?;
@@ -293,13 +284,7 @@ fn premerge_batches<const W: usize>(
     let ordinal = sum.device();
     let partner_entries = running.len();
     let partner_entries_u32 = partner_entries as u32;
-    let LayerScratch {
-        bucket_at,
-        scan,
-        export,
-        stats,
-        ..
-    } = scratch;
+    let LayerScratch { bucket_at, scan, export, stats, .. } = scratch;
     let DeviceExport {
         premerge,
         received_offsets,
@@ -344,12 +329,7 @@ fn premerge_batches<const W: usize>(
             written,
         )?;
         grow(stream, &mut premerge.lens, partner_entries * n, ordinal)?;
-        grow(
-            stream,
-            &mut premerge.split_offsets,
-            partner_entries * n + 1,
-            ordinal,
-        )?;
+        grow(stream, &mut premerge.split_offsets, partner_entries * n + 1, ordinal)?;
         // SAFETY: arguments match `k_premerge_split` in export.cu; `lens` holds `K × n` entries.
         unsafe {
             stream
@@ -373,9 +353,7 @@ fn premerge_batches<const W: usize>(
             scan,
             &mut premerge.totals,
         )?;
-        premerge
-            .split_offsets_host
-            .resize(partner_entries * n + 1, 0);
+        premerge.split_offsets_host.resize(partner_entries * n + 1, 0);
         {
             let (split_offsets, split_offsets_host) =
                 (&premerge.split_offsets, &mut premerge.split_offsets_host);
@@ -389,12 +367,8 @@ fn premerge_batches<const W: usize>(
             })?;
         }
         let split = &premerge.split_offsets_host;
-        let share = |j: usize| {
-            (
-                split[j * n] as usize,
-                (split[(j + 1) * n] - split[j * n]) as usize,
-            )
-        };
+        let share =
+            |j: usize| (split[j * n] as usize, (split[(j + 1) * n] - split[j * n]) as usize);
         let set_offsets = |block_offsets: &mut [u32], j: usize, run: u32| {
             for i in 0..n {
                 block_offsets[p0 + i] = run + split[j * n + i] - split[j * n];
@@ -436,9 +410,7 @@ fn premerge_batches<const W: usize>(
             if rows > 0 {
                 let live = running[j] as usize;
                 block.reserve_keep(stream, live, live + rows, ordinal)?;
-                let DeviceBlock {
-                    x, z, coefficient, ..
-                } = block;
+                let DeviceBlock { x, z, coefficient, .. } = block;
                 copy(j, running[j], (x, z, coefficient))?;
             }
             running[j] += rows as u32;

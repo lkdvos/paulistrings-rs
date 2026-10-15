@@ -321,78 +321,41 @@ fn a_retain_to_the_identity_alone_is_key_preserving() {
 fn n_bucket_deltas<const W: usize, C: Channel<W>>(channel: &C, adjoint: bool) -> usize {
     // Plenty of bucket bits, so distinct key deltas do not collide.
     let hash = Gf2Hash::<W>::new(128, 16, 0xBEEF);
-    channel
-        .prepare(&hash, adjoint)
-        .unwrap()
-        .bucket_deltas()
-        .len()
+    channel.prepare(&hash, adjoint).unwrap().bucket_deltas().len()
 }
 
 #[test]
 fn bucket_fanin_matches_the_design_table() {
     // 1 bucket: key-preserving channels.
     for (name, n) in [
-        (
-            "identity",
-            n_bucket_deltas::<2, _>(&IdentityChannel::new(), false),
-        ),
-        (
-            "depolarizing",
-            n_bucket_deltas::<2, _>(&PtmChannel::depolarizing(5, 0.1), false),
-        ),
-        (
-            "dephasing",
-            n_bucket_deltas::<2, _>(&PtmChannel::dephasing(5, 0.1), false),
-        ),
-        (
-            "pauli_x",
-            n_bucket_deltas::<2, _>(&PtmChannel::pauli_x(5), false),
-        ),
-        (
-            "pauli_y",
-            n_bucket_deltas::<2, _>(&PtmChannel::pauli_y(5), false),
-        ),
-        (
-            "pauli_z",
-            n_bucket_deltas::<2, _>(&PtmChannel::pauli_z(5), false),
-        ),
+        ("identity", n_bucket_deltas::<2, _>(&IdentityChannel::new(), false)),
+        ("depolarizing", n_bucket_deltas::<2, _>(&PtmChannel::depolarizing(5, 0.1), false)),
+        ("dephasing", n_bucket_deltas::<2, _>(&PtmChannel::dephasing(5, 0.1), false)),
+        ("pauli_x", n_bucket_deltas::<2, _>(&PtmChannel::pauli_x(5), false)),
+        ("pauli_y", n_bucket_deltas::<2, _>(&PtmChannel::pauli_y(5), false)),
+        ("pauli_z", n_bucket_deltas::<2, _>(&PtmChannel::pauli_z(5), false)),
     ] {
         assert_eq!(n, 1, "{name} should read 1 input bucket per output bucket");
     }
 
     // 2 buckets: 1-dimensional delta sets.
     for (name, n) in [
-        (
-            "h",
-            n_bucket_deltas::<2, _>(&PtmChannel::hadamard(5), false),
-        ),
-        (
-            "s",
-            n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), false),
-        ),
+        ("h", n_bucket_deltas::<2, _>(&PtmChannel::hadamard(5), false)),
+        ("s", n_bucket_deltas::<2, _>(&PtmChannel::phase_gate(5), false)),
         (
             "amplitude_damping",
             n_bucket_deltas::<2, _>(&PtmChannel::amplitude_damping(5, 0.3), false),
         ),
-        (
-            "rot_z",
-            n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), false),
-        ),
+        ("rot_z", n_bucket_deltas::<2, _>(&PauliRotation::new(PauliString::<2>::z(5), 0.3), false)),
     ] {
         assert_eq!(n, 2, "{name} should read 2 input buckets per output bucket");
     }
 
     // 4 buckets: 2-dimensional delta sets.
     for (name, n) in [
-        (
-            "cnot",
-            n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), false),
-        ),
+        ("cnot", n_bucket_deltas::<2, _>(&PtmChannel::cnot(1, 4), false)),
         ("cz", n_bucket_deltas::<2, _>(&PtmChannel::cz(1, 4), false)),
-        (
-            "swap",
-            n_bucket_deltas::<2, _>(&PtmChannel::swap(1, 4), false),
-        ),
+        ("swap", n_bucket_deltas::<2, _>(&PtmChannel::swap(1, 4), false)),
     ] {
         assert_eq!(n, 4, "{name} should read 4 input buckets per output bucket");
     }
@@ -451,9 +414,7 @@ fn key_preserving_channels_are_detected() {
 fn support_bits_use_the_clifford2q_packing() {
     let hash = Gf2Hash::<1>::new(64, 8, 0x1);
     let prepared = PtmChannel::cnot(2, 7).prepare(&hash, false).unwrap();
-    let Prepared::Local(p) = prepared else {
-        panic!("expected Local")
-    };
+    let Prepared::Local(p) = prepared else { panic!("expected Local") };
     assert_eq!(p.qubits().collect::<Vec<_>>(), [2, 7]);
     // x on q2 -> bit 0; z on q2 -> bit 1; x on q7 -> bit 2; z on q7 -> bit 3.
     let x2 = PauliString::<1>::x(2);
@@ -475,13 +436,8 @@ fn colliding_deltas_share_a_group_rather_than_being_lost() {
     // With 1 bucket bit, CNOT's four key deltas collide on bucket deltas.
     let hash = Gf2Hash::<2>::new(128, 1, 0xC011);
     let prepared = PtmChannel::cnot(1, 4).prepare(&hash, false).unwrap();
-    let Prepared::Local(p) = prepared else {
-        panic!("expected Local")
-    };
-    assert!(
-        p.bucket_deltas().len() <= 2,
-        "only 2 bucket values exist with 1 bit",
-    );
+    let Prepared::Local(p) = prepared else { panic!("expected Local") };
+    assert!(p.bucket_deltas().len() <= 2, "only 2 bucket values exist with 1 bit",);
     // No delta is dropped: the total member count is still |D| = 4.
     assert_eq!(p.num_deltas(), 4);
     // And the table still reproduces `apply`.
@@ -494,9 +450,7 @@ fn deltas_are_ascending_by_local_delta() {
     for bits in [1u8, 4, 16] {
         let hash = Gf2Hash::<2>::new(128, bits, 0xC012);
         let prepared = PtmChannel::swap(1, 4).prepare(&hash, false).unwrap();
-        let Prepared::Local(p) = prepared else {
-            panic!("expected Local")
-        };
+        let Prepared::Local(p) = prepared else { panic!("expected Local") };
         for pair in p.deltas().windows(2) {
             assert!(
                 pair[0].local_delta < pair[1].local_delta,
@@ -516,10 +470,7 @@ fn derive_refuses_support_wider_than_the_local_maximum() {
     let hash = Gf2Hash::<1>::new(64, 8, 0x1);
     assert!(Prepared::derive_local(&rot, &hash, false).is_none());
     // The override still produces a usable preparation.
-    assert!(matches!(
-        rot.prepare(&hash, false),
-        Some(Prepared::Rotation(_))
-    ));
+    assert!(matches!(rot.prepare(&hash, false), Some(Prepared::Rotation(_))));
 }
 
 /// The popcount check reads straight off the mask, independent of which qubits are set or which word they land in.

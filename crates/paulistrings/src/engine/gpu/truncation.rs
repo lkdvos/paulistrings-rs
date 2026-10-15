@@ -56,14 +56,7 @@ fn emit(tree: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
         T::And(a, b) | T::Or(a, b) => {
             emit(a, out);
             emit(b, out);
-            out.push((
-                if matches!(tree, T::And(..)) {
-                    OP_AND
-                } else {
-                    OP_OR
-                },
-                0,
-            ));
+            out.push((if matches!(tree, T::And(..)) { OP_AND } else { OP_OR }, 0));
         }
         T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => out.push((OP_KEEP, 0)),
     }
@@ -71,11 +64,7 @@ fn emit(tree: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
 
 impl KeepProgram {
     /// The program that keeps every nonzero term.
-    pub(crate) const KEEP: Self = Self {
-        len: 1,
-        op: [OP_KEEP; KEEP_NODES],
-        arg: [0; KEEP_NODES],
-    };
+    pub(crate) const KEEP: Self = Self { len: 1, op: [OP_KEEP; KEEP_NODES], arg: [0; KEEP_NODES] };
 
     /// Lower the per-term half of `tree`; [`GpuError::Unsupported`] past [`KEEP_NODES`] nodes.
     pub(crate) fn lower(tree: &BuiltinTruncation) -> Result<Self, GpuError> {
@@ -86,11 +75,8 @@ impl KeepProgram {
                 "a per-term truncation program longer than 15 nodes",
             ));
         }
-        let mut program = Self {
-            len: nodes.len() as u32,
-            op: [OP_KEEP; KEEP_NODES],
-            arg: [0; KEEP_NODES],
-        };
+        let mut program =
+            Self { len: nodes.len() as u32, op: [OP_KEEP; KEEP_NODES], arg: [0; KEEP_NODES] };
         for (i, (op, arg)) in nodes.into_iter().enumerate() {
             program.op[i] = op;
             program.arg[i] = arg;

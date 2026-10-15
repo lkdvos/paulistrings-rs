@@ -24,22 +24,16 @@ fn partition_bits_is_log2_of_the_count() {
 fn threads_per_partition_overrides_the_resolved_width() {
     let cpus = allowed_cpus();
     let placement = Placement::Explicit(vec![cpus.clone(), cpus.clone()]);
-    let config = PartitionConfig {
-        placement,
-        bind_memory: false,
-        threads_per_partition: None,
-    };
+    let config = PartitionConfig { placement, bind_memory: false, threads_per_partition: None };
 
     let resolved = PartitionRuntime::new(&config).expect("resolve");
     for slot in &resolved.slots {
         assert_eq!(slot.threads, cpus.len());
     }
 
-    let narrowed = PartitionRuntime::new(&PartitionConfig {
-        threads_per_partition: Some(1),
-        ..config
-    })
-    .expect("resolve with an explicit width");
+    let narrowed =
+        PartitionRuntime::new(&PartitionConfig { threads_per_partition: Some(1), ..config })
+            .expect("resolve with an explicit width");
     for slot in &narrowed.slots {
         assert_eq!(slot.threads, 1);
         assert_eq!(slot.cpus.as_ref(), Some(&cpus), "the CPU set is untouched");
@@ -62,9 +56,8 @@ fn map_partitions_returns_results_in_rank_order() {
 #[test]
 fn map_partitions_runs_collectives_between_partitions() {
     let runtime = PartitionRuntime::new(&config(4)).expect("resolve");
-    let got = runtime.map_partitions(vec![3u8, 7, 1, 5], |_, item, transport| {
-        transport.allreduce_max_u8(item)
-    });
+    let got = runtime
+        .map_partitions(vec![3u8, 7, 1, 5], |_, item, transport| transport.allreduce_max_u8(item));
     assert_eq!(got, vec![7, 7, 7, 7]);
 }
 

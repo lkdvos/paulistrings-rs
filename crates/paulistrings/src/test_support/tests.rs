@@ -5,14 +5,8 @@ use num_complex::Complex64;
 
 #[test]
 fn identity_channel_has_empty_support() {
-    assert_eq!(
-        <IdentityChannel as Channel<1>>::support(&IdentityChannel),
-        [0u64; 1]
-    );
-    assert_eq!(
-        <IdentityChannel as Channel<2>>::support(&IdentityChannel),
-        [0u64; 2]
-    );
+    assert_eq!(<IdentityChannel as Channel<1>>::support(&IdentityChannel), [0u64; 1]);
+    assert_eq!(<IdentityChannel as Channel<2>>::support(&IdentityChannel), [0u64; 2]);
 }
 
 #[test]
@@ -22,10 +16,7 @@ fn identity_channel_emits_its_input_unchanged() {
     let _ = input.mul_assign(&PauliString::<2>::z(70));
     let coeff = Complex64::new(2.0, 3.0);
     for adjoint in [false, true] {
-        assert_eq!(
-            raw_outputs(&IdentityChannel, adjoint, input, coeff),
-            vec![(input, coeff)]
-        );
+        assert_eq!(raw_outputs(&IdentityChannel, adjoint, input, coeff), vec![(input, coeff)]);
     }
 }
 

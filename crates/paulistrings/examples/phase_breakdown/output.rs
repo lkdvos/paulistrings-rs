@@ -58,30 +58,16 @@ pub(crate) fn print_table(cell: &CellResult) {
     let s = &cell.stats;
     let wall_total = s.wall_total_ns();
 
-    println!(
-        "  {:<12} {:>10} {:>12} {:>8}",
-        "phase", "ms", "ms/layer", "% wall"
-    );
+    println!("  {:<12} {:>10} {:>12} {:>8}", "phase", "ms", "ms/layer", "% wall");
     for (name, get) in WALL_PHASES {
         let ns = get(s);
         if ns == 0 {
             continue;
         }
         let ms = ns as f64 / 1e6;
-        let ms_per_layer = if s.layers > 0 {
-            ms / s.layers as f64
-        } else {
-            0.0
-        };
-        let pct = if wall_total > 0 {
-            ns as f64 / wall_total as f64 * 100.0
-        } else {
-            0.0
-        };
-        println!(
-            "  {:<12} {:>10.3} {:>12.4} {:>7.1}%",
-            name, ms, ms_per_layer, pct
-        );
+        let ms_per_layer = if s.layers > 0 { ms / s.layers as f64 } else { 0.0 };
+        let pct = if wall_total > 0 { ns as f64 / wall_total as f64 * 100.0 } else { 0.0 };
+        println!("  {:<12} {:>10.3} {:>12.4} {:>7.1}%", name, ms, ms_per_layer, pct);
     }
 
     let busy_total = s.busy_total_ns();
@@ -89,11 +75,7 @@ pub(crate) fn print_table(cell: &CellResult) {
     for (name, get) in BUSY_PHASES {
         let ns = get(s);
         let ms = ns as f64 / 1e6;
-        let pct = if busy_total > 0 {
-            ns as f64 / busy_total as f64 * 100.0
-        } else {
-            0.0
-        };
+        let pct = if busy_total > 0 { ns as f64 / busy_total as f64 * 100.0 } else { 0.0 };
         println!("    {:<10} {:>10.3} ms {:>7.1}% of busy", name, ms, pct);
     }
     let efficiency = if s.coset_loop_ns > 0 && cell.threads > 0 {
@@ -108,17 +90,10 @@ pub(crate) fn print_table(cell: &CellResult) {
     );
 
     let wall_s = cell.wall_ns as f64 / 1e9;
-    let strings_per_s = if wall_s > 0.0 {
-        s.terms_in as f64 / wall_s
-    } else {
-        0.0
-    };
+    let strings_per_s = if wall_s > 0.0 { s.terms_in as f64 / wall_s } else { 0.0 };
     let overhead_ns = s.timer_reads() * TIMER_READ_OVERHEAD_NS;
-    let overhead_pct = if cell.wall_ns > 0 {
-        overhead_ns as f64 / cell.wall_ns as f64 * 100.0
-    } else {
-        0.0
-    };
+    let overhead_pct =
+        if cell.wall_ns > 0 { overhead_ns as f64 / cell.wall_ns as f64 * 100.0 } else { 0.0 };
     println!("  strings/s          = {strings_per_s:.3e}");
     println!(
         "  timer overhead est = {:.3} us ({} reads x {} ns) = {:.2}% of wall",
@@ -127,10 +102,7 @@ pub(crate) fn print_table(cell: &CellResult) {
         TIMER_READ_OVERHEAD_NS,
         overhead_pct
     );
-    println!(
-        "  VmRSS = {} kB   VmHWM = {} kB",
-        cell.vmrss_kb, cell.vmhwm_kb
-    );
+    println!("  VmRSS = {} kB   VmHWM = {} kB", cell.vmrss_kb, cell.vmhwm_kb);
     print_partition_block(cell);
     if let Some(d) = &cell.device {
         println!(
@@ -198,22 +170,12 @@ pub(crate) fn print_partition_block(cell: &CellResult) {
         "    terms in per partition = {:?}   imbalance (max/mean) = {:.3}",
         p.terms_in, p.imbalance,
     );
-    let coset_ms: Vec<String> = p
-        .coset_loop_ns
-        .iter()
-        .map(|ns| format!("{:.3}", *ns as f64 / 1e6))
-        .collect();
-    println!(
-        "    coset_loop ms per partition = [{}]",
-        coset_ms.join(", ")
-    );
+    let coset_ms: Vec<String> =
+        p.coset_loop_ns.iter().map(|ns| format!("{:.3}", *ns as f64 / 1e6)).collect();
+    println!("    coset_loop ms per partition = [{}]", coset_ms.join(", "));
     // The human format prints the per-layer series' shape; the full arrays are in the JSON row.
     if let (Some(first), Some(last)) = (p.imbalance_by_layer.first(), p.imbalance_by_layer.last()) {
-        let worst = p
-            .imbalance_by_layer
-            .iter()
-            .copied()
-            .fold(f64::MIN, f64::max);
+        let worst = p.imbalance_by_layer.iter().copied().fold(f64::MIN, f64::max);
         println!(
             "    imbalance per layer over {} layers: first {:.3}, worst {:.3}, last {:.3}   \
              (rows = {})",
@@ -329,9 +291,5 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
 
 /// A device row's ordinals, comma-joined.
 pub(crate) fn device_csv(d: &DeviceCellStats) -> String {
-    d.devices
-        .iter()
-        .map(u32::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
+    d.devices.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
 }

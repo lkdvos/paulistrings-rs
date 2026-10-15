@@ -42,12 +42,7 @@ impl PtmChannel {
         Self::clifford_2q(
             [control, target],
             PtmKind::Cnot,
-            [
-                pack(1, 0, 1, 0),
-                pack(0, 1, 0, 0),
-                pack(0, 0, 1, 0),
-                pack(0, 1, 0, 1),
-            ],
+            [pack(1, 0, 1, 0), pack(0, 1, 0, 0), pack(0, 0, 1, 0), pack(0, 1, 0, 1)],
         )
     }
 
@@ -61,12 +56,7 @@ impl PtmChannel {
         Self::clifford_2q(
             [q0, q1],
             PtmKind::Cz,
-            [
-                pack(1, 0, 0, 1),
-                pack(0, 1, 0, 0),
-                pack(0, 1, 1, 0),
-                pack(0, 0, 0, 1),
-            ],
+            [pack(1, 0, 0, 1), pack(0, 1, 0, 0), pack(0, 1, 1, 0), pack(0, 0, 0, 1)],
         )
     }
 
@@ -80,26 +70,14 @@ impl PtmChannel {
         Self::clifford_2q(
             [q0, q1],
             PtmKind::Swap,
-            [
-                pack(0, 0, 1, 0),
-                pack(0, 0, 0, 1),
-                pack(1, 0, 0, 0),
-                pack(0, 1, 0, 0),
-            ],
+            [pack(0, 0, 1, 0), pack(0, 0, 0, 1), pack(1, 0, 0, 0), pack(0, 1, 0, 0)],
         )
     }
 
     fn clifford_1q(qubit: usize, image: [u8; 4], negated: u16, kind: PtmKind) -> Self {
         let mut padded = [0u8; LOCAL_DIM];
         padded[..4].copy_from_slice(&image);
-        Self::new(
-            &[qubit],
-            PtmStorage::SignedPermutation {
-                image: padded,
-                negated,
-            },
-            kind,
-        )
+        Self::new(&[qubit], PtmStorage::SignedPermutation { image: padded, negated }, kind)
     }
 
     /// The signed permutation from the images of `X₀, Z₀, X₁, Z₁`, multiplied out per input.
@@ -128,11 +106,7 @@ impl PtmChannel {
                 negated |= 1 << index;
             }
         }
-        Self::new(
-            &qubits,
-            PtmStorage::SignedPermutation { image, negated },
-            kind,
-        )
+        Self::new(&qubits, PtmStorage::SignedPermutation { image, negated }, kind)
     }
 }
 
@@ -145,13 +119,6 @@ const fn pack(x0: u8, z0: u8, x1: u8, z1: u8) -> u8 {
 fn unpack(packed: u8) -> PauliString<1> {
     let mut string = PauliString::<1>::identity();
     write_pauli(&mut string.x, &mut string.z, 0, 0, 1, (packed & 3) as usize);
-    write_pauli(
-        &mut string.x,
-        &mut string.z,
-        0,
-        1,
-        2,
-        ((packed >> 2) & 3) as usize,
-    );
+    write_pauli(&mut string.x, &mut string.z, 0, 1, 2, ((packed >> 2) & 3) as usize);
     string
 }

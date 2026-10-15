@@ -27,9 +27,7 @@ pub fn device_count() -> usize {
     if !libcuda_present() {
         return 0;
     }
-    CudaContext::device_count()
-        .map(|count| count.max(0) as usize)
-        .unwrap_or(0)
+    CudaContext::device_count().map(|count| count.max(0) as usize).unwrap_or(0)
 }
 
 /// Static facts about one CUDA device.

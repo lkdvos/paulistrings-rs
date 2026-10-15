@@ -43,9 +43,7 @@ fn export_all<const W: usize>(
 ) -> Vec<Exported<W>> {
     let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, seed);
     let whole = input.clone().with_hash(hash);
-    let prepared = channel
-        .prepare(whole.hash(), adjoint)
-        .expect("channel could not be prepared");
+    let prepared = channel.prepare(whole.hash(), adjoint).expect("channel could not be prepared");
     let size = rows.num_partitions() as u32;
     (0..size)
         .map(|rank| {
@@ -54,10 +52,7 @@ fn export_all<const W: usize>(
             let mut scratch = ExportScratch::default();
             let order = order_for(&plan, local.num_buckets());
             let (send, counts) = export_layer(&local, &prepared, &plan, size, &order, &mut scratch);
-            assert!(
-                send[rank as usize].is_none(),
-                "a partition exports to itself"
-            );
+            assert!(send[rank as usize].is_none(), "a partition exports to itself");
             assert_eq!(send.len(), size as usize);
             Exported { rank, send, counts }
         })
@@ -176,10 +171,7 @@ fn an_all_commuting_rotation_exports_empty_blocks() {
 
     let rot = PauliRotation::new(gen, 0.41);
     let exports = export_all(&input, &rot, false, 2, 0x52, &rows);
-    assert!(
-        all_rows(&exports).is_empty(),
-        "commuting terms emit nothing"
-    );
+    assert!(all_rows(&exports).is_empty(), "commuting terms emit nothing");
     for e in &exports {
         assert!(e.counts.rows_sent.iter().all(|&r| r == 0));
         let blocks: Vec<_> = e.send.iter().flatten().flat_map(|p| &p.blocks).collect();
@@ -319,9 +311,8 @@ fn the_export_is_the_partition_crossing_rows_w2() {
                 let what = format!("{name} adjoint={adjoint} bits={bits}");
                 assert_eq!(got.len(), want.len(), "{what}: distinct keys");
                 for (key, (n, sum)) in &want {
-                    let (gn, gsum) = got
-                        .get(key)
-                        .unwrap_or_else(|| panic!("{what}: missing key {key:?}"));
+                    let (gn, gsum) =
+                        got.get(key).unwrap_or_else(|| panic!("{what}: missing key {key:?}"));
                     assert_eq!(gn, n, "{what}: row count");
                     assert!((gsum - sum).norm() < TOL, "{what}: coeff {gsum} vs {sum}");
                 }
@@ -379,10 +370,7 @@ fn a_reused_scratch_gives_the_same_export() {
 
     // A wide-fanout layer first, so the scratch is left large.
     let channels = differential_channels_w1();
-    let (_, wide) = channels
-        .iter()
-        .find(|(n, _)| *n == "haar_su4")
-        .expect("the dense SU(4) cell");
+    let (_, wide) = channels.iter().find(|(n, _)| *n == "haar_su4").expect("the dense SU(4) cell");
     let prepared = wide.prepare(whole.hash(), false).unwrap();
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let wide_local = whole.filter_partition(&rows, 0);
@@ -395,14 +383,8 @@ fn a_reused_scratch_gives_the_same_export() {
     let local = whole.filter_partition(&rows, 0);
     let order = order_for(&plan, local.num_buckets());
     let (reused, counts_reused) = export_layer(&local, &prepared, &plan, 4, &order, &mut scratch);
-    let (fresh, counts_fresh) = export_layer(
-        &local,
-        &prepared,
-        &plan,
-        4,
-        &order,
-        &mut ExportScratch::default(),
-    );
+    let (fresh, counts_fresh) =
+        export_layer(&local, &prepared, &plan, 4, &order, &mut ExportScratch::default());
     assert_eq!(counts_reused, counts_fresh);
     assert_eq!(reused.len(), fresh.len());
     for (a, b) in reused.iter().zip(&fresh) {

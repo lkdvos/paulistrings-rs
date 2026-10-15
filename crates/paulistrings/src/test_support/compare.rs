@@ -136,18 +136,12 @@ pub struct DiscardMeter<'p, P: ?Sized> {
 
 fn add_f64(cell: &std::sync::atomic::AtomicU64, v: f64) {
     use std::sync::atomic::Ordering::Relaxed;
-    let _ = cell.fetch_update(Relaxed, Relaxed, |b| {
-        Some((f64::from_bits(b) + v).to_bits())
-    });
+    let _ = cell.fetch_update(Relaxed, Relaxed, |b| Some((f64::from_bits(b) + v).to_bits()));
 }
 
 impl<'p, P: ?Sized> DiscardMeter<'p, P> {
     pub fn new(policy: &'p P) -> Self {
-        Self {
-            policy,
-            pending: 0f64.to_bits().into(),
-            total: 0f64.to_bits().into(),
-        }
+        Self { policy, pending: 0f64.to_bits().into(), total: 0f64.to_bits().into() }
     }
 
     /// The summed per-layer discarded norm so far.
@@ -303,10 +297,7 @@ pub fn heavy_cut<const W: usize>(
     terms: usize,
     seed: u64,
 ) -> (crate::Circuit<W>, PauliSum<W>) {
-    (
-        trotter_steps(num_qubits, 0.4, steps),
-        tie_heavy_sum(terms, num_qubits, seed),
-    )
+    (trotter_steps(num_qubits, 0.4, steps), tie_heavy_sum(terms, num_qubits, seed))
 }
 
 /// One-layer circuits whose single cut splits a boundary group and drops little weight, each with its input and the `n` that cuts it: a Haar SU(4) on `(0, 1)` over [`spread_magnitudes`] of [`rand_sum`], and a Hadamard on qubit 0 over magnitudes `1`, `2⁻²⁰`, `2⁻⁴⁰`, where `n` falls inside the `2⁻²⁰` ties.
@@ -327,12 +318,7 @@ pub fn single_cuts<const W: usize>(
     }
     let random = rand_sum::<W>(1_500, num_qubits, seed);
     vec![
-        (
-            "dense cut",
-            dense,
-            spread_magnitudes(&random, 40, seed),
-            2_000,
-        ),
+        ("dense cut", dense, spread_magnitudes(&random, 40, seed), 2_000),
         ("tied cut", hadamard, tied.finalize(), 1_300),
     ]
 }
@@ -361,11 +347,7 @@ pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> 
     assert!(num_qubits >= 8, "the fixture's keys reach qubit 7");
     let phases = [0.0f64, 1.0, 2.5, -2.0];
     let mut acc = BuildAccumulator::<W>::new(num_qubits);
-    for ((p, w), phi) in four_term_keys::<W>()
-        .into_iter()
-        .zip(FOUR_TERM_WEIGHTS)
-        .zip(phases)
-    {
+    for ((p, w), phi) in four_term_keys::<W>().into_iter().zip(FOUR_TERM_WEIGHTS).zip(phases) {
         acc.add_term(p, Complex64::from_polar(w.sqrt(), phi));
     }
     acc.finalize()
@@ -375,11 +357,7 @@ pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> 
 pub fn collapsed_index<const W: usize>(sum: &PauliSum<W>, keys: &[PauliString<W>]) -> usize {
     assert_eq!(sum.len(), 1, "a collapse leaves exactly one string");
     let (x, z, c) = sum.iter().next().unwrap();
-    assert_eq!(
-        c,
-        Complex64::new(1.0, 0.0),
-        "the survivor's coefficient is 1"
-    );
+    assert_eq!(c, Complex64::new(1.0, 0.0), "the survivor's coefficient is 1");
     keys.iter()
         .position(|p| &p.x == x && &p.z == z)
         .expect("the survivor is one of the input strings")

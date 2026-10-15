@@ -110,7 +110,7 @@
 <a href=#110 id=110 data-nosnippet>110</a><span class="doccomment">/// Mean rest rows per output key that gets any, the radix gate's second arm; ask it of the channel's own PTM, never a restricted one.
 <a href=#111 id=111 data-nosnippet>111</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>rest_rows_per_key&lt;<span class="kw">const </span>W: usize&gt;(ptm: <span class="kw-2">&amp;</span>LocalPtm&lt;W&gt;) -&gt; f64 {
 <a href=#112 id=112 data-nosnippet>112</a>    <span class="kw">let </span>zero = Complex64::new(<span class="number">0.0</span>, <span class="number">0.0</span>);
-<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">let </span>rest_start = usize::from(ptm.deltas().first().is_some_and(|d| d.local_delta == <span class="number">0</span>));
+<a href=#113 id=113 data-nosnippet>113</a>    <span class="kw">let </span>rest_start = usize::from(ptm.has_identity());
 <a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">let </span>dim = <span class="number">1usize </span>&lt;&lt; (<span class="number">2 </span>* ptm.k());
 <a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">let </span>(<span class="kw-2">mut </span>rows, <span class="kw-2">mut </span>keys) = (<span class="number">0u32</span>, <span class="number">0u32</span>);
 <a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">for </span>output <span class="kw">in </span><span class="number">0</span>..dim {

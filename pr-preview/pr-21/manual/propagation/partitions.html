@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
+            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -212,8 +212,8 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
 On a single-node box <code>"auto"</code> also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a <code>ValueError</code> that points at explicit CPU lists.</p>
 <p><a href="../../library/module-helpers.html"><code>paulistrings.numa_nodes()</code></a> reports what the machine offers, as one CPU list per node intersected with this process’s affinity mask, so a script can decide for itself before choosing.
 <code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
-<p><code>propagate_with_stats</code> fills <code>PropagationStats.partition</code> on a partitioned run: per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
-It is <code>None</code> for an unpartitioned run.
+<p><code>PropagationStats.partition</code> holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
+An unpartitioned run reports one partition.
 <code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the cost/benefit split above turns on.</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")

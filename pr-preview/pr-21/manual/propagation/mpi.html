@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
+            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -248,7 +248,7 @@ A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term 
 evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
 </code></pre>
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
-The distributed <a href="../measurements.html#echo">echo read-out</a> <code>rotated_overlap</code> requires rows that skip the coordinates it flips, the x-bits of its sites for <code>axis="x"</code>.
+Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="../measurements.html#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
 <div class="table-wrapper">
@@ -298,7 +298,7 @@ if let Some(evolved) = split.gather()? {
     println!("{} terms", evolved.len());
 }
 <span class="boring">}</span></code></pre>
-<p><code>gpu::propagate_mpi_gpu</code> is the one-shot form.
+<p><code>scatter_to_device_with(&amp;observable, transport, GpuScatterOptions { rows, ..GpuScatterOptions::new(&amp;[device])? })</code> splits by other rows or layer options; <code>gpu::propagate_mpi_gpu</code> is the one-shot form.
 A device failure on any rank fails the call on every rank, with <code>GpuError::Poisoned</code> naming the failing rank on its peers, so the group never falls out of step.
 Launch with every node GPU visible to every task (<code>srun --gpus-per-node=&lt;k&gt; --mpi=pmix</code>, as <code>scripts/slurm/mpi-gpu.sbatch</code> does), where the locality pick matters.</p>
 <p>A remote layer’s columns move device to device over NCCL (<a href="gpu.html#exchange">CUDA devices</a>), which needs the NCCL library at run time (<a href="../../installation.html#gpu-and-mpi-features">Installation</a>).

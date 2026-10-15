@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
+            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -213,7 +213,7 @@ print(stats.circuit_index)
 The lists run in <strong>application</strong> order, which under <code>direction="heisenberg"</code> is the reverse of the circuit as written: the first entry above is the depolarizing channel pushed last.
 <code>circuit_index</code> recovers the position as written regardless of direction, and <code>application_index</code> is the loop counter.</p>
 <p><code>terms_out[k]</code> is the count <em>after</em> layer <code>k</code>’s truncation, <code>terms_in[k + 1] == terms_out[k]</code>, and <code>peak_terms</code> is the maximum of those resident counts.
-<code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, otherwise <code>None</code> (<a href="partitions.html">NUMA partitions</a>, <a href="mpi.html">MPI ranks</a>).
+<code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, one partition for an unpartitioned run (<a href="partitions.html">NUMA partitions</a>, <a href="mpi.html">MPI ranks</a>).
 The full field list is in the <a href="../../library/propagate.html#propagationstats">Library</a>.</p>
 <h2 id="estimate-the-memory-a-run-needs"><a class="header" href="#estimate-the-memory-a-run-needs">Estimate the memory a run needs</a></h2>
 <p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient.
@@ -238,9 +238,13 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("paulistrings.propagate").setLevel(logging.DEBUG)
 paulistrings.reset_log_cache()   # pyo3-log caches each logger's effective level
 </code></pre>
-<p>A layer’s DEBUG line reads <code>layer k/n [name]: before -&gt; after terms, t ms (partition r/P, d remote deltas, m rows in)</code> at every partition count, one line per partition.</p>
+<p>The INFO lines read <code>propagate: N terms through n channels (direction), scope</code> and <code>propagate: n layers applied, before -&gt; after terms, t s, scope</code>, where <code>scope</code> is <code>1 partition</code>, <code>P partitions [placement]</code>, or <code>partition r/P [placement]</code> for one rank of a <code>comm=</code> run, whose counts are that rank’s own.
+A layer’s DEBUG line reads <code>layer k/n [name]: before -&gt; after terms, t ms (partition r/P, d remote deltas, m rows in)</code> at every partition count, one line per partition.
+Placement, pinning and transport setup log under <code>paulistrings.partitioned</code>, and device setup (kernel compiles and the kernel cache, device choice, the NCCL and peer wires) under <code>paulistrings.gpu</code>, so each filters on its own.</p>
 <p>Call <a href="../../library/module-helpers.html"><code>reset_log_cache()</code></a> again after changing the level mid-process; the cache is otherwise stale for the rest of the process.
 Leave logging off when timing — an enabled DEBUG filter adds a clock read per layer.</p>
+<p>Every <code>PAULISTRINGS_*</code> environment variable is read once per process, the first time it is needed, and its effective value is logged at DEBUG under the target of the subsystem it tunes; an unparsable value logs a warning and the default applies.
+Set them before the first call, and alike on every rank of a <code>comm=</code> run.</p>
 <h2 id="threads"><a class="header" href="#threads">Threads</a></h2>
 <p>In a single unpartitioned process, set the thread count via <code>RAYON_NUM_THREADS</code> <strong>before the interpreter starts</strong> — Rayon builds its global pool at the first <code>propagate</code> call and never resizes it, so setting the variable from inside an already-running script does not reliably reach it:</p>
 <pre><code class="language-bash">RAYON_NUM_THREADS=32 python my_script.py

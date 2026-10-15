@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
+            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -210,7 +210,7 @@ Linearity is the property everything else follows from:</p>
 Equal keys always share a bucket (h is a function), so duplicates can never straddle buckets.
 Because <code>H</code> is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one (ARCHITECTURE.md §Hash).</p>
 <p>Bucket count follows the sum’s size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
-Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucket-Policy).</p>
+Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to <code>H</code> splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucketing, §Bucket-Policy).</p>
 <h2 id="write-disjoint-cosets"><a class="header" href="#write-disjoint-cosets">Write-disjoint cosets</a></h2>
 <p>Take the span of <code>h(D)</code> in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: <strong>a coset is a closed task</strong>.
@@ -238,7 +238,7 @@ The merge is fused with the segmented reduction: one two-pointer walk sums equal
 <p>Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel’s own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
-Pauli rotations prepare specially at any generator weight, since their delta set is just <code>{0, generator}</code> (ARCHITECTURE.md §Prepared-Channels).</p>
+Pauli rotations above two qubits prepare specially, since their delta set is just <code>{0, generator}</code> at any weight (ARCHITECTURE.md §Prepared-Channels).</p>
 <h2 id="truncation"><a class="header" href="#truncation">Truncation</a></h2>
 <p>A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.

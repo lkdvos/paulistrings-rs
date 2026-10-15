@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-ae07100f.js";
+            window.path_to_searchindex_js = "../../searchindex-baf5421b.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -185,7 +185,7 @@
 <h1 id="cuda-devices"><a class="header" href="#cuda-devices">CUDA devices</a></h1>
 <p>A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a <a href="partitions.html">partitioned run</a>: one partition on one device, one partition per listed device, or one device per MPI rank.
 Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
-The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §GPU-Readiness; this page is when to reach for it and how.</p>
+The mechanism is in <a href="https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md"><code>ARCHITECTURE.md</code></a> §GPU; this page is when to reach for it and how.</p>
 <h2 id="when-it-pays"><a class="header" href="#when-it-pays">When a device pays</a></h2>
 <p><strong>Dense two-qubit layers at a million terms and up are where the device wins.</strong>
 On an RTX A6000 a saturated <code>su4</code> layer runs 11× faster on wall than the 16-thread host engine at 1.41e7 terms, and 15× at 5.65e7 (<a href="https://github.com/lkdvos/paulistrings-rs/blob/main/research/HARDWARE.md"><code>research/HARDWARE.md</code></a> § ccqlin038 — GPU).
@@ -266,33 +266,29 @@ It needs the extension built with both features (<code>maturin develop --release
 A list of several ordinals under <code>comm=</code> is a <code>ValueError</code>.
 A rank that cannot use its device fails the call on every rank, the peers raising the same exception type naming it.</p>
 <h2 id="rust-multi-device"><a class="header" href="#rust-multi-device">Rust: several devices, and one device per MPI rank</a></h2>
-<p><code>GpuPartitionedSum</code> splits a sum across the device partitions of a <code>Placement::Devices</code> runtime, one partition per listed device, and holds it across calls; <code>GpuPauliSum</code> is its one-device form, built by <code>GpuPauliSum::from_host(&amp;sum, ordinal)</code>:</p>
+<p><code>GpuPartitionedSum</code> splits a sum across device partitions, one per listed device, and holds it across calls; <code>GpuPartitionedSum::from_host(&amp;sum, ordinal)</code> is the one-device form:</p>
 <!-- doctest: skip -->
 <pre class="playground"><code class="language-rust"><span class="boring">#![allow(unused)]
 </span><span class="boring">fn main() {
-</span>use paulistrings::{PartitionConfig, Placement};
-use paulistrings::gpu::GpuPartitionedSum;
+</span>use paulistrings::gpu::GpuPartitionedSum;
 
-let config = PartitionConfig {
-    placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
-    bind_memory: false,
-    partition_row_seed: None,
-};
-let mut split = GpuPartitionedSum::scatter_to_devices(&amp;observable, &amp;config)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&amp;observable, &amp;[0, 1, 2, 3])?;
 split.propagate(&amp;circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 <span class="boring">}</span></code></pre>
+<p><code>scatter_to_devices_with</code> takes a <code>GpuScatterOptions { devices, rows, layer }</code>: a runtime resolved from <code>Placement::Devices</code>, the partition rows, and the device layer’s knobs (<code>GpuLayerOptions</code>); <code>GpuScatterOptions::new(&amp;devices)</code> fills in the defaults.</p>
 <p>The exchanged columns move device to device.
+With <code>enable_trace</code>, every layer’s <code>PartitionLayerRecord</code> carries the device partitions’ counters as <code>device</code> (a <code>DeviceLayerRecord</code> each: records, block size, arena batches, fallbacks, path taken) beside the shared <code>refine_passes</code> and <code>receive_chunks</code>.
 A device driver takes its policy as a <code>BuiltinTruncation</code>, which every builtin and combinator converts into (<code>ApproxTopN(n)</code> or <code>&amp;ApproxTopN(n)</code> alike).
-<code>per_device &gt; 1</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
+A runtime of <code>Placement::Devices { per_device &gt; 1 }</code> puts several partitions on one device, which is how the exchange is tested on a single GPU — <strong>give each partition its own GPU in practice</strong>; sharing one is a testing configuration, not a performance one.
 With features <code>mpi</code> and <code>cuda</code>, <code>gpu::MpiGpuSum</code> is the <a href="mpi.html#gpu-per-rank">MPI ranks</a> driver with each rank’s share on its own device.</p>
 <h2 id="exchange"><a class="header" href="#exchange">Exchange mode, merge and chunking</a></h2>
 <p>Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver’s device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (<code>gpu::MpiGpuSum</code>).
 The NCCL communicator starts <strong>once, collectively, at scatter</strong>: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
-<code>PAULISTRINGS_NCCL_TIMEOUT_S</code> (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
+<code>PAULISTRINGS_WIRE_TIMEOUT_S</code> (default 300) bounds every wait on the exchange, and every collective of an in-process device group (a host group waits 10 s); a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
 Running it needs the <code>nccl/2.23.4-1</code> module alongside <code>cuda,mpi</code> — see <a href="../../installation.html#gpu-and-mpi-features">Installation</a> and <a href="mpi.html#gpu-per-rank">MPI ranks</a>.</p>
 <p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>), so two remote deltas that land on the same receiver key ship as one row.
-It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation, which has one remote entry, or a Clifford, whose remote entries never share an output pattern.
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>
 <p><strong>A device receive moves in chunks of destination positions</strong> rather than all at once (<code>GpuLayerOptions::exchange_bytes</code>, <code>PAULISTRINGS_GPU_EXCHANGE_BYTES</code>, <code>K</code>/<code>M</code>/<code>G</code> suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
 The send side is never chunked: its export volume stays resident until the layer’s last chunk moved.</p>

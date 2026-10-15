@@ -33,6 +33,20 @@ fn agrees_bucket_bits(application_index: usize) -> bool {
     application_index < BITS_AGREE_EVERY || application_index.is_multiple_of(BITS_AGREE_EVERY)
 }
 
+/// Panic on every partition unless all hold `bits` bucket bits; two collectives, outside the module's schedule, so only a debug build issues them.
+#[cfg(debug_assertions)]
+fn assert_bucket_bits_agree(collectives: &impl Collectives, bits: u8, application_index: usize) {
+    let highest = collectives.allreduce_max_u8(bits);
+    let lowest = u8::MAX - collectives.allreduce_max_u8(u8::MAX - bits);
+    assert_eq!(
+        lowest,
+        highest,
+        "partition {}, layer {application_index}: the partitions hold between {lowest} and {highest} \
+         bucket bits (this one {bits}), where the bucket-count agreement keeps them equal",
+        collectives.rank(),
+    );
+}
+
 /// A [`Collectives`] view that counts the policy finalization's calls for the trace.
 struct CountingCollectives<'a> {
     inner: &'a dyn Collectives,
@@ -186,6 +200,12 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
             }
         }
 
+        // Gated on the build alone, never on data, so every partition issues these collectives alike.
+        #[cfg(debug_assertions)]
+        if !solo {
+            assert_bucket_bits_agree(transport, local.hash().bits(), application_index);
+        }
+
         let counts = local.apply_layer(&prepared, &plan, rows, policy, transport);
         timed!(stamp.rearm());
 
@@ -247,3 +267,6 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

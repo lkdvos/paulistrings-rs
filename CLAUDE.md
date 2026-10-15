@@ -9,17 +9,17 @@ The one storage type is a bucketed `PauliSum<W>`: structure-of-arrays `x`/`z`/co
 `W` is a const generic; the PyO3 bindings monomorphize `W ∈ {1, 2, 4, 8, 16}` (64–1024 qubits).
 The optional partitioned engine splits the sum over `P ≤ 64` NUMA domains, MPI ranks (`mpi` feature) or CUDA devices (`cuda` feature) by GF(2) partition rows, behind a sealed `Transport` seam.
 
-`ARCHITECTURE.md` is the design source of truth; code cites its sections as `ARCHITECTURE.md §Engine`, so never rename its `##` headings without sweeping the citations.
-`research/FINDINGS.md` records measured and rejected ideas, `research/HARDWARE.md` the measured host facts; both are cited by heading the same way.
+Correctness contracts live in the `//!` or `///` docs of the item that enforces them; there is no separate design document.
+`research/FINDINGS.md` records measured and rejected ideas, `research/HARDWARE.md` the measured host facts; both are cited by heading (`research/FINDINGS.md §Heading`), so never rename a heading without sweeping its citations.
 
 ## Comment & prose style
 
 These rules are binding on every file, including markdown.
 
 1. **One sentence per line.** Never reflow a paragraph across lines. A long sentence stays one long line.
-2. **Comment blocks are rare.** A `//!` module header is at most five lines and says what the module contains, not how it works. A run longer than ~8 comment lines needs a reason.
+2. **Comment blocks are rare.** A `//!` module header is at most five lines and says what the module contains, not how it works, unless it states the module's contracts, which may run longer. A run longer than ~8 comment lines needs a reason.
 3. **No history in comments.** No dates, no "we tried X", no "previously", no A/B tables, no "re-measured on <host>". That is what `research/FINDINGS.md` and git are for.
-4. **Cite, don't paraphrase.** `ARCHITECTURE.md §Engine` is one line and outranks the paragraph restating it.
+4. **Cite, don't paraphrase.** Cite a FINDINGS heading or the item that holds the contract; one line outranks the paragraph restating it.
 5. **Comment the surprise** — a safety invariant, a non-obvious algorithm choice, a contract an implementor must honour. Never the mechanics the code already states.
 6. **Rust docs are a developer guide.** Python docstrings and the book are the user guide, so rustdoc carries no usage examples or doctests, and multi-paragraph `///` belongs only on the `pub` surface.
 
@@ -31,7 +31,7 @@ These rules are binding on every file, including markdown.
 - Each entry point is one plain call plus one `_with(…, options)` variant (`propagate`/`propagate_with`, `scatter`/`scatter_with`).
 - About 800 production lines per file is a soft cap; split on real seams.
 - No abbreviations in names (`accumulator`, not `acc`); domain acronyms (GF2, PTM, NUMA, MPI, NCCL) stay.
-- A move is its own commit and sweeps `ARCHITECTURE.md` citations and the layout below in the same commit.
+- A move is its own commit and sweeps citations of the moved items and the layout below in the same commit.
 
 ## Commands
 

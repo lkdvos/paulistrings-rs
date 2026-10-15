@@ -78,7 +78,6 @@ Start at [`examples/README.md`](examples/README.md).
 - Documentation site — showcases, benchmarks and cross-engine comparisons, rebuilt on every push to `main`: [lkdvos.github.io/paulistrings-rs](https://lkdvos.github.io/paulistrings-rs/).
   Source and local build instructions: [`docs/`](docs/README.md).
 - Rust developer reference: [docs.rs/paulistrings](https://docs.rs/paulistrings), or the rustdoc rendered alongside the site at [lkdvos.github.io/paulistrings-rs/api/](https://lkdvos.github.io/paulistrings-rs/api/).
-- System design and the propagation engine: [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Repository layout
 
@@ -117,7 +116,7 @@ research/
 
 Python is the user interface, documented on the [documentation site](https://lkdvos.github.io/paulistrings-rs/).
 The Rust crate's rustdoc is a developer guide to the engine rather than a user API.
-[`CLAUDE.md`](CLAUDE.md) lists the build, test and benchmark commands, and [`ARCHITECTURE.md`](ARCHITECTURE.md) is the design source of truth.
+[`CLAUDE.md`](CLAUDE.md) lists the build, test and benchmark commands.
 
 ```bash
 module load uv                    # Flatiron; elsewhere see https://docs.astral.sh/uv/

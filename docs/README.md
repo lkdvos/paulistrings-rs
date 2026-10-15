@@ -71,7 +71,7 @@ by rendering `cargo doc` alongside the book. Everything else resolves locally.
 ## What is in it
 
 The book is organized into four areas, Python-only — the Rust interface's home
-is the crate's own rustdoc and `ARCHITECTURE.md`.
+is the crate's own rustdoc.
 
 | section | contents |
 |---|---|

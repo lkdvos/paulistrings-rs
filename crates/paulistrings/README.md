@@ -4,7 +4,7 @@
 [![crates.io](https://img.shields.io/crates/v/paulistrings)](https://crates.io/crates/paulistrings)
 
 <!-- Pitch paragraph is single-sourced with the repo-root README.md — keep the two word-identical. -->
-Library for Pauli propagation built to scale across threads, processes and nodes.
+Library for simulating quantum circuits in the Pauli basis, built to scale across threads, processes and nodes.
 Pauli strings are stored as symplectic bitvectors, and terms are assigned to workers by a hash function that is linear over the bitfield.
 As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
 Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.

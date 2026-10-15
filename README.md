@@ -8,7 +8,7 @@
      The docs site pulls this same text in mechanically through the ANCHOR markers below
      (docs/book/src/index.md), so it cannot drift there; only these two files need syncing by hand. -->
 <!-- ANCHOR: pitch -->
-Library for Pauli propagation built to scale across threads, processes and nodes.
+Library for simulating quantum circuits in the Pauli basis, built to scale across threads, processes and nodes.
 Pauli strings are stored as symplectic bitvectors, and terms are assigned to workers by a hash function that is linear over the bitfield.
 As a result, the library can efficiently parallelize the work and compute the communication patterns for a given circuit.
 Additionally, for standard gate and noise sets, the amount of communication remains bounded and no global synchronization or reduction is required.

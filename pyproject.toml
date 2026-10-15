@@ -8,7 +8,8 @@ version = "0.1.1"
 description = "Classical simulation of quantum circuits in the Pauli basis, with a parallel Rust engine"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT OR Apache-2.0" }
+license = "MIT OR Apache-2.0"
+license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 authors = [{ name = "Lukas Devos", email = "ldevos@flatironinstitute.org" }]
 dependencies = ["numpy>=1.24"]
 

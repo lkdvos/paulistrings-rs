@@ -22,9 +22,10 @@ checkout_rev() {
     git -C "$repo" worktree add --detach "$2" "$1" >/dev/null
     _checkouts+=("$2")
     trap _remove_checkouts EXIT
-    # A rev older than the committed lock gets the checkout's, so the offline build resolves to cached versions.
-    [ -f "$2/Cargo.lock" ] || cp "$repo/Cargo.lock" "$2/Cargo.lock"
-    (cd "$2" && cargo fetch --offline --locked >/dev/null) || {
+    # A rev older than the committed lock gets the checkout's, which its own manifests may then trim offline, so its build resolves to cached versions.
+    local locked=--locked
+    [ -f "$2/Cargo.lock" ] || { cp "$repo/Cargo.lock" "$2/Cargo.lock"; locked=; }
+    (cd "$2" && cargo fetch --offline $locked >/dev/null) || {
         echo "shared crate cache lacks a Cargo.lock entry: re-run scripts/slurm/setup-shared-toolchain.sh on a networked host" >&2
         exit 3
     }

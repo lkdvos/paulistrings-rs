@@ -125,6 +125,32 @@ impl<const W: usize> GatherRun<W> {
     }
 }
 
+/// Panic unless `append_into` left the run's identity stream as it was and grew its rest stream by exactly the rows `count` promised: received rows must never join the identity stream, which the merge requires strictly ascending.
+#[cfg(debug_assertions)]
+fn debug_assert_received_rows_joined_the_rest<const W: usize>(
+    run: &GatherRun<W>,
+    (identity_keys, identity_coefficients, rest): (usize, usize, usize),
+    promised: usize,
+) {
+    assert_eq!(
+        (
+            run.identity.x.len(),
+            run.identity.z.len(),
+            run.identity.coeff.len()
+        ),
+        (identity_keys, identity_keys, identity_coefficients),
+        "received rows joined the identity stream",
+    );
+    assert_eq!(
+        run.rest.x.len() - rest,
+        promised,
+        "the rest stream took {} received rows where ExtraRows::count promised {promised}",
+        run.rest.x.len() - rest,
+    );
+    debug_assert_eq!(run.rest.x.len(), run.rest.z.len());
+    debug_assert_eq!(run.rest.x.len(), run.rest.coeff.len());
+}
+
 /// Below this many cosets the layer runs serially.
 pub(in crate::engine) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
@@ -268,7 +294,15 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     }
     if X::NEEDS_BETA {
         for (j, run) in runs.iter_mut().enumerate() {
+            #[cfg(debug_assertions)]
+            let lens_before = (
+                run.identity.x.len(),
+                run.identity.coeff.len(),
+                run.rest.len(),
+            );
             extra.append_into(beta_of(j), &mut run.rest);
+            #[cfg(debug_assertions)]
+            debug_assert_received_rows_joined_the_rest(run, lens_before, extra.count(beta_of(j)));
         }
     }
     lap!(stamp, scratch.stats.gather_ns);

@@ -1104,6 +1104,33 @@ mod extra_rows_tests {
         }
     }
 
+    /// The coset loop checks that each append lands in the rest stream, row for row as `count` promised.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "received rows where ExtraRows::count promised")]
+    fn an_append_beyond_its_count_is_caught() {
+        /// An [`ExtraRows`] whose `count` promises fewer rows than `append_into` pushes.
+        struct Undercounted<const W: usize>(Injected<W>);
+
+        impl<const W: usize> ExtraRows<W> for Undercounted<W> {
+            const NEEDS_BETA: bool = true;
+
+            fn count(&self, beta: u32) -> usize {
+                self.0.count(beta).saturating_sub(1)
+            }
+
+            fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
+                self.0.append_into(beta, rest)
+            }
+        }
+
+        let input = rand_sum::<1>(600, 8, 0xE47C);
+        let cnot = PtmChannel::cnot(1, 5);
+        let hash = Gf2Hash::<1>::new(8, 3, 0x51);
+        let injected = Undercounted(injection_for(&input, &hash));
+        let _ = layer_with_extra(&input, &cnot, &AlwaysKeep, 3, 0x51, &injected);
+    }
+
     /// An empty `Injected` (`NEEDS_BETA = true`) gives exactly what `NoExtra` gives.
     #[test]
     fn an_empty_injection_changes_nothing() {

@@ -15,12 +15,11 @@ Output: `target/criterion/` (HTML reports).
 
 ```bash
 ./scripts/setup.sh
-source .venv/bin/activate
-uv sync --extra examples --extra bench   # the cross-library deps; also rebuilds the extension after a Rust change
-pytest benchmarks/python --benchmark-only --benchmark-json=benchmarks/results/py.json
+uv sync --extra examples --extra bench   # the cross-library deps
+uv run pytest benchmarks/python --benchmark-only --benchmark-json=benchmarks/results/py.json
 ```
 
-Manual, not run in CI: `bench_baseline.py` (vs qiskit/openfermion containers; `uv run --with openfermion` for the latter, see [`python/baseline_comparison/README.md`](python/baseline_comparison/README.md)) plus the five Part A benchmarks below.
+Manual, not run in CI: `bench_baseline.py` (vs qiskit/openfermion containers; `uv run --with openfermion` for the latter, see [`python/baseline_comparison/README.md`](python/baseline_comparison/README.md)), the five Part A benchmarks below, and the PauliPropagation.jl head-to-head [`python/bench_jl_performance.py`](python/bench_jl_performance.py) (record and protocol in [`python/jl_performance/`](python/jl_performance/README.md)).
 None of the Part A benchmarks run in CI; each has a CI-safe correctness gate at smaller scale in `benchmarks/python/tests/`.
 
 | | driver | results | oracle |
@@ -34,8 +33,8 @@ None of the Part A benchmarks run in CI; each has a CI-safe correctness gate at 
 ## Julia baseline (PauliPropagation.jl)
 
 ```bash
-python benchmarks/python/julia_baseline.py --self-test     # wrapper smoke test
-pytest benchmarks/python/test_julia_parity.py -q           # the blocking parity gate
+uv run python benchmarks/python/julia_baseline.py --self-test     # wrapper smoke test
+uv run pytest benchmarks/python/test_julia_parity.py -q           # the blocking parity gate
 ```
 
 [`benchmarks/julia/`](julia/) is a subprocess-driven, out-of-CI baseline against PauliPropagation.jl; see [`julia/README.md`](julia/README.md) for the pinned version and known semantic divergences.

@@ -1,6 +1,5 @@
 target/
 **/*.rs.bk
-Cargo.lock
 
 __pycache__/
 *.py[cod]
@@ -24,9 +23,8 @@ benchmarks/python/jl_performance/**/tasks/
 # Rendered docs site (mdbook build-dir); the source is docs/book/src.
 docs/book/site/
 
-# Sibling worktrees checked out inside the repo.
+# The pres worktree checked out inside the repo.
 /pres/
-/simd/
 
 .DS_Store
 .idea/

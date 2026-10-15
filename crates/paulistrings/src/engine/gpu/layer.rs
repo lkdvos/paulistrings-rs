@@ -1,246 +1,92 @@
-//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale. See ARCHITECTURE.md §Engine, §Partitioning and §GPU-Readiness.
+//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale.
+//!
+//! Within a bucket the device keeps unique keys in no particular order; the fused layer sorts records by fingerprint and falls back to the full key on a collision, so equal keys always end adjacent.
+//! A block's records and a source bucket's rows are checked against `LAYER_CAP` and `MAX_BUCKET_LEN` before the launch: a lone partition refines past a violation up to `GpuLayerOptions::max_bits`, while a group member reports `Unsupported`, since nobody refines off-schedule.
+//! A permutation table takes the scatter path instead of the fused layer only when the layer has no received rows.
 
 use std::sync::Arc;
 
+#[cfg(feature = "phase-timing")]
 use cudarc::driver::sys::CUevent_flags;
-use cudarc::driver::{CudaEvent, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+#[cfg(feature = "phase-timing")]
+use cudarc::driver::CudaEvent;
+use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
-use super::export::{exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECV_SEGMENT};
-use super::module::{
-    layer_shared_bytes, layer_threads, thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN,
+use super::export::{
+    exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECEIVED_SEGMENT,
 };
+use super::module::{thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan, ScanScratch};
-use super::sum::GpuSum;
+use super::sum::{GpuSum, REFINE_MAX_DELTA};
 use super::truncation::KeepProgram;
-use crate::bucket::hash::B_MAX_BITS;
-use crate::bucket::sum::desired_bits;
 use crate::channel::prepared::Prepared;
-use crate::engine::coset::Gf2Span;
+use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
-use crate::engine::partitioned::plan::PartitionPlan;
-use crate::engine::partitioned::transport::Transport;
+use crate::engine::plan::PartitionPlan;
+use crate::engine::timing::timed;
+use crate::engine::trace::DeviceLayerRecord;
+use crate::engine::transport::Transport;
+use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::truncation::builtin::APPROX_BINS;
 
-/// Records per fused block the default bucket policy aims for.
-pub const DEFAULT_RECORDS_PER_BLOCK: usize = 4096;
+mod fast_paths;
+mod fused;
+mod options;
 
-/// Default cap on the loose output arena, in bytes.
-pub const DEFAULT_ARENA_BYTES: usize = 4 << 30;
+use fast_paths::{permute_device, rescale_device};
+pub(super) use fused::{
+    arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
+};
+pub(crate) use options::{gpu_desired_bits, prepared_fanout};
+pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 
-/// How the device chooses its bucket count before a layer; grow-only either way, as [`PauliSum::rebucket`](crate::PauliSum::rebucket).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GpuBucketPolicy {
-    /// `fanout × terms per bucket ≈ target`, so a fused block sees about `target` records whatever the channel's fanout.
-    RecordsPerBlock(usize),
-    /// A fixed `desired_bits(len, target, 1)`, independent of the channel.
-    TermsPerBucket(usize),
-}
-
-impl Default for GpuBucketPolicy {
-    fn default() -> Self {
-        GpuBucketPolicy::RecordsPerBlock(DEFAULT_RECORDS_PER_BLOCK)
-    }
-}
-
-/// Knobs of the device layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct GpuLayerOptions {
-    /// The bucket count the device refines to before a layer.
-    pub bucket_policy: GpuBucketPolicy,
-    /// Bytes the loose output arena may hold; positions are batched so no batch's pre-dedup rows exceed it.
-    pub arena_bytes: usize,
-    /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`]; `B_MAX_BITS` by default.
-    pub max_bits: u8,
-    /// Merge one partner's exported rows by key on the sender before the exchange (ARCHITECTURE.md §Partitioning); on by default.
-    pub premerge: bool,
-    /// Bytes the received rows of a remote layer may hold on the device at once, at `(2W + 3) × 8` per row.
-    ///
-    /// The receive then moves in chunks of destination positions, a power of two of them, each merged by the fused layer before the next arrives (ARCHITECTURE.md §Partitioning); a chunk exceeds the cap only when one position alone does.
-    /// Unbounded, one chunk, unless `PAULISTRINGS_GPU_EXCHANGE_BYTES` names a byte count (`K`, `M` and `G` suffixes are binary).
-    pub exchange_bytes: usize,
-    /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path, K12–K14, instead of the fused layer; on by default.
-    pub clifford: bool,
-}
-
-/// The default of [`GpuLayerOptions::exchange_bytes`], read once per process.
-fn exchange_bytes_default() -> usize {
-    static BYTES: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *BYTES.get_or_init(|| {
-        parse_bytes(
-            std::env::var("PAULISTRINGS_GPU_EXCHANGE_BYTES")
-                .ok()
-                .as_deref(),
-        )
-    })
-}
-
-/// A positive byte count with an optional binary `K`/`M`/`G` suffix; anything else is unbounded.
-fn parse_bytes(raw: Option<&str>) -> usize {
-    let Some(raw) = raw.map(str::trim) else {
-        return usize::MAX;
-    };
-    let (digits, shift) = match raw.as_bytes().last() {
-        Some(b'K' | b'k') => (&raw[..raw.len() - 1], 10),
-        Some(b'M' | b'm') => (&raw[..raw.len() - 1], 20),
-        Some(b'G' | b'g') => (&raw[..raw.len() - 1], 30),
-        _ => (raw, 0),
-    };
-    digits
-        .parse::<usize>()
-        .ok()
-        .filter(|&n| n > 0)
-        .and_then(|n| n.checked_mul(1usize << shift))
-        .unwrap_or(usize::MAX)
-}
-
-impl Default for GpuLayerOptions {
-    fn default() -> Self {
-        Self {
-            bucket_policy: GpuBucketPolicy::default(),
-            arena_bytes: DEFAULT_ARENA_BYTES,
-            max_bits: B_MAX_BITS,
-            premerge: true,
-            exchange_bytes: exchange_bytes_default(),
-            clifford: true,
-        }
-    }
-}
-
-/// The bucket bits a layer of `fanout` entries over `len` terms wants under `policy`, never below `current`.
-pub(crate) fn gpu_desired_bits(
-    len: usize,
-    fanout: usize,
-    policy: GpuBucketPolicy,
-    current: u8,
-) -> u8 {
-    let (rows, target) = match policy {
-        GpuBucketPolicy::TermsPerBucket(target) => (len, target),
-        GpuBucketPolicy::RecordsPerBlock(target) => (len.saturating_mul(fanout.max(1)), target),
-    };
-    desired_bits(rows, target.max(1), 1)
-        .max(current)
-        .min(B_MAX_BITS)
-}
-
-/// The entries `prep` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
-pub(crate) fn prepared_fanout<const W: usize>(prep: &Prepared<W>) -> usize {
-    match prep {
-        Prepared::Local(ptm) => ptm
-            .deltas()
-            .iter()
-            .filter(|d| {
-                d.amp
-                    .iter()
-                    .any(|a| *a != num_complex::Complex64::new(0.0, 0.0))
-            })
-            .count(),
-        Prepared::Rotation(_) => 2,
-    }
-}
-
-/// Per-layer counters of the most recent device layer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct GpuLayerCounters {
-    /// Bucket bits the layer ran at.
-    pub bits: u8,
-    /// Refine passes the layer itself issued.
-    pub refine_passes: u32,
-    /// Pre-dedup records over every block.
-    pub records: u64,
-    /// The largest block's records.
-    pub records_max: u32,
-    /// Record capacity of the launched variant.
-    pub n_cap: u32,
-    /// Arena batches.
-    pub batches: u32,
-    /// Blocks that fell back to the `g_hi32` passes, the sender-side merge's included.
-    pub fallback_hi: u32,
-    /// Blocks that fell back to the full-key sort, the sender-side merge's included.
-    pub fallback_key: u32,
-    /// The layer took the rescale path.
-    pub rescaled: bool,
-    /// The layer took the permutation path, K12–K14, with `records` its input rows.
-    pub permuted: bool,
-    /// The layer reduced by the segmented scan rather than the head-serial walk.
-    pub dense: bool,
-    /// Rows received from partners and merged by the fused layer.
-    pub rows_received: u64,
-    /// Exported rows the sender-side merge folded away before the exchange.
-    pub rows_premerged: u64,
-    /// Chunks the received rows moved in ([`GpuLayerOptions::exchange_bytes`]); zero on a local layer.
-    pub recv_chunks: u32,
-}
-
-/// Kernel milliseconds per family, accumulated under `phase-timing` and folded into the partition's `PhaseStats`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct GpuKernelMs {
-    /// K1, the count table.
-    pub count: f64,
-    /// K2, segment sizes and their scans.
-    pub sizes: f64,
-    /// K3, the fused layer over every batch.
-    pub layer: f64,
-    /// K4, compaction and its scans.
-    pub compact: f64,
-    /// K5, the key-preserving rescale.
-    pub rescale: f64,
-    /// K14, the permutation scatter; its K12 count and K13 sizes land in `count` and `sizes`.
-    pub permute: f64,
-    /// K6, refines the layer issued.
-    pub refine: f64,
-    /// K7, the `ApproxTopN` histogram and retain.
-    pub truncate: f64,
-    /// K10, the export blocks' counts and fill.
-    pub export: f64,
-}
-
-/// The exchange's laps of one partition, drained into its `PhaseStats` per layer.
+/// The partition's phase counters under `phase-timing` (`benchmarks/PROFILING.md` contract (a)), nothing otherwise.
 #[cfg(feature = "phase-timing")]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct ExchangeLaps {
-    pub export_ns: u64,
-    pub exchange_ns: u64,
-    pub rows_exported: u64,
-    pub recv_rows: u64,
-}
+pub(crate) type DeviceStats = crate::engine::stats::PhaseStats;
+#[cfg(not(feature = "phase-timing"))]
+pub(crate) type DeviceStats = ();
+
+/// The `PhaseStats` field a kernel interval lands in.
+#[cfg(feature = "phase-timing")]
+type KernelSlot = fn(&mut DeviceStats) -> &mut u64;
 
 /// A [`DevicePrepared`]'s per-entry tables on the device.
-pub(super) struct TableBufs {
-    pub(super) amp: CudaSlice<f64>,
+pub(super) struct TableBuffers {
+    pub(super) amplitude: CudaSlice<f64>,
     pub(super) mask: CudaSlice<u64>,
-    pub(super) nz: CudaSlice<u32>,
-    pub(super) bd: CudaSlice<u32>,
-    pub(super) gm: CudaSlice<u64>,
-    pub(super) rem: CudaSlice<u32>,
+    pub(super) nonzero_patterns: CudaSlice<u32>,
+    pub(super) bucket_delta: CudaSlice<u32>,
+    pub(super) fingerprint_delta: CudaSlice<u64>,
+    pub(super) received_slot: CudaSlice<u32>,
 }
 
-impl TableBufs {
-    pub(super) fn new(s: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
+impl TableBuffers {
+    pub(super) fn new(stream: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
         Ok(Self {
-            amp: s.alloc_zeros(512)?,
-            mask: s.alloc_zeros(32 * w)?,
-            nz: s.alloc_zeros(16)?,
-            bd: s.alloc_zeros(16)?,
-            gm: s.alloc_zeros(16)?,
-            rem: s.alloc_zeros(16)?,
+            amplitude: stream.alloc_zeros(512)?,
+            mask: stream.alloc_zeros(32 * w)?,
+            nonzero_patterns: stream.alloc_zeros(16)?,
+            bucket_delta: stream.alloc_zeros(16)?,
+            fingerprint_delta: stream.alloc_zeros(16)?,
+            received_slot: stream.alloc_zeros(16)?,
         })
     }
 
-    /// Copy every table of `t` up; the copies are synchronous.
+    /// Copy every table of `table` up; the copies are synchronous.
     pub(super) fn upload<const W: usize>(
         &mut self,
-        s: &Arc<CudaStream>,
-        t: &DevicePrepared<W>,
+        stream: &Arc<CudaStream>,
+        table: &DevicePrepared<W>,
     ) -> Result<(), GpuError> {
-        s.memcpy_htod(&t.amp, &mut self.amp)?;
-        s.memcpy_htod(&t.mask, &mut self.mask)?;
-        s.memcpy_htod(&t.nz, &mut self.nz)?;
-        s.memcpy_htod(&t.bucket_delta, &mut self.bd)?;
-        s.memcpy_htod(&t.gm, &mut self.gm)?;
-        s.memcpy_htod(&t.rem, &mut self.rem)?;
+        stream.memcpy_htod(&table.amplitude, &mut self.amplitude)?;
+        stream.memcpy_htod(&table.mask, &mut self.mask)?;
+        stream.memcpy_htod(&table.nonzero_patterns, &mut self.nonzero_patterns)?;
+        stream.memcpy_htod(&table.bucket_delta, &mut self.bucket_delta)?;
+        stream.memcpy_htod(&table.fingerprint_delta, &mut self.fingerprint_delta)?;
+        stream.memcpy_htod(&table.received_slot, &mut self.received_slot)?;
         Ok(())
     }
 }
@@ -248,22 +94,24 @@ impl TableBufs {
 /// Grow-only device buffers one partition keeps between layers.
 pub(crate) struct LayerScratch<const W: usize> {
     pub(super) bucket_at: CudaSlice<u32>,
-    pub(super) cnt: CudaSlice<u32>,
+    pub(super) counts: CudaSlice<u32>,
     rows: CudaSlice<u32>,
-    seg_start: CudaSlice<u32>,
-    out_len_pos: CudaSlice<u32>,
-    pub(super) dst_off: CudaSlice<u32>,
-    /// K7's `[len, bins…]`.
-    pub(super) hist: CudaSlice<u64>,
-    /// K8's 256-bin radix digit histogram, reused across passes.
-    pub(super) radix_hist: CudaSlice<u64>,
-    /// K8's small scalar outputs: the extracted singleton bits, or `[above, equal]` counts.
+    segment_start: CudaSlice<u32>,
+    rows_per_position: CudaSlice<u32>,
+    pub(super) destination_offsets: CudaSlice<u32>,
+    /// The octave histogram's `[len, bins…]`.
+    pub(super) histogram: CudaSlice<u64>,
+    /// The radix-select's 256-bin digit histogram, reused across passes.
+    pub(super) radix_histogram: CudaSlice<u64>,
+    /// The radix-select's extracted singleton bits.
     pub(super) radix_out: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
-    pub(super) table: TableBufs,
+    pub(super) table: TableBuffers,
     entry_of: CudaSlice<u32>,
     pub(super) arena: Option<DeviceColumns<W>>,
-    seg_host: Vec<u32>,
+    segment_start_host: Vec<u32>,
+    /// The coset order `bucket_at` uploads the inverse of, and that inverse on the host.
+    order: CosetOrder,
     bucket_at_host: Vec<u32>,
     /// `(bits, bucket deltas)` the resident `bucket_at` was built for; the map is a function of those two alone.
     bucket_at_key: Option<(u8, Vec<u32>)>,
@@ -271,145 +119,149 @@ pub(crate) struct LayerScratch<const W: usize> {
     longest: Option<u32>,
     pub(super) scan: ScanScratch,
     /// Scan totals, two slots so a count's pair of scans can be read together.
-    pub(super) tot_a: CudaSlice<u32>,
-    tot_b: CudaSlice<u32>,
+    pub(super) totals: CudaSlice<u32>,
+    length_totals: CudaSlice<u32>,
     /// Export, exchange and receive buffers.
     pub(super) export: DeviceExport<W>,
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
-    pub(crate) counters: GpuLayerCounters,
-    pub(crate) kernel_ms: GpuKernelMs,
+    /// The current layer's device counters, read into its trace row.
+    pub(crate) record: DeviceLayerRecord,
+    /// The current layer's refine passes.
+    pub(crate) refine_passes: u32,
+    /// The current layer's receive chunks, planned before the first moves, so a failure mid-receive keeps it.
+    pub(crate) receive_chunks: u32,
+    /// Kernel intervals, copies and exchange laps land here directly.
+    pub(crate) stats: DeviceStats,
     /// Timing events, reused across layers.
+    #[cfg(feature = "phase-timing")]
     events: Vec<CudaEvent>,
+    #[cfg(feature = "phase-timing")]
     next_event: usize,
     /// Recorded event pairs not yet read; [`Self::resolve`] reads them behind one synchronization instead of one per kernel.
-    pending: Vec<(usize, usize, KernelSlot)>,
-    /// Host-to-device and device-to-host copy time inside the current layer.
-    pub(crate) xfer_ns: XferNs,
     #[cfg(feature = "phase-timing")]
-    pub(crate) laps: ExchangeLaps,
+    pending: Vec<(usize, usize, KernelSlot)>,
 }
 
-type KernelSlot = fn(&mut GpuKernelMs) -> &mut f64;
-
-#[cfg(feature = "phase-timing")]
-pub(crate) type XferNs = [u64; 2];
-#[cfg(not(feature = "phase-timing"))]
-pub(crate) type XferNs = ();
-
-/// Which direction a timed copy in [`xfer`] runs.
+/// Which direction a timed copy in [`timed_transfer`] runs.
 #[derive(Clone, Copy)]
-pub(super) enum Xfer {
+pub(super) enum Transfer {
     H2d,
     D2h,
 }
 
-/// Run `f`, a synchronous host<->device copy, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
-#[inline]
-pub(super) fn xfer<T>(
-    ns: &mut XferNs,
-    dir: Xfer,
+/// Run `f`, a synchronous host<->device copy on `stream`, timing it into `h2d_ns` / `d2h_ns` under `phase-timing`.
+pub(super) fn timed_transfer<T>(
+    stream: &CudaStream,
+    stats: &mut DeviceStats,
+    dir: Transfer,
     f: impl FnOnce() -> Result<T, GpuError>,
 ) -> Result<T, GpuError> {
     #[cfg(feature = "phase-timing")]
     {
+        // The copy would otherwise absorb the wait for queued kernels, so the timed region starts after its own sync.
+        stream.synchronize()?;
         let t0 = std::time::Instant::now();
         let r = f();
-        ns[dir as usize] += t0.elapsed().as_nanos() as u64;
+        let ns = t0.elapsed().as_nanos() as u64;
+        match dir {
+            Transfer::H2d => stats.h2d_ns += ns,
+            Transfer::D2h => stats.d2h_ns += ns,
+        }
         r
     }
     #[cfg(not(feature = "phase-timing"))]
     {
-        let _ = (ns, dir);
+        let _ = (stream, stats, dir);
         f()
     }
 }
 
 impl<const W: usize> LayerScratch<W> {
     pub(crate) fn new(sum: &GpuSum<W>, options: GpuLayerOptions) -> Result<Self, GpuError> {
-        let s = &sum.stream;
+        let stream = &sum.stream;
         Ok(Self {
-            bucket_at: s.alloc_zeros(1)?,
-            cnt: s.alloc_zeros(1)?,
-            rows: s.alloc_zeros(1)?,
-            seg_start: s.alloc_zeros(2)?,
-            out_len_pos: s.alloc_zeros(1)?,
-            dst_off: s.alloc_zeros(2)?,
-            hist: s.alloc_zeros(1 + APPROX_BINS)?,
-            radix_hist: s.alloc_zeros(256)?,
-            radix_out: s.alloc_zeros(2)?,
-            fallback: s.alloc_zeros(2)?,
-            table: TableBufs::new(s, W)?,
-            entry_of: s.alloc_zeros(16)?,
+            bucket_at: stream.alloc_zeros(1)?,
+            counts: stream.alloc_zeros(1)?,
+            rows: stream.alloc_zeros(1)?,
+            segment_start: stream.alloc_zeros(2)?,
+            rows_per_position: stream.alloc_zeros(1)?,
+            destination_offsets: stream.alloc_zeros(2)?,
+            histogram: stream.alloc_zeros(1 + APPROX_BINS)?,
+            radix_histogram: stream.alloc_zeros(256)?,
+            radix_out: stream.alloc_zeros(2)?,
+            fallback: stream.alloc_zeros(2)?,
+            table: TableBuffers::new(stream, W)?,
+            entry_of: stream.alloc_zeros(16)?,
             arena: None,
-            seg_host: Vec::new(),
+            segment_start_host: Vec::new(),
+            order: CosetOrder::default(),
             bucket_at_host: Vec::new(),
             bucket_at_key: None,
             longest: None,
-            scan: ScanScratch::new(s)?,
-            tot_a: s.alloc_zeros(2)?,
-            tot_b: s.alloc_zeros(2)?,
+            scan: ScanScratch::new(stream)?,
+            totals: stream.alloc_zeros(2)?,
+            length_totals: stream.alloc_zeros(2)?,
             export: DeviceExport::new(sum)?,
             extent: sum.len(),
             options,
-            counters: GpuLayerCounters::default(),
-            kernel_ms: GpuKernelMs::default(),
-            events: Vec::new(),
-            next_event: 0,
-            pending: Vec::new(),
-            xfer_ns: XferNs::default(),
+            record: DeviceLayerRecord::default(),
+            refine_passes: 0,
+            receive_chunks: 0,
+            stats: DeviceStats::default(),
             #[cfg(feature = "phase-timing")]
-            laps: ExchangeLaps::default(),
+            events: Vec::new(),
+            #[cfg(feature = "phase-timing")]
+            next_event: 0,
+            #[cfg(feature = "phase-timing")]
+            pending: Vec::new(),
         })
     }
 
-    /// Whether kernel events are recorded: under `phase-timing` only.
-    fn timing(&self) -> bool {
-        cfg!(feature = "phase-timing")
-    }
-
-    pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<Option<usize>, GpuError> {
-        if !self.timing() {
-            return Ok(None);
-        }
+    /// Record a timing event on the sum's stream, opening an interval for [`Self::lap`].
+    #[cfg(feature = "phase-timing")]
+    pub(super) fn event(&mut self, sum: &GpuSum<W>) -> Result<usize, GpuError> {
         if self.next_event == self.events.len() {
-            self.events
-                .push(sum.ctx.new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?);
+            self.events.push(
+                sum.context
+                    .new_event(Some(CUevent_flags::CU_EVENT_DEFAULT))?,
+            );
         }
         let i = self.next_event;
         self.events[i].record(&sum.stream)?;
         self.next_event += 1;
-        Ok(Some(i))
+        Ok(i)
     }
 
-    /// Close the interval opened by `from` with a new event; read at the next [`Self::resolve`].
+    /// Close the interval opened by `from` with a new event; read into `into` at the next [`Self::resolve`].
+    #[cfg(feature = "phase-timing")]
     pub(super) fn lap(
         &mut self,
         sum: &GpuSum<W>,
-        from: Option<usize>,
+        from: usize,
         into: KernelSlot,
     ) -> Result<(), GpuError> {
-        let Some(i) = from else { return Ok(()) };
-        let Some(j) = self.event(sum)? else {
-            return Ok(());
-        };
-        self.pending.push((i, j, into));
+        let to = self.event(sum)?;
+        self.pending.push((from, to, into));
         Ok(())
     }
 
-    /// Read every pending interval into `kernel_ms` behind one synchronization and free the events for reuse.
+    /// Read every pending interval into `stats`, in nanoseconds, behind one synchronization and free the events for reuse.
     pub(super) fn resolve(&mut self, sum: &GpuSum<W>) -> Result<(), GpuError> {
-        if self.pending.is_empty() {
+        #[cfg(feature = "phase-timing")]
+        {
+            if !self.pending.is_empty() {
+                sum.stream.synchronize()?;
+            }
+            for (from, to, into) in std::mem::take(&mut self.pending) {
+                let ms = f64::from(self.events[from].elapsed_ms(&self.events[to])?);
+                *into(&mut self.stats) += (ms.max(0.0) * 1e6) as u64;
+            }
             self.next_event = 0;
-            return Ok(());
         }
-        sum.stream.synchronize()?;
-        for (i, j, into) in std::mem::take(&mut self.pending) {
-            let ms = f64::from(self.events[i].elapsed_ms(&self.events[j])?);
-            *into(&mut self.kernel_ms) += ms;
-        }
-        self.next_event = 0;
+        #[cfg(not(feature = "phase-timing"))]
+        let _ = sum;
         Ok(())
     }
 
@@ -419,36 +271,31 @@ impl<const W: usize> LayerScratch<W> {
         sum: &GpuSum<W>,
         table: &DevicePrepared<W>,
     ) -> Result<(), GpuError> {
-        let s = &sum.stream;
-        let o = sum.device();
+        let stream = &sum.stream;
+        let ordinal = sum.device();
         let b = sum.hash.num_buckets();
         let e = table.entries;
         let key = (sum.hash.bits(), table.bucket_deltas());
-        // The position map depends on the bucket count and the deltas alone, so a steady-state layer reuses the resident one.
         let map_stale = self.bucket_at_key.as_ref() != Some(&key);
         if map_stale {
-            let span = Gf2Span::new(&key.1, key.0);
+            self.order.rebuild(&Gf2Span::new(&key.1, key.0), true);
+            let order = &self.order;
             self.bucket_at_host.clear();
-            self.bucket_at_host.resize(b, 0);
-            for beta in 0..b as u32 {
-                self.bucket_at_host[span.perm_index(beta) as usize] = beta;
-            }
-            grow(s, &mut self.bucket_at, b, o)?;
+            self.bucket_at_host
+                .extend((0..b as u32).map(|position| order.bucket_at(position)));
+            grow(stream, &mut self.bucket_at, b, ordinal)?;
         }
-        grow(s, &mut self.cnt, b * e, o)?;
-        grow(s, &mut self.rows, b, o)?;
-        grow(s, &mut self.seg_start, b + 1, o)?;
-        grow(s, &mut self.dst_off, b + 1, o)?;
-        // A pageable upload synchronizes the stream first, so the copy's wall includes any refine still running; the timed region starts after its own sync.
-        #[cfg(feature = "phase-timing")]
-        s.synchronize()?;
+        grow(stream, &mut self.counts, b * e, ordinal)?;
+        grow(stream, &mut self.rows, b, ordinal)?;
+        grow(stream, &mut self.segment_start, b + 1, ordinal)?;
+        grow(stream, &mut self.destination_offsets, b + 1, ordinal)?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
-        let bufs = &mut self.table;
-        xfer(&mut self.xfer_ns, Xfer::H2d, || {
+        let buffers = &mut self.table;
+        timed_transfer(stream, &mut self.stats, Transfer::H2d, || {
             if map_stale {
-                s.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
+                stream.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
             }
-            bufs.upload(s, table)
+            buffers.upload(stream, table)
         })?;
         if map_stale {
             self.bucket_at_key = Some(key);
@@ -456,38 +303,46 @@ impl<const W: usize> LayerScratch<W> {
         Ok(())
     }
 
-    /// K1 over the local buckets.
+    /// `k_count` over the local buckets.
     pub(super) fn count_local(
         &mut self,
         sum: &GpuSum<W>,
         table: &DevicePrepared<W>,
     ) -> Result<(), GpuError> {
-        let s = &sum.stream;
+        let stream = &sum.stream;
         let b = sum.hash.num_buckets();
         let (b32, e32) = (b as u32, table.entries as u32);
-        let t0 = self.event(sum)?;
-        // SAFETY: arguments match `k_count` in count.cu; `cnt` holds `b * e` entries.
+        timed!(let t0 = self.event(sum)?);
+        // SAFETY: arguments match `k_count` in count.cu; `counts` holds `b * e` entries.
         unsafe {
-            s.launch_builder(&sum.kernels.count)
-                .arg(&sum.cols.x)
-                .arg(&sum.cols.z)
-                .arg(&sum.cols.start)
-                .arg(&sum.cols.lens)
+            stream
+                .launch_builder(&sum.kernels.count)
+                .arg(&sum.columns.x)
+                .arg(&sum.columns.z)
+                .arg(&sum.columns.start)
+                .arg(&sum.columns.lengths)
                 .arg(&b32)
                 .arg(&table.mode)
                 .arg(&e32)
-                .arg(&table.kq)
-                .arg(&table.q0)
-                .arg(&table.q1)
-                .arg(&table.rot_cos)
-                .arg(&table.rot_sin)
-                .arg(&self.table.amp)
+                .arg(&table.support_size)
+                .arg(&table.qubit_0)
+                .arg(&table.qubit_1)
+                .arg(&table.rotation_cos)
+                .arg(&table.rotation_sin)
+                .arg(&self.table.amplitude)
                 .arg(&self.table.mask)
-                .arg(&self.table.nz)
-                .arg(&mut self.cnt)
+                .arg(&self.table.nonzero_patterns)
+                .arg(&mut self.counts)
                 .launch(warp_per_bucket(b))?;
         }
-        self.lap(sum, t0, |m| &mut m.count)
+        timed!(self.lap(sum, t0, |stats| &mut stats.gather_ns)?);
+        Ok(())
+    }
+
+    /// The original bucket at each position of the resident `bucket_at`, for a host-side debug check.
+    #[cfg(debug_assertions)]
+    pub(super) fn bucket_at_host(&self) -> &[u32] {
+        &self.bucket_at_host
     }
 
     /// The longest source bucket, read once per bucket count and layer.
@@ -496,84 +351,81 @@ impl<const W: usize> LayerScratch<W> {
             return Ok(l);
         }
         self.scan_lens(sum)?;
-        #[cfg(feature = "phase-timing")]
-        sum.stream.synchronize()?;
-        let (s, tot_b) = (&sum.stream, &self.tot_b);
-        let l = xfer(&mut self.xfer_ns, Xfer::D2h, || {
-            let v = s.clone_dtoh(tot_b)?;
-            s.synchronize()?;
+        let (stream, length_totals) = (&sum.stream, &self.length_totals);
+        let l = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
+            let v = stream.clone_dtoh(length_totals)?;
+            stream.synchronize()?;
             Ok(v[1])
         })?;
         self.longest = Some(l);
         Ok(l)
     }
 
-    /// The scan of the bucket lengths whose maximum `tot_b[1]` is the longest bucket.
+    /// The scan of the bucket lengths whose maximum `length_totals[1]` is the longest bucket.
     fn scan_lens(&mut self, sum: &GpuSum<W>) -> Result<(), GpuError> {
         let b = sum.hash.num_buckets();
         exclusive_scan(
             &sum.stream,
             &sum.kernels,
-            &sum.cols.lens.slice(0..b),
-            &mut self.dst_off.slice_mut(0..b + 1),
+            &sum.columns.lengths.slice(0..b),
+            &mut self.destination_offsets.slice_mut(0..b + 1),
             b,
             &mut self.scan,
-            &mut self.tot_b,
+            &mut self.length_totals,
         )
     }
 
-    /// K2 and its scans, over the local counts and the received offsets; returns `(records total, records max, longest local bucket)`.
+    /// `k_rows` and its scans, over the local counts and the received offsets; returns `(records total, records max, longest local bucket)`.
     fn sizes(
         &mut self,
         sum: &GpuSum<W>,
         table: &DevicePrepared<W>,
     ) -> Result<(u32, u32, u32), GpuError> {
-        let s = &sum.stream;
-        let k = &sum.kernels;
+        let stream = &sum.stream;
+        let kernels = &sum.kernels;
         let b = sum.hash.num_buckets();
         let (b32, e32) = (b as u32, table.entries as u32);
-        let t1 = self.event(sum)?;
-        // SAFETY: arguments match `k_rows` in count.cu; `recv_off` holds `K × (b + 1)` entries for the `K` received entries `rem` names.
+        timed!(let t1 = self.event(sum)?);
+        // SAFETY: arguments match `k_rows` in count.cu; `received_offsets` holds `K × (b + 1)` entries for the `K` received entries `received_slot` names.
         unsafe {
-            s.launch_builder(&k.rows)
-                .arg(&self.cnt)
+            stream
+                .launch_builder(&kernels.rows)
+                .arg(&self.counts)
                 .arg(&self.bucket_at)
-                .arg(&self.table.bd)
-                .arg(&self.table.rem)
-                .arg(&self.export.recv_off)
+                .arg(&self.table.bucket_delta)
+                .arg(&self.table.received_slot)
+                .arg(&self.export.received_offsets)
                 .arg(&mut self.rows)
                 .arg(&b32)
                 .arg(&e32)
                 .launch(thread_per(b, 1024))?;
         }
         exclusive_scan(
-            s,
-            k,
+            stream,
+            kernels,
             &self.rows.slice(0..b),
-            &mut self.seg_start.slice_mut(0..b + 1),
+            &mut self.segment_start.slice_mut(0..b + 1),
             b,
             &mut self.scan,
-            &mut self.tot_a,
+            &mut self.totals,
         )?;
         let known = self.longest;
         if known.is_none() {
             self.scan_lens(sum)?;
         }
-        self.lap(sum, t1, |m| &mut m.sizes)?;
-        // Downloads wait for the scans, so the timed region again starts after its own sync.
-        #[cfg(feature = "phase-timing")]
-        s.synchronize()?;
-        self.seg_host.resize(b + 1, 0);
-        let (seg_start, seg_host) = (&self.seg_start, &mut self.seg_host);
-        let (tot_a, tot_b) = (&self.tot_a, &self.tot_b);
-        let (tm, longest) = xfer(&mut self.xfer_ns, Xfer::D2h, || {
-            let tm = s.clone_dtoh(tot_a)?;
+        timed!(self.lap(sum, t1, |stats| &mut stats.gather_ns)?);
+        self.segment_start_host.resize(b + 1, 0);
+        let (segment_start, segment_start_host) =
+            (&self.segment_start, &mut self.segment_start_host);
+        let (totals, length_totals) = (&self.totals, &self.length_totals);
+        let (tm, longest) = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
+            let tm = stream.clone_dtoh(totals)?;
             let longest = match known {
                 Some(l) => l,
-                None => s.clone_dtoh(tot_b)?[1],
+                None => stream.clone_dtoh(length_totals)?[1],
             };
-            s.memcpy_dtoh(&seg_start.slice(0..b + 1), &mut seg_host[..])?;
-            s.synchronize()?;
+            stream.memcpy_dtoh(&segment_start.slice(0..b + 1), &mut segment_start_host[..])?;
+            stream.synchronize()?;
             Ok((tm, longest))
         })?;
         self.longest = Some(longest);
@@ -581,58 +433,65 @@ impl<const W: usize> LayerScratch<W> {
     }
 }
 
-/// Apply `prep` to `sum` on its device under `keep`, leaving the previous columns as `sum.spare`.
-/// `target_bits` is the bucket count the group settled on; a lone partition refines to it and to its bucket policy in one pass, a partition of a group runs at exactly `target_bits` and reports `Unsupported` rather than refine off-schedule.
-/// A layer with remote deltas exports through K10, exchanges over `transport`, and merges the received rows in the fused layer.
-#[allow(clippy::too_many_arguments)]
+/// One layer's inputs besides the sum, its scratch and the transport.
+pub(crate) struct DeviceLayer<'a, const W: usize> {
+    pub(crate) prepared: &'a Prepared<W>,
+    pub(crate) plan: &'a PartitionPlan,
+    /// The per-term half of the run's policy.
+    pub(crate) keep: &'a KeepProgram,
+    /// The group's agreed bucket bits.
+    pub(crate) target_bits: u8,
+}
+
+/// Apply `layer` to `sum` on its device, leaving the previous columns as `sum.spare`; remote deltas exchange over `transport`.
 pub(crate) fn apply_layer_device<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
-    prep: &Prepared<W>,
-    plan: &PartitionPlan,
-    keep: &KeepProgram,
+    layer: &DeviceLayer<'_, W>,
     scratch: &mut LayerScratch<W>,
-    target_bits: u8,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
-    let r = apply_layer_body(sum, prep, plan, keep, scratch, target_bits, transport);
+    let r = apply_layer_body(sum, layer, scratch, transport);
     // A failed layer still completes its pending receive, so every peer's chunked receive completes too.
     let finished = finish_receive(sum, scratch);
     let resolved = scratch.resolve(sum);
     r.and_then(|c| finished.and(resolved).map(|()| c))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn apply_layer_body<const W: usize, X: Transport>(
     sum: &mut GpuSum<W>,
-    prep: &Prepared<W>,
-    plan: &PartitionPlan,
-    keep: &KeepProgram,
+    layer: &DeviceLayer<'_, W>,
     scratch: &mut LayerScratch<W>,
-    target_bits: u8,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
+    let &DeviceLayer {
+        prepared,
+        plan,
+        keep,
+        target_bits,
+    } = layer;
     let size = transport.size();
-    scratch.next_event = 0;
-    let mut table = DevicePrepared::new(prep, &sum.hash, &sum.fp, &plan.remote);
+    let mut table = DevicePrepared::new(prepared, &sum.hash, &sum.fingerprints, &plan.remote);
     let has_remote = plan.has_remote();
-    debug_assert_eq!(table.n_remote, plan.remote.len());
-    scratch.counters = GpuLayerCounters {
-        bits: sum.hash.bits(),
+    debug_assert_eq!(table.received_entries, plan.remote.len());
+    scratch.record = DeviceLayerRecord {
         dense: table.dense,
-        ..GpuLayerCounters::default()
+        ..DeviceLayerRecord::default()
     };
-    scratch.export.recv_rows = 0;
-    scratch.export.recv_max_segment = 0;
+    scratch.refine_passes = 0;
+    scratch.receive_chunks = 0;
+    scratch.export.received_rows = 0;
+    scratch.export.received_max_segment = 0;
     scratch.longest = None;
     debug_assert!(scratch.export.pending.is_none());
     let refine =
         |sum: &mut GpuSum<W>, scratch: &mut LayerScratch<W>, bits: u8| -> Result<(), GpuError> {
-            let t = scratch.event(sum)?;
+            timed!(let t = scratch.event(sum)?);
+            let before = sum.hash.bits();
             sum.refine_to(bits)?;
-            scratch.lap(sum, t, |m| &mut m.refine)?;
+            timed!(scratch.lap(sum, t, |stats| &mut stats.rebucket_ns)?);
             scratch.extent = sum.len();
             scratch.longest = None;
-            scratch.counters.refine_passes += 1;
+            scratch.refine_passes += u32::from(bits - before).div_ceil(u32::from(REFINE_MAX_DELTA));
             Ok(())
         };
     if table.key_preserving {
@@ -666,7 +525,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
             "more than 2^32 pre-dedup records in one layer",
         ));
     }
-    // In a group every layer runs at exactly the agreed count and nobody refines off-schedule (ARCHITECTURE.md §Partitioning); the device steers the count through `proposed_bits` alone.
+    // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (engine/driver.rs).
     let max_bits = if solo {
         scratch.options.max_bits.min(B_MAX_BITS)
     } else {
@@ -676,7 +535,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         gpu_desired_bits(
             n_in,
             table.fanout,
-            scratch.options.bucket_policy,
+            scratch.options.records_per_block,
             sum.hash.bits(),
         )
         .min(max_bits)
@@ -691,7 +550,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
         }
         table.rehash(&sum.hash);
     }
-    let cap = sum.kernels.layer_cap();
+    let record_cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
     // Oversize blocks and over-long source buckets are known from the count table; a lone partition refines one more bit, which halves both.
     let (records, records_max) = loop {
@@ -705,12 +564,12 @@ fn apply_layer_body<const W: usize, X: Transport>(
         if has_remote {
             counts = exchange_rows(sum, &table, plan, scratch, transport)?;
         }
-        let (total, max_seg, max_len) = scratch.sizes(sum, &table)?;
-        if max_seg as usize <= cap
+        let (total, max_segment, max_len) = scratch.sizes(sum, &table)?;
+        if max_segment as usize <= record_cap
             && max_len as usize <= MAX_BUCKET_LEN
-            && scratch.export.recv_max_segment <= MAX_RECV_SEGMENT
+            && scratch.export.received_max_segment <= MAX_RECEIVED_SEGMENT
         {
-            break (total, max_seg);
+            break (total, max_segment);
         }
         if !solo {
             return Err(GpuError::Unsupported(
@@ -725,16 +584,14 @@ fn apply_layer_body<const W: usize, X: Transport>(
         refine(sum, scratch, sum.hash.bits() + 1)?;
         table.rehash(&sum.hash);
     };
-    let bits = sum.hash.bits();
     let b = sum.hash.num_buckets();
-    scratch.counters.bits = bits;
-    scratch.counters.records = u64::from(records);
-    scratch.counters.records_max = records_max;
-    scratch.counters.rows_received = counts.rows_received;
+    scratch.record.records = u64::from(records);
+    scratch.record.max_block_records = records_max;
 
-    let k: Arc<KernelSet> = sum.kernels.clone();
-    let (func, n_cap, smem) = fused_variant(&k, W, records_max as usize, table.dense);
-    scratch.counters.n_cap = n_cap as u32;
+    let kernels: Arc<KernelSet> = sum.kernels.clone();
+    let (func, record_capacity, smem) =
+        fused_variant(&kernels, W, records_max as usize, table.dense);
+    scratch.record.record_capacity = record_capacity as u32;
 
     // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
     let chunk_starts: Vec<usize> = scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
@@ -743,32 +600,33 @@ fn apply_layer_body<const W: usize, X: Transport>(
             .collect()
     });
     let (batches, max_batch_rows) = arena_batches::<W>(
-        &scratch.seg_host,
+        &scratch.segment_start_host,
         scratch.options.arena_bytes,
-        cap,
+        record_cap,
         &chunk_starts,
     );
-    scratch.counters.batches = batches.len() as u32;
-    scratch.counters.recv_chunks = chunk_starts.len() as u32;
+    scratch.record.batches = batches.len() as u32;
+    scratch.receive_chunks = chunk_starts.len() as u32;
+    counts.receive_chunks = scratch.receive_chunks;
 
-    let s = sum.stream.clone();
-    let o = sum.device();
+    let stream = sum.stream.clone();
+    let ordinal = sum.device();
     let mut arena = match scratch.arena.take() {
         Some(a) => a,
-        None => DeviceColumns::<W>::with_capacity(&s, o, max_batch_rows, 1)?,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, max_batch_rows, 1)?,
     };
     arena.len = 0;
     arena.buckets = 0;
     arena.reserve(max_batch_rows, 1)?;
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&s, o, n_in, b)?,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, n_in, b)?,
     };
     out.len = 0;
     out.buckets = 0;
     out.reserve(out.term_capacity(), b)?;
-    grow(&s, &mut scratch.out_len_pos, b, o)?;
-    s.memset_zeros(&mut scratch.fallback)?;
+    grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
+    stream.memset_zeros(&mut scratch.fallback)?;
     let mut running = 0u32;
     let mut next_chunk = 0usize;
     for &(p0, p1) in &batches {
@@ -776,63 +634,59 @@ fn apply_layer_body<const W: usize, X: Transport>(
             receive_chunk(sum, scratch, next_chunk)?;
             next_chunk += 1;
         }
-        let nblk = (p1 - p0) as u32;
+        let num_blocks = (p1 - p0) as u32;
         let p0u = p0 as u32;
-        let t0 = scratch.event(sum)?;
+        timed!(let t0 = scratch.event(sum)?);
         let fused = FusedTable {
-            cnt: &scratch.cnt,
-            seg_start: &scratch.seg_start,
+            counts: &scratch.counts,
+            segment_start: &scratch.segment_start,
             table: &scratch.table,
         };
-        let recv = FusedRecv {
-            off: &scratch.export.recv_off,
-            base: &scratch.export.recv_base,
-            x: &scratch.export.recv_x,
-            z: &scratch.export.recv_z,
-            c: &scratch.export.recv_c,
-            g: &scratch.export.recv_g,
+        let received = FusedReceived {
+            offsets: &scratch.export.received_offsets,
+            base: &scratch.export.received_base,
+            x: &scratch.export.received_x,
+            z: &scratch.export.received_z,
+            coefficient: &scratch.export.received_coefficient,
+            fingerprint: &scratch.export.received_fingerprint,
         };
         let written = FusedOut {
             arena: &mut arena,
-            out_len_pos: &mut scratch.out_len_pos,
+            rows_per_position: &mut scratch.rows_per_position,
             fallback: &mut scratch.fallback,
         };
         launch_fused(
             sum,
             &table,
             &fused,
-            &recv,
+            &received,
             &scratch.bucket_at,
             keep,
             (func, smem),
-            (p0u, nblk),
+            (p0u, num_blocks),
             written,
         )?;
-        scratch.lap(sum, t0, |m| &mut m.layer)?;
+        timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
         let n = p1 - p0;
-        let t1 = scratch.event(sum)?;
+        timed!(let t1 = scratch.event(sum)?);
         exclusive_scan(
-            &s,
-            &k,
-            &scratch.out_len_pos.slice(p0..p1),
-            &mut scratch.dst_off.slice_mut(0..n + 1),
+            &stream,
+            &kernels,
+            &scratch.rows_per_position.slice(p0..p1),
+            &mut scratch.destination_offsets.slice_mut(0..n + 1),
             n,
             &mut scratch.scan,
-            &mut scratch.tot_a,
+            &mut scratch.totals,
         )?;
-        // The download would otherwise absorb the wait for the fused kernel.
-        #[cfg(feature = "phase-timing")]
-        s.synchronize()?;
-        let tot = &scratch.tot_a;
-        let batch_out = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-            let v = s.clone_dtoh(tot)?;
-            s.synchronize()?;
+        let totals = &scratch.totals;
+        let batch_out = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+            let v = stream.clone_dtoh(totals)?;
+            stream.synchronize()?;
             Ok(v[0])
         })?;
         out.len = running as usize;
         let need = (running + batch_out) as usize;
         if need > out.term_capacity() {
-            // Geometric growth, capped by the pre-dedup total no output can exceed.
             let grown = (2 * out.term_capacity())
                 .max(need)
                 .min((records as usize).max(need));
@@ -840,576 +694,42 @@ fn apply_layer_body<const W: usize, X: Transport>(
         }
         // SAFETY: arguments match `k_compact` in compact.cu; `out` holds `running + batch_out` terms.
         unsafe {
-            s.launch_builder(&k.compact)
+            stream
+                .launch_builder(&kernels.compact)
                 .arg(&arena.x)
                 .arg(&arena.z)
                 .arg(&arena.coeff)
-                .arg(&arena.g)
-                .arg(&scratch.seg_start)
-                .arg(&scratch.dst_off)
-                .arg(&scratch.out_len_pos)
+                .arg(&arena.fingerprint)
+                .arg(&scratch.segment_start)
+                .arg(&scratch.destination_offsets)
+                .arg(&scratch.rows_per_position)
                 .arg(&scratch.bucket_at)
                 .arg(&p0u)
                 .arg(&running)
                 .arg(&mut out.x)
                 .arg(&mut out.z)
                 .arg(&mut out.coeff)
-                .arg(&mut out.g)
+                .arg(&mut out.fingerprint)
                 .arg(&mut out.start)
-                .arg(&mut out.lens)
-                .launch(thread_per(nblk as usize * 256, 256))?;
+                .arg(&mut out.lengths)
+                .launch(thread_per(num_blocks as usize * 256, 256))?;
         }
-        scratch.lap(sum, t1, |m| &mut m.compact)?;
+        timed!(scratch.lap(sum, t1, |stats| &mut stats.compact_ns)?);
         running += batch_out;
     }
     debug_assert_eq!(next_chunk, chunk_starts.len());
-    let fb = s.clone_dtoh(&scratch.fallback)?;
-    s.synchronize()?;
-    scratch.counters.fallback_hi += fb[0];
-    scratch.counters.fallback_key += fb[1];
+    let fallbacks = stream.clone_dtoh(&scratch.fallback)?;
+    stream.synchronize()?;
+    scratch.record.high_word_fallbacks += fallbacks[0];
+    scratch.record.full_key_fallbacks += fallbacks[1];
     out.len = running as usize;
     out.buckets = b;
     scratch.arena = Some(arena);
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.extent = sum.len();
     sum.debug_check();
     Ok(counts)
 }
 
-/// Contiguous position ranges whose pre-dedup rows (`seg`, `b + 1` CSR offsets) fit an arena of `arena_bytes`, each starting a new range at every position of the ascending `starts`, and the largest range's rows.
-pub(super) fn arena_batches<const W: usize>(
-    seg: &[u32],
-    arena_bytes: usize,
-    cap: usize,
-    starts: &[usize],
-) -> (Vec<(usize, usize)>, usize) {
-    let b = seg.len() - 1;
-    let cap_rows = (arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(cap);
-    let mut batches: Vec<(usize, usize)> = Vec::new();
-    let mut starts = starts.iter().copied().peekable();
-    let mut p0 = 0usize;
-    while p0 < b {
-        while starts.next_if(|&c| c <= p0).is_some() {}
-        let end = starts.peek().copied().unwrap_or(b).min(b);
-        let mut p1 = p0 + 1;
-        while p1 < end && (seg[p1 + 1] - seg[p0]) as usize <= cap_rows {
-            p1 += 1;
-        }
-        batches.push((p0, p1));
-        p0 = p1;
-    }
-    let max_rows = batches
-        .iter()
-        .map(|&(a, c)| (seg[c] - seg[a]) as usize)
-        .max()
-        .unwrap_or(0);
-    (batches, max_rows)
-}
-
-/// The fused-layer variant for blocks of up to `records_max` records: the kernel, its record capacity and its dynamic shared bytes.
-pub(super) fn fused_variant(
-    k: &KernelSet,
-    w: usize,
-    records_max: usize,
-    dense: bool,
-) -> (&CudaFunction, usize, u32) {
-    let threads = layer_threads(w) as usize;
-    let n_cap = records_max.max(threads).next_power_of_two();
-    let variant = &k.layer[(n_cap / threads).trailing_zeros() as usize];
-    debug_assert_eq!(variant.items * threads, n_cap);
-    let func = if dense {
-        &variant.segscan
-    } else {
-        &variant.serial
-    };
-    (func, n_cap, layer_shared_bytes(n_cap, w))
-}
-
-/// The table-side buffers one fused-layer launch reads: the counts and segment starts sized for `table`'s upload.
-pub(super) struct FusedTable<'a> {
-    pub(super) cnt: &'a CudaSlice<u32>,
-    pub(super) seg_start: &'a CudaSlice<u32>,
-    pub(super) table: &'a TableBufs,
-}
-
-/// The concatenated received blocks a fused-layer launch reads for its received entries.
-pub(super) struct FusedRecv<'a> {
-    pub(super) off: &'a CudaSlice<u32>,
-    pub(super) base: &'a CudaSlice<u32>,
-    pub(super) x: &'a CudaSlice<u64>,
-    pub(super) z: &'a CudaSlice<u64>,
-    pub(super) c: &'a CudaSlice<f64>,
-    pub(super) g: &'a CudaSlice<u64>,
-}
-
-/// What a fused-layer launch writes: the loose arena, rows per position, and the fallback counters.
-pub(super) struct FusedOut<'a, const W: usize> {
-    pub(super) arena: &'a mut DeviceColumns<W>,
-    pub(super) out_len_pos: &'a mut CudaSlice<u32>,
-    pub(super) fallback: &'a mut CudaSlice<u32>,
-}
-
-/// K3 over positions `p0..p0 + nblk` with `kernel = (function, shared bytes)` from [`fused_variant`].
-#[allow(clippy::too_many_arguments)]
-pub(super) fn launch_fused<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
-    t: &FusedTable<'_>,
-    r: &FusedRecv<'_>,
-    bucket_at: &CudaSlice<u32>,
-    keep: &KeepProgram,
-    kernel: (&CudaFunction, u32),
-    (p0, nblk): (u32, u32),
-    out: FusedOut<'_, W>,
-) -> Result<(), GpuError> {
-    let (func, smem) = kernel;
-    let e32 = table.entries as u32;
-    let b32 = sum.hash.num_buckets() as u32;
-    let FusedOut {
-        arena,
-        out_len_pos,
-        fallback,
-    } = out;
-    // SAFETY: arguments match the `LAYER_KERNEL` signature in layer.cu; the arena holds the batch's pre-dedup rows, `out_len_pos` has `b` entries, `t` is `table`'s upload with `cnt`/`seg_start` sized for it, and the received columns hold every row `t.rem` names.
-    unsafe {
-        sum.stream
-            .launch_builder(func)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
-            .arg(bucket_at)
-            .arg(t.cnt)
-            .arg(t.seg_start)
-            .arg(&table.mode)
-            .arg(&e32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&table.rot_cos)
-            .arg(&table.rot_sin)
-            .arg(&t.table.amp)
-            .arg(&t.table.mask)
-            .arg(&t.table.nz)
-            .arg(&t.table.bd)
-            .arg(&t.table.gm)
-            .arg(&t.table.rem)
-            .arg(r.off)
-            .arg(r.base)
-            .arg(&b32)
-            .arg(r.x)
-            .arg(r.z)
-            .arg(r.c)
-            .arg(r.g)
-            .arg(keep)
-            .arg(&p0)
-            .arg(&mut arena.x)
-            .arg(&mut arena.z)
-            .arg(&mut arena.coeff)
-            .arg(&mut arena.g)
-            .arg(out_len_pos)
-            .arg(fallback)
-            .launch(LaunchConfig {
-                grid_dim: (nblk, 1, 1),
-                block_dim: (layer_threads(W), 1, 1),
-                shared_mem_bytes: smem,
-            })?;
-    }
-    Ok(())
-}
-
-/// K5: the key-preserving fast path, into the spare columns at the input's offsets.
-fn rescale_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    table: &DevicePrepared<W>,
-    keep: &KeepProgram,
-    scratch: &mut LayerScratch<W>,
-) -> Result<(), GpuError> {
-    let s = sum.stream.clone();
-    let k = sum.kernels.clone();
-    let o = sum.device();
-    let b = sum.hash.num_buckets();
-    let extent = scratch.extent.max(sum.len());
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&s, o, extent, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(extent, b)?;
-    grow(&s, &mut scratch.dst_off, b + 1, o)?;
-    #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let amp = &mut scratch.table.amp;
-    xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&table.amp, amp)?;
-        Ok(())
-    })?;
-    let b32 = b as u32;
-    let t0 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_rescale` in rescale.cu; `out` has room for the input's extent.
-    unsafe {
-        s.launch_builder(&k.rescale)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
-            .arg(&b32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&scratch.table.amp)
-            .arg(keep)
-            .arg(&mut out.x)
-            .arg(&mut out.z)
-            .arg(&mut out.coeff)
-            .arg(&mut out.g)
-            .arg(&mut out.start)
-            .arg(&mut out.lens)
-            .launch(warp_per_bucket(b))?;
-    }
-    exclusive_scan(
-        &s,
-        &k,
-        &out.lens.slice(0..b),
-        &mut scratch.dst_off.slice_mut(0..b + 1),
-        b,
-        &mut scratch.scan,
-        &mut scratch.tot_a,
-    )?;
-    scratch.lap(sum, t0, |m| &mut m.rescale)?;
-    #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let tot = &scratch.tot_a;
-    let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-        let v = s.clone_dtoh(tot)?;
-        s.synchronize()?;
-        Ok(v[0])
-    })?;
-    out.len = total as usize;
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
-    scratch.counters.rescaled = true;
-    sum.debug_check();
-    Ok(())
-}
-
-/// K12's and K14's block width: the average source bucket rounded up to a power of two, between two warps and the fused layer's width for `w`.
-pub(super) fn perm_threads(len: usize, buckets: usize, w: usize) -> u32 {
-    let avg = len.div_ceil(buckets.max(1));
-    (avg.max(64).next_power_of_two() as u32).min(layer_threads(w))
-}
-
-/// K12–K14: the permutation path, into the spare columns as a tight CSR in bucket order.
-fn permute_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    table: &DevicePrepared<W>,
-    keep: &KeepProgram,
-    scratch: &mut LayerScratch<W>,
-) -> Result<(), GpuError> {
-    let s = sum.stream.clone();
-    let k = sum.kernels.clone();
-    let o = sum.device();
-    let b = sum.hash.num_buckets();
-    let n_in = sum.len();
-    let (b32, e32) = (b as u32, table.entries as u32);
-    grow(&s, &mut scratch.cnt, b * table.entries, o)?;
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&s, o, n_in, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(n_in, b)?;
-    #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let (bufs, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
-    xfer(&mut scratch.xfer_ns, Xfer::H2d, || {
-        s.memcpy_htod(&table.amp, &mut bufs.amp)?;
-        s.memcpy_htod(&table.mask, &mut bufs.mask)?;
-        s.memcpy_htod(&table.bucket_delta, &mut bufs.bd)?;
-        s.memcpy_htod(&table.gm, &mut bufs.gm)?;
-        s.memcpy_htod(&table.entry_of, entry_of)?;
-        Ok(())
-    })?;
-    let block_per_bucket = LaunchConfig {
-        grid_dim: (b32, 1, 1),
-        block_dim: (perm_threads(n_in, b, W), 1, 1),
-        shared_mem_bytes: 0,
-    };
-    let t0 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_count` in permute.cu; `cnt` holds `b * e` entries.
-    unsafe {
-        s.launch_builder(&k.perm_count)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
-            .arg(&table.mode)
-            .arg(&e32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&table.rot_cos)
-            .arg(&table.rot_sin)
-            .arg(&scratch.table.amp)
-            .arg(&scratch.table.mask)
-            .arg(&scratch.table.nz)
-            .arg(&scratch.entry_of)
-            .arg(keep)
-            .arg(&mut scratch.cnt)
-            .launch(block_per_bucket)?;
-    }
-    scratch.lap(sum, t0, |m| &mut m.count)?;
-    let t1 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_lens`; `out.lens` holds `b` entries.
-    unsafe {
-        s.launch_builder(&k.perm_lens)
-            .arg(&scratch.cnt)
-            .arg(&scratch.table.bd)
-            .arg(&b32)
-            .arg(&e32)
-            .arg(&mut out.lens)
-            .launch(thread_per(b, 256))?;
-    }
-    exclusive_scan(
-        &s,
-        &k,
-        &out.lens.slice(0..b),
-        &mut out.start.slice_mut(0..b + 1),
-        b,
-        &mut scratch.scan,
-        &mut scratch.tot_a,
-    )?;
-    scratch.lap(sum, t1, |m| &mut m.sizes)?;
-    let t2 = scratch.event(sum)?;
-    // SAFETY: arguments match `k_perm_scatter`; `out` has room for every input row, the scan's total at most.
-    unsafe {
-        s.launch_builder(&k.perm_scatter)
-            .arg(&sum.cols.x)
-            .arg(&sum.cols.z)
-            .arg(&sum.cols.coeff)
-            .arg(&sum.cols.g)
-            .arg(&sum.cols.start)
-            .arg(&sum.cols.lens)
-            .arg(&table.mode)
-            .arg(&e32)
-            .arg(&table.kq)
-            .arg(&table.q0)
-            .arg(&table.q1)
-            .arg(&table.rot_cos)
-            .arg(&table.rot_sin)
-            .arg(&scratch.table.amp)
-            .arg(&scratch.table.mask)
-            .arg(&scratch.table.nz)
-            .arg(&scratch.entry_of)
-            .arg(&scratch.table.bd)
-            .arg(&scratch.table.gm)
-            .arg(&scratch.cnt)
-            .arg(&out.start)
-            .arg(keep)
-            .arg(&mut out.x)
-            .arg(&mut out.z)
-            .arg(&mut out.coeff)
-            .arg(&mut out.g)
-            .launch(block_per_bucket)?;
-    }
-    scratch.lap(sum, t2, |m| &mut m.permute)?;
-    #[cfg(feature = "phase-timing")]
-    s.synchronize()?;
-    let tot = &scratch.tot_a;
-    let total = xfer(&mut scratch.xfer_ns, Xfer::D2h, || {
-        let v = s.clone_dtoh(tot)?;
-        s.synchronize()?;
-        Ok(v[0])
-    })?;
-    out.len = total as usize;
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.cols, out));
-    scratch.extent = sum.len();
-    scratch.counters.bits = sum.hash.bits();
-    scratch.counters.records = n_in as u64;
-    scratch.counters.permuted = true;
-    sum.debug_check();
-    Ok(())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::bucket::hash::Gf2Hash;
-    use crate::channel::{Channel, GeneralUnitary2Q};
-    use crate::engine::partitioned::transport::InProcessTransport;
-    use crate::test_support::{
-        assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, KeepAll,
-    };
-    use num_complex::Complex64;
-
-    /// `SWAP·CNOT` as a matrix: its symplectic map has no fixed nonzero vector, so all 16 deltas are realized and every row emits exactly one record.
-    fn sixteen_delta_permutation() -> GeneralUnitary2Q {
-        let e = |i: usize| -> [Complex64; 4] {
-            let mut r = [Complex64::new(0.0, 0.0); 4];
-            r[i] = Complex64::new(1.0, 0.0);
-            r
-        };
-        GeneralUnitary2Q::from_matrix(0, 1, [e(0), e(3), e(1), e(2)])
-    }
-
-    /// One layer on a single-bucket device sum under `opts`, against the naive oracle; returns the counters.
-    /// With `x0`, every term carries `X` on qubit 0, so a two-qubit table on `(0, 1)` never sees the identity pattern and every entry emits for every row.
-    fn single_bucket_layer(
-        n: usize,
-        x0: bool,
-        ch: &dyn Channel<2>,
-        opts: GpuLayerOptions,
-    ) -> Result<GpuLayerCounters, GpuError> {
-        let mut input = rand_sum::<2>(n, 128, 0x4096 + n as u64);
-        if x0 {
-            let mut acc = crate::accumulator::BuildAccumulator::<2>::new(128);
-            for (x, z, c) in input.iter() {
-                let mut x = *x;
-                x[0] |= 1;
-                acc.add_term(
-                    crate::pauli_string::PauliString::<2> { x, z: *z },
-                    crate::phase::Phase::ONE,
-                    c,
-                );
-            }
-            input = acc.finalize();
-        }
-        let input = input.with_hash(Gf2Hash::new(128, 0, crate::bucket::sum::DEFAULT_HASH_SEED));
-        assert_eq!(input.len(), n);
-        let mut sum = GpuSum::from_host(&input, 0)?;
-        let mut scratch = LayerScratch::new(&sum, opts)?;
-        let prep = ch.prepare(sum.hash(), false).expect("prepared");
-        let rows = crate::bucket::hash::PartitionRows::<2>::none(128);
-        let plan = PartitionPlan::new(&prep, &rows, 0);
-        let solo = InProcessTransport::group(1);
-        apply_layer_device(
-            &mut sum,
-            &prep,
-            &plan,
-            &KeepProgram::KEEP,
-            &mut scratch,
-            0,
-            &solo[0],
-        )?;
-        let want = naive_apply_layer(&input, ch, &KeepAll, false);
-        assert_terms_close(&sum.to_host()?, &want, 1e-11, "single bucket");
-        Ok(scratch.counters)
-    }
-
-    #[test]
-    fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
-        crate::require_cuda!();
-        // The limits under test are the fused layer's, which a permutation table only reaches with the scatter path off.
-        let opts = GpuLayerOptions {
-            bucket_policy: GpuBucketPolicy::TermsPerBucket(1 << 20),
-            clifford: false,
-            ..GpuLayerOptions::default()
-        };
-        let perm = sixteen_delta_permutation();
-        let c = single_bucket_layer(MAX_BUCKET_LEN, false, &perm, opts).unwrap();
-        assert_eq!(
-            (c.bits, c.refine_passes, c.records, c.records_max),
-            (0, 0, 4096, 4096)
-        );
-        let c = single_bucket_layer(MAX_BUCKET_LEN + 1, false, &perm, opts).unwrap();
-        assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
-
-        // A Haar SU(4) row with a non-identity pattern emits 15 records: the one entry mapping it onto `I⊗I` is exactly zero.
-        let su4 = GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix());
-        let cap = crate::engine::gpu::module::kernel_set(0, 2)
-            .unwrap()
-            .layer_cap();
-        let c = single_bucket_layer(cap / 15, true, &su4, opts).unwrap();
-        assert_eq!(
-            (
-                c.bits,
-                c.refine_passes,
-                c.records_max as usize,
-                c.n_cap as usize
-            ),
-            (0, 0, 15 * (cap / 15), cap)
-        );
-        let c = single_bucket_layer(cap / 15 + 1, true, &su4, opts).unwrap();
-        assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
-        let capped = GpuLayerOptions {
-            max_bits: 0,
-            ..opts
-        };
-        assert!(matches!(
-            single_bucket_layer(cap / 15 + 1, true, &su4, capped),
-            Err(GpuError::Unsupported(_))
-        ));
-    }
-
-    #[test]
-    fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
-        assert_eq!(perm_threads(1_000_000, 256, 2), 1024);
-        assert_eq!(perm_threads(1_000_000, 4096, 2), 256);
-        assert_eq!(perm_threads(10_000, 1024, 1), 64);
-        assert_eq!(perm_threads(0, 1, 1), 64);
-        assert_eq!(perm_threads(1_000_000, 256, 8), 256);
-        assert_eq!(perm_threads(1_000_000, 256, 4), 512);
-    }
-
-    #[test]
-    fn the_exchange_cap_parses_bytes_with_binary_suffixes() {
-        assert_eq!(parse_bytes(None), usize::MAX);
-        assert_eq!(parse_bytes(Some("4096")), 4096);
-        assert_eq!(parse_bytes(Some(" 3K ")), 3 << 10);
-        assert_eq!(parse_bytes(Some("2m")), 2 << 20);
-        assert_eq!(parse_bytes(Some("1G")), 1 << 30);
-        for bad in ["", "0", "-1", "G", "1.5G", "lots"] {
-            assert_eq!(parse_bytes(Some(bad)), usize::MAX, "{bad:?}");
-        }
-    }
-
-    /// Eight positions of ten rows under an arena of thirty: batches of three, and a new batch at every chunk start.
-    #[test]
-    fn arena_batches_start_anew_at_every_chunk_start() {
-        let seg: Vec<u32> = (0..=8).map(|p| 10 * p).collect();
-        let bytes = 30 * DeviceColumns::<1>::BYTES_PER_TERM;
-        assert_eq!(
-            arena_batches::<1>(&seg, bytes, 1, &[]),
-            (vec![(0, 3), (3, 6), (6, 8)], 30)
-        );
-        assert_eq!(
-            arena_batches::<1>(&seg, bytes, 1, &[0, 4, 6]),
-            (vec![(0, 3), (3, 4), (4, 6), (6, 8)], 30)
-        );
-        assert_eq!(
-            arena_batches::<1>(&seg, bytes, 1, &[0, 1, 2, 3, 4, 5, 6, 7]),
-            ((0..8).map(|p| (p, p + 1)).collect(), 10)
-        );
-    }
-
-    #[test]
-    fn records_per_block_policy_scales_with_fanout_and_is_grow_only() {
-        let p = GpuBucketPolicy::RecordsPerBlock(4096);
-        // 1e6 terms: fanout 1 wants 2^8 buckets (3906 records), fanout 2 one more bit, fanout 16 four more.
-        assert_eq!(gpu_desired_bits(1_000_000, 1, p, 0), 8);
-        assert_eq!(gpu_desired_bits(1_000_000, 2, p, 0), 9);
-        assert_eq!(gpu_desired_bits(1_000_000, 16, p, 0), 12);
-        assert_eq!(
-            gpu_desired_bits(1_000_000, 1, p, 11),
-            11,
-            "never below the current bits"
-        );
-        assert_eq!(gpu_desired_bits(0, 16, p, 0), 0);
-        assert_eq!(gpu_desired_bits(4096, 1, p, 0), 0);
-        assert_eq!(gpu_desired_bits(4097, 1, p, 0), 1);
-        assert_eq!(gpu_desired_bits(usize::MAX / 2, 16, p, 0), B_MAX_BITS);
-        let fixed = GpuBucketPolicy::TermsPerBucket(256);
-        assert_eq!(gpu_desired_bits(1_000_000, 16, fixed, 0), 12);
-        assert_eq!(gpu_desired_bits(1_000_000, 1, fixed, 0), 12);
-        assert_eq!(gpu_desired_bits(256, 1, fixed, 0), 0);
-        assert_eq!(gpu_desired_bits(257, 1, fixed, 0), 1);
-    }
-}
+mod tests;

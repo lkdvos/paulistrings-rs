@@ -143,6 +143,28 @@ def test_non_unitary_matrix_is_rejected():
         gates.unitary_1q(0, bad)
 
 
+def test_a_matrix_off_unitary_by_more_than_1e10_is_rejected():
+    off = np.array(CNOT, dtype=complex)
+    off[0, 0] *= 1.0 + 1e-9
+    with pytest.raises(ValueError, match=r"not unitary .*tolerance 1e-10"):
+        gates.unitary_2q(0, 1, off)
+    circuit = Circuit(2)
+    with pytest.raises(ValueError, match="not unitary"):
+        circuit.unitary_2q(0, 1, off)
+
+
+def test_a_nan_matrix_is_rejected():
+    bad = np.array([[np.nan, 0.0], [0.0, 1.0]], dtype=complex)
+    with pytest.raises(ValueError, match="not unitary"):
+        gates.unitary_1q(0, bad)
+
+
+def test_a_matrix_within_the_tolerance_is_accepted():
+    near = np.array(CNOT, dtype=complex)
+    near[1, 1] += 1e-11
+    gates.unitary_2q(0, 1, near)
+
+
 def test_repeated_qubit_is_rejected():
     with pytest.raises(ValueError, match="must differ"):
         gates.unitary_2q(2, 2, CNOT)

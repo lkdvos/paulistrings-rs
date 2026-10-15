@@ -48,21 +48,6 @@ def test_spec_qubit_sets_match_the_qasm():
     assert sum(o[0] == "cz" for o in ops) == 1488
 
 
-def test_diagonal_echo_resums_the_moment_series():
-    paulistrings = pytest.importorskip("paulistrings")
-    hist = [0.1, 0.2, 0.3, 0.25, 0.15]
-    for order in (2, 4, 8):
-        assert ole.truncated_series(hist, 0.3, order) != pytest.approx(
-            paulistrings.diagonal_echo(hist, 0.3), abs=1e-12
-        )
-    assert ole.truncated_series(hist, 0.3, 24) == pytest.approx(paulistrings.diagonal_echo(hist, 0.3), abs=1e-12)
-    # Full scrambling: n_P ~ Binomial(35, 1/2), App. C 1 c.
-    full = [math.comb(35, n) / 2**35 for n in range(36)]
-    assert paulistrings.diagonal_echo(full, 0.3) == pytest.approx(
-        ole.spec()["references"]["full_scrambling"]["value"], abs=1e-4
-    )
-
-
 def _patch():
     edges = {tuple(sorted(o[2])) for o in ole.floquet_layer() if o[0] == "cz"}
     adj = _adjacency(edges)
@@ -142,26 +127,26 @@ def test_exact_echo_matches_dense_on_a_patch(L, alpha):
     delta = ole.spec()["delta"]
     A = obs.propagate(circuit, direction="heisenberg")
     want = _dense_echo(ops, qubits, obs_q, probe_q, delta)
-    assert A.rotated_overlap(sites, delta, axis="x") == pytest.approx(want, abs=1e-10)
-    hist = A.anticommute_histogram(sites, axis="x")
+    assert ole.rotated_overlap(A, sites, delta, "x") == pytest.approx(want, abs=1e-10)
+    hist = ole.anticommute_histogram(A, sites, "x")
     assert sum(hist) == pytest.approx(1.0, abs=1e-12)
-    assert 0.0 < ps.diagonal_echo(hist, delta) <= 1.0
+    assert 0.0 < ole.diagonal_echo(hist, delta) <= 1.0
 
 
 def test_no_scattering_is_a_perfect_echo():
     ps, *_, obs, circuit, sites = _engine_patch(2, 0.0)
     A = obs.propagate(circuit, direction="heisenberg")
-    assert ps.diagonal_echo(A.anticommute_histogram(sites, axis="x"), 0.3) == pytest.approx(1.0, abs=1e-12)
-    assert A.rotated_overlap(sites, 0.3, axis="x") == pytest.approx(1.0, abs=1e-12)
+    assert ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3) == pytest.approx(1.0, abs=1e-12)
+    assert ole.rotated_overlap(A, sites, 0.3, "x") == pytest.approx(1.0, abs=1e-12)
 
 
 def test_ppmc_with_a_large_cache_is_exact_and_a_small_one_collapses():
     ps, *_, obs, circuit, sites = _engine_patch(2, ole.eta_of_alpha(0.15))
     exact = obs.propagate(circuit, direction="heisenberg")
     big = obs.propagate(circuit, ps.truncation.collapse_sample(10**9, 7), direction="heisenberg")
-    assert np.allclose(big.anticommute_histogram(sites, axis="x"), exact.anticommute_histogram(sites, axis="x"), atol=1e-12)
+    assert np.allclose(ole.anticommute_histogram(big, sites, "x"), ole.anticommute_histogram(exact, sites, "x"), atol=1e-12)
     runs = [
-        ps.diagonal_echo(obs.propagate(circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg").anticommute_histogram(sites, axis="x"), 0.3)
+        ole.diagonal_echo(ole.anticommute_histogram(obs.propagate(circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg"), sites, "x"), 0.3)
         for s in (1, 1, 2)
     ]
     assert runs[0] == runs[1]

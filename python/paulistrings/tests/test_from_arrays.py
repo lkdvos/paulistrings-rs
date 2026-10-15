@@ -1,6 +1,6 @@
 """``PauliSum.from_arrays`` and ``paulistrings.io`` (``.npz`` save/load).
 
-Design source: ``research/FINDINGS.md`` §A3.
+Design source: ``research/FINDINGS.md`` §Python API extensions.
 ``from_arrays`` is the inverse of ``x_array`` / ``z_array`` /
 ``coefficients_array``; ingest routes through the same `BuildAccumulator`
 `from_strings` uses (duplicate keys sum, exact zeros drop). ``io.save`` /
@@ -94,6 +94,35 @@ def test_from_arrays_on_empty_arrays():
     got = PauliSum.from_arrays(x, z, coeffs, num_qubits=4)
     assert len(got) == 0
     assert got.num_qubits == 4
+
+
+# ---- to_arrays, the inverse ----
+
+
+@pytest.mark.parametrize("num_qubits", [3, 65, 200])
+def test_to_arrays_round_trips_through_from_arrays(num_qubits):
+    rng = np.random.default_rng(num_qubits)
+    labels = {"".join(rng.choice(list("IXYZ"), num_qubits)): complex(*rng.normal(size=2)) for _ in range(50)}
+    s = PauliSum.from_strings(labels, num_qubits=num_qubits)
+    x, z, coeffs = s.to_arrays()
+    assert x.dtype == np.uint64 and z.dtype == np.uint64 and coeffs.dtype == np.complex128
+    assert x.shape == z.shape == (len(s), s.width)
+    assert coeffs.shape == (len(s),)
+    _assert_close(PauliSum.from_arrays(x, z, coeffs, num_qubits), s)
+
+
+def test_to_arrays_matches_the_column_snapshots():
+    s = PauliSum.from_strings({"XI": 1.0, "ZY": -0.5j, "II": 2.0}, num_qubits=2)
+    x, z, coeffs = s.to_arrays()
+    np.testing.assert_array_equal(x, s.x_array())
+    np.testing.assert_array_equal(z, s.z_array())
+    np.testing.assert_array_equal(coeffs, s.coefficients_array())
+
+
+def test_to_arrays_of_an_empty_sum():
+    x, z, coeffs = PauliSum(70).to_arrays()
+    assert x.shape == z.shape == (0, 2)
+    assert coeffs.shape == (0,)
 
 
 # ---- width-band coverage ----

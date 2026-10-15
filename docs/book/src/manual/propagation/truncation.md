@@ -30,20 +30,20 @@ It keeps terms of Pauli weight at most `k`, which is useful when the causal cone
 
 **`topn(k)` bounds memory, but changes what "converged" means.**
 It keeps at most `k` terms, largest `|c|` first, so the error is set by the discarded tail rather than by a threshold; a `topn` run cannot carry a `coeff`-sweep convergence panel, and it has no equivalent in `PauliPropagation.jl` for cross-engine comparison.
-`topn` never splits a tie group of exactly-equal coefficient magnitudes — the whole group is kept if it fits within `k`, dropped whole otherwise — which matters for symmetric problems, where a tied group is a symmetry orbit and can be large.
-**`approx_topn(n)`** is the cheap sibling: it bins terms by octave of `|c|²` and keeps whole octaves from the top down while they fit in `n`, so at most `n` terms survive, the shortfall is bounded by the population of the coarsest excluded octave, and a tie group is again kept whole.
+A sum of more than `k` terms keeps exactly `k`: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
+**`approx_topn(n)`** is the cheap sibling: it bins terms by octave of `|c|²`, keeps whole octaves from the top down while they fit in `n`, and fills the rest from the next octave in storage order, so exactly `n` terms survive but not necessarily the `n` largest.
 Exact `topn` has no partitioned form, so `approx_topn` is the policy for [NUMA partitions](partitions.md) and [MPI ranks](mpi.md).
 
 **`collapse_sample(cache, seed)` samples instead of filtering.**
 Whenever a gate leaves more than `cache` strings it draws one string with probability `|c|² / Σ|c|²` and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as [`diagonal_echo`](../measurements.md#echo); average many seeds and report the standard error.
+It is unbiased only for weight-diagonal read-outs such as the [diagonal echo](../measurements.md#echo); average many seeds and report the standard error.
 `PropagationStats.collapses` counts the draws.
 
 ```python
 sampler = truncation.collapse_sample(1_000, 7)
 ```
 
-Policies compose with `&` (keep when both agree) and `|` (keep when either does):
+Policies compose with `&` (keep when both agree, and run every layer pass) and `|` (keep when either does); `|` combines per-term filters only, and raises `ValueError` on a `topn`, `approx_topn` or `collapse_sample`:
 
 ```python
 policy = truncation.weight(6) & truncation.coeff(1e-10)

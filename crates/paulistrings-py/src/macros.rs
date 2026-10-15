@@ -137,3 +137,24 @@ macro_rules! for_num_qubits {
         }
     };
 }
+
+/// Evaluate `$body` with `$policy` bound to the policy a host propagate runs `$tree` (a `&BuiltinTruncation`) as, one monomorphized engine per arm; see [`crate::truncation_dispatch::Lowered`].
+macro_rules! with_lowered_policy {
+    ($tree:expr, |$policy:ident| $body:expr) => {{
+        use crate::truncation_dispatch::{record, Lowered};
+        match Lowered::of($tree) {
+            Lowered::Coefficient(lowered) => {
+                let $policy = record(&lowered);
+                $body
+            }
+            Lowered::CoefficientAndWeight(lowered) => {
+                let $policy = record(&lowered);
+                $body
+            }
+            Lowered::Tree(tree) => {
+                let $policy = record(tree);
+                $body
+            }
+        }
+    }};
+}

@@ -1,27 +1,27 @@
-// K3: the fused layer, one block per output position (ARCHITECTURE.md §Engine, §GPU-Readiness).
+// The fused layer, one block per output position; contracts in engine/gpu/layer.rs.
 // Records (g_lo32, tag) for every emitting (source bucket, entry) pair, local or received, live in shared memory; a 16-bit index array is radix-sorted over them, equal-g32 runs are checked on the full key, and a segmented sum deduplicates before the surviving rows are written to the arena at seg_start[p].
 // Fallbacks are block-uniform: a colliding adjacent pair (equal g_lo32, different key) triggers eight more passes over g_hi32, and a pair still colliding after that a full lex-key sort.
 
 struct Smem {
-    u32* sg;        // n_cap
-    u16* stag;      // n_cap
-    u16* ia;        // n_cap
-    u16* ib;        // n_cap
-    u16* scnt;      // n_cap / 2 : [digit][it][warp]
-    u32* swarp;     // 36
-    double* s_amp;  // 512
-    u64* s_mask;    // 32 * W
-    u64* s_gm;      // 16
-    u32* s_bd;      // 16
-    u32* s_nz;      // 16
-    u32* s_sb;      // 16
-    u32* s_rem;     // 16
-    u32* s_len;     // 16
-    u32* s_ebase;   // 18
-    u32* s_flag;    // 4
-    double* s_segr; // 32
-    double* s_segi; // 32
-    u32* s_segf;    // 32
+    u32* sg;                       // n_cap
+    u16* stag;                     // n_cap
+    u16* ia;                       // n_cap
+    u16* ib;                       // n_cap
+    u16* scnt;                     // n_cap / 2 : [digit][it][warp]
+    u32* swarp;                    // 36
+    double* s_amplitude;           // 512
+    u64* s_mask;                   // 32 * W
+    u64* s_fingerprint_delta;      // 16
+    u32* s_bucket_delta;           // 16
+    u32* s_nonzero_patterns;       // 16
+    u32* s_sb;                     // 16
+    u32* s_received_slot;          // 16
+    u32* s_len;                    // 16
+    u32* s_ebase;                  // 18
+    u32* s_flag;                   // 4
+    double* s_segr;                // 32
+    double* s_segi;                // 32
+    u32* s_segf;                   // 32
 };
 
 __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
@@ -32,14 +32,14 @@ __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
     s.ib = s.ia + n_cap;
     s.scnt = s.ib + n_cap;
     s.swarp = (u32*)(s.scnt + n_cap / 2);
-    s.s_amp = (double*)(s.swarp + 36);
-    s.s_mask = (u64*)(s.s_amp + 512);
-    s.s_gm = s.s_mask + 32 * W;
-    s.s_bd = (u32*)(s.s_gm + 16);
-    s.s_nz = s.s_bd + 16;
-    s.s_sb = s.s_nz + 16;
-    s.s_rem = s.s_sb + 16;
-    s.s_len = s.s_rem + 16;
+    s.s_amplitude = (double*)(s.swarp + 36);
+    s.s_mask = (u64*)(s.s_amplitude + 512);
+    s.s_fingerprint_delta = s.s_mask + 32 * W;
+    s.s_bucket_delta = (u32*)(s.s_fingerprint_delta + 16);
+    s.s_nonzero_patterns = s.s_bucket_delta + 16;
+    s.s_sb = s.s_nonzero_patterns + 16;
+    s.s_received_slot = s.s_sb + 16;
+    s.s_len = s.s_received_slot + 16;
     s.s_ebase = s.s_len + 16;
     s.s_flag = s.s_ebase + 18;
     s.s_segr = (double*)(s.s_flag + 4);
@@ -79,7 +79,7 @@ __device__ __forceinline__ void radix_pass_n(u16* ia, u16* ib, u16* scnt, u32* s
         if (lt == 0) scnt[d * n_groups + it * WARPS + warp] = (u16)__popc(m);
     }
     __syncthreads();
-    block_exscan<(C >= 2 ? C / 2 : 1), u16>(scnt, 16 * n_groups, swarp);
+    block_exclusive_scan<(C >= 2 ? C / 2 : 1), u16>(scnt, 16 * n_groups, swarp);
 #pragma unroll
     for (int it = 0; it < C; ++it) {
         if (!FULL && (u32)it >= n_it) break;
@@ -100,14 +100,14 @@ __device__ __forceinline__ void layer_body(
     const u64* __restrict__ x, const u64* __restrict__ z, const double* __restrict__ c, const u64* __restrict__ g,
     const u32* __restrict__ in_start, const u32* __restrict__ in_len, const u32* __restrict__ bucket_at,
     const u32* __restrict__ cnt, const u32* __restrict__ seg_start,
-    u32 mode, u32 E, u32 kq, u32 q0, u32 q1, double rcos, double rsin,
-    const double* __restrict__ amp, const u64* __restrict__ mask, const u32* __restrict__ nz,
-    const u32* __restrict__ bd, const u64* __restrict__ gm,
-    const u32* __restrict__ rem, const u32* __restrict__ recv_off, const u32* __restrict__ rbase, u32 B,
+    u32 mode, u32 E, u32 support_size, u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin,
+    const double* __restrict__ amplitude, const u64* __restrict__ mask, const u32* __restrict__ nonzero_patterns,
+    const u32* __restrict__ bucket_delta, const u64* __restrict__ fingerprint_delta,
+    const u32* __restrict__ received_slot, const u32* __restrict__ recv_off, const u32* __restrict__ rbase, u32 B,
     const u64* __restrict__ rx, const u64* __restrict__ rz, const double* __restrict__ rc, const u64* __restrict__ rg,
     const KeepProg& prog, u32 p0,
     u64* __restrict__ out_x, u64* __restrict__ out_z, double* __restrict__ out_c, u64* __restrict__ out_g,
-    u32* __restrict__ out_len_pos, u32* __restrict__ fallback) {
+    u32* __restrict__ rows_per_position, u32* __restrict__ fallback) {
     extern __shared__ __align__(16) u8 smem_raw[];
     const u32 n_cap = C * THREADS;
     Smem S = carve(smem_raw, n_cap);
@@ -117,24 +117,24 @@ __device__ __forceinline__ void layer_body(
     const u32 seg0 = seg_start[p] - seg_start[p0];
     const u32 n_rows = seg_start[p + 1] - seg_start[p];
     if (n_rows == 0) {
-        if (tid == 0) out_len_pos[p] = 0;
+        if (tid == 0) rows_per_position[p] = 0;
         return;
     }
 
-    // A rotation table never reads `amp`.
-    if (mode == MODE_LOCAL) for (u32 i = tid; i < 512; i += THREADS) S.s_amp[i] = amp[i];
+    // A rotation table never reads `amplitude`.
+    if (mode == MODE_LOCAL) for (u32 i = tid; i < 512; i += THREADS) S.s_amplitude[i] = amplitude[i];
     for (u32 i = tid; i < 32 * W; i += THREADS) S.s_mask[i] = mask[i];
     // A received entry's source is segment p of its block: rows already shifted and multiplied by the sender.
     if (tid < MAX_ENTRIES) {
-        S.s_gm[tid] = gm[tid] & fp_mask();
-        S.s_bd[tid] = bd[tid];
-        S.s_nz[tid] = nz[tid];
-        const u32 k = rem[tid];
-        S.s_rem[tid] = k;
+        S.s_fingerprint_delta[tid] = fingerprint_delta[tid] & fingerprint_mask();
+        S.s_bucket_delta[tid] = bucket_delta[tid];
+        S.s_nonzero_patterns[tid] = nonzero_patterns[tid];
+        const u32 k = received_slot[tid];
+        S.s_received_slot[tid] = k;
         u32 sb_start = 0, sb_len = 0;
         if (tid < E) {
             if (k == NO_REMOTE) {
-                const u32 sb = beta ^ bd[tid];
+                const u32 sb = beta ^ bucket_delta[tid];
                 sb_start = in_start[sb];
                 sb_len = in_len[sb];
             } else {
@@ -152,7 +152,7 @@ __device__ __forceinline__ void layer_body(
         u32 run = 0;
         for (u32 e = 0; e < E; ++e) {
             S.s_ebase[e] = run;
-            run += (S.s_rem[e] == NO_REMOTE) ? cnt[(size_t)(beta ^ S.s_bd[e]) * E + e] : S.s_len[e];
+            run += (S.s_received_slot[e] == NO_REMOTE) ? cnt[(size_t)(beta ^ S.s_bucket_delta[e]) * E + e] : S.s_len[e];
         }
         S.s_ebase[E] = run;
         S.s_flag[0] = 0;
@@ -161,22 +161,22 @@ __device__ __forceinline__ void layer_body(
     Table T;
     T.mode = mode;
     T.entries = E;
-    T.kq = kq;
-    T.q0 = q0;
-    T.q1 = q1;
-    T.rot_cos = rcos;
-    T.rot_sin = rsin;
-    T.amp = S.s_amp;
+    T.support_size = support_size;
+    T.qubit_0 = qubit_0;
+    T.qubit_1 = qubit_1;
+    T.rotation_cos = rotation_cos;
+    T.rotation_sin = rotation_sin;
+    T.amplitude = S.s_amplitude;
     T.mask = S.s_mask;
-    T.nz = S.s_nz;
+    T.nonzero_patterns = S.s_nonzero_patterns;
 
     // Build: one warp per entry, warp-compacted in source order; a narrow block takes several entries per warp.
     for (u32 e = warp; e < E; e += WARPS) {
         const u32 start = S.s_sb[e];
         const u32 len = S.s_len[e];
-        const bool received = S.s_rem[e] != NO_REMOTE;
+        const bool received = S.s_received_slot[e] != NO_REMOTE;
         u32 wbase = S.s_ebase[e];
-        const u64 gme = S.s_gm[e];
+        const u64 gme = S.s_fingerprint_delta[e];
         for (u32 r0 = 0; r0 < len; r0 += WARP) {
             const u32 r = r0 + lane;
             bool ok = false;
@@ -195,7 +195,7 @@ __device__ __forceinline__ void layer_body(
             if (ok) {
                 const u32 idx = wbase + __popc(bal & lanemask_lt());
                 S.sg[idx] = (u32)gv;
-                S.stag[idx] = (u16)((e << TAG_OFF_BITS) | r);
+                S.stag[idx] = (u16)((e << TAG_OFFSET_BITS) | r);
             }
             wbase += __popc(bal);
         }
@@ -212,15 +212,15 @@ __device__ __forceinline__ void layer_body(
     u16* stag = S.stag;
     u32* sg = S.sg;
     const u32* s_sb = S.s_sb;
-    const u32* s_rem = S.s_rem;
+    const u32* s_received_slot = S.s_received_slot;
     const u64* s_mask = S.s_mask;
-    const u64* s_gm = S.s_gm;
+    const u64* s_fingerprint_delta = S.s_fingerprint_delta;
 
     auto src_of = [&](u32 j, u32& e, bool& received) -> u32 {
         const u32 t = stag[j];
-        e = t >> TAG_OFF_BITS;
-        received = s_rem[e] != NO_REMOTE;
-        return s_sb[e] + (t & TAG_OFF_MASK);
+        e = t >> TAG_OFFSET_BITS;
+        received = s_received_slot[e] != NO_REMOTE;
+        return s_sb[e] + (t & TAG_OFFSET_MASK);
     };
     auto out_key = [&](u32 j) -> Key {
         u32 e;
@@ -239,7 +239,7 @@ __device__ __forceinline__ void layer_body(
         u32 e;
         bool received;
         const u32 src = src_of(j, e, received);
-        return received ? rg[src] : (g[src] ^ s_gm[e]);
+        return received ? rg[src] : (g[src] ^ s_fingerprint_delta[e]);
     };
 
     const u32 n_it = (n_rows + THREADS - 1) / THREADS;
@@ -329,7 +329,7 @@ __device__ __forceinline__ void layer_body(
                 out_x[(size_t)slot * W + w] = k.x[w] ^ s_mask[(e * 2) * W + w];
                 out_z[(size_t)slot * W + w] = k.z[w] ^ s_mask[(e * 2 + 1) * W + w];
             }
-            out_g[slot] = g[src] ^ s_gm[e];
+            out_g[slot] = g[src] ^ s_fingerprint_delta[e];
         }
         out_c[2 * (size_t)slot] = ar;
         out_c[2 * (size_t)slot + 1] = ai;
@@ -411,8 +411,8 @@ __device__ __forceinline__ void layer_body(
 #pragma unroll
         for (int it = 0; it < C; ++it) sg[base + it] = keep[it] ? 1u : 0u;
         __syncthreads();
-        const u32 total = block_exscan<C, u32>(sg, n_cap, S.swarp);
-        if (tid == 0) out_len_pos[p] = total;
+        const u32 total = block_exclusive_scan<C, u32>(sg, n_cap, S.swarp);
+        if (tid == 0) rows_per_position[p] = total;
 #pragma unroll
         for (int it = 0; it < C; ++it) {
             if (!keep[it]) continue;
@@ -449,8 +449,8 @@ __device__ __forceinline__ void layer_body(
 #pragma unroll
         for (int it = 0; it < C; ++it) sg[it * THREADS + tid] = keep[it] ? 1u : 0u;
         __syncthreads();
-        const u32 total = block_exscan<C, u32>(sg, n_cap, S.swarp);
-        if (tid == 0) out_len_pos[p] = total;
+        const u32 total = block_exclusive_scan<C, u32>(sg, n_cap, S.swarp);
+        if (tid == 0) rows_per_position[p] = total;
 #pragma unroll
         for (int it = 0; it < C; ++it) {
             if (!keep[it]) continue;
@@ -463,27 +463,38 @@ __device__ __forceinline__ void layer_body(
 #define LAYER_KERNEL(C, SEG, NAME)                                                                         \
     extern "C" __global__ void __launch_bounds__(THREADS) NAME(                                            \
         const u64* x, const u64* z, const double* c, const u64* g, const u32* in_start, const u32* in_len, \
-        const u32* bucket_at, const u32* cnt, const u32* seg_start, u32 mode, u32 E, u32 kq, u32 q0,       \
-        u32 q1, double rcos, double rsin, const double* amp, const u64* mask, const u32* nz,               \
-        const u32* bd, const u64* gm, const u32* rem, const u32* recv_off, const u32* rbase, u32 B,         \
-        const u64* rx, const u64* rz, const double* rc, const u64* rg,                                     \
-        const __grid_constant__ KeepProg prog, u32 p0, u64* out_x,                                         \
-        u64* out_z, double* out_c, u64* out_g, u32* out_len_pos, u32* fallback) {                          \
-        layer_body<C, SEG>(x, z, c, g, in_start, in_len, bucket_at, cnt, seg_start, mode, E, kq, q0, q1,   \
-                           rcos, rsin, amp, mask, nz, bd, gm, rem, recv_off, rbase, B, rx, rz, rc, rg,     \
-                           prog, p0, out_x, out_z, out_c, out_g, out_len_pos, fallback);                   \
+        const u32* bucket_at, const u32* cnt, const u32* seg_start, u32 mode, u32 E, u32 support_size,     \
+        u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin, const double* amplitude,       \
+        const u64* mask, const u32* nonzero_patterns, const u32* bucket_delta,                             \
+        const u64* fingerprint_delta, const u32* received_slot, const u32* recv_off, const u32* rbase,     \
+        u32 B, const u64* rx, const u64* rz, const double* rc, const u64* rg,                              \
+        const __grid_constant__ KeepProg prog, u32 p0, u64* out_x, u64* out_z, double* out_c, u64* out_g,  \
+        u32* rows_per_position, u32* fallback) {                                                           \
+        layer_body<C, SEG>(x, z, c, g, in_start, in_len, bucket_at, cnt, seg_start, mode, E, support_size, \
+                           qubit_0, qubit_1, rotation_cos, rotation_sin, amplitude, mask, nonzero_patterns,\
+                           bucket_delta, fingerprint_delta, received_slot, recv_off, rbase, B, rx, rz, rc, \
+                           rg, prog, p0, out_x, out_z, out_c, out_g, rows_per_position, fallback);         \
     }
 
 #define LAYER_PAIR(C) LAYER_KERNEL(C, false, k_layer_serial_##C) LAYER_KERNEL(C, true, k_layer_segscan_##C)
 
-// Every items-per-thread variant whose record capacity fits CAP at this block width.
+#ifndef TEST_CARVE_BYTES
+// Every items-per-thread variant whose record capacity fits LAYER_CAP at this block width.
 LAYER_PAIR(1)
 LAYER_PAIR(2)
 LAYER_PAIR(4)
 LAYER_PAIR(8)
-#if THREADS * 16 <= CAP
+#if THREADS * 16 <= LAYER_CAP
 LAYER_PAIR(16)
 #endif
-#if THREADS * 32 <= CAP
+#if THREADS * 32 <= LAYER_CAP
 LAYER_PAIR(32)
+#endif
+#else
+// Test hook in place of the variants: the bytes `carve` lays out for n_cap records, which `layer_shared_bytes` in module.rs must equal.
+extern "C" __global__ void k_carve_bytes(u32 n_cap, u64* out) {
+    u8* base = (u8*)out;
+    const Smem s = carve(base, n_cap);
+    *out = (u64)((u8*)(s.s_segf + 32) - base);
+}
 #endif

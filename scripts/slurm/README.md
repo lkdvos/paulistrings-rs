@@ -1,20 +1,19 @@
 # Slurm templates for the partitioned-engine measurements
 
-Batch scripts that run the partitioned engine's measurements on an exclusive Rusty node rather than
-the shared reference workstation. Submitting is a manual step (`sbatch`), by design: allocating
-cluster resources is a user check-in point.
+Batch scripts that run the partitioned engine's measurements on an exclusive Rusty node rather than the shared reference workstation.
+Submitting is a manual step (`sbatch`), by design: allocating cluster resources is a user check-in point.
+The templates share `common.sh`: the shared toolchain, a private checkout of `PS_REV` whose locked crates must all be in the shared cache, the results directory and the test-binary lookup.
 
 | script | what it runs | when |
 |---|---|---|
-| `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs the working tree) or the runtime-knob A/B P=1 vs P=`<numa nodes>` on one binary | in-process partitioning |
+| `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs `PS_REV`) or a runtime-knob A/B on one binary, P=1 vs P=`<numa nodes>` unless `KNOB_B` names another knob; `MPI=1` runs either under `srun` at one rank per NUMA domain | in-process partitioning, MPI ranks |
 | `gpu-devices.sbatch` | one 4 × A100 node (`gpu` partition): the single-device CUDA net, `tests/propagate_gpu_partitioned.rs` at one partition per GPU, then `phase_breakdown --device 0` and `--device 0,1,2,3` on the device cells | the CUDA backend, one process (needs the `cuda` cargo feature) |
 | `mpi-gpu.sbatch` | one 4-GPU node by default (`--gpus-per-node=4 --ntasks-per-node=4`, every node GPU visible to every task), one GPU per MPI rank over NCCL: diagnostics preamble, `tests/mpi_ranks.rs` with `NCCL_DEBUG` on, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
 
 ## Node choice
 
-Partition `ccq` (the user is at CCQ; `scc` is the Scientific Computing Core's). Snapshot of `sinfo -p ccq` on 2026-09-08: 43 idle **icelake** (2 × 32 cores, rocky9), 4 idle rome
-(2 × 64), 11 genoa (2 × 48, mostly allocated). The templates default to
+Partition `ccq` (the user is at CCQ; `scc` is the Scientific Computing Core's) has **icelake** (2 × 32 cores, rocky9, the most often idle), rome (2 × 64) and genoa (2 × 48) nodes; `sinfo -p ccq` shows what is free. The templates default to
 `--constraint=icelake&rocky9` for availability and because rocky9 matches the module stack the
 workstation uses; override with `sbatch --constraint='genoa&rocky9' ...` to get more NUMA domains per
 socket (P = 4 or 8 if the BIOS exposes NPS4). The scripts never hard-code CPU lists: `ab-campaign.sbatch`
@@ -24,35 +23,44 @@ do the same job for it.
 
 ## One-time setup: a toolchain on the shared filesystem
 
-`~/.cargo` and `~/.rustup` on the CCQ workstations are symlinks into the local NVMe `/home`, which
-cluster nodes do not mount — rustup's `cargo` proxy dangles there and the first jobs died with
-`cargo: command not found`. Run once, on a host with network access:
+`~/.cargo` and `~/.rustup` on the CCQ workstations are symlinks into the local NVMe `/home`, which cluster nodes do not mount, so rustup's `cargo` proxy dangles there.
+Run once, on a host with network access:
 
 ```bash
 scripts/slurm/setup-shared-toolchain.sh     # ~750 MB under $HOME/.local/rust-shared
 ```
 
-It installs the `rust-toolchain.toml` channel and pre-fetches the crate registry there; the templates
-export `RUSTUP_HOME`/`CARGO_HOME` accordingly and fail fast (exit 3) if `cargo` is still unusable.
+It installs the `rust-toolchain.toml` channel and pre-fetches the crate registry there.
+The templates export `RUSTUP_HOME`/`CARGO_HOME` accordingly and fail fast (exit 3) if `cargo` is unusable or `cargo fetch --offline --locked` finds a `Cargo.lock` entry missing from the cache.
 Re-run it after changing the toolchain pin or the dependency set.
 
 ## Usage
 
-The workstation environment exports `SBATCH_RESERVATION=rocky9` (a leftover of the rocky9 migration;
-that reservation no longer exists), which makes every `sbatch` fail with "Requested reservation is
-invalid". Unset it for the submission (`env -u SBATCH_RESERVATION sbatch ...`, or `unset
-SBATCH_RESERVATION` once in the shell).
+The workstation environment exports a stale `SBATCH_RESERVATION=rocky9`, which makes every `sbatch` fail with "Requested reservation is invalid".
+Unset it for the submission (`env -u SBATCH_RESERVATION sbatch ...`, or `unset SBATCH_RESERVATION` once in the shell).
+
+Run the A/B template locally first, as plain `bash`: `SMOKE=1 bash scripts/slurm/ab-campaign.sbatch` presets one tiny cell (`LAYERS=cnot NS=2000 THREADS=2 REPS=2 PAIRS=1`) and exercises the toolchain, the cache check, the builds and `ab-compare.sh` end to end in a minute or two.
 
 ```bash
 # P=1 vs P=<numa> runtime-knob campaign on one binary:
 env -u SBATCH_RESERVATION sbatch scripts/slurm/ab-campaign.sbatch
 # same, choosing layers / sizes / pairs:
 LAYERS="su4 rotation_local rotation_remote gu2q" NS="1000000 3000000" PAIRS=5 sbatch scripts/slurm/ab-campaign.sbatch
-# code A/B of the untouched path (P=1 both sides): baseline sha vs the working tree
+# code A/B of the untouched path (P=1 both sides): baseline sha vs PS_REV
 A_REV=e7de227 LAYERS="rotation_zz cnot su4" sbatch scripts/slurm/ab-campaign.sbatch
+# code A/B with both sides partitioned: P = 4 unpinned, 8 threads per partition
+A_REV=e7de227 LAYERS="rotation_zz cnot su4" NS="1000 100000" THREADS=32 PROBE_EXTRA="--partitions 4 --partition-cpus unpinned" sbatch scripts/slurm/ab-campaign.sbatch
+# runtime-knob A/B of another probe flag: B adds KNOB_B instead of the partitions knob
+LAYERS="rotation_zz cnot su4" THREADS="1 8" KNOB_B="--truncation atopn:100000" sbatch scripts/slurm/ab-campaign.sbatch
 # more NUMA domains:
 sbatch --constraint='genoa&rocky9' scripts/slurm/ab-campaign.sbatch
+# paired MPI A/B: code A/B at one rank per NUMA domain over two nodes, each cell's rows merged over ranks
+MPI=1 A_REV=e7de227 LAYERS="cnot su4" NS=3000000 sbatch --nodes=2 scripts/slurm/ab-campaign.sbatch
 ```
+
+Every cell is named `slurm-<jobid>-<layer>-n<n>-t<t>`, so two jobs on one node and day never share a log or a sidecar.
+Each distinct rev builds once, before the first cell, and every cell runs those two binaries through `ab-compare.sh --bin-a/--bin-b`.
+Under `MPI=1` the launcher is `srun --ntasks=<ranks> --cpu-bind=ldoms --mpi=pmix` (`ranks.sh`), `THREADS` is per rank, and `ab-compare.sh --launch` merges each run's `.rank<N>` sidecars into one row per cell, every `*_ns` time and `vmhwm_kb` the maximum over ranks; off-cluster it is `mpirun -n 2`, and `LAUNCH` overrides either.
 
 ## The MPI ranks job
 
@@ -63,7 +71,7 @@ there is no domains-per-rank knob and no `--partition-cpus` string to build. The
 a power of two (a partition is named by `log2(P)` GF(2) rows), so the script rounds
 `nodes × domains` down and prints what it picked: two icelake nodes of two domains each give four
 ranks. The net having passed, it then runs `phase_breakdown --mpi` at the same rank count — `LAYERS`
-and `N` choose the cells — and each rank writes its own `.rank<N>` sidecar.
+and `N` choose the cells — and each rank writes its own `.rank<N>` sidecar, `benchmarks/results/<date>-<node>/mpi-ranks-<job>.jsonl.rank<N>`.
 
 ```bash
 env -u SBATCH_RESERVATION sbatch scripts/slurm/mpi-ranks.sbatch
@@ -72,9 +80,9 @@ env -u SBATCH_RESERVATION sbatch --constraint='genoa&rocky9' scripts/slurm/mpi-r
 ```
 
 The build needs `libclang` for rsmpi's bindgen, which is why the template loads `llvm/19.1.7`
-alongside `openmpi/5.0.6` and exports `LIBCLANG_PATH`. Run `cargo fetch` once on a login host after
-adding the feature — the job builds `--offline` against the shared registry cache. On the
-workstation the same net runs without Slurm through `scripts/mpi-test.sh --ranks 2,4`.
+alongside `openmpi/5.0.6` and exports `LIBCLANG_PATH`.
+The job builds `--offline` against the shared registry cache.
+On the workstation the same net runs without Slurm through `scripts/mpi-test.sh --ranks 2,4`.
 
 Jobs build the commit `PS_REV` (default: `HEAD` when the job starts) in a git worktree, never the
 live checkout, so editing the tree while jobs are queued is safe; pin with
@@ -92,11 +100,7 @@ Hardware counters (`scripts/perf-stat.sh`, uncore IMC bandwidth, remote-load sha
 the templates: they need `perf_event_paranoid` low enough on the node, which is typically not the
 case on the cluster. Run the counter pass on the workstation for the cells that matter.
 
-The repo's `target` is likewise a symlink into the workstation's local `/home` (dangling on the
-nodes), which is why `ab-compare.sh` honours `CARGO_TARGET_DIR` for its worktrees and binaries.
-Builds happen on the node into a job-private `CARGO_TARGET_DIR` under the node's local scratch
-(`$TMPDIR`), with `cargo --offline` against the shared `~/.cargo` registry cache — so run any
-`cargo fetch`/build once on a login host first if dependencies changed.
+The repo's `target` is likewise a symlink into the workstation's local `/home` (dangling on the nodes), so builds go into a job-private `CARGO_TARGET_DIR`: node-local scratch (`$TMPDIR`) for the one-node templates, the shared home filesystem where every rank execs the binary.
 
 ## The GPU jobs
 
@@ -132,23 +136,13 @@ Its preamble logs `nvidia-smi topo -m`, `ibv_devinfo -l`, the `nvidia_peermem`/`
 
 Every `srun` in the GPU templates runs through `bounded <secs> srun ...` from `scripts/slurm/bounded.sh`: `timeout` sends TERM at the bound and KILL 30 s later, the step's status is reported, and a failed step lists the compute processes left on the node's GPUs (`leftover_gpu_processes`, an `--overlap` step so it runs beside whatever is stuck).
 A hung rank (a device wait that never ends, an `MPI_Abort` that never returns) therefore costs one step's bound, not the allocation's time limit; `NET_BOUND` and `PROBE_BOUND` set the bounds in seconds.
-The differential net of `mpi-gpu.sbatch` runs under `PAULISTRINGS_NCCL_TIMEOUT_S=60` (`NCCL_TIMEOUT_S` overrides), since its exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
+The differential net of `mpi-gpu.sbatch` runs under `PAULISTRINGS_WIRE_TIMEOUT_S=60` (`WIRE_TIMEOUT_S` overrides), since its exchanges take milliseconds and a 300 s wait is the engine's production bound, not a test's.
 A failed net is reported, the probe is skipped and the job exits non-zero.
 `tests/mpi_ranks.rs` itself arms a watchdog before `MPI_Abort` and aborts the process 15 s later if the launcher has not ended it.
 
 ## JCC-erratum padding across node types
 
-`-Cllvm-args=-x86-branches-within-32B-boundaries` is worth −9..−13% wall on the reference
-workstation (ccqlin038, Cascade Lake): the
-JCC erratum (SKX102) excludes any 32-byte fetch window whose jump crosses or ends on the boundary
-from the decoded-uop cache, and the padding takes DSB residency from 45.8% to 98.0%
-(`research/FINDINGS.md`).
-
-**The erratum is Skylake-derived Intel only**, and the campaign settled it: across rome (Zen2),
-genoa (Zen4) and icelake (Ice Lake-SP), **13 of 13 direction-consistent phase results at 1 thread
-show the padded build slower** (+0.6..+3.8%). So the flag is **not** in `.cargo/config.toml` — the
-shipped default is portable, and hosts with the erratum opt in via `scripts/jcc-rustflags.sh`,
-which every measurement script sources. Cluster jobs therefore get the right build automatically.
+Every template sources `scripts/jcc-rustflags.sh`, so a node with the JCC erratum gets the padded build and every other node the portable one (`research/FINDINGS.md §JCC branch padding, opt-in`).
 
 ## The operator Loschmidt echo jobs (`examples/b8_ole`)
 

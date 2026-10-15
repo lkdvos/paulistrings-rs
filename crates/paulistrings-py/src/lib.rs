@@ -1,10 +1,7 @@
 //! Python bindings for `paulistrings`.
 //!
-//! See ARCHITECTURE.md §Python-Bindings. The user-visible Python surface is a
-//! small set of classes (`PauliSum`, `Circuit`) plus three factory submodules
-//! (`gates`, `noise`, `truncation`). The width parameter `W` is monomorphized
-//! at a fixed set `{1, 2, 4, 8, 16}` and dispatched outside any hot loop
-//! (ARCHITECTURE.md §Width).
+//! The user-visible Python surface is a small set of classes (`PauliSum`, `Circuit`) plus three factory submodules (`gates`, `noise`, `truncation`).
+//! The width parameter `W` is monomorphized at a fixed set `{1, 2, 4, 8, 16}` and dispatched once per call, outside any hot loop.
 
 // PyO3 0.22's `#[pymethods]` expansion converts return values via `.into()` even for a `PyResult<T>`, which clippy flags; the lint is on the macro output, not our code.
 #![allow(clippy::useless_conversion)]
@@ -22,6 +19,7 @@ mod noise;
 mod pauli_string;
 mod sum;
 mod truncation;
+mod truncation_dispatch;
 mod truncation_spec;
 
 use pyo3::prelude::*;
@@ -47,7 +45,7 @@ fn reset_log_cache() {
 /// A machine with no NUMA information reports the whole affinity mask as a single node. The lists are a snapshot: a later affinity change is not reflected until the next call.
 #[pyfunction]
 fn numa_nodes() -> Vec<Vec<usize>> {
-    paulistrings::engine::partitioned::numa_nodes()
+    paulistrings::numa_nodes()
         .into_iter()
         .map(|(_id, cpus)| cpus.0)
         .collect()
@@ -87,12 +85,6 @@ fn cuda_available() -> bool {
     false
 }
 
-/// The diagonal echo `sum_n w[n] cos(2 delta)**n / sum_n w[n]` from a `PauliSum.anticommute_histogram` `w`; `nan` for an all-zero histogram.
-#[pyfunction]
-fn diagonal_echo(hist: Vec<f64>, delta: f64) -> f64 {
-    paulistrings::diagonal_echo(&hist, delta)
-}
-
 /// Shorthand for `PauliString.from_label(label)`, for writing one down by hand.
 ///
 /// ```python
@@ -115,13 +107,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mpi_available, m)?)?;
     m.add_function(wrap_pyfunction!(cuda_available, m)?)?;
     m.add_function(wrap_pyfunction!(p, m)?)?;
-    m.add_function(wrap_pyfunction!(diagonal_echo, m)?)?;
-
-    // Re-exported from the core so the Python default cannot drift from the Rust one.
-    m.add(
-        "DEFAULT_SMALL_SUM_THRESHOLD",
-        paulistrings::DEFAULT_SMALL_SUM_THRESHOLD,
-    )?;
+    m.add_function(wrap_pyfunction!(truncation_dispatch::_last_host_policy, m)?)?;
 
     m.add_class::<pauli_string::PauliString>()?;
     m.add_class::<sum::PauliSum>()?;

@@ -11,10 +11,12 @@ The echo is `S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)`, where `A = C†OC`, `O = Z^{�
 
 ## The estimators
 
-`anticommute_histogram` gives `w_n = Σ_{n_P = n} b_P²`, where `n_P` counts the perturbation sites whose `X` anticommutes with `P`.
-The paper's diagonal OLE is `S_diag = Σ_n w_n cos(2δ)ⁿ / Σ_n w_n`, which is the closed form of its moment series Eq. (C34).
+The estimators in `ole.py` are numpy over `PauliSum.to_arrays()`.
+`ole.anticommute_histogram` gives `w_n = Σ_{n_P = n} b_P²`, where `n_P` counts the perturbation sites whose `X` anticommutes with `P`.
+The paper's diagonal OLE is `ole.diagonal_echo`, `S_diag = Σ_n w_n cos(2δ)ⁿ / Σ_n w_n`, which is the closed form of its moment series Eq. (C34).
 `truncated_series` gives the truncated sum that Fig. 17(b) scans.
-`rotated_overlap` is the exact `S_δ` of the propagated `A`, off-diagonal terms included.
+`ole.rotated_overlap` is the exact `S_δ` of the propagated `A`, off-diagonal terms included: strings that `V_δ† · V_δ` mixes form classes, and each class of `k` strings costs `k²` pairs.
+Under `--mpi` each rank evaluates both on its `result="local"` share and the values are summed over ranks, which is exact for the overlap because the partition rows exclude the probe sites' x-bits.
 
 ## PP-MC
 

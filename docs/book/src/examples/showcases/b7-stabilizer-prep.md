@@ -154,6 +154,7 @@ pytest examples/tests/test_showcase_b7.py                        # 0.5 s
 [`RAYON_NUM_THREADS=1`](../../manual/propagation/settings.md#threads) must be exported before the interpreter starts; the
 script asserts the pin and refuses to run unpinned. A full run regenerates
 every artifact in the showcase directory.
+`--quick` writes into the gitignored `benchmarks/results/b7-quick/` instead, and `--out-dir DIR` picks another directory.
 
 **Numbers:** every value on this page is sourced from
 [`examples/b7_stabilizer_prep/README.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/examples/b7_stabilizer_prep/README.md)

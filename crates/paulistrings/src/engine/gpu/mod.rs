@@ -1,9 +1,9 @@
-//! The CUDA backend. See ARCHITECTURE.md §GPU-Readiness.
+//! The CUDA backend (feature `cuda`): device probes, device-resident sums and their propagation drivers.
 //!
-//! `device` is the runtime probe and device table, `module` the NVRTC kernel cache, [`GpuSum`] the device-resident sum over `columns`, [`GpuPartitionedSum`] (one device: [`GpuPauliSum`]) and [`GpuDistributedSum`] the partitioned drivers over the device backend of `partition`, `layer` and `export`.
+//! [`GpuPartitionedSum`] holds a sum on one device or splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
 
 mod columns;
-pub(crate) mod device;
+mod device;
 mod driver;
 mod error;
 mod export;
@@ -14,7 +14,7 @@ mod layer;
 mod module;
 #[cfg(feature = "mpi")]
 mod nccl;
-mod partition;
+pub(crate) mod partition;
 mod payload;
 mod prepared;
 mod rank;
@@ -24,18 +24,21 @@ mod sum;
 mod truncation;
 mod wire;
 
+/// `log` target of device setup: kernel compiles and the kernel cache, device choice, and the device wires (NCCL, peer access).
+pub(crate) const GPU_LOG_TARGET: &str = "paulistrings::gpu";
+
 #[cfg(feature = "mpi")]
 pub use device::nccl_available;
 pub use device::{cuda_available, device_count, devices, DeviceInfo};
-pub use driver::{
-    first_failure, propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuPauliSum,
-};
+pub use driver::{propagate_gpu, propagate_gpu_partitioned, GpuPartitionedSum, GpuScatterOptions};
 pub use error::GpuError;
-pub use layer::{
-    GpuBucketPolicy, GpuLayerCounters, GpuLayerOptions, DEFAULT_ARENA_BYTES,
-    DEFAULT_RECORDS_PER_BLOCK,
-};
+pub use layer::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
+#[cfg(any(test, feature = "test-utils"))]
+pub use partition::FaultPlan;
 pub use rank::GpuDistributedSum;
 #[cfg(feature = "mpi")]
 pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};
 pub use sum::GpuSum;
+pub(crate) use wire::wire_timeout;
+#[cfg(any(test, feature = "test-utils"))]
+pub use wire::WireFault;

@@ -1,0 +1,271 @@
+//! The [`Transport`] trait, the [`Payload`] wire seam, the exchange's [`ChunkMap`], and the one-partition [`SoloTransport`].
+
+use crate::collectives::sealed::Sealed;
+use crate::collectives::Collectives;
+use crate::engine::coset::CosetOrder;
+
+/// The chunks a layer's bulk transfer is cut into, over the positions of the receiver's [`CosetOrder`].
+///
+/// Chunk edges always fall on coset boundaries, so a coset task waits on exactly one chunk.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChunkMap {
+    positions: u32,
+    /// `log2` of the coset size: coset `c` owns positions `c << coset_dimension .. (c + 1) << coset_dimension`.
+    coset_dimension: u32,
+    cosets: u32,
+    /// Clamped to `1..=cosets`.
+    chunks: u32,
+    /// `chunks` before the clamp, which every partition must have asked for alike; only the MPI header carries it.
+    #[cfg(feature = "mpi")]
+    requested: u32,
+}
+
+impl ChunkMap {
+    /// `positions` positions in cosets of `2^coset_dimension`, cut into at most `chunks` pieces; panics unless `positions` is a power of two and `chunks > 0`.
+    pub(crate) fn new(positions: usize, coset_dimension: usize, chunks: usize) -> Self {
+        assert!(
+            positions.is_power_of_two(),
+            "ChunkMap: {positions} positions is not a power of two",
+        );
+        assert!(chunks > 0, "ChunkMap: a layer needs at least one chunk");
+        let coset_dimension = coset_dimension as u32;
+        let positions = positions as u32;
+        debug_assert!(
+            (1u32 << coset_dimension) <= positions,
+            "ChunkMap: a coset of {} buckets does not fit in {positions}",
+            1u32 << coset_dimension,
+        );
+        let cosets = positions >> coset_dimension;
+        Self {
+            positions,
+            coset_dimension,
+            cosets,
+            chunks: (chunks as u32).min(cosets).max(1),
+            #[cfg(feature = "mpi")]
+            requested: chunks as u32,
+        }
+    }
+
+    /// The chunking of `order`'s positions.
+    pub(crate) fn of_order(order: &CosetOrder, chunks: usize) -> Self {
+        Self::new(order.positions(), order.dimension(), chunks)
+    }
+
+    /// Positions, i.e. buckets.
+    pub(crate) fn positions(&self) -> usize {
+        self.positions as usize
+    }
+
+    pub(crate) fn chunks(&self) -> usize {
+        self.chunks as usize
+    }
+
+    /// The chunk count this map was asked for, before the clamp to the coset count.
+    #[cfg(feature = "mpi")]
+    pub(crate) fn requested_chunks(&self) -> u32 {
+        self.requested
+    }
+
+    /// The first position of chunk `k`, a multiple of the coset size; `bound(chunks())` is the position count.
+    pub(crate) fn bound(&self, k: usize) -> u32 {
+        assert!(k <= self.chunks(), "ChunkMap: chunk {k} is out of range");
+        let coset = (k as u64 * u64::from(self.cosets)).div_ceil(u64::from(self.chunks)) as u32;
+        coset << self.coset_dimension
+    }
+
+    /// The `k` with `bound(k) <= position < bound(k + 1)`.
+    pub(crate) fn chunk_of_position(&self, position: u32) -> usize {
+        let coset = u64::from(position >> self.coset_dimension);
+        ((coset * u64::from(self.chunks)) / u64::from(self.cosets)) as usize
+    }
+}
+
+/// Something a [`Transport`] can move between partitions as zero-copy byte views of its own columns.
+///
+/// The in-process transport moves the typed value and calls none of these methods.
+pub trait Payload: Default + Send + 'static {
+    /// Borrowed byte views of this payload's columns, in wire order.
+    fn byte_parts(&self) -> Vec<&[u8]>;
+
+    /// Reshape for an incoming message of part lengths `lens` (growing, never shrinking, the storage) and hand out one mutable byte view per part, in `byte_parts` order.
+    ///
+    /// Panics if `lens` is not a shape this payload can take.
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]>;
+
+    /// Check, once the bytes have arrived and before the engine reads them, what `receive_into` could not; panics on an inconsistent payload.
+    fn finish_receive(&mut self);
+
+    /// The parts a two-phase transport must deliver before the body runs, in `byte_parts` order; every part by default.
+    fn early_parts(&self) -> Vec<&[u8]> {
+        self.byte_parts()
+    }
+
+    /// The parts after `early_parts`, each cut at `map`'s chunks: `bulk_parts()[i][k]` is part `i`'s slice for chunk `k`; none by default.
+    ///
+    /// Must cut exactly as `bulk_receive_into` does on the receiver, or the two sides post different message sizes.
+    fn bulk_parts(&self, map: &ChunkMap) -> Vec<Vec<&[u8]>> {
+        let _ = map;
+        Vec::new()
+    }
+
+    /// `receive_into` sizing every part from `lens` but handing out only the `early_parts` views.
+    fn early_receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        self.receive_into(lens)
+    }
+
+    /// The receive-side mirror of `bulk_parts`, called once the early parts have arrived.
+    fn bulk_receive_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
+        let _ = map;
+        Vec::new()
+    }
+}
+
+/// What a coset task waits on before it reads a received row of its chunk.
+///
+/// Called from every Rayon worker at once, so an MPI implementation must serialize itself (`MPI_THREAD_SERIALIZED`).
+pub trait ChunkWait: Sync {
+    /// Block until every row of chunk `k` has arrived; safe to call concurrently, repeatedly and out of order.
+    fn wait_chunk(&self, k: usize);
+}
+
+/// The [`ChunkWait`] of a transport whose exchange already completed.
+pub(super) struct AlreadyHere;
+
+impl ChunkWait for AlreadyHere {
+    fn wait_chunk(&self, _k: usize) {}
+}
+
+/// The per-layer all-to-all exchange between the partitions of a group.
+///
+/// Sealed through [`Collectives`]; not object-safe, so the layer loop monomorphizes over it.
+pub trait Transport: Collectives {
+    /// Send `send[q]` to partition `q`, run `body` on what the partners sent here, and return the received payloads with `body`'s result.
+    ///
+    /// Two-phase: the `early_parts` have arrived before `body` starts, and `body` calls `ChunkWait::wait_chunk` before reading a chunk's bulk rows.
+    /// `send.len()` must be the group size with `None` in the own slot and for any partner with nothing to send; every partition passes the same `map`.
+    /// `spare` is a payload pool in unspecified state, possibly empty: the transport takes receive payloads from it and returns finished send payloads to it.
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        spare: &mut Vec<P>,
+        map: &ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R;
+
+    /// The blocking [`exchange_layer`](Self::exchange_layer) under an empty `ChunkMap`, for payloads whose every part is early.
+    fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
+        self.exchange_layer(send, spare, &ChunkMap::default(), |_, _| ())
+            .0
+    }
+
+    /// Collect every partition's `parts` on rank 0: `Some(v)` there with `v[q]` partition `q`'s parts, `None` elsewhere; one collective.
+    ///
+    /// A transport that infers its partner set from the `Some` positions, as the MPI one does, must override this asymmetric call.
+    fn gather_to_root(&self, parts: Vec<&[u8]>) -> Option<Vec<Vec<Vec<u8>>>> {
+        let size = self.size() as usize;
+        let this_rank = self.rank() as usize;
+        let mine = ByteParts(parts.iter().map(|p| p.to_vec()).collect());
+
+        if this_rank != ROOT {
+            let mut send: Vec<Option<ByteParts>> = (0..size).map(|_| None).collect();
+            send[ROOT] = Some(mine);
+            self.exchange(send, &mut Vec::new());
+            return None;
+        }
+
+        let mut received = self.exchange(
+            (0..size).map(|_| None).collect::<Vec<Option<ByteParts>>>(),
+            &mut Vec::new(),
+        );
+        let mut mine = Some(mine);
+        Some(
+            (0..size)
+                .map(|q| {
+                    let got = if q == ROOT {
+                        mine.take()
+                    } else {
+                        received[q].take()
+                    };
+                    got.unwrap_or_else(|| {
+                        panic!(
+                            "gather_to_root: partition {q} sent nothing (it must send its \
+                                parts, empty or not)"
+                        )
+                    })
+                    .0
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The group of one that unpartitioned propagation runs on: no reduction or exchange has anyone to talk to.
+pub(crate) struct SoloTransport;
+
+impl Sealed for SoloTransport {}
+
+impl Collectives for SoloTransport {
+    fn rank(&self) -> u32 {
+        0
+    }
+    fn size(&self) -> u32 {
+        1
+    }
+    fn allreduce_max_u8(&self, v: u8) -> u8 {
+        v
+    }
+    fn allreduce_sum_u64(&self, _buffer: &mut [u64]) {}
+    fn allreduce_sum_f64(&self, _buffer: &mut [f64]) {}
+    fn barrier(&self) {}
+}
+
+impl Transport for SoloTransport {
+    fn exchange_layer<P, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        _spare: &mut Vec<P>,
+        _map: &ChunkMap,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+    {
+        debug_assert!(
+            send.iter().all(Option::is_none),
+            "a group of one sends to no one"
+        );
+        let result = body(&send, &AlreadyHere);
+        (send, result)
+    }
+}
+
+/// The partition every gather lands on.
+pub(super) const ROOT: usize = 0;
+
+/// A [`Payload`] that is already bytes, the default gather's wire form.
+#[derive(Default)]
+struct ByteParts(Vec<Vec<u8>>);
+
+impl Payload for ByteParts {
+    fn byte_parts(&self) -> Vec<&[u8]> {
+        self.0.iter().map(Vec::as_slice).collect()
+    }
+
+    fn receive_into(&mut self, lens: &[usize]) -> Vec<&mut [u8]> {
+        self.0.resize_with(lens.len(), Vec::new);
+        for (part, &len) in self.0.iter_mut().zip(lens) {
+            part.clear();
+            part.resize(len, 0);
+        }
+        self.0.iter_mut().map(Vec::as_mut_slice).collect()
+    }
+
+    fn finish_receive(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests;

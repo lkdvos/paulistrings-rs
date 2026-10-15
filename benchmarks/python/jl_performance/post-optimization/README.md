@@ -1,7 +1,6 @@
-# Curve sweeps on the default engine
+# Curve sweeps
 
-Three workloads, 21 configurations, five `abba` pairs each, `engine="sorted"` (the default bucketed engine at
-every term count). The protocol, ratio convention (`ratio = t_julia / t_paulistrings`, `> 1` means `paulistrings`
+Three workloads, 21 configurations, five `abba` pairs each, on the bucketed engine at every term count. The protocol, ratio convention (`ratio = t_julia / t_paulistrings`, `> 1` means `paulistrings`
 is faster), acceptance rule and caveats live in [`../README.md`](../README.md) and are not restated.
 
 Engine `crates/` tree `81c568a`, extension built 2026-09-01 13:29:28, driver at `0f00207`. The SU(4) curve is a
@@ -34,7 +33,7 @@ meaningful along a single-parameter family.
 The advantage is non-monotone: it peaks at 2.146 near 6.4 × 10⁵ terms and falls back to 1.610 at 2.1 × 10⁶. That
 decay is Julia's per-term cost falling faster over the same range (2 406 → 1 550 ns, −36 %) than this engine's
 (1 097 → 964 ns, −12 %), not anything degrading here. It is a property of a sum near closure rather than of large
-`m`, which [`../deep-kicked-ising/README.md`](../deep-kicked-ising/README.md) isolates.
+`m`.
 
 ## XXZ chain, n = 100, `Jz = 0.5`, `dt = 0.1`, 6 Trotter steps, 1782 channels
 
@@ -84,10 +83,7 @@ term, against Julia's 1.625 GiB and 479 B/term.
 Below each crossover PauliPropagation.jl wins, by up to 3.6× at 68 terms. The reason is structural: a hash-map
 insert per term costs little at 10² terms, while the bucketed rebucket → permute → coset-loop → unpermute pipeline
 costs nearly the same whatever the term count, which the ns/term columns show directly (47 059 ns/term at 68 terms
-against 964 at 2.1 × 10⁶). That fixed cost is what the opt-in `engine="auto"` direct-apply path avoids; it is
-measured on exactly these configurations in
-[`../post-optimization-auto/README.md`](../post-optimization-auto/README.md), and its numbers are a different
-engine setting that is never mixed into a table here.
+against 964 at 2.1 × 10⁶).
 
 ## Data provenance
 
@@ -96,7 +92,7 @@ imported the driver's protocol math rather than reimplementing it, and refused t
 verdict disagreed with the logged one. Ratios, medians, verdicts, crossovers and parity evidence come from the
 five-pair run itself.
 
-Two fields are joined from [`../summary.json`](../summary.json) and tagged `"source": "joined"`. `peak_terms` is
+Two fields are joined from the `4768fe4` sweep of the same configurations (`git show 6dc4488:benchmarks/python/jl_performance/summary.json`) and tagged `"source": "joined"`. `peak_terms` is
 exact rather than approximate, since it is a deterministic function of circuit and cutoff, the parity gate proves
 the per-layer count sequences identical, and every final count matches. The memory block is **not** a measurement
 of this engine, and no rotation-workload memory figure is quoted above; a memory rerun of the rotation workloads

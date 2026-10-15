@@ -1,8 +1,8 @@
 """``PauliSum.expectation_stabilizer`` and ``interop.stabilizers_from_stim``.
 
-Design source: ``research/FINDINGS.md`` §A8-ii.
+Design source: ``research/FINDINGS.md`` §Python API extensions.
 The core's own hand-computed cases live in
-``crates/paulistrings/src/stabilizer.rs``; what is added here is the *string*
+``crates/paulistrings/src/readout/stabilizer.rs``; what is added here is the *string*
 surface (signed generator specs, their error messages) plus two independent
 oracles the Rust side cannot reach: a dense ``numpy`` projector
 ``Pi = prod_i (I + s_i G_i) / 2`` at ``n <= 6``, and ``stim``'s own

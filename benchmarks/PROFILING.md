@@ -3,7 +3,7 @@
 Operational reference for the performance-measurement framework: how to run a measurement campaign, read its output, and decide what it means.
 See `benchmarks/README.md` for the three benchmark surfaces; this doc is about the tools underneath the Rust microbenchmark surface.
 
-Two protocols share the same probe (`examples/phase_breakdown.rs`) and `phase-timing` instrumentation, differing only in how runs are scheduled and compared.
+Two protocols share the same probe (`examples/phase_breakdown/`) and `phase-timing` instrumentation, differing only in how runs are scheduled and compared.
 **Campaigns** (`bench-campaign.sh`) run once and log everything to a dated results directory — good for exploring, and for effects large enough to clear this host's single-shot noise floor.
 **Interleaved A/B** (`ab-compare.sh`) builds two binaries and alternates them adjacent in time — the only protocol that can resolve effects the campaign noise floor would otherwise swallow.
 
@@ -62,9 +62,12 @@ Both sides being the working tree, or both resolving to the same clean commit, i
 
 ## Tool one-liners
 
-- `scripts/bench-campaign.sh <name> <item>...` — runs a sequence of `criterion:<filter>`, `probe:<args>`, `perf-stat:<args>`, `scaling:<placement>`, `macro`, or `bandwidth` items, logged to `benchmarks/results/<date>-<host>/<name>.txt` (append-on-rerun, never overwrite). `--help` prints the full item menu.
+- `scripts/smoke-tooling.sh` — every tool below once at smoke size (criterion `--test`, a probe cell per driver, a one-pair A/B with and without `mpirun`, a tiny campaign, `profile.sh bin`, `SMOKE=1` Slurm template, `mpi-test.sh --ranks 2`), skipping what the host lacks; run it after changing any of them.
+- `scripts/bench-campaign.sh <name> <item>...` — runs a sequence of `criterion:<filter>`, `probe:<args>`, `perf-stat:<args>`, `scaling:<placement>`, or `bandwidth` items, logged to `benchmarks/results/<date>-<host>/<name>.txt` (append-on-rerun, never overwrite). `--help` prints the full item menu.
 - `scripts/host-topology.sh` — sourced, not executed, by `bench-campaign.sh` and `bandwidth.sh`. Single source of truth for host-specific placement: `PLACEMENT_PREFIX` (named placement → command prefix, keyed on `hostname -s`), `BANDWIDTH_RUNS`, and `CEILING_MAP` (thread-count → `bandwidth.txt` section label, consumed by `perf-viz.py`). An unrecognized host falls back to an uncalibrated default plus a stderr warning; add a new `case` arm rather than editing an existing one.
 - `scripts/ab-compare.sh <name> --a <rev|.> --b <rev|.> --probe '<args>' [options]` — the interleaved A/B harness. `--probe-b '<args>'` gives side B its own probe args (default: same as `--probe`) for a runtime-knob A/B — e.g. `--partitions` — on one binary rather than a code change; see the P=1-vs-P=2 recipe under Threading below. When `--probe-b` is given, both sides sharing a tree/commit gets a note instead of the usual smoke-mode warning, and the report runs with `--pair-on layer,threads`.
+  Each rev builds once, and two sides on one tree share one binary; `--bin-a`/`--bin-b <path>` run prebuilt probes instead.
+  `--launch '<mpirun|srun prefix>'` runs every probe under that launcher (the probe args need `--mpi`) and merges each run's `.rank<N>` sidecars into one row per cell, every `*_ns` time and `vmhwm_kb` the maximum over ranks and every other key rank 0's, so `ab-report.py` reads them unchanged.
 - `python3 scripts/ab-report.py A.jsonl B.jsonl [--field wall_ns] [--all-phases] [--pair-on layer,threads[,partitions]]` — the paired-delta reporter, re-invocable on archived sidecars. `--pair-on` (default `layer,threads,partitions`) sets which fields identify a cell; drop `partitions` to pair a P=1 run against a P=2 run of the same `(layer, threads)`.
 - `scripts/profile.sh probe --n 1000000 --threads 32 --layers rotation_zz` — flamegraph the `phase_breakdown` probe.
 - `scripts/profile.sh bench apply_layer_bucketed 10` — flamegraph a criterion bench group via `--profile-time <seconds>` (default 10s).
@@ -80,14 +83,14 @@ Both sides being the working tree, or both resolving to the same clean commit, i
 
 The tools communicate through file formats, not each other's code — a format change in one silently breaks a consumer elsewhere unless the coupling is written down.
 
-**(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from `phase_breakdown.rs`'s `json_line` — verify against `PhaseStats` in
+**(a) The probe's `--json-out` sidecar** (one JSON object per line) is the sole input to `perf-viz.py`'s phase-breakdown section and, via `ab-compare.sh`'s per-side sidecars, to `ab-report.py`. Fields, from `phase_breakdown/output.rs`'s `json_line` — verify against `PhaseStats` in
 `crates/paulistrings/src/engine/stats.rs` before relying on any name: `layer`, `truncation`, `threads`,
-`n`, `reps`, `qubits`, `seed`, `hash_seed`, `bucket_bits`, `wall_ns`; the wall-clock phases
+`n`, `reps`, `qubits`, `seed`, `hash_seed`, `wall_ns`; the wall-clock phases
 `rebucket_ns`, `prepare_ns`, `rescale_ns`,
 `span_plan_ns`, `permute_ns`, `coset_loop_ns`, `unpermute_ns`, `recount_ns`, `finalize_ns`; the worker
 busy-time phases `swap_ns`, `size_ns`, `gather_ns`, `sort_ns`, `merge_ns`, `clear_ns`; and the counters
 `layers`, `cosets`, `runs`, `rows_gathered`, `rows_sorted`, `rows_id`, `terms_in`, `terms_out`, `vmrss_kb`,
-`vmhwm_kb`, `target_bucket_len`, `min_buckets`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
+`vmhwm_kb`. `n` is the *steady-state* term count after an untimed warm-up call, not necessarily the
 requested `--n` — see Phase timing below. `perf-viz.py` keeps only the *last* line per
 `(layer, threads, partitions)` key, so an appended re-run overwrites the earlier one in the rendered
 report.
@@ -96,24 +99,21 @@ The partitioned engine (`--partitions <csv>`, default `1`) adds: `partitions` (i
 (string, the `--partition-cpus` argument echoed back — `"auto"`, `"unpinned"`, or the `"<list>;<list>"`
 lists), `pin_memory` (0/1, from `--bind-memory`), `gen_qubits` (2-element list, the `(q0, q1)` a
 `rotation_*` layer rotated about — `[0, 1]` for every other layer), `local_layers`, `remote_layers`,
-`rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry per partition),
+`collectives` (collective calls over the timed call, the exchanges excluded), `rows_exported`, `bytes_exported`, `partition_terms_in` (list, one entry per partition),
 `partition_imbalance` (float), `export_ns`, `exchange_ns`, `barrier_ns`, and `partition_coset_loop_ns`
 (list, one entry per partition).
 
-Six further keys carry the workload and row-policy axes the two Trotter-step
-layers (`tfim_step`, `heavyhex_step`) brought with them, and are written on every row:
+Six further keys carry the workload and row-policy axes, and are written on every row:
 `initial` (string, `"random"` or `"z0"` — the cell's input sum, whose default is per layer, so
 read it rather than assuming the run's flag), `partition_rows` (string, `"random"` / `"cut"`),
 `rows_remote_gens` (int) and `rows_remote_weight` (float) — the distinct key-delta
-masks those rows leave remote and the number of *layers* carrying one, the same scale for all
-three policies — and the two per-layer series `partition_imbalance_by_layer` (list of floats, one
+masks those rows leave remote and the number of *layers* carrying one — and the two per-layer series `partition_imbalance_by_layer` (list of floats, one
 `max/mean` of the partitions' input term counts per layer, in application order) and
 `terms_by_layer` (list of ints, the group's total terms in per layer). The cell-level
 `partition_imbalance` sums the layers before dividing and so hides the mixing dynamics; the series
 is what shows them, and `terms_by_layer` is the growth curve to read it against. Both are long —
 a four-step heavy-hex cell is 1084 layers — and both are empty on an unpartitioned row.
-`--format tsv` carries all six as trailing columns of the same names, the two series
-`|`-joined. `hash_seed` on a partitioned row is the seed actually used, which a `cut`/`select`
+`hash_seed` on a partitioned row is the seed actually used, which a `cut`
 cell may have re-drawn to keep its rows independent of `H`'s (it says so on stderr); that also
 moves the coset dimension, so do not compare such a cell's phase timings against a differently
 seeded one.
@@ -121,11 +121,27 @@ seeded one.
 A distributed cell (`--mpi`) adds two more, and only there: `rank` and `ranks`. Each rank writes its
 own sidecar file, `<--json-out path>.rank<N>`.
 
-Three device-only phase fields are written on every row and are zero on a host row: `compact_ns` (K4, kernel time, contained in `coset_loop_ns` like `gather_ns`/`merge_ns`), `h2d_ns` and `d2h_ns` (the copies inside a layer, contained in `coset_loop_ns` or `rescale_ns` — sub-phases, never summed into a total).
+Five device-only phase fields are written on every row and are zero on a host row: `compact_ns` (compaction, kernel time, contained in `coset_loop_ns` like `gather_ns`/`merge_ns`), `h2d_ns` and `d2h_ns` (the copies inside a layer, contained in `coset_loop_ns` or `rescale_ns`), `truncate_ns` (the truncation kernels, contained in `finalize_ns`) and `export_kernel_ns` (the export and sender-side merge kernels, contained in `export_ns`; both the maximum over partitions, like their parent phases) — sub-phases, never summed into a total.
+A device row fills the shared `PhaseStats` fields as follows, kernel times from CUDA events read in nanoseconds behind one synchronization per layer and per finalize:
+
+| field | device meaning |
+|:-|:-|
+| `rebucket_ns` | the refine kernels (`refine_count`, `refine_scatter`) the layer issued |
+| `rescale_ns` | `rescale` and its scan |
+| `gather_ns` | `count` and `rows` with their scans, or `permute_count` and `permute_lengths` with theirs |
+| `merge_ns` | the fused layer over every batch, or `permute_scatter`; `sort_ns` stays `0` |
+| `compact_ns` | `compact` and its scans |
+| `coset_loop_ns` | the driving thread's wall over the layer less `rebucket_ns`, `rescale_ns`, `export_ns` and `exchange_ns` |
+| `finalize_ns` | the driver's wall around the policy's layer pass |
+| `truncate_ns` | `octave_histogram`, `boundary_counts`, `retain` and exact `TopN`'s radix-select |
+| `export_ns`, `exchange_ns` | the export pass's and the exchange's wall, as on a host partition |
+| `export_kernel_ns` | `export_counts`, `export_fill` and the sender-side merge |
+| `cosets`, `runs` | arena batches (one on a permutation layer) and positions |
+| `rows_gathered`, `rows_sorted` | pre-dedup records (`rows_sorted` zero on a permutation layer) |
+
 A device cell (`--device`, feature `cuda`) adds three more, and only there: `device` (a list of the ordinals the cell's partitions ran on, one entry per device: `[0]` for one device, `[0,1,2,3]` for `--device 0,1,2,3`, the rank's own `[d]` on an `--mpi` row), `upload_ns` (the scatter of the input, including the first-use NVRTC compile) and `download_ns` (the gather of the timed call's output; both are outside `wall_ns`).
 Every local device cell is a partitioned cell as well, one device alone at `partitions` `1`: `partitions` is the device count times `--gpu-partitions`, `partition_cpus` is the literal `"gpu"`, `pin_memory` is `0`, and every partitioned key above is written (`export_ns`, `exchange_ns`, `rows_exported`, `bytes_exported`, the per-partition lists).
 An `--mpi --device` row is a distributed cell and a device cell at once: `rank`/`ranks` as above, `partitions` `1`, `partition_cpus` `"gpu"`, `upload_ns` this rank's scatter and `download_ns` the collective gather.
-`--format tsv` carries all six as trailing columns, `device` comma-joined and `-1` on a host row.
 See The device axis below for what the host phase names mean on a device row.
 
 Two further keys are **sub-phases, contained in the phase above rather than additional to it**, so
@@ -134,15 +150,12 @@ into the output buckets' rest streams, of which `chunk_wait_ns` is the part spen
 chunk of those rows to land.
 
 **The exchange is two-phase, so `exchange_ns` is small and the transfer shows up inside the coset
-loop** (`ARCHITECTURE.md` §Partitioning): the rows arrive while the layer runs, and `chunk_wait_ns` is
+loop** (`engine/transport.rs`, `ChunkWait`): the rows arrive while the layer runs, and `chunk_wait_ns` is
 what the loop failed to hide. Read the pair together — a remote layer whose `chunk_wait_ns / threads`
 is close to `exchange_ns` hid nothing, and one where it is near zero is compute-bound.
 
-**Every consumer of this sidecar must read every one of these — old and
-new alike — with `row.get(key, default)`, never a bare index/key lookup**: a sidecar written before the
-partitioned engine landed has none of them, and `partitions` defaults to `1` in that case (an
-unpartitioned probe run is P=1, not absent data). `ab-report.py` and `perf-viz.py` both follow this rule;
-match it in any new consumer.
+**Every consumer reads the keys a row may lack with `row.get(key, default)`, never a bare lookup**: `rank`/`ranks` and the device keys are absent from other rows, and `partitions` defaults to `1`.
+`ab-report.py` and `perf-viz.py` both follow this rule; match it in any new consumer.
 
 Two details of how the probe fills those fields:
 
@@ -158,9 +171,10 @@ Two details of how the probe fills those fields:
   other transport call). There is no barrier in the engine.
 - The wall-clock phases of a partitioned row are the **maximum over partitions** (the group's critical
   path), the busy-time phases and every counter are **sums** over partitions, and `layers` is the
-  driver's layer count rather than a sum — the fold lives in `phase_breakdown.rs::fold_partition_stats`.
+  driver's layer count rather than a sum — the fold lives in `phase_breakdown/cells.rs::fold_partition_stats`.
 
-**(b) The probe's stdout `cell` line.** Every cell prints one `cell layer=<name> threads=<n> n=<n> layers=<n> wall_ms=<f> trunc=<spec>` line, in every `--format`; the partitioned engine appends ` partitions=<P>` after `trunc=`.
+**(b) The probe's stdout `cell` line.** Every cell prints one `cell layer=<name> threads=<n> n=<n> layers=<n> wall_ms=<f> trunc=<spec> partitions=<P>` line, in every `--format`.
+An `--mpi` cell appends ` rank=<r>/<R> vmhwm_kb=<kB>`, and a device cell then ` device=<ordinals>`, comma-joined.
 `perf-stat.sh`'s awk greps this literal shape (`n=` and `layers=` field prefixes) to compute cycles/string, scanning every field for those two prefixes rather than assuming a fixed field count.
 Change the line's fields or order, fix `perf-stat.sh`'s awk in the same change.
 
@@ -171,7 +185,7 @@ Thread-scaling groups rely on a naming contract: a `BenchmarkId` of `<group>/<th
 Without a ceiling-map header, `perf-viz.py` falls back to a hard-coded ccqlin038-shaped thread-count → section table.
 
 **(e) The campaign results directory** (`benchmarks/results/<date>-<host>/`). Per campaign name:
-`<name>.txt`, `<name>.json`, `<name>-probe.json` (the probe's JSONL sidecar, despite the `.json` extension), one `<name>-scaling-<placement>.json` per `scaling:` placement, and `<name>-report.html`.
+`<name>.txt`, `<name>.json`, `<name>.probe.jsonl` (the probe's sidecar), one `<name>-scaling-<placement>.json` per `scaling:` placement, and `<name>-report.html`.
 `bandwidth.txt` and `flamegraph-<name>-<shortcommit>[-dirty].html` (+ `.meta.txt`) live directly in the dated directory, shared across every campaign there.
 A/B runs add `<name>-ab.log`, `<name>-{a,b}.probe.jsonl`, and the archived binaries `<name>-{a,b}-<sha|worktree>[-dirty]`.
 
@@ -179,9 +193,9 @@ A/B runs add `<name>-ab.log`, `<name>-{a,b}.probe.jsonl`, and the archived binar
 
 The `phase-timing` Cargo feature (`crates/paulistrings/src/engine/stats.rs`) gates a per-phase counter breakdown of the propagation engine.
 It is measurement-only and never in the default feature set — the default build carries no timing code and no stats fields at all.
-The same bitwise-identity tests (fingerprint net, thread-count/bucket-count/seed determinism) run with the feature enabled in CI, as the acceptance test that instrumentation doesn't perturb output.
+The test suite runs with the feature enabled in CI, as the acceptance test that instrumentation doesn't perturb output.
 
-Counters are read via `LayerScratch::take_stats()` after driving layers through `propagate_with_scratch`.
+Every driver drains its counters with `take_stats()` as a `PartitionPhaseStats`, one `PhaseStats` per partition (a plain `propagate_with` through a `LayerScratch` holds one).
 Two clock domains are deliberately mixed in one `PhaseStats`:
 
 - **Wall-clock phases** (`rebucket_ns` … `finalize_ns`) — measured once per layer on the calling thread; they sum to approximately the layer's wall time.
@@ -189,21 +203,21 @@ Two clock domains are deliberately mixed in one `PhaseStats`:
 
 The probe runs each `(layer, threads)` cell twice inside a dedicated Rayon pool: an untimed warm-up call, then a timed call whose input is the warm-up's output, so the timed call measures steady-state cost.
 `trotter` additionally self-caps its input at `TROTTER_MAX_N` regardless of `--n` (64 distinct generators under no truncation grow combinatorially rather than closing).
-The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × stats::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
+The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × test_support::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
 
 ### The partition axis
 
 `--partitions <csv>` (default `1`) sweeps partition counts alongside `--layers` and `--threads`.
-A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with_options`.
+A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pools outside the timed region, then runs the same warm-up + timed pair through `PartitionedSum::propagate_with`.
 
 - **`--threads` is the TOTAL thread count** at every `P`: each partition's pool gets `threads / P` workers. A `--threads` value not divisible by `--partitions` is a startup error, and so is `P > threads`.
-- `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` — the same string `host-topology.sh`'s `PARTITION_CPUS` holds.
+- `--partition-cpus` takes `auto` (default — `Placement::Auto`, one partition per NUMA node in the mask, capped at `P`), `unpinned` (`Placement::Unpinned`, no pinning at all), or the `'<list>;<list>'` cpulists of `Placement::Explicit` (`numactl -H` lists each node's CPUs).
 - `--bind-memory 0|1` (default 1) is `PartitionConfig::bind_memory`; `--partition-seed <u64>` fixes the GF(2) partition rows instead of deriving them from the sum's hash seed.
-- `P = 1` runs the unpartitioned engine — the same code path, policy value and output as before the partition axis existed.
+- `P = 1` runs the unpartitioned engine.
 - Layers `rotation_local` and `rotation_remote` are a `ZZ` rotation on `(0, q)` with `q` the smallest qubit whose layer has, respectively, no remote delta and at least one, under that cell's partition rows. Both collapse to `rotation_zz` at `P = 1`; the chosen pair goes to stderr and into the sidecar's `gen_qubits`.
 - `--partition-rows random|cut` (default `random`) chooses the rows: `random` is `PartitionRows::from_seed`; `cut` is `PartitionRows::cut` over `P` contiguous qubit blocks, chosen by an exact DP over the layer's own graph to cross as few two-qubit generators as possible at ±25% size balance. Both report `rows_remote_gens` / `rows_remote_weight` in the sidecar.
 - Layers `tfim_step` (a 1D open chain of `--qubits` qubits) and `heavyhex_step` (the fixed 127-qubit Eagle r3 lattice, `--qubits >= 127`) are the rotation-only kicked-Ising Trotter steps the row policies exist for: `--reps` is the step count, both default to `--initial z0`, and both need a truncation policy to converge (`coeff:1.220703125e-4` is `2^-13`).
-- `--truncation topn:<N>` is refused for a partitioned cell: `TopN` has no `PartitionedTruncation` impl. `atopn:<N>`, `coeff:<t>` and `keep` all run.
+- `--truncation topn:<N>` is refused for a partitioned cell: partitioned exact `TopN` is not yet supported. `atopn:<N>`, `coeff:<t>` and `keep` all run.
 
 ### The rank axis
 
@@ -229,7 +243,7 @@ mpirun -n 4 --map-by ppr:1:numa --bind-to numa \
 
 ### The device axis
 
-`--device <ordinal>` (feature `cuda`) runs each cell on one CUDA device through `GpuPauliSum`, the one-partition `GpuPartitionedSum`, the same shape as a `P = 1` partitioned cell: the input is uploaded untimed, an untimed warm-up call drives the resident sum to its steady state, the timed call applies the layer set again, and the output is downloaded untimed.
+`--device <ordinal>` (feature `cuda`) runs each cell on one CUDA device through the one-partition `GpuPartitionedSum`, the same shape as a `P = 1` partitioned cell: the input is uploaded untimed, an untimed warm-up call drives the resident sum to its steady state, the timed call applies the layer set again, and the output is downloaded untimed.
 `wall_ns` therefore means the same thing on a device row as on a host row, and `n` is the steady-state term count on the device.
 
 ```bash
@@ -238,10 +252,10 @@ cargo build --release --features phase-timing,cuda --example phase_breakdown
 target/release/examples/phase_breakdown --device 0 --n 4000000 --reps 5 --layers rotation_zz,cnot,gu2q,su4 --json-out out.jsonl
 ```
 
-- **`--threads` is not swept**: one cell per layer, `--threads[0]` echoed into the row. `--partitions` must stay at `1` (device partitions come from `--gpu-partitions`), `topn:<N>` is refused except on one ordinal at one partition, `--occupancy-at` is unsupported, and `rotation_remote` needs more than one device partition (several ordinals, or `--gpu-partitions > 1`), or `--mpi` at more than one rank.
+- **`--threads` is not swept**: one cell per layer, `--threads[0]` echoed into the row. `--partitions` must stay at `1` (device partitions come from `--gpu-partitions`), `topn:<N>` is refused except on one ordinal at one partition, and `rotation_remote` needs more than one device partition (several ordinals, or `--gpu-partitions > 1`), or `--mpi` at more than one rank.
 - **`--device <csv|auto>`** takes a list: several ordinals (or `auto`, every visible device) run the cell through `GpuPartitionedSum` with `Placement::Devices { devices, per_device: <--gpu-partitions> }`, one partition per device by default. Under `--mpi` it takes one ordinal or `auto`, the rank's device by CPU locality (`gpu::local_device_for_comm`), and each rank runs its partition through `MpiGpuSum`.
-- **`--gpu-partitions <n>`** runs the cell as `n` virtual partitions on each device through `GpuPartitionedSum` (`Placement::Devices { devices: [d], per_device: n }`), the partition rows chosen exactly as for a host `--partitions` cell (`--partition-rows`, `--partition-seed`). A remote layer exports through K10, exchanges over the in-process peer wire (ARCHITECTURE.md §Partitioning) and merges the received rows in the fused layer at the agreed bucket count, the blocks staying in device memory: `export_ns` is K10, `exchange_ns` the skeleton exchange, the vote and every chunk's wire group, the receiver's fingerprint pass included, and `h2d_ns`/`d2h_ns` carry only the CSR offsets (kilobytes). `chunk_wait_ns` stays zero, as for a host `--partitions` cell. A device sender merges each partner's rows by key before the exchange (ARCHITECTURE.md §Partitioning), so `rows_exported`/`bytes_exported` count the merged rows and `export_ns` includes the merge; `GpuLayerOptions::premerge` off restores the unmerged export. P=1 (`--device` alone) against `--gpu-partitions 2` is a runtime-knob A/B like the host's: `scripts/ab-compare.sh --probe-b '<args with --gpu-partitions 2>'`, paired on `(layer, threads)`.
-- **The host phase names carry the kernel family that replaces them**: `gather_ns` is K1+K2 (count and segment sizes with their scans), `merge_ns` the fused K3 — the sort is inside it, so `sort_ns` stays `0` — `compact_ns` K4, `rescale_ns` K5, `rebucket_ns` the device refines, `finalize_ns` the driver's wall around K7. All are CUDA-event times, read behind one synchronization at the end of the layer.
+- **`--gpu-partitions <n>`** runs the cell as `n` virtual partitions on each device through `GpuPartitionedSum` (`Placement::Devices { devices: [d], per_device: n }`), the partition rows chosen exactly as for a host `--partitions` cell (`--partition-rows`, `--partition-seed`). A remote layer exports through the export kernels, exchanges over the in-process peer wire (`engine/gpu/export.rs`) and merges the received rows in the fused layer at the agreed bucket count, the blocks staying in device memory: `export_ns` is the export (`export_kernel_ns` its kernels), `exchange_ns` the skeleton exchange, the vote and every chunk's wire group, the receiver's fingerprint pass included, and `h2d_ns`/`d2h_ns` carry only the CSR offsets (kilobytes). `chunk_wait_ns` stays zero, as for a host `--partitions` cell. A device sender merges each partner's rows by key before the exchange (`engine/gpu/export/premerge.rs`), so `rows_exported`/`bytes_exported` count the merged rows and `export_ns` includes the merge; `GpuLayerOptions::premerge` off restores the unmerged export. P=1 (`--device` alone) against `--gpu-partitions 2` is a runtime-knob A/B like the host's: `scripts/ab-compare.sh --probe-b '<args with --gpu-partitions 2>'`, paired on `(layer, threads)`.
+- **The host phase names carry the kernel family that replaces them**, as the table in contract (a) lists: `gather_ns` the count and segment sizes, `merge_ns` the fused layer — the sort is inside it, so `sort_ns` stays `0` — `compact_ns` compaction, `rescale_ns` the rescale, `rebucket_ns` the device refines, and the device-only `truncate_ns` and `export_kernel_ns` inside `finalize_ns` and `export_ns`.
 - **`coset_loop_ns` is the driving thread's wall over the fused path** (count, layer, compaction, and the copies between them), so `gather_ns + merge_ns + compact_ns ≤ coset_loop_ns`, and the gap is launch, scan and copy overhead.
 - **`busy / (coset_loop_ns × threads)` is not a parallel-efficiency figure on a device row.** The busy fields are kernel time on one device, not summed worker time, and `threads` is an echoed flag; read `Σbusy / coset_loop_ns` as the fraction of the loop the kernels themselves account for instead.
 - `rows_gathered` and `rows_sorted` are both the layer's pre-dedup record count and `rows_id` is `0`: every record is gathered and sorted on the device. `cosets` is the arena batch count and `runs` the block (position) count.
@@ -311,7 +325,7 @@ The reference host (ccqlin038: 2 sockets, node0 physical CPUs 0-7 / HT 16-23, no
 
 An unrecognized host gets only the no-op `default` placement plus an uncalibrated `BANDWIDTH_RUNS`/`CEILING_MAP` and a stderr warning; add a case arm in `host-topology.sh` to calibrate a new host.
 
-**Partitioned cells run under no placement prefix.** The partitioned engine pins its own worker threads via `--partition-cpus "<list>;<list>"` (`host-topology.sh`'s `PARTITION_CPUS` map, ccqlin038: `node2x8="0-7;8-15"`, `node2x16="0-7,16-23;8-15,24-31"`), so wrapping a P>1 run in a `PLACEMENT_PREFIX` entry fights that pinning: `numactl --membind` forces every page onto one node regardless of which partition touches it, and `--cpunodebind`/`taskset` shrink the CPU mask the engine's own `Auto` placement reads.
+**Partitioned cells run under no placement prefix.** The partitioned engine pins its own worker threads via `--partition-cpus "<list>;<list>"` (ccqlin038: `"0-7;8-15"` for 8 physical cores per socket, `"0-7,16-23;8-15,24-31"` with their hyperthreads), so wrapping a P>1 run in a `PLACEMENT_PREFIX` entry fights that pinning: `numactl --membind` forces every page onto one node regardless of which partition touches it, and `--cpunodebind`/`taskset` shrink the CPU mask the engine's own `Auto` placement reads.
 The one legitimate combination is P=1 under the existing `node0`/`phys8` placements, used as the one-socket reference point.
 
 **P=1 vs P=2, same binary (a runtime-knob A/B):**

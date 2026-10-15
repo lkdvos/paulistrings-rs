@@ -24,7 +24,7 @@
 # user submits.
 #
 # The rank count must be a power of two: a partition is named by log2(P) GF(2)
-# rows (ARCHITECTURE.md §Partitioning), and the test binary refuses anything
+# rows (PartitionRows in pauli_sum/hash.rs), and the test binary refuses anything
 # else with exit 2.
 #
 # --python syncs $VIRTUAL_ENV, or ./.venv-mpi if that is unset, through

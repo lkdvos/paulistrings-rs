@@ -1,9 +1,9 @@
-// K5: the key-preserving fast path, `rescale_in_place` in engine/bucketed.rs: c' = c * amp[s], dropping exact zeros and rows `keep_term` rejects, order-preserving, one warp per bucket into the same start offsets.
+// k_rescale: the key-preserving fast path, `rescale_in_place` in engine/bucketed.rs: c' = c * amplitude[s], dropping exact zeros and rows `keep_term` rejects, order-preserving, one warp per bucket into the same start offsets.
 
 extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __restrict__ z,
                                      const double* __restrict__ c, const u64* __restrict__ g,
                                      const u32* __restrict__ in_start, const u32* __restrict__ in_len, u32 B,
-                                     u32 kq, u32 q0, u32 q1, const double* __restrict__ amp,
+                                     u32 support_size, u32 qubit_0, u32 qubit_1, const double* __restrict__ amplitude,
                                      const __grid_constant__ KeepProg keep,
                                      u64* __restrict__ ox, u64* __restrict__ oz, double* __restrict__ oc,
                                      u64* __restrict__ og, u32* __restrict__ out_start, u32* __restrict__ out_len) {
@@ -20,9 +20,9 @@ extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __res
         if (r < len) {
             const size_t src = (size_t)start + r;
             k = load_key(x, z, src);
-            const u32 s = support_bits(k, kq, q0, q1);
+            const u32 s = support_bits(k, support_size, qubit_0, qubit_1);
             const double cr = c[2 * src], ci = c[2 * src + 1];
-            const double ar = amp[s * 2], ai = amp[s * 2 + 1];
+            const double ar = amplitude[s * 2], ai = amplitude[s * 2 + 1];
             pr = cr * ar - ci * ai;
             pi = cr * ai + ci * ar;
             ok = (pr != 0.0 || pi != 0.0) && keep_eval(keep, [&]() -> Key { return k; }, pr, pi);

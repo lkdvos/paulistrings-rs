@@ -11,8 +11,7 @@ What lives here
 - `make_policy` / `TruncationSpec` — the jl-compatible `(max_weight,
   min_abs_coeff)` knobs, the only truncation vocabulary comparative runs may
   use. `topn` is deliberately not offered (plan §2, D3: PauliPropagation.jl has
-  no equivalent, and `topn` on the right of an `|` composition is silently
-  inert).
+  no equivalent).
 - `assert_single_threaded` — the A7 thread-pin gate.
 - `run_propagation` — one run in, one `report.RunRecord` out: separately timed
   propagation and contraction, term counts from `PropagationStats`, peak RSS,
@@ -180,8 +179,7 @@ def make_policy(
     schedule match a per-gate-truncating reference (plan §5, D10).
 
     `topn` is deliberately absent: there is no reference-implementation
-    equivalent, and it is silently inert on the right of an `|` composition
-    (plan §2, D3). Showcases that want it should call
+    equivalent (plan §2, D3). Showcases that want it should call
     `paulistrings.truncation.topn` directly and say so in their narrative.
     """
     parts = []
@@ -338,7 +336,7 @@ def _status_kb(name: str) -> float | None:
 def peak_memory_kb() -> float | None:
     """`VmHWM` in KiB — peak RSS over the **whole process lifetime**.
 
-    The same source `crates/paulistrings/examples/phase_breakdown.rs` samples.
+    The same source `crates/paulistrings/examples/phase_breakdown/cells.rs` samples.
     It is monotone: it never falls when memory is released, so it is a per-run
     figure only in a process that has done exactly one run. See the module
     docstring's memory-accounting note.
@@ -403,8 +401,7 @@ def assert_single_threaded() -> None:
         "resizes it, so the variable must be in the environment before anything in "
         "the process propagates. Export it before the interpreter starts:\n"
         "    RAYON_NUM_THREADS=1 python <script>\n"
-        "(measured thread behaviour: this module's docstring, correcting "
-        "research/FINDINGS.md §A7)"
+        "(measured thread behaviour: this module's docstring)"
     )
 
 
@@ -492,7 +489,6 @@ def run_propagation(
     oracle_value: float | None = None,
     engine: str = "paulistrings",
     engine_version: str | None = None,
-    propagate_engine: str | None = None,
     threads: int | None = None,
     seeds: Mapping[str, int] | None = None,
     library_versions: Mapping[str, str] | None = None,
@@ -535,15 +531,6 @@ def run_propagation(
         Reference value; when given together with a contraction, the record
         carries `absolute_error`. Plan §7 rule 1: every numeric claim comes
         from an oracle or a provenance-tagged reference file.
-    `propagate_engine`
-        `PauliSum.propagate`'s `engine` kwarg — `"sorted"`, `"auto"` or
-        `"direct"` — forwarded to *both* the warmup and the timed pass so the
-        two are the same code path. `None` (the default) does not pass the
-        kwarg at all, which is the binding's `"sorted"` default and therefore
-        byte-for-byte today's behaviour: an existing caller cannot be moved
-        onto the direct path by accident. When given it is recorded in
-        `RunRecord.extra["propagate_engine"]`, since a timing measured on a
-        different layer engine is not comparable with one that was not.
     `threads`
         `1` asserts the single-thread pin before doing anything else
         (`assert_single_threaded`); any other value is recorded as-is, for a
@@ -570,16 +557,9 @@ def run_propagation(
     policy_obj, truncation_labels = _policy_and_labels(policy)
     baseline_peak_kb = peak_memory_kb()
 
-    # Omitted entirely when `propagate_engine` is None, rather than passed as
-    # the string `"sorted"`: the two are the same selection, but not passing it
-    # keeps this call identical to what every existing caller already issues.
-    engine_kwargs: dict[str, Any] = {}
-    if propagate_engine is not None:
-        engine_kwargs["engine"] = propagate_engine
-
     if warmup:
         warm_evolved, _ = observable.propagate_with_stats(
-            circuit, policy_obj, direction=direction, **engine_kwargs
+            circuit, policy_obj, direction=direction
         )
         if state is not None:
             warm_evolved.expectation(state)
@@ -589,7 +569,7 @@ def run_propagation(
 
     start = time.perf_counter()
     evolved, stats = observable.propagate_with_stats(
-        circuit, policy_obj, direction=direction, **engine_kwargs
+        circuit, policy_obj, direction=direction
     )
     propagation_time_s = time.perf_counter() - start
 
@@ -625,8 +605,6 @@ def run_propagation(
         record_extra.setdefault("rss_kb_after", rss_kb)
     if state is not None:
         record_extra.setdefault("state", state)
-    if propagate_engine is not None:
-        record_extra.setdefault("propagate_engine", propagate_engine)
     observed = observed_thread_count()
     if observed is not None:
         record_extra.setdefault("observed_threads", observed)

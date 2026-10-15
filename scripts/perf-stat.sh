@@ -26,26 +26,15 @@
 # breakdown, never per-process.
 set -euo pipefail
 
-# The JCC-erratum padding is deliberately not in .cargo/config.toml — it is a
-# ~1% tax on every part without the erratum, which is all of `ccq`. Measurement
-# builds opt in, so the reference host cannot silently lose 9-13% mid-campaign.
-# Append: an exported RUSTFLAGS replaces the config's rustflags wholesale.
-# See scripts/jcc-rustflags.sh and research/HARDWARE.md.
-. "$(dirname "$0")/jcc-rustflags.sh"
-export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"
+. "$(dirname "$0")/jcc-rustflags.sh"   # research/FINDINGS.md §JCC branch padding, opt-in
 
 cd "$(dirname "$0")/.."
 
-# A caller-supplied prebuilt probe (PROBE=/path/to/binary, already built and
-# executable) skips the cargo build step entirely -- useful for the
-# interleaved A/B protocol in benchmarks/PROFILING.md, where the binaries
-# under comparison are built once up front and must not be rebuilt (or
-# overwritten in place) between runs.
 _probe_prebuilt=0
 if [[ -n "${PROBE:-}" && -x "${PROBE:-}" ]]; then
     _probe_prebuilt=1
 fi
-PROBE=${PROBE:-target/release/examples/phase_breakdown}
+PROBE=${PROBE:-${CARGO_TARGET_DIR:-target}/release/examples/phase_breakdown}
 IDLE_SECS=${IDLE_SECS:-3}
 
 if [[ "$_probe_prebuilt" == "1" ]]; then
@@ -103,10 +92,8 @@ else
 fi
 
 # ---- pass B: system-wide DRAM traffic (uncore IMC), per socket ------------
-# perf pre-scales cas_count_* to MiB (the CSV unit column says so) — do NOT
-# multiply by 64 again. Idle baseline is now --per-socket too (previously it
-# was whole-box only), so it can be subtracted per socket below instead of
-# as one blended whole-box rate.
+# perf pre-scales cas_count_* to MiB (the CSV unit column says so), so never multiply by 64 again.
+# The idle baseline is per socket, so it is subtracted per socket below.
 echo
 echo "--- pass B: DRAM bandwidth (system-wide; approximate on a shared box) ---"
 perf stat -a -x, -o "$tmp/idle.csv" --per-socket \
@@ -164,12 +151,12 @@ awk -F, '
 ' "$tmp/idle.csv" "$tmp/imc.csv"
 
 # ---- pass C: per-process retired remote/local DRAM loads -------------------
-# Retired loads only -- the write stream's NUMA locality only shows up in
-# pass B's per-socket IMC breakdown above, never per-process. Guarded: older
-# kernels/perf builds, or non-Intel uncore, may not expose these events.
+# Retired loads only: the write stream's NUMA locality shows only in pass B's per-socket split.
+# The event list is captured first, because `grep -q` closing the pipe early fails `perf list` with SIGPIPE under pipefail.
 echo
 echo "--- pass C: per-process NUMA retired loads (local/remote DRAM) ---"
-if perf list 2>/dev/null | grep -q 'mem_load_l3_miss_retired.remote_dram'; then
+events=$(perf list 2>/dev/null || true)
+if grep -q 'mem_load_l3_miss_retired.remote_dram' <<<"$events"; then
     perf stat -x, -o "$tmp/numa.csv" \
         -e mem_load_l3_miss_retired.local_dram,mem_load_l3_miss_retired.remote_dram,mem_load_l3_miss_retired.remote_hitm \
         -- "$PROBE" "$@" >/dev/null

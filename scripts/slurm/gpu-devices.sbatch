@@ -23,33 +23,20 @@
 #   PS_REV   commit to build (default: HEAD when the job starts), in a private git worktree
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
+. scripts/slurm/common.sh
 
 module purge
 module load modules/2.4-20250724 cuda/12.8.0
-SHARED_RUST=${SHARED_RUST:-$HOME/.local/rust-shared}
-export RUSTUP_HOME="$SHARED_RUST/rustup" CARGO_HOME="$SHARED_RUST/cargo"
-export PATH="$CARGO_HOME/bin:$PATH"
-command -v cargo >/dev/null && cargo --version >/dev/null 2>&1 || {
-    echo "cargo not usable on this node (SHARED_RUST=$SHARED_RUST); run scripts/slurm/setup-shared-toolchain.sh on a networked host first" >&2
-    exit 3
-}
+use_shared_rust
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
-mkdir -p "$CARGO_TARGET_DIR"
-unset RUST_LOG RAYON_NUM_THREADS
+REMOVE_TARGET_DIR=1
 PS_REV=${PS_REV:-$(git rev-parse HEAD)}
-repo=$PWD
-src="$CARGO_TARGET_DIR/src"
-git worktree add --detach "$src" "$PS_REV" >/dev/null
-trap 'cd "$repo" && git worktree remove --force "$src" 2>/dev/null; rm -rf "$CARGO_TARGET_DIR"' EXIT
-[ -f "$repo/Cargo.lock" ] && cp "$repo/Cargo.lock" "$src/Cargo.lock"
-cd "$src"
-. scripts/jcc-rustflags.sh
-if [ -n "$JCC_RUSTFLAGS" ]; then export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$JCC_RUSTFLAGS"; fi
+checkout_rev "$PS_REV" "$CARGO_TARGET_DIR/src"
+out=$(results_dir)
+cd "$CARGO_TARGET_DIR/src"
+. scripts/jcc-rustflags.sh   # research/FINDINGS.md §JCC branch padding, opt-in
 
-node=$(hostname -s)
-out="$repo/benchmarks/results/$(date +%Y-%m-%d)-$node"
-mkdir -p "$out"
-echo "== job ${SLURM_JOB_ID:-?} on $node, rev $PS_REV ($(git log -1 --format=%s "$PS_REV")), $(date -Is)"
+echo "== job ${SLURM_JOB_ID:-?} on $(hostname -s), rev $PS_REV ($(git log -1 --format=%s "$PS_REV")), $(date -Is)"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 lscpu | grep -E 'Model name|Socket|NUMA|^CPU\(s\)'
 nvidia-smi -L
@@ -84,11 +71,11 @@ tag="${SLURM_JOB_ID:-local}"
 cells() {
     local devices=$1 name=$2 layers=$3
     echo "== probe --device $devices: $layers"
-    "$probe" --device "$devices" --n "$N" --reps "$REPS" --layers "$layers" --format json \
+    "$probe" --device "$devices" --n "$N" --reps "$REPS" --layers "$layers" \
         --json-out "$out/gpu-$tag-$name.jsonl"
     echo "== probe --device $devices: heavyhex_step"
     "$probe" --device "$devices" --reps 5 --layers heavyhex_step --truncation coeff:0.0001220703125 \
-        --format json --json-out "$out/gpu-$tag-$name.jsonl"
+        --json-out "$out/gpu-$tag-$name.jsonl"
 }
 cells 0 dev0 "$LAYERS"
 cells "$DEVICES" "dev${DEVICES//,/}" "$LAYERS,rotation_remote"

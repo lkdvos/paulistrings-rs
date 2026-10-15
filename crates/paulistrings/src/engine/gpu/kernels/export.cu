@@ -1,23 +1,23 @@
-// K10: one exchange block per remote delta, CSR by the receiver's destination position (ARCHITECTURE.md §Partitioning).
-// counts[p] is entry e's row count from source bucket bucket_at[p] ^ bd; the fill writes segment p warp-compacted in source order, rows bitwise the local emitters'.
+// k_export_counts and k_export_fill: one exchange block per remote delta, CSR by the receiver's destination position (engine/partitioned/export.rs).
+// counts[p] is entry e's row count from source bucket bucket_at[p] ^ bucket_delta; the fill writes segment p warp-compacted in source order, rows bitwise the local emitters'.
 
-extern "C" __global__ void k_export_counts(const u32* __restrict__ cnt, const u32* __restrict__ bucket_at, u32 bd,
+extern "C" __global__ void k_export_counts(const u32* __restrict__ cnt, const u32* __restrict__ bucket_at, u32 bucket_delta,
                                            u32 e, u32 E, u32 B, u32* __restrict__ counts) {
     const u32 p = blockIdx.x * blockDim.x + threadIdx.x;
     if (p >= B) return;
-    counts[p] = cnt[(size_t)(bucket_at[p] ^ bd) * E + e];
+    counts[p] = cnt[(size_t)(bucket_at[p] ^ bucket_delta) * E + e];
 }
 
 extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* __restrict__ z,
                                          const double* __restrict__ c, const u32* __restrict__ in_start,
                                          const u32* __restrict__ in_len, const u32* __restrict__ bucket_at,
-                                         TABLE_ARGS, u32 bd, u32 e, u32 B, const u32* __restrict__ offsets,
+                                         TABLE_ARGS, u32 bucket_delta, u32 e, u32 B, const u32* __restrict__ offsets,
                                          u64* __restrict__ ox, u64* __restrict__ oz, double* __restrict__ oc) {
     MAKE_TABLE(T);
     const u32 lane = lane_id();
     const u32 p = blockIdx.x * (blockDim.x / WARP) + warp_id();
     if (p >= B) return;
-    const u32 sb = bucket_at[p] ^ bd;
+    const u32 sb = bucket_at[p] ^ bucket_delta;
     const u32 start = in_start[sb], len = in_len[sb];
     u32 w = offsets[p];
     for (u32 r0 = 0; r0 < len; r0 += WARP) {
@@ -46,7 +46,7 @@ extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* _
     }
 }
 
-// The sender-side merge of one partner's blocks; K3 runs between the counts and the split over the partner's sub-table.
+// The sender-side merge of one partner's blocks; the fused layer runs between the counts and the split over the partner's sub-table.
 // sub[beta * K + j] = cnt[beta * E + sel[j]], the count table of the sub-table from the layer's.
 extern "C" __global__ void k_premerge_counts(const u32* __restrict__ cnt, u32 E, const u32* __restrict__ sel, u32 K,
                                              u32 B, u32* __restrict__ sub) {
@@ -56,16 +56,16 @@ extern "C" __global__ void k_premerge_counts(const u32* __restrict__ cnt, u32 E,
 }
 
 // lens[j * n + i]: the merged rows of position p0 + i handed to block j, greedily in block order and never more than block j's unmerged count there, so no segment outgrows the tag's offset field.
-extern "C" __global__ void k_premerge_split(const u32* __restrict__ out_len_pos, const u32* __restrict__ sub,
-                                            const u32* __restrict__ bucket_at, const u32* __restrict__ bd, u32 K,
+extern "C" __global__ void k_premerge_split(const u32* __restrict__ rows_per_position, const u32* __restrict__ sub,
+                                            const u32* __restrict__ bucket_at, const u32* __restrict__ bucket_delta, u32 K,
                                             u32 p0, u32 n, u32* __restrict__ lens) {
     const u32 i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     const u32 p = p0 + i;
     const u32 beta = bucket_at[p];
-    u32 m = out_len_pos[p];
+    u32 m = rows_per_position[p];
     for (u32 j = 0; j < K; ++j) {
-        const u32 t = min(m, sub[(size_t)(beta ^ bd[j]) * K + j]);
+        const u32 t = min(m, sub[(size_t)(beta ^ bucket_delta[j]) * K + j]);
         lens[(size_t)j * n + i] = t;
         m -= t;
     }

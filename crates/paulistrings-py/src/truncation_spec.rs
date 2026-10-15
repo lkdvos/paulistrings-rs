@@ -1,7 +1,8 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle over a core [`BuiltinTruncation`] tree.
-//! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`.
+//! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`, and `|` takes per-term filters only.
 
-use paulistrings::truncation::{BuiltinTruncation, CollapseSample};
+use paulistrings::{BuiltinTruncation, CollapseSample};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::sync::Arc;
 
@@ -37,7 +38,7 @@ pub(crate) fn collapse_count(tree: &BuiltinTruncation) -> Option<u64> {
                 walk(b, out);
             }
             BuiltinTruncation::Keep
-            | BuiltinTruncation::Coeff(_)
+            | BuiltinTruncation::Coefficient(_)
             | BuiltinTruncation::Weight(_)
             | BuiltinTruncation::TopN(_)
             | BuiltinTruncation::ApproxTopN(_) => {}
@@ -75,24 +76,34 @@ impl PyTruncation {
         ))
     }
 
-    fn __or__(&self, other: &PyTruncation) -> PyTruncation {
-        PyTruncation::new(BuiltinTruncation::Or(
-            Box::new(self.tree.clone()),
-            Box::new(other.tree.clone()),
-        ))
+    /// Either of two per-term filters (`coeff`, `weight`, or a composition of them); raises `ValueError` if either side has a layer pass (`topn`, `approx_topn`, `collapse_sample`).
+    fn __or__(&self, other: &PyTruncation) -> PyResult<PyTruncation> {
+        BuiltinTruncation::try_or(self.tree.clone(), other.tree.clone())
+            .map(PyTruncation::new)
+            .map_err(PyValueError::new_err)
     }
 
     fn __repr__(&self) -> String {
-        format!("Truncation({:?})", self.tree)
+        format!("Truncation({})", tree_repr(&self.tree))
+    }
+}
+
+/// The tree's `Debug` form with the Python spelling `Coeff` for [`BuiltinTruncation::Coefficient`].
+fn tree_repr(tree: &BuiltinTruncation) -> String {
+    match tree {
+        BuiltinTruncation::Coefficient(eps) => format!("Coeff({eps:?})"),
+        BuiltinTruncation::And(a, b) => format!("And({}, {})", tree_repr(a), tree_repr(b)),
+        BuiltinTruncation::Or(a, b) => format!("Or({}, {})", tree_repr(a), tree_repr(b)),
+        other => format!("{other:?}"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use paulistrings::accumulator::BuildAccumulator;
-    use paulistrings::pauli_string::PauliString;
-    use paulistrings::phase::Phase;
+    use paulistrings::BuildAccumulator;
+    use paulistrings::PauliString;
+
     use paulistrings::TruncationPolicy;
 
     /// `n` single-site `X` strings with coefficient 1.
@@ -100,8 +111,7 @@ mod tests {
         let mut acc = BuildAccumulator::<1>::new(n);
         for q in 0..n {
             acc.add_term(
-                PauliString::<1>::x(q as u32),
-                Phase::ONE,
+                PauliString::<1>::x(q),
                 num_complex::Complex64::new(1.0, 0.0),
             );
         }
@@ -117,7 +127,7 @@ mod tests {
         for tree in [&a, &b, &b] {
             <BuiltinTruncation as TruncationPolicy<1>>::finalize_layer(tree, &mut x_sum(40));
         }
-        let both = BuiltinTruncation::Or(Box::new(a.clone()), Box::new(b.clone()));
+        let both = BuiltinTruncation::And(Box::new(a.clone()), Box::new(b.clone()));
         assert_eq!(collapse_count(&both), Some(3));
         let twice = BuiltinTruncation::And(Box::new(a.clone()), Box::new(a));
         assert_eq!(collapse_count(&twice), Some(1));

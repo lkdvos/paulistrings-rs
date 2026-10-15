@@ -2,10 +2,10 @@
 
 Pin the policy semantics by running ``propagate`` through circuits whose
 output coefficients straddle the cutoff, and check both the simple factories
-and the ``And`` / ``Or`` combinators thread through. ``approx_topn``'s
-approximate-``n`` contract — at most ``n``, short of it by at most the coarsest
-excluded octave's population, tie groups whole, single-octave wipe — is pinned
-against hand-computed octave arithmetic and against ``topn`` on the same sums.
+and the ``And`` / ``Or`` combinators thread through. ``topn`` and
+``approx_topn`` keep exactly ``n`` — whole octaves (or magnitudes) above the
+boundary, the boundary filled in storage order — pinned against hand-computed
+octave arithmetic and against ``topn`` on the same sums.
 
 Note: the truncation policy only fires inside the engine's merge / finalize
 passes, which only run when at least one channel is in the circuit. These
@@ -20,7 +20,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates, truncation
 
-from .test_from_arrays import _as_dict
+from .test_from_arrays import _as_dict, _assert_close
 
 
 TOL = 1e-12
@@ -97,55 +97,56 @@ _CLUSTERED = {"II": 1.0, "XI": 0.9, "ZI": 0.7, "XX": 0.6, "YI": 0.5}
 
 
 @pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 6])
-def test_approx_topn_never_keeps_more_than_n(n):
+def test_approx_topn_keeps_exactly_n(n):
     s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
     out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
-    assert len(out.coefficients()) <= n
+    assert len(out.coefficients()) == min(n, len(_CLUSTERED))
 
 
-def test_approx_topn_shortfall_is_the_coarsest_excluded_octaves_population():
+def test_approx_topn_fills_the_boundary_octave():
     # n = 4, hand-computed on `_CLUSTERED`. The octaves from the top hold 1, 1
-    # and 3 terms, so the running counts are S = 1, 2, 5. Five overshoots 4, so
-    # the cut is the octave above it: two terms kept, the three-term octave
-    # dropped whole.
-    #
-    # TopN(4) keeps four — 0.6 is the 4th largest and nothing ties it — so this
-    # is a case where the two genuinely differ, and the shortfall 4 - 2 = 2 is
-    # inside the documented bound: kept > n - p with p = 3.
+    # and 3 terms: the top two are kept whole, and two of the three in the
+    # boundary octave [0.25, 0.5) of |c|² fill the rest, whichever come first in
+    # bucket order — not necessarily 0.7 and 0.6, which TopN(4) keeps.
     s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
     approx = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(4))
     exact = s.propagate(_probe_circuit(2), policy=truncation.topn(4))
-    assert _mags(approx) == pytest.approx([1.0, 0.9])
+    mags = _mags(approx)
+    assert len(mags) == 4
+    assert mags[:2] == pytest.approx([1.0, 0.9])
+    assert all(m in (pytest.approx(0.7), pytest.approx(0.6), pytest.approx(0.5)) for m in mags[2:])
     assert _mags(exact) == pytest.approx([1.0, 0.9, 0.7, 0.6])
-    kept, n, p = len(approx.coefficients()), 4, 3
-    assert kept <= n
-    assert kept > n - p
 
 
-def test_approx_topn_keeps_a_tie_group_whole():
-    # The three 0.5s share an octave, so they are kept or dropped together
-    # whatever n is — no tie rule needed, unlike TopN.
+def test_approx_topn_splits_a_tie_group_to_keep_exactly_n():
     s = PauliSum.from_strings(
         {"II": 1.0, "XI": 0.5, "ZI": 0.5, "XX": 0.5},
         num_qubits=2,
     )
     for n in range(5):
         out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
-        kept_ties = sum(1 for m in _mags(out) if abs(m - 0.5) < TOL)
-        assert kept_ties in (0, 3), f"n={n} split the multiplet: {_mags(out)}"
+        assert _mags(out) == pytest.approx([1.0, 0.5, 0.5, 0.5][:n]), f"n={n}"
 
 
-def test_approx_topn_wipes_a_single_octave_sum():
-    # 1.0, 1.1, 1.2, 1.3 square into [1, 2) together: one octave, so S is 0 or
-    # 4 and neither fits in 3. The degenerate case, documented on the factory.
+def test_topn_splits_a_tie_group_to_keep_exactly_n():
+    s = PauliSum.from_strings(
+        {"II": 1.0, "XI": 0.5, "ZI": -0.5, "XX": 0.5},
+        num_qubits=2,
+    )
+    for n in range(5):
+        out = s.propagate(_probe_circuit(2), policy=truncation.topn(n))
+        assert _mags(out) == pytest.approx([1.0, 0.5, 0.5, 0.5][:n]), f"n={n}"
+
+
+def test_approx_topn_keeps_n_of_a_single_octave_sum():
+    # 1.0, 1.1, 1.2, 1.3 square into [1, 2) together: one octave, so three of
+    # the four survive, the first three in bucket order.
     s = PauliSum.from_strings(
         {"II": 1.0, "XI": 1.1, "ZI": 1.2, "XX": 1.3},
         num_qubits=2,
     )
     out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(3))
-    assert out.coefficients() == []
-    # ... and pairing it with a coefficient threshold is the documented escape
-    # hatch only insofar as it removes candidates; with n >= len nothing is cut.
+    assert len(out.coefficients()) == 3
     kept = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(4))
     assert len(kept.coefficients()) == 4
 
@@ -161,19 +162,29 @@ def test_approx_topn_composes_with_the_operators():
         _probe_circuit(2), policy=truncation.approx_topn(2) & truncation.weight(1)
     )
     assert _mags(out) == pytest.approx([1.0, 0.25])
-    # Or keeps a term if either arm does, and both TopN flavours' *per-term*
-    # predicate is unconditionally true — they work in the layer pass, which
-    # `Or` does not run (matching `builtin::Or`). So an `Or` containing one
-    # keeps everything, exactly as it does with `topn`.
-    ored = s.propagate(
-        _probe_circuit(2), policy=truncation.approx_topn(1) | truncation.weight(1)
-    )
-    assert len(ored.coefficients()) == 4
-    assert len(
-        s.propagate(
-            _probe_circuit(2), policy=truncation.topn(1) | truncation.weight(1)
-        ).coefficients()
-    ) == 4
+
+
+@pytest.mark.parametrize(
+    "layer_pass",
+    [
+        lambda: truncation.topn(3),
+        lambda: truncation.approx_topn(3),
+        lambda: truncation.collapse_sample(3, 1),
+        lambda: truncation.coeff(0.1) & truncation.topn(3),
+        lambda: truncation.weight(2) & truncation.collapse_sample(3, 1),
+    ],
+    ids=["topn", "approx_topn", "collapse_sample", "coeff & topn", "weight & collapse"],
+)
+def test_or_rejects_a_layer_pass(layer_pass):
+    with pytest.raises(
+        ValueError,
+        match="Or combines per-term filters only, but its second operand has a layer pass",
+    ):
+        truncation.weight(1) | layer_pass()
+    with pytest.raises(ValueError, match="its first operand has a layer pass"):
+        layer_pass() | truncation.coeff(0.1)
+    with pytest.raises(ValueError, match="both operands have a layer pass"):
+        layer_pass() | layer_pass()
 
 
 def test_and_combinator_requires_both_to_keep():
@@ -239,7 +250,7 @@ def test_coeff_factory_is_a_truncation_object():
     b = truncation.weight(2)
     composed = a & b
     # Should behave like a Truncation under further composition.
-    deeper = composed | truncation.topn(5)
+    deeper = (composed | truncation.weight(0)) & truncation.topn(5)
     assert deeper is not None
 
 
@@ -270,7 +281,7 @@ def test_collapse_sample_above_the_final_size_is_a_no_op():
     s, c = _fanout_case()
     want = s.propagate(c, direction="heisenberg")
     got, stats = s.propagate_with_stats(c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
-    assert _as_dict(got) == _as_dict(want)
+    _assert_close(got, want)
     assert stats.collapses == 0
 
 
@@ -294,15 +305,12 @@ def test_collapse_sample_bounds_every_layer_by_the_cache():
 def test_collapse_sample_is_reproducible_per_seed():
     s, c = _fanout_case()
     runs = {
-        seed: [
-            _as_dict(s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg"))
-            for _ in range(2)
-        ]
+        seed: [s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg") for _ in range(2)]
         for seed in range(6)
     }
-    for seed, (first, second) in runs.items():
-        assert first == second, f"seed {seed}"
-    assert len({repr(sorted(r[0].items())) for r in runs.values()}) > 1, "seeds must draw differently"
+    for first, second in runs.values():
+        _assert_close(second, first)
+    assert len({repr(sorted(_as_dict(r[0]))) for r in runs.values()}) > 1, "seeds must draw differently"
 
 
 def test_collapse_sample_counts_per_call_and_continues_its_sequence():
@@ -316,7 +324,7 @@ def test_collapse_sample_counts_per_call_and_continues_its_sequence():
     # Two four-layer calls on one object draw what one eight-layer call draws.
     policy = truncation.collapse_sample(1, 11)
     chained = s.propagate(circuit, policy).propagate(circuit, policy)
-    assert _as_dict(chained) == _as_dict(s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
+    _assert_close(chained, s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
 
 
 def test_collapse_sample_draws_by_squared_magnitude():

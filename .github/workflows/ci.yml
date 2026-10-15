@@ -46,8 +46,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
-      - run: cargo test --doc -p paulistrings
-      - run: cargo build --examples -p paulistrings
       - run: cargo test -p paulistrings --features phase-timing
       - run: cargo build -p paulistrings --features phase-timing --example phase_breakdown
 

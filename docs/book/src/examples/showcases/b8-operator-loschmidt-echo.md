@@ -15,18 +15,20 @@ The echo is `S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)`, where `A = C†OC`, `O = Z^{�
 
 <!-- doctest: skip -->
 ```python
+import ole
 from paulistrings import truncation
 policy = truncation.collapse_sample(cache=500_000_000, seed=s)
 A = O.propagate(C, policy, direction="heisenberg")
-S = diagonal_echo(A.anticommute_histogram(sites, axis="x"), 0.3)
+S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 ```
 
 - `collapse_sample` propagates exactly until a gate leaves more than `cache` strings.
 - It then draws one string with probability `b_P²/Σb²` and restarts from it.
 - The last block is kept whole.
 - The diagonal estimator `Σ b_P² cos(2δ)^{n_P} / Σ b²` is the resummed moment series of the paper's Eq. (C34).
-- `rotated_overlap` gives the exact echo of the same `A`, off-diagonal terms included.
-- Under `comm=` both read-outs are collective, and `collapse_sample` draws the same string whatever the thread count.
+- `ole.rotated_overlap` gives the exact echo of the same `A`, off-diagonal terms included.
+- Both estimators are numpy over `A.to_arrays()`; under `comm=` each rank reads its `result="local"` share and `comm.allreduce` sums the values.
+- `collapse_sample` draws the same string whatever the thread count.
 
 ## Cost
 

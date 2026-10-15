@@ -1,20 +1,19 @@
 //! Behavior of the `phase-timing` counters themselves. The *non-perturbation*
-//! guarantee is not tested here — it is the whole existing suite (fingerprint
-//! net, thread-count/bucket-count bitwise identity, capacity stability)
-//! passing under `--features phase-timing`.
+//! guarantee is not tested here — it is the whole existing suite passing
+//! under `--features phase-timing`.
 #![cfg(feature = "phase-timing")]
 
-use paulistrings::channel::{Depolarizing, PauliRotation};
-use paulistrings::engine::partitioned::{
-    DistributedSum, InProcessTransport, PartitionRuntime, PartitionedSum,
-};
+use paulistrings::test_support::InProcessTransport;
+use paulistrings::{DistributedSum, PartitionRuntime, PartitionedSum, ScatterOptions, ScatterRows};
+use paulistrings::{PauliRotation, PtmChannel};
 // `rand_sum_real::<1>` — at `W = 1` its per-word masking loop reduces to the
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
-use paulistrings::test_support::{rand_sum_real, unpinned_partitions, zz_rotation, KeepAll};
+use paulistrings::test_support::{
+    partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
+};
 use paulistrings::{
-    propagate_with_scratch, Circuit, Direction, LayerScratch, PartitionRows, PauliString,
-    PhaseStats,
+    propagate_with, Circuit, Direction, LayerScratch, PauliString, PhaseStats, PropagateOptions,
 };
 
 #[test]
@@ -34,11 +33,18 @@ fn stats_sum_approximates_total() {
         .expect("pool");
     let mut scratch = LayerScratch::<1>::new();
     let out = pool.install(|| {
-        propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Heisenberg, &mut scratch)
+        propagate_with(
+            &circuit,
+            sum,
+            &KeepAll,
+            Direction::Heisenberg,
+            &mut scratch,
+            PropagateOptions::default(),
+        )
     });
     assert!(!out.is_empty());
 
-    let stats = scratch.take_stats();
+    let stats = scratch.take_stats().per_partition[0];
     assert_eq!(stats.layers, 4);
     assert!(stats.cosets > 0, "coset tasks must be counted: {stats:?}");
     assert!(stats.runs >= stats.cosets);
@@ -76,27 +82,42 @@ fn take_stats_drains() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
     let first = scratch.take_stats();
-    assert!(first.layers == 1 && first.coset_loop_ns > 0);
+    assert_eq!(first.layers, 1);
+    assert_eq!(first.per_partition.len(), 1, "a plain run is one partition");
+    assert!(first.per_partition[0].layers == 1 && first.per_partition[0].coset_loop_ns > 0);
+    assert_eq!((first.scatter_ns, first.gather_ns), (0, 0));
     let second = scratch.take_stats();
-    assert_eq!(second, PhaseStats::default());
+    assert_eq!(second.per_partition, vec![PhaseStats::default()]);
+    assert_eq!(second.layers, 0);
 }
 
 #[test]
 fn rescale_path_is_attributed() {
     let mut circuit = Circuit::<1>::new(16);
-    circuit.push(Depolarizing {
-        support: [2],
-        p: 0.05,
-    });
+    circuit.push(PtmChannel::depolarizing(2, 0.05));
     let sum = rand_sum_real::<1>(5_000, 16, 0xACE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
-    let stats = scratch.take_stats();
+    let stats = scratch.take_stats().per_partition[0];
     assert!(stats.rescale_ns > 0, "{stats:?}");
     assert_eq!(stats.coset_loop_ns, 0, "{stats:?}");
     assert_eq!(stats.cosets, 0);
@@ -134,10 +155,16 @@ fn partitioned_stats_are_attributed() {
     }
     let sum = rand_sum_real::<1>(20_000, 16, 0x9A17);
 
-    let config = unpinned_partitions(2, 1, 0x51A75);
+    let config = unpinned_partitions(2, 1);
     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
-    let mut split = PartitionedSum::scatter_with_rows(sum, rows, runtime);
+    let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
+    let mut split = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions {
+            runtime,
+            rows: ScatterRows::Explicit(rows),
+        },
+    );
 
     let started = std::time::Instant::now();
     split.propagate(&circuit, &KeepAll, Direction::Forward);
@@ -203,11 +230,17 @@ fn distributed_stats_are_attributed() {
             .map(|transport| {
                 let (circuit, sum) = (&circuit, sum.clone());
                 scope.spawn(move || {
-                    let config = unpinned_partitions(1, 1, 0x51A75);
+                    let config = unpinned_partitions(1, 1);
                     let runtime = PartitionRuntime::new(&config).expect("topology resolves");
-                    let rows = PartitionRows::<1>::from_rows(16, vec![[1u64]], vec![[0u64]]);
-                    let mut split =
-                        DistributedSum::scatter_with_rows(sum, transport, runtime, rows);
+                    let rows = partition_rows::<1>(16, vec![[1u64]], vec![[0u64]]);
+                    let mut split = DistributedSum::scatter_with(
+                        sum,
+                        transport,
+                        ScatterOptions {
+                            runtime,
+                            rows: ScatterRows::Explicit(rows),
+                        },
+                    );
 
                     let started = std::time::Instant::now();
                     split.propagate(circuit, &KeepAll, Direction::Forward);
@@ -267,12 +300,78 @@ fn the_unpartitioned_engine_reports_no_exchange() {
     let sum = rand_sum_real::<1>(5_000, 16, 0xD1CE);
 
     let mut scratch = LayerScratch::<1>::new();
-    let _ = propagate_with_scratch(&circuit, sum, &KeepAll, Direction::Forward, &mut scratch);
+    let _ = propagate_with(
+        &circuit,
+        sum,
+        &KeepAll,
+        Direction::Forward,
+        &mut scratch,
+        PropagateOptions::default(),
+    );
 
-    let stats = scratch.take_stats();
+    let stats = scratch.take_stats().per_partition[0];
     assert_eq!(stats.collective_ns, 0, "{stats:?}");
     assert_eq!(stats.export_ns, 0, "{stats:?}");
     assert_eq!(stats.exchange_ns, 0, "{stats:?}");
     assert_eq!(stats.rows_exported, 0, "{stats:?}");
     assert_eq!(stats.recv_rows, 0, "{stats:?}");
+}
+
+/// A device run lands its kernel times on the fields `PhaseStats` documents: the fused path's on `gather_ns`, `merge_ns` and `compact_ns`, the truncation's on `truncate_ns` and, with a remote layer, the export kernels' on `export_kernel_ns`.
+#[cfg(feature = "cuda")]
+#[test]
+fn device_stats_land_on_their_fields() {
+    use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
+    use paulistrings::{ApproxTopN, PartitionConfig, Placement};
+    paulistrings::require_cuda!();
+    let gen = PauliString::<1> {
+        x: [0b0101],
+        z: [0b1010],
+    };
+    let mut circuit = Circuit::<1>::new(16);
+    for _ in 0..3 {
+        circuit.push(PauliRotation::new(gen, 0.3));
+    }
+    let sum = rand_sum_real::<1>(20_000, 16, 0x9A18);
+
+    let mut one = GpuPartitionedSum::from_host(&sum, 0).expect("upload");
+    one.propagate(&circuit, ApproxTopN(15_000), Direction::Forward)
+        .expect("propagate");
+    let stats = one.take_stats();
+    let p = &stats.per_partition[0];
+    assert_eq!(p.layers, 3, "{p:?}");
+    assert!(
+        p.gather_ns > 0 && p.merge_ns > 0 && p.compact_ns > 0,
+        "{p:?}"
+    );
+    assert!(p.truncate_ns > 0 && p.finalize_ns > 0, "{p:?}");
+    assert_eq!((p.export_ns, p.export_kernel_ns), (0, 0), "{p:?}");
+
+    let config = PartitionConfig {
+        placement: Placement::Devices {
+            devices: vec![0],
+            per_device: 2,
+        },
+        bind_memory: false,
+        threads_per_partition: None,
+    };
+    let options = GpuScatterOptions {
+        devices: PartitionRuntime::new(&config).expect("placement"),
+        rows: ScatterRows::Explicit(partition_rows::<1>(16, vec![[1u64]], vec![[0u64]])),
+        layer: GpuLayerOptions::default(),
+    };
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(&sum, options).expect("scatter");
+    split
+        .propagate(&circuit, KeepAll, Direction::Forward)
+        .expect("propagate");
+    for (rank, p) in split.take_stats().per_partition.iter().enumerate() {
+        assert!(
+            p.export_ns > 0 && p.export_kernel_ns > 0,
+            "partition {rank}: {p:?}"
+        );
+        assert!(
+            p.rows_exported > 0 && p.recv_rows > 0,
+            "partition {rank}: {p:?}"
+        );
+    }
 }

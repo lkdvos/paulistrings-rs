@@ -2,7 +2,7 @@
 
 A device run holds the sum on CUDA GPUs and applies every layer there, with the same layer loop, truncation rules and trace as a [partitioned run](partitions.md): one partition on one device, one partition per listed device, or one device per MPI rank.
 Each output bucket is one thread block that builds, sorts and merges its incoming rows in shared memory, so a layer never materializes a gather row or runs a global sort.
-The mechanism is in [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §GPU-Readiness; this page is when to reach for it and how.
+The engine it runs is [Inside the engine](engine.md); this page is when to reach for it and how.
 
 ## When a device pays {#when-it-pays}
 
@@ -121,38 +121,34 @@ A rank that cannot use its device fails the call on every rank, the peers raisin
 
 ## Rust: several devices, and one device per MPI rank {#rust-multi-device}
 
-`GpuPartitionedSum` splits a sum across the device partitions of a `Placement::Devices` runtime, one partition per listed device, and holds it across calls; `GpuPauliSum` is its one-device form, built by `GpuPauliSum::from_host(&sum, ordinal)`:
+`GpuPartitionedSum` splits a sum across device partitions, one per listed device, and holds it across calls; `GpuPartitionedSum::from_host(&sum, ordinal)` is the one-device form:
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::engine::partitioned::{PartitionConfig, PartitionRuntime, Placement};
 use paulistrings::gpu::GpuPartitionedSum;
 
-let config = PartitionConfig {
-    placement: Placement::Devices { devices: vec![0, 1, 2, 3], per_device: 1 },
-    bind_memory: false,
-    partition_row_seed: None,
-};
-let runtime = PartitionRuntime::new(&config)?;
-let mut split = GpuPartitionedSum::scatter_to_devices(&observable, runtime, &config)?;
+let mut split = GpuPartitionedSum::scatter_to_devices(&observable, &[0, 1, 2, 3])?;
 split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 let evolved = split.gather()?;
 ```
 
+`scatter_to_devices_with` takes a `GpuScatterOptions { devices, rows, layer }`: a runtime resolved from `Placement::Devices`, the partition rows, and the device layer's knobs (`GpuLayerOptions`); `GpuScatterOptions::new(&devices)` fills in the defaults.
+
 The exchanged columns move device to device.
+With `enable_trace`, every layer's `PartitionLayerRecord` carries the device partitions' counters as `device` (a `DeviceLayerRecord` each: records, block size, arena batches, fallbacks, path taken) beside the shared `refine_passes` and `receive_chunks`.
 A device driver takes its policy as a `BuiltinTruncation`, which every builtin and combinator converts into (`ApproxTopN(n)` or `&ApproxTopN(n)` alike).
-`per_device > 1` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
+A runtime of `Placement::Devices { per_device > 1 }` puts several partitions on one device, which is how the exchange is tested on a single GPU — **give each partition its own GPU in practice**; sharing one is a testing configuration, not a performance one.
 With features `mpi` and `cuda`, `gpu::MpiGpuSum` is the [MPI ranks](mpi.md#gpu-per-rank) driver with each rank's share on its own device.
 
 ## Exchange mode, merge and chunking {#exchange}
 
 Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver's device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (`gpu::MpiGpuSum`).
 The NCCL communicator starts **once, collectively, at scatter**: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
-`PAULISTRINGS_NCCL_TIMEOUT_S` (default 300) bounds every wait on the exchange; a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as `GpuError::Timeout`, `GpuError::Wire` or `GpuError::Nccl` (`RuntimeError` from Python).
+`PAULISTRINGS_WIRE_TIMEOUT_S` (default 300) bounds every wait on the exchange, and every collective of an in-process device group (a host group waits 10 s); a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as `GpuError::Timeout`, `GpuError::Wire` or `GpuError::Nccl` (`RuntimeError` from Python).
 Running it needs the `nccl/2.23.4-1` module alongside `cuda,mpi` — see [Installation](../../installation.md#gpu-and-mpi-features) and [MPI ranks](mpi.md#gpu-per-rank).
 
 **A device sender merges one partner's rows by key before the exchange** (`GpuLayerOptions::premerge`), so two remote deltas that land on the same receiver key ship as one row.
-It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation or a Clifford, which have at most one remote entry each.
+It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation, which has one remote entry, or a Clifford, whose remote entries never share an output pattern.
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.
 
 **A device receive moves in chunks of destination positions** rather than all at once (`GpuLayerOptions::exchange_bytes`, `PAULISTRINGS_GPU_EXCHANGE_BYTES`, `K`/`M`/`G` suffixes), capping the receive volume resident on the device at once; unbounded by default, one chunk.
@@ -170,8 +166,7 @@ On a pair the driver reports as unsupported the copy stages through the host ins
 ## What changes on a device
 
 **Results agree to floating-point tolerance, not bit for bit.**
-The device sums equal keys in a different order from the host, as a different bucket count does ([`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Determinism).
-No reduction uses a floating-point atomic, so two runs on the same device give the same bits.
+The device sums equal keys in a different order from the host, as a different bucket count does.
 
 **Storage order is the host's canonical order, but for the device's own bucket count.**
 The download re-sorts each bucket to the host's lexicographic order, and the device chooses its bucket count by rows per block rather than terms per bucket, so `x_array()` of a device result can list the terms in a different order from a host run's.

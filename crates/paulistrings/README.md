@@ -12,31 +12,11 @@ Additionally, for standard gate and noise sets, the amount of communication rema
 This crate is the pure-Rust core. Python bindings live in the
 [`paulistrings-rs`](https://github.com/lkdvos/paulistrings-rs) workspace.
 
-## Quickstart
+## Building from source and developing
 
-```rust
-use paulistrings::{
-    channel::Clifford1Q, BuildAccumulator, Circuit, Direction, PauliString, Phase,
-    TruncationPolicy, propagate,
-};
-use num_complex::Complex64;
-
-// Build the observable Z_0 + 0.5 * X_1 on 2 qubits.
-let mut acc = BuildAccumulator::<1>::new(2);
-acc.add_term(PauliString::<1>::z(0), Phase::ONE, Complex64::new(1.0, 0.0));
-acc.add_term(PauliString::<1>::x(1), Phase::ONE, Complex64::new(0.5, 0.0));
-let observable = acc.finalize();
-
-// Heisenberg-evolve through a one-gate circuit: H on qubit 0.
-let mut circuit = Circuit::<1>::new(2);
-circuit.push(Clifford1Q::h(0));
-
-struct KeepAll;
-impl<const W: usize> TruncationPolicy<W> for KeepAll {}
-
-let evolved = propagate(&circuit, observable, &KeepAll, Direction::Heisenberg);
-assert_eq!(evolved.len(), 2); // H · Z_0 · H = X_0, plus the unchanged 0.5*X_1
-```
+Python is the user interface: install `paulistrings-rs` and read the [documentation site](https://lkdvos.github.io/paulistrings-rs/).
+This crate's rustdoc is a developer guide to the engine rather than a user API.
+[`CLAUDE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/CLAUDE.md) lists the build, test and benchmark commands.
 
 ## Design
 
@@ -48,18 +28,17 @@ Four pillars in priority order:
    write-disjoint layers, Rayon-parallel with no global sort.
 3. **Extensibility** for research — open [`Channel`] and
    [`TruncationPolicy`] traits.
-4. **GPU-readiness** — `#[repr(C)]` `Pod` types, fixed-fanout buffers,
+4. **GPU-readiness** — structure-of-arrays columns, fixed-fanout buffers,
    shared-nothing parallelism that maps onto CUB primitives without
    restructuring.
 
 See the [API documentation](https://docs.rs/paulistrings) for module-level
 guides on the bucketed engine, width monomorphization, and the extension
-traits. For the system-level design, see
-[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md).
+traits; each module states the contracts it keeps.
 
 ## License
 
 Dual-licensed under MIT or Apache-2.0, at your option.
 
-[`Channel`]: https://docs.rs/paulistrings/latest/paulistrings/channel/trait.Channel.html
-[`TruncationPolicy`]: https://docs.rs/paulistrings/latest/paulistrings/truncation/trait.TruncationPolicy.html
+[`Channel`]: https://docs.rs/paulistrings/latest/paulistrings/trait.Channel.html
+[`TruncationPolicy`]: https://docs.rs/paulistrings/latest/paulistrings/trait.TruncationPolicy.html

@@ -2,15 +2,15 @@
 
 `paulistrings` evolves a weighted sum of Pauli strings through a circuit layer by layer, forward or in the Heisenberg picture, with truncation keeping the sum tractable.
 This page explains the engine design that makes that loop fast: the sum never maintains a global sorted order, every layer's data movement is known before any term is touched, and the parallel decomposition needs no locks, no atomics, and no synchronization inside a layer.
-The companion [Engine performance](../../examples/benchmarks/engine-performance.md) page puts measured numbers to each claim; [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) is the invariants-only reference this page narrates — cited by section below rather than restated in full.
+The companion [Engine performance](../../examples/benchmarks/engine-performance.md) page puts measured numbers to each claim.
 
 ## The propagation loop
 
-A `PauliSum` stores each term as a symplectic key: qubit `i`'s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient (ARCHITECTURE.md §Data-Model).
+A `PauliSum` stores each term as a symplectic key: qubit `i`'s Pauli is a bit pair, packed into fixed-width x/z bit arrays, one machine word per 64 qubits, with a complex coefficient.
 Under this encoding Pauli multiplication is bitwise XOR of keys plus a phase, and the phase is folded into the coefficient at the boundary, so a key is a plain element of the vector space `GF(2)^{2n}`.
 
 Each circuit layer applies one channel to every term.
-A channel with support on `k` qubits maps an input key `v` to outputs `v ⊕ d`, where `d` ranges over a small **delta set** `D` determined by the channel alone: a Pauli rotation of any generator weight has `|D| = 2` (identity and the generator), a two-qubit Clifford at most 4, a dense two-qubit unitary at most 16 (ARCHITECTURE.md §Bucketing).
+A channel with support on `k` qubits maps an input key `v` to outputs `v ⊕ d`, where `d` ranges over a small **delta set** `D` determined by the channel alone: a Pauli rotation of any generator weight has `|D| = 2` (identity and the generator), a two-qubit Clifford at most 4, a dense two-qubit unitary at most 16.
 Applying a layer means fanning every term out over `D`, then recombining terms that landed on the same key.
 
 The recombination is the interesting part.
@@ -37,22 +37,21 @@ h(v ⊕ d) = h(v) ⊕ h(d)
 
 A term in bucket `i` fans out only into buckets `i ⊕ h(d)` for `d ∈ D` — so the layer's entire data-movement pattern is a function of the channel and the hash, known **before touching a single term**.
 Equal keys always share a bucket (h is a function), so duplicates can never straddle buckets.
-Because `H` is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one (ARCHITECTURE.md §Hash).
+Because `H` is dense and random, bucket loads stay uniform whatever structure truncation imposes on the keys, and the map from delta to bucket offset is almost always one-to-one.
 
 Bucket count follows the sum's size, targeting about a thousand terms per bucket so a bucket and its scratch fit in L2.
-Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to `H` splits each bucket in two with the within-bucket order inherited (ARCHITECTURE.md §Bucket-Policy).
+Refining the partition when the sum grows is a single parity pass per term, not a re-sort: adding one row to `H` splits each bucket in two with the within-bucket order inherited.
 
 ## Write-disjoint cosets
 
 Take the span of `h(D)` in bucket-index space.
 Its cosets partition the buckets, and every output bucket in a coset reads only input buckets in that same coset: **a coset is a closed task**.
 That is the engine's whole parallel decomposition — one coset per work-stealing task, and by construction no two tasks touch the same bucket, so a layer runs with no atomics, no locks, and no cross-thread reconciliation of any kind.
-Load balance comes from the random hash plus work-stealing (ARCHITECTURE.md §Parallelism).
+Load balance comes from the random hash plus work-stealing.
 
 ![Bucket space partitioned into cosets](../../assets/design/bucket-cosets.svg)
 
-At a fixed bucket count and hash seed this structure also makes the output bitwise identical across thread counts and repeat runs: cosets are write-disjoint and work within one is sequential.
-Across bucket counts or seeds, output agrees to floating-point tolerance — equal-key summation order is deliberately unspecified (ARCHITECTURE.md §Determinism).
+Output agrees to floating-point tolerance across runs — equal-key summation order is deliberately unspecified.
 
 ## In-place layer execution
 
@@ -68,7 +67,7 @@ Each coset task, independently:
 Two structural tricks keep the moved bytes down.
 The identity delta's stream keeps its source keys, so it inherits the source bucket's sorted order and is never sorted; and when the identity amplitude is dense (every rotation and general unitary), the gather materializes only the 16-byte coefficients and the merge borrows the key columns from the source bucket in place — identity keys are neither written nor re-read.
 The rest-stream sort itself exploits that a gather run is a concatenation of already-sorted per-delta streams; a radix variant takes over for dense two-qubit PTMs, where the sort dominates the layer.
-The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes (ARCHITECTURE.md §Engine).
+The merge is fused with the segmented reduction: one two-pointer walk sums equal-key coefficients and applies the truncation filter to each fully summed coefficient as it passes.
 
 Channels that never change keys at all (depolarizing, dephasing, Pauli gates) bypass the whole pipeline as a parallel coefficient rescale.
 
@@ -77,21 +76,20 @@ Channels that never change keys at all (depolarizing, dephasing, Pauli gates) by
 Applying a channel through its general single-term interface per term would pay an indirect call and re-derived tables millions of times.
 Instead the engine prepares each channel once per layer into a local Pauli-transfer-matrix form: per delta, a bucket offset, full-width XOR masks, and an amplitude table with all phases pre-folded.
 The preparation is derived automatically for any channel with support on at most two qubits by probing the channel's own single-term action on the local Pauli basis — a custom channel defines only that action and gets the bucketed engine for free.
-Pauli rotations prepare specially at any generator weight, since their delta set is just `{0, generator}` (ARCHITECTURE.md §Prepared-Channels).
+Pauli rotations above two qubits prepare specially, since their delta set is just `{0, generator}` at any weight.
 
 ## Truncation
 
 A truncation policy has two hooks split by cost.
 The per-term test runs on every merged output — potentially billions of times — sees the fully summed coefficient inside the merge, and is compiled directly into it, so a threshold test inlines to a compare with no call.
 The per-layer step runs once per layer and may be non-local; `TopN` and its histogram-based approximation live there.
-Policies compose with and/or combinators.
-Magnitude comparisons use `|c|²` rather than `|c|` (the same ordering, no `hypot` on the hot path), and `TopN` keeps or drops magnitude-tied symmetry multiplets whole (ARCHITECTURE.md §Truncation).
+Policies compose with and/or combinators; or combines per-term filters only.
+Magnitude comparisons use `|c|²` rather than `|c|` (the same ordering, no `hypot` on the hot path), and `TopN`/`ApproxTopN` keep exactly `n`, filling from the boundary in bucket order.
 
 ## Further reading
 
-[`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) is the maintainer-facing design reference: the same mechanisms with their tuning constants, contracts, and invariants.
-The rustdoc under [/api/](../../api/paulistrings/index.html) documents the public types; the module docs on `engine::bucketed`, `engine::merge`, and `pauli_sum` carry the precise per-module contracts.
+The rustdoc under [/api/](../../api/paulistrings/index.html) documents the public types; the module docs carry the engine's contracts next to the code that keeps them.
 
-The same loop runs with the sum split across NUMA domains or MPI ranks — [NUMA partitions](partitions.md), [MPI ranks](mpi.md), and `ARCHITECTURE.md` §Partitioning for the mechanism.
+The same loop runs with the sum split across NUMA domains or MPI ranks — [NUMA partitions](partitions.md), [MPI ranks](mpi.md) and [GPU](gpu.md).
 
-Sources: [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Data-Model, §Bucketing, §Hash, §Prepared-Channels, §Engine, §Parallelism, §Determinism, §Truncation; module docs [`engine/bucketed.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs), [`engine/merge.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs), [`pauli_sum.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum.rs).
+Sources: module docs [`engine/coset.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/coset.rs), [`pauli_sum/hash.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/hash.rs), [`engine/bucketed.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/bucketed.rs), [`engine/merge.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/engine/merge.rs), [`pauli_sum/mod.rs`](https://github.com/lkdvos/paulistrings-rs/blob/main/crates/paulistrings/src/pauli_sum/mod.rs).

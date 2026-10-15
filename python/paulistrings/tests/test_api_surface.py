@@ -1,4 +1,4 @@
-"""Smoke-test that the public API surface (ARCHITECTURE.md §Python-Bindings) is wired up.
+"""Smoke-test that the public API surface is wired up.
 
 Deliberately shallow: this module only asserts that the names exist and that the
 constructors pick a width. Behavioral coverage lives in the sibling
@@ -18,7 +18,6 @@ def test_top_level_names():
     assert hasattr(paulistrings, "gates")
     assert hasattr(paulistrings, "noise")
     assert hasattr(paulistrings, "truncation")
-    assert hasattr(paulistrings, "DEFAULT_SMALL_SUM_THRESHOLD")
     assert hasattr(paulistrings, "PropagationStats")
     assert hasattr(paulistrings, "PartitionStats")
     assert hasattr(paulistrings, "numa_nodes")

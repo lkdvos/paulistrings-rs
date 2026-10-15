@@ -5,14 +5,12 @@
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
 use crate::truncation_spec::{collapse_count, collapses_since};
-use paulistrings::engine::partitioned::Collectives;
-#[cfg(feature = "cuda")]
-use paulistrings::gpu::first_failure;
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
-use paulistrings::truncation::BuiltinTruncation;
+use paulistrings::BuiltinTruncation;
+use paulistrings::Collectives;
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRows, PartitionTrace,
-    PauliSum as CorePauliSum, PropagateOptions, TopologyError,
+    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRuntime, PartitionTrace,
+    PauliSum as CorePauliSum, PropagateOptions, ScatterOptions, ScatterRows, TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -129,8 +127,6 @@ pub struct MpiRun {
 pub struct MpiOutcome<const W: usize> {
     /// The gathered sum on rank 0 (empty elsewhere), or this rank's own partition.
     pub sum: CorePauliSum<W>,
-    /// The rows `sum` is split by across the group: the scatter's for a local share, [`PartitionRows::none`] for a gathered one, which rank 0 holds whole.
-    pub rows: PartitionRows<W>,
     pub rank: u32,
     pub size: u32,
     /// This rank's [`PartitionTrace`], when asked for.
@@ -165,23 +161,26 @@ impl MpiRun {
             rows,
             gather,
         } = self;
-        let mut split =
-            MpiSum::<W>::scatter_with_policy(sum.clone(), transport, &default_config(), &rows)?;
+        let scatter_options = ScatterOptions {
+            runtime: PartitionRuntime::new(&default_config())?,
+            rows: ScatterRows::Policy(rows),
+        };
+        let mut split = MpiSum::<W>::scatter_with(sum.clone(), transport, scatter_options);
         if traced {
             split.enable_trace();
         }
         let before = collapse_count(policy);
-        split.propagate_with_options(circuit, policy, direction, options);
+        with_lowered_policy!(policy, |lowered| split
+            .propagate_with(circuit, lowered, direction, options));
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
         // An empty trace is the honest fallback for a zero-layer circuit, which records nothing.
         let trace = traced.then(|| split.take_trace().unwrap_or_default());
-        let (out, rows) = harvest(&split, gather);
+        let out = harvest(&split, gather);
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
         Ok(MpiOutcome {
             sum: out,
-            rows,
             rank,
             size,
             trace,
@@ -205,17 +204,28 @@ fn agreed_collapses(
     })
 }
 
-/// What this rank returns, with the rows it is split by: the gathered sum on rank 0 (an empty sum elsewhere) under [`PartitionRows::none`], or its own partition under the scatter's rows.
-fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> (CorePauliSum<W>, PartitionRows<W>) {
+/// What this rank returns: the gathered sum on rank 0 (an empty sum elsewhere), or its own partition.
+fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
     if gather {
         // Collective; `Some` on rank 0 only.
-        let whole = split
+        split
             .gather()
-            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()));
-        (whole, PartitionRows::<W>::none(split.num_qubits()))
+            .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
     } else {
-        (split.local().clone(), split.rows().clone())
+        split.local().clone()
     }
+}
+
+/// `(rank, code)` of the first rank of `collectives`'s group whose `code` is non-zero, agreed in one all-reduce of `size` words. **Collective.**
+#[cfg(feature = "cuda")]
+fn first_failure(collectives: &dyn Collectives, code: u64) -> Option<(usize, u64)> {
+    let mut codes = vec![0u64; collectives.size() as usize];
+    codes[collectives.rank() as usize] = code;
+    collectives.allreduce_sum_u64(&mut codes);
+    codes
+        .iter()
+        .position(|&code| code != 0)
+        .map(|rank| (rank, codes[rank]))
 }
 
 /// This rank's device pick `local`, agreed over `transport`'s group, so a rank that cannot use its device fails the call on every rank. **Collective.**
@@ -298,24 +308,37 @@ impl MpiGpuRun {
             gather,
             device,
         } = self;
-        let mut split = MpiGpuSum::<W>::scatter_to_device(sum, transport, device, &rows)
+        use paulistrings::gpu::{GpuError, GpuScatterOptions};
+        // Agreed, so a rank whose placement fails does not leave its peers in the scatter's collectives.
+        let placed = GpuScatterOptions::new(&[device]);
+        let failed = first_failure(&transport, u64::from(placed.is_err()));
+        let scatter = match (placed, failed) {
+            (Err(err), _) => return Err(MpiGpuFailure::Gpu(err)),
+            (Ok(_), Some((rank, _))) => {
+                return Err(MpiGpuFailure::Gpu(GpuError::Poisoned { rank, layer: 0 }))
+            }
+            (Ok(options), None) => GpuScatterOptions {
+                rows: ScatterRows::Policy(rows.clone()),
+                ..options
+            },
+        };
+        let mut split = MpiGpuSum::<W>::scatter_to_device_with(sum, transport, scatter)
             .map_err(MpiGpuFailure::Gpu)?;
         if traced {
             split.enable_trace();
         }
         let before = collapse_count(policy);
         split
-            .propagate_with_options(circuit, policy, direction, options)
+            .propagate_with(circuit, policy, direction, options)
             .map_err(MpiGpuFailure::Gpu)?;
         let collapses = agreed_collapses(policy, before, split.transport());
         let (rank, size) = (split.rank(), split.size());
         let trace = traced.then(|| split.take_trace().unwrap_or_default());
-        let (out, rows) = if gather {
-            let whole = split
+        let out = if gather {
+            split
                 .gather()
                 .map_err(MpiGpuFailure::Gpu)?
-                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()));
-            (whole, PartitionRows::<W>::none(split.num_qubits()))
+                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
         } else {
             // A local download: agreed here so a rank whose download fails does not leave its peers a call ahead.
             let share = split.local_to_host();
@@ -323,14 +346,13 @@ impl MpiGpuRun {
             match (share, failed) {
                 (Err(err), _) => return Err(MpiGpuFailure::Gpu(err)),
                 (Ok(_), Some((rank, _))) => return Err(MpiGpuFailure::PeerDownload(rank)),
-                (Ok(share), None) => (share, split.rows().clone()),
+                (Ok(share), None) => share,
             }
         };
         // Explicit: frees the duplicated communicator here, before the interpreter finalizes MPI.
         drop(split);
         Ok(MpiOutcome {
             sum: out,
-            rows,
             rank,
             size,
             trace,

@@ -68,6 +68,10 @@ the single deepest convergence point (167 million terms at
 `min_abs_coeff = 1e-6`, tail depth 5). `--quick` stops that grid one point
 earlier: 40 s and 1.5 GiB, every other number identical.
 
+A full run rewrites the committed artifacts next to this script; `--quick`
+writes into the gitignored `benchmarks/results/b7-quick/` instead, and
+`--out-dir DIR` overrides either.
+
 Timings here are wall-clock on a shared workstation and are *not* a performance
 claim -- the suite's noise floor is +-5-8% single-threaded (CLAUDE.md
 §Performance discipline), and every time used quantitatively (Part 3) is a
@@ -76,6 +80,7 @@ minimum over repeats.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import math
@@ -1326,11 +1331,18 @@ def write_json(records: Sequence[report.RunRecord]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    quick = "--quick" in argv
-    unknown = [arg for arg in argv if arg != "--quick"]
-    if unknown:
-        raise SystemExit(f"unknown argument(s) {unknown}; the only flag is --quick")
+    global OUT_DIR
+    parser = argparse.ArgumentParser(description="B7: stabilizer-state preparation showcase.")
+    parser.add_argument("--quick", action="store_true", help="stop the depth-5 convergence grid at 1e-5")
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        help="where the artifacts go (default: this directory, or benchmarks/results/b7-quick/ under --quick)",
+    )
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    quick = args.quick
+    OUT_DIR = args.out_dir or (_REPO_ROOT / "benchmarks" / "results" / "b7-quick" if quick else _HERE)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     harness.assert_logging_quiet()
     harness.assert_single_threaded()

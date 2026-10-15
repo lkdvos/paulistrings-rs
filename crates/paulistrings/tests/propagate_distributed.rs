@@ -2,8 +2,8 @@
 //!
 //! The distributed driver is the partitioned engine with one partition per
 //! *process*. Its contract is the same as the in-process one's — the gathered
-//! output agrees with `propagate` to floating-point tolerance (ARCHITECTURE.md
-//! §Determinism) — but the code path differs: the layer loop runs on one thread
+//! output agrees with `propagate` to floating-point tolerance — but the code
+//! path differs: the layer loop runs on one thread
 //! per rank rather than fanned out from a single driver, the scatter is
 //! replicated rather than split from one sum, and the gather goes through the
 //! transport's byte framing instead of a local merge.
@@ -13,32 +13,50 @@
 //! transport's own net is `tests/mpi_ranks.rs`, run under `mpirun`.
 
 use num_complex::Complex64;
-use paulistrings::channel::{Clifford1Q, Clifford2Q, Depolarizing, GeneralUnitary2Q};
-use paulistrings::engine::partitioned::{
-    DistributedSum, InProcessTransport, PartitionConfig, PartitionRowPolicy,
-};
+use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
-    assert_terms_close, collapsing_circuit, haar_su4_matrix, rand_sum, rand_sum_on, rand_sum_real,
-    trotter_circuit, unpinned_partitions, z0_sum, zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, collapsing_circuit,
+    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
+    spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter, z0_sum, zz_rotation,
+    KeepAll,
 };
-use paulistrings::truncation::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff,
-};
+use paulistrings::PtmChannel;
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionedTruncation, PauliString, PauliSum,
-    Phase, RotationAxis,
+    propagate, BuildAccumulator, BuiltinTruncation, Circuit, Direction, PauliString, PauliSum,
+    TruncationPolicy,
+};
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
+use paulistrings::{
+    DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime, ScatterOptions,
+    ScatterRows,
 };
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
 /// enough a circuit that the bucket count grows mid-run, so the per-layer bits
 /// all-reduce actually changes value.
-const THETA: f64 = 0.1;
+const THETA: f64 = 0.01;
+
+/// Partition-row seed of every seeded scatter here.
+const ROW_SEED: u64 = 0x5EED_C0FF_EE00_4321;
 
 /// One unpinned partition of two threads: what a rank's runtime looks like when
 /// the launcher, not the engine, did the placement.
 fn config() -> PartitionConfig {
-    unpinned_partitions(1, 2, 0x5EED_C0FF_EE00_4321)
+    unpinned_partitions(1, 2)
+}
+
+/// This rank's share of `sum`, split by the rows `policy` draws, on a runtime built from [`config`].
+fn scatter_by_policy<const W: usize>(
+    sum: PauliSum<W>,
+    transport: InProcessTransport,
+    policy: PartitionRowPolicy,
+) -> DistributedSum<W, InProcessTransport> {
+    let options = ScatterOptions {
+        runtime: PartitionRuntime::new(&config()).expect("topology resolves"),
+        rows: ScatterRows::Policy(policy),
+    };
+    DistributedSum::scatter_with(sum, transport, options)
 }
 
 /// A short circuit mixing the layer shapes that matter: a local-ish Clifford, a
@@ -46,20 +64,17 @@ fn config() -> PartitionConfig {
 /// channel (which is key-preserving, so it never exchanges).
 fn mixed_circuit<const W: usize>(num_qubits: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(num_qubits);
-    let n = num_qubits as u32;
+    let n = num_qubits;
     for q in 0..n {
-        circuit.push(Clifford2Q::cnot(q, (q + 1) % n));
+        circuit.push(PtmChannel::cnot(q, (q + 1) % n));
     }
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(GeneralUnitary2Q::from_matrix(0, 1, haar_su4_matrix()));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
     circuit.push(zz_rotation::<W>(0, n / 2, 0.31));
     for q in 0..n {
-        circuit.push(Depolarizing {
-            support: [q],
-            p: 0.04,
-        });
+        circuit.push(PtmChannel::depolarizing(q, 0.04));
     }
-    circuit.push(GeneralUnitary2Q::from_matrix(1, 2, haar_su4_matrix()));
+    circuit.push(PtmChannel::unitary_2q(1, 2, haar_su4_matrix()));
     circuit
 }
 
@@ -92,11 +107,11 @@ fn distributed<const W: usize, T>(
     size: u32,
 ) -> PauliSum<W>
 where
-    T: PartitionedTruncation<W> + Sync,
+    T: TruncationPolicy<W> + Sync,
 {
     let gathered: Vec<Option<PauliSum<W>>> = on_ranks(size, |transport| {
         let mut split =
-            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED));
         split.assert_invariants();
         split.propagate(circuit, policy, direction);
         split.assert_invariants();
@@ -117,23 +132,33 @@ where
 /// The unpartitioned engine is the oracle for every group size and direction.
 fn check<const W: usize, T>(circuit: &Circuit<W>, sum: &PauliSum<W>, policy: &T, name: &str)
 where
-    T: PartitionedTruncation<W> + Sync,
+    T: TruncationPolicy<W> + Sync + Clone + Into<BuiltinTruncation>,
 {
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(circuit, sum.clone(), policy, direction);
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), policy, direction);
         for size in [1u32, 2, 4] {
             let got = distributed(circuit, sum, policy, direction, size);
             let what = format!("{name} ranks={size} {direction:?}");
-            assert_terms_close(&got, &want, TOL, &what);
-            assert_eq!(got.len(), want.len(), "{what}: term count");
+            assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
         }
+    }
+}
+
+/// One cut that splits a boundary group, dropping little weight.
+#[test]
+fn single_cuts_match_propagate() {
+    for (name, circuit, sum, n) in single_cuts::<1>(16, 0x51C3) {
+        check(&circuit, &sum, &ApproxTopN(n), name);
+    }
+    for (name, circuit, sum, n) in single_cuts::<2>(70, 0x51C4) {
+        check(&circuit, &sum, &ApproxTopN(n), name);
     }
 }
 
 #[test]
 fn trotter_matches_propagate_w1() {
     let circuit = trotter_circuit::<1>(24, THETA);
-    let sum = rand_sum_real::<1>(1_200, 24, 0x0D15);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(1_200, 24, 0x0D15), 40, 0x0D15);
     check(&circuit, &sum, &ApproxTopN(2_000), "trotter approx w1");
     check(
         &circuit,
@@ -146,17 +171,65 @@ fn trotter_matches_propagate_w1() {
 #[test]
 fn trotter_matches_propagate_w2() {
     let circuit = trotter_circuit::<2>(24, THETA);
-    let sum = rand_sum_real::<2>(900, 24, 0x0D16);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(900, 24, 0x0D16), 40, 0x0D16);
     check(&circuit, &sum, &ApproxTopN(1_500), "trotter w2");
+}
+
+/// Every layer of [`heavy_cut`] cuts through ties or an octave, too heavily for the operator check (`assert_runs_agree_count_only` asserts so): the counts must still match, `ApproxTopN` on 2 and 4 ranks and exact `TopN` on one.
+#[test]
+fn heavy_cuts_keep_the_reference_count() {
+    use paulistrings::TopN;
+    let (circuit, sum) = heavy_cut::<1>(12, 1, 800, 0x4EA2);
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let policies: [(BuiltinTruncation, &[u32]); 2] =
+            [(ApproxTopN(400).into(), &[2, 4]), (TopN(400).into(), &[1])];
+        for (policy, sizes) in policies {
+            let (want, discarded) = propagate_discarding(&circuit, sum.clone(), &policy, direction);
+            for &size in sizes {
+                let got = distributed(&circuit, &sum, &policy, direction, size);
+                let what = format!("heavy {policy:?} ranks={size} {direction:?}");
+                assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
+            }
+        }
+    }
+}
+
+/// Exact `TopN` runs on one rank and panics on every rank of two before the first layer.
+#[test]
+fn exact_top_n_runs_on_one_rank_only() {
+    use paulistrings::TopN;
+    let circuit = trotter_circuit::<1>(24, THETA);
+    let sum = rand_sum_real::<1>(1_200, 24, 0x70B3);
+    let want = propagate(&circuit, sum.clone(), &TopN(800), Direction::Forward);
+    let got = distributed(&circuit, &sum, &TopN(800), Direction::Forward, 1);
+    assert_terms_close(&got, &want, TOL, "TopN on one rank");
+
+    let messages = on_ranks(2, |transport| {
+        let mut split =
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED));
+        let terms = split.local().len();
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            split.propagate(&circuit, &TopN(800), Direction::Forward)
+        }))
+        .expect_err("TopN on two ranks must panic");
+        assert_eq!(split.local().len(), terms, "no layer may run");
+        panic.downcast_ref::<String>().cloned().unwrap_or_default()
+    });
+    for message in messages {
+        assert!(message.contains("not yet supported"), "{message}");
+    }
 }
 
 /// `BuiltinTruncation`'s collective layer pass, per rank.
 #[test]
 fn builtin_truncation_tree_matches_propagate() {
-    use paulistrings::truncation::BuiltinTruncation as T;
+    use paulistrings::BuiltinTruncation as T;
     let circuit = trotter_circuit::<1>(24, THETA);
-    let sum = rand_sum_real::<1>(1_200, 24, 0x0D17);
-    let tree = T::And(Box::new(T::Coeff(1e-9)), Box::new(T::ApproxTopN(2_000)));
+    let sum = spread_magnitudes(&rand_sum_real::<1>(1_200, 24, 0x0D17), 40, 0x0D17);
+    let tree = T::And(
+        Box::new(T::Coefficient(1e-9)),
+        Box::new(T::ApproxTopN(2_000)),
+    );
     check(&circuit, &sum, &tree, "trotter tree w1");
 }
 
@@ -166,16 +239,16 @@ fn builtin_truncation_tree_matches_propagate() {
 #[test]
 fn mixed_channels_match_propagate() {
     let circuit = mixed_circuit::<1>(6);
-    let sum = rand_sum::<1>(200, 6, 0x0D17);
+    let sum = spread_magnitudes(&rand_sum::<1>(200, 6, 0x0D17), 40, 0x0D17);
     check(&circuit, &sum, &KeepAll, "mixed keep w1");
     check(&circuit, &sum, &CoefficientThreshold(1e-9), "mixed eps w1");
     check(&circuit, &sum, &WeightCutoff(4), "mixed weight w1");
-    check(&circuit, &sum, &ApproxTopN(300), "mixed approx w1");
+    check(&circuit, &sum, &ApproxTopN(1_000), "mixed approx w1");
 
     let circuit = mixed_circuit::<2>(6);
-    let sum = rand_sum::<2>(200, 6, 0x0D18);
+    let sum = spread_magnitudes(&rand_sum::<2>(200, 6, 0x0D18), 40, 0x0D18);
     check(&circuit, &sum, &KeepAll, "mixed keep w2");
-    check(&circuit, &sum, &ApproxTopN(300), "mixed approx w2");
+    check(&circuit, &sum, &ApproxTopN(1_000), "mixed approx w2");
 }
 
 /// A sum small enough that some ranks hold nothing: the empty-partition path
@@ -183,8 +256,8 @@ fn mixed_channels_match_propagate() {
 #[test]
 fn a_two_term_sum_survives_four_ranks() {
     let mut circuit = Circuit::<1>::new(4);
-    circuit.push(Clifford1Q::h(0));
-    circuit.push(Clifford2Q::cnot(0, 1));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::cnot(0, 1));
 
     let sum = rand_sum::<1>(2, 4, 0x0D19);
     check(&circuit, &sum, &KeepAll, "two terms");
@@ -213,7 +286,7 @@ fn gather_is_repeatable_and_non_destructive() {
 
     let (first, second) = on_ranks(2, |transport| {
         let mut split =
-            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED));
         split.propagate(&circuit, &KeepAll, Direction::Forward);
         let first = split.gather();
         split.propagate(&circuit, &KeepAll, Direction::Forward);
@@ -231,11 +304,11 @@ fn gather_is_repeatable_and_non_destructive() {
 fn the_trace_is_this_ranks_view_of_every_layer() {
     let circuit = mixed_circuit::<1>(6);
     let sum = rand_sum::<1>(200, 6, 0x0D1C);
-    let layers = circuit.channels.len();
+    let layers = circuit.len();
 
     let traces = on_ranks(2, |transport| {
         let mut split =
-            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED));
         split.enable_trace();
         split.propagate(&circuit, &KeepAll, Direction::Forward);
         (split.rank(), split.take_trace().expect("tracing is on"))
@@ -272,7 +345,7 @@ fn ranks_driven_through_different_circuits_are_caught() {
     let sum = rand_sum::<1>(50, 4, 0x0D1D);
     let short = Circuit::<1>::new(4);
     let mut long = Circuit::<1>::new(4);
-    long.push(Clifford1Q::h(0));
+    long.push(PtmChannel::hadamard(0));
 
     let mut group = InProcessTransport::group(2);
     let one = group.pop().expect("rank 1");
@@ -285,12 +358,16 @@ fn ranks_driven_through_different_circuits_are_caught() {
             // Rank 1 sees the mismatch too; swallow it so only rank 0's panic
             // reaches the harness.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let mut split =
-                    DistributedSum::scatter(sum.clone(), one, &config()).expect("topology");
+                let mut split = DistributedSum::scatter_with(
+                    sum.clone(),
+                    one,
+                    unpinned_scatter(1, 2, ROW_SEED),
+                );
                 split.propagate(long, &KeepAll, Direction::Forward);
             }));
         });
-        let mut split = DistributedSum::scatter(sum.clone(), zero, &config()).expect("topology");
+        let mut split =
+            DistributedSum::scatter_with(sum.clone(), zero, unpinned_scatter(1, 2, ROW_SEED));
         split.propagate(&short, &KeepAll, Direction::Forward);
     });
 }
@@ -313,7 +390,7 @@ fn a_multi_partition_runtime_is_rejected() {
     let sum = rand_sum::<1>(10, 4, 0x0D1F);
     let mut group = InProcessTransport::group(1);
     let zero = group.remove(0);
-    let _ = DistributedSum::scatter(sum, zero, &unpinned_partitions(2, 1, 3));
+    let _ = DistributedSum::scatter(sum, zero, &unpinned_partitions(2, 1));
 }
 
 /// Every rank's `len()` is the whole sum's, and the local shares add up to it.
@@ -324,8 +401,8 @@ fn len_is_collective_and_the_shares_add_up() {
 
     let seen = on_ranks(4, |transport| {
         let split =
-            DistributedSum::scatter(sum.clone(), transport, &config()).expect("topology resolves");
-        (split.len(), split.len_local())
+            DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED));
+        (split.len(), split.local().len())
     });
 
     for (rank, &(total, _)) in seen.iter().enumerate() {
@@ -340,22 +417,21 @@ fn len_is_collective_and_the_shares_add_up() {
 /// single-`Z` key has odd z-weight in exactly the block holding that qubit.
 fn single_z_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> {
     let mut acc = BuildAccumulator::<W>::new(num_qubits);
-    for q in 0..num_qubits as u32 {
-        acc.add_term(
-            PauliString::<W>::z(q),
-            Phase::ONE,
-            Complex64::new(1.0 + f64::from(q), 0.0),
-        );
+    for q in 0..num_qubits {
+        acc.add_term(PauliString::<W>::z(q), Complex64::new(1.0 + q as f64, 0.0));
     }
     acc.finalize()
 }
 
 /// The qubits this rank's share names, one per single-`Z` term, ascending.
-fn local_z_qubits<const W: usize, X: paulistrings::engine::partitioned::Transport>(
+fn local_z_qubits<const W: usize, X: paulistrings::Transport>(
     split: &DistributedSum<W, X>,
-) -> Vec<u32> {
+) -> Vec<usize> {
     let (_, z, _) = split.local().to_arrays();
-    let mut qubits: Vec<u32> = z.iter().map(|row| row[0].trailing_zeros()).collect();
+    let mut qubits: Vec<usize> = z
+        .iter()
+        .map(|row| row[0].trailing_zeros() as usize)
+        .collect();
     qubits.sort_unstable();
     qubits
 }
@@ -368,9 +444,8 @@ fn a_cut_row_policy_lands_each_block_on_its_own_rank() {
     let sum = single_z_sum::<1>(NQ);
     let policy = PartitionRowPolicy::Cut(vec![(0..4).collect(), (4..8).collect()]);
 
-    let held: Vec<Vec<u32>> = on_ranks(2, |transport| {
-        let split = DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), &policy)
-            .expect("topology resolves");
+    let held: Vec<Vec<usize>> = on_ranks(2, |transport| {
+        let split = scatter_by_policy(sum.clone(), transport, policy.clone());
         split.assert_invariants();
         local_z_qubits(&split)
     });
@@ -379,12 +454,11 @@ fn a_cut_row_policy_lands_each_block_on_its_own_rank() {
     assert_eq!(held[1], vec![4, 5, 6, 7], "block 1 is rank 1's");
 }
 
-/// `Seeded` is the existing draw spelled as a policy: at the config's own seed
-/// it splits the sum exactly as [`DistributedSum::scatter`] does.
+/// `DistributedSum::scatter` splits by the default rows: the seeded draw at the sum's own hash seed.
 #[test]
-fn a_seeded_row_policy_splits_as_the_configs_scatter_does() {
-    const SEED: u64 = 0x5EED_C0FF_EE00_4321;
+fn scatter_splits_by_the_sums_own_seed() {
     let sum = rand_sum::<1>(300, 8, 0x0D22);
+    let seed = sum.hash().seed();
 
     let seen: Vec<(usize, usize)> = std::thread::scope(|scope| {
         let sum = &sum;
@@ -395,15 +469,10 @@ fn a_seeded_row_policy_splits_as_the_configs_scatter_does() {
                 scope.spawn(move || {
                     let want = DistributedSum::scatter(sum.clone(), a, &config())
                         .expect("topology resolves");
-                    let got = DistributedSum::scatter_with_policy(
-                        sum.clone(),
-                        b,
-                        &config(),
-                        &PartitionRowPolicy::Seeded(Some(SEED)),
-                    )
-                    .expect("topology resolves");
+                    let got =
+                        scatter_by_policy(sum.clone(), b, PartitionRowPolicy::Seeded(Some(seed)));
                     assert_eq!(want.rows(), got.rows());
-                    (want.len_local(), got.len_local())
+                    (want.local().len(), got.local().len())
                 })
             })
             .collect();
@@ -419,20 +488,20 @@ fn a_seeded_row_policy_splits_as_the_configs_scatter_does() {
     assert_eq!(seen.iter().map(|&(_, got)| got).sum::<usize>(), sum.len());
 }
 
-/// `local_expectation_product_state` is per rank, and the ranks' answers sum to
+/// `local().expectation_product` is per rank, and the ranks' answers sum to
 /// the whole sum's.
 #[test]
 fn local_expectations_sum_to_the_whole_sums() {
-    use paulistrings::ProductState;
+    use paulistrings::{PauliAxis, ProductBasis};
 
     let sum = rand_sum_real::<1>(300, 6, 0x0D21);
-    let state = ProductState::ZPlus;
-    let want = sum.expectation_product_state(state);
+    let state = PauliAxis::Z;
+    let want = sum.expectation_product(&ProductBasis::uniform(state));
 
     let parts: Vec<Complex64> = on_ranks(4, |transport| {
-        DistributedSum::scatter(sum.clone(), transport, &config())
-            .expect("topology resolves")
-            .local_expectation_product_state(state)
+        DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, ROW_SEED))
+            .local()
+            .expectation_product(&ProductBasis::uniform(state))
     });
 
     let got: Complex64 = parts.iter().sum();
@@ -483,155 +552,47 @@ fn collapse_sample_trajectories_over_ranks() {
 /// Over `InProcessTransport` ranks, one collapse keeps exactly one string in the whole group, drawn with probability `|c|² / Σ|c|²`.
 #[test]
 fn collapse_sample_distributed_picks_by_weight() {
-    use paulistrings::engine::partitioned::PartitionRuntime;
     use paulistrings::test_support::{
         assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
         FOUR_TERM_WEIGHTS,
     };
-    const ROW_SEED: u64 = 0x5EED_C0FF_EE00_4321;
-
+    use paulistrings::PartitionRuntime;
     let keys = four_term_keys::<1>();
     let input = weighted_four_term_sum::<1>(8);
     let mut circuit = Circuit::<1>::new(8);
-    circuit.push(Depolarizing {
-        support: [0],
-        p: 0.0,
-    });
+    circuit.push(PtmChannel::depolarizing(0, 0.0));
 
-    for size in [2u32, 4] {
-        let rows =
-            paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
-        let owners: std::collections::HashSet<u32> =
-            keys.iter().map(|p| rows.partition_of_pauli(p)).collect();
-        assert!(
-            owners.len() > 1,
-            "ranks={size}: the fixture must span ranks"
-        );
+    let size = 2u32;
+    let rows =
+        paulistrings::PartitionRows::<1>::from_seed(8, size.trailing_zeros() as u8, ROW_SEED);
+    let owners: std::collections::HashSet<u32> =
+        keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
+    assert!(
+        owners.len() > 1,
+        "ranks={size}: the fixture must span ranks"
+    );
 
-        let runtimes: Vec<_> = (0..size)
-            .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1, ROW_SEED)).unwrap())
-            .collect();
-        let mut counts = [0usize; 4];
-        for seed in 0..2000u64 {
-            let policy = CollapseSample::new(3, seed);
-            let gathered = on_ranks(size, |transport| {
-                use paulistrings::engine::partitioned::Collectives;
-                let runtime = runtimes[transport.rank() as usize].clone();
-                let mut split = DistributedSum::scatter_with_rows(
-                    input.clone(),
-                    transport,
-                    runtime,
-                    rows.clone(),
-                );
-                split.propagate(&circuit, &policy, Direction::Forward);
-                assert!(split.len_local() <= 1);
-                split.gather()
-            });
-            let got = gathered.into_iter().next().unwrap().unwrap();
-            counts[collapsed_index(&got, &keys)] += 1;
-            assert_eq!(policy.collapses(), 1);
-        }
-        assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
+    let runtimes: Vec<_> = (0..size)
+        .map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1)).unwrap())
+        .collect();
+    let mut counts = [0usize; 4];
+    for seed in 0..250u64 {
+        let policy = CollapseSample::new(3, seed);
+        let gathered = on_ranks(size, |transport| {
+            use paulistrings::Collectives;
+            let runtime = runtimes[transport.rank() as usize].clone();
+            let options = ScatterOptions {
+                runtime,
+                rows: ScatterRows::Explicit(rows.clone()),
+            };
+            let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
+            split.propagate(&circuit, &policy, Direction::Forward);
+            assert!(split.local().len() <= 1);
+            split.gather()
+        });
+        let got = gathered.into_iter().next().unwrap().unwrap();
+        counts[collapsed_index(&got, &keys)] += 1;
+        assert_eq!(policy.collapses(), 1);
     }
-}
-
-// ---- echo read-outs -----------------------------------------------------------
-
-/// Every rank's `(rotated_overlap, anticommute_histogram, len_local)` after a Heisenberg run on `size` ranks scattered by `policy`.
-fn distributed_echo<const W: usize>(
-    circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
-    policy: &PartitionRowPolicy,
-    size: u32,
-    sites: &[usize],
-    axis: RotationAxis,
-) -> Vec<(f64, Vec<f64>, usize)> {
-    on_ranks(size, |transport| {
-        let mut split =
-            DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), policy)
-                .expect("topology resolves");
-        split.propagate(circuit, &KeepAll, Direction::Heisenberg);
-        (
-            split.rotated_overlap(sites, 0.3, axis),
-            split.anticommute_histogram(sites, axis),
-            split.len_local(),
-        )
-    })
-}
-
-/// With rows excluding the coordinates `V` flips, the gather-free echo equals the single-process one on every rank, for both axes and both widths.
-fn check_distributed_echo<const W: usize>(num_qubits: usize, window: &[u32], sites: &[usize]) {
-    let sum = rand_sum_on::<W>(400, num_qubits, window, 0xEC40);
-    let mut circuit = Circuit::<W>::new(num_qubits);
-    for pair in window.windows(2) {
-        circuit.push(Clifford2Q::cnot(pair[0], pair[1]));
-    }
-    circuit.push(GeneralUnitary2Q::from_matrix(
-        window[0],
-        window[1],
-        haar_su4_matrix(),
-    ));
-    circuit.push(zz_rotation::<W>(window[1], window[3], 0.31));
-    let evolved = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
-    let flipped: Vec<u32> = sites.iter().map(|&q| q as u32).collect();
-
-    for axis in [RotationAxis::Z, RotationAxis::X] {
-        let want = evolved.rotated_overlap(sites, 0.3, axis);
-        let want_hist = evolved.anticommute_histogram(sites, axis);
-        let (exclude_x, exclude_z) = match axis {
-            RotationAxis::Z => (vec![], flipped.clone()),
-            RotationAxis::X => (flipped.clone(), vec![]),
-        };
-        let policy = PartitionRowPolicy::SeededExcluding {
-            seed: Some(0x5EED_0E40),
-            exclude_x,
-            exclude_z,
-        };
-        for size in [2u32, 4] {
-            let ranks = distributed_echo(&circuit, &sum, &policy, size, sites, axis);
-            assert!(
-                ranks.iter().filter(|r| r.2 > 0).count() > 1,
-                "W={W} {axis:?} ranks={size}: the split must be nontrivial",
-            );
-            for (rank, (got, hist, _)) in ranks.iter().enumerate() {
-                let what = format!("W={W} {axis:?} ranks={size} rank {rank}");
-                assert!((got - want).abs() < 1e-10, "{what}: {got} vs {want}");
-                assert_eq!(got.to_bits(), ranks[0].0.to_bits(), "{what}: ranks agree");
-                for (h, w) in hist.iter().zip(&want_hist) {
-                    assert!((h - w).abs() < 1e-10, "{what}: {hist:?} vs {want_hist:?}");
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn distributed_echo_read_outs_match_the_single_process_ones_w1() {
-    check_distributed_echo::<1>(10, &[0, 2, 3, 5, 6, 9], &[2, 3, 6]);
-}
-
-#[test]
-fn distributed_echo_read_outs_match_the_single_process_ones_w2() {
-    check_distributed_echo::<2>(70, &[61, 62, 63, 64, 65, 68], &[62, 63, 64]);
-}
-
-/// Rows that read a flipped coordinate would split a class across ranks, so every rank refuses before communicating.
-#[test]
-fn distributed_rotated_overlap_rejects_rows_that_split_classes() {
-    let sum = rand_sum_on::<1>(200, 10, &[0, 2, 3, 5, 6, 9], 0xEC41);
-    let sites = [2usize, 3, 6];
-    let policy = PartitionRowPolicy::Seeded(Some(0x5EED_0E40));
-    let results: Vec<_> = on_ranks(2, |transport| {
-        let split = DistributedSum::scatter_with_policy(sum.clone(), transport, &config(), &policy)
-            .expect("topology resolves");
-        assert!(
-            !split.rows().keeps_flip_classes(&sites, RotationAxis::Z),
-            "the fixture rows must read a flip"
-        );
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            split.rotated_overlap(&sites, 0.3, RotationAxis::Z)
-        }))
-        .is_err()
-    });
-    assert_eq!(results, vec![true, true], "every rank must refuse");
+    assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
 }

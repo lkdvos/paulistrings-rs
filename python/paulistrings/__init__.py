@@ -1,7 +1,7 @@
 """Pauli propagation library — Python entry point.
 
 The user-visible surface is a thin layer over width-monomorphized enums that
-dispatch once outside any hot loop (see ARCHITECTURE.md §Python-Bindings). The
+dispatch once outside any hot loop. The
 compiled extension lives at ``paulistrings._paulistrings``; this package
 re-exports the high-level classes and exposes the ``gates``, ``noise``, and
 ``truncation`` factory submodules.
@@ -23,14 +23,12 @@ reports what ``partitions="auto"`` has to place against,
 
 from . import _paulistrings
 from ._paulistrings import (
-    DEFAULT_SMALL_SUM_THRESHOLD,
     Circuit,
     PartitionStats,
     PauliString,
     PauliSum,
     PropagationStats,
     cuda_available,
-    diagonal_echo,
     mpi_available,
     numa_nodes,
     p,
@@ -47,8 +45,6 @@ __all__ = [
     "p",
     "PropagationStats",
     "PartitionStats",
-    "DEFAULT_SMALL_SUM_THRESHOLD",
-    "diagonal_echo",
     "gates",
     "noise",
     "truncation",

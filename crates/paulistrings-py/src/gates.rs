@@ -1,4 +1,4 @@
-//! `paulistrings._paulistrings.gates` submodule: gate factories. See ARCHITECTURE.md §Python-Bindings.
+//! `paulistrings._paulistrings.gates` submodule: gate factories.
 
 use crate::channel_spec::{Axis, ChannelSpec, PyChannel};
 use num_complex::Complex64;
@@ -6,8 +6,10 @@ use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+/// Largest `|(U†U − I)_ij|` accepted; must match `PtmChannel`'s own bound.
+const UNITARITY_TOLERANCE: f64 = 1e-10;
+
 /// Read an `n x n` complex matrix from a NumPy array, checking shape and unitarity.
-/// The unitarity check is not pedantry: a non-unitary matrix silently produces a non-physical channel, and the error would only show up as drifting coefficients many layers later.
 fn read_unitary<const N: usize>(
     a: PyReadonlyArray2<'_, Complex64>,
     what: &str,
@@ -25,64 +27,60 @@ fn read_unitary<const N: usize>(
             u[i][j] = view[[i, j]];
         }
     }
-    // U U^dagger == I to within tolerance.
+    // The same bound `PtmChannel::unitary_1q`/`unitary_2q` assert, checked first so a bad matrix is a `ValueError`, not a panic.
+    let mut deviation: f64 = 0.0;
     for i in 0..N {
         for j in 0..N {
-            let acc: Complex64 = u[i]
-                .iter()
-                .zip(u[j].iter())
-                .map(|(a, b)| a * b.conj())
-                .sum();
-            let want = if i == j {
-                Complex64::new(1.0, 0.0)
-            } else {
-                Complex64::new(0.0, 0.0)
-            };
-            if (acc - want).norm() > 1e-9 {
-                return Err(PyValueError::new_err(format!(
-                    "{what}: matrix is not unitary (U U* deviates from the identity \
-                     by {:.3e} at [{i}][{j}])",
-                    (acc - want).norm(),
-                )));
+            let product: Complex64 = (0..N).map(|k| u[k][i].conj() * u[k][j]).sum();
+            let identity = if i == j { 1.0 } else { 0.0 };
+            let entry = (product - Complex64::new(identity, 0.0)).norm();
+            if entry > deviation || entry.is_nan() {
+                deviation = entry;
             }
         }
+    }
+    if deviation.is_nan() || deviation > UNITARITY_TOLERANCE {
+        return Err(PyValueError::new_err(format!(
+            "{what}: matrix is not unitary (largest entry of U†U − I is {deviation:.3e}, \
+             tolerance {UNITARITY_TOLERANCE:e})"
+        )));
     }
     Ok(u)
 }
 
 #[pyfunction]
-fn h(qubit: u32) -> PyChannel {
+fn h(qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::H { qubit })
 }
 
 #[pyfunction]
-fn s(qubit: u32) -> PyChannel {
+fn s(qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::S { qubit })
 }
 
 /// `S^dagger = diag(1, -i)`, the phase gate's inverse. The one named single-qubit Clifford here that is not self-adjoint, so this is what `Circuit.adjoint()` emits in place of an `s`.
 #[pyfunction]
-fn sdg(qubit: u32) -> PyChannel {
+fn sdg(qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Sdg { qubit })
 }
 
 #[pyfunction]
-fn x(qubit: u32) -> PyChannel {
+fn x(qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::X { qubit })
 }
 
 #[pyfunction]
-fn y(qubit: u32) -> PyChannel {
+fn y(qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Y { qubit })
 }
 
 #[pyfunction]
-fn z(qubit: u32) -> PyChannel {
+fn z(qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Z { qubit })
 }
 
 /// Reject a two-qubit gate whose two indices coincide: the prepared local PTM would be derived over a one-qubit support declared as two, silently wrong rather than merely odd.
-fn distinct_pair(name: &str, q0: u32, q1: u32) -> PyResult<()> {
+fn distinct_pair(name: &str, q0: usize, q1: usize) -> PyResult<()> {
     if q0 == q1 {
         return Err(PyValueError::new_err(format!(
             "{name}: the two qubit indices must differ (both are {q0})"
@@ -92,57 +90,57 @@ fn distinct_pair(name: &str, q0: u32, q1: u32) -> PyResult<()> {
 }
 
 /// Shared by `gates.cnot` and `Circuit.cnot`.
-pub(crate) fn cnot_spec(control: u32, target: u32) -> PyResult<ChannelSpec> {
+pub(crate) fn cnot_spec(control: usize, target: usize) -> PyResult<ChannelSpec> {
     distinct_pair("cnot", control, target)?;
     Ok(ChannelSpec::Cnot { control, target })
 }
 
 /// Shared by `gates.cz` and `Circuit.cz`.
-pub(crate) fn cz_spec(q0: u32, q1: u32) -> PyResult<ChannelSpec> {
+pub(crate) fn cz_spec(q0: usize, q1: usize) -> PyResult<ChannelSpec> {
     distinct_pair("cz", q0, q1)?;
     Ok(ChannelSpec::Cz { q0, q1 })
 }
 
 /// Shared by `gates.swap` and `Circuit.swap`.
-pub(crate) fn swap_spec(q0: u32, q1: u32) -> PyResult<ChannelSpec> {
+pub(crate) fn swap_spec(q0: usize, q1: usize) -> PyResult<ChannelSpec> {
     distinct_pair("swap", q0, q1)?;
     Ok(ChannelSpec::Swap { q0, q1 })
 }
 
 #[pyfunction]
-fn cnot(control: u32, target: u32) -> PyResult<PyChannel> {
+fn cnot(control: usize, target: usize) -> PyResult<PyChannel> {
     Ok(PyChannel::new(cnot_spec(control, target)?))
 }
 
 #[pyfunction]
-fn cz(q0: u32, q1: u32) -> PyResult<PyChannel> {
+fn cz(q0: usize, q1: usize) -> PyResult<PyChannel> {
     Ok(PyChannel::new(cz_spec(q0, q1)?))
 }
 
 #[pyfunction]
-fn swap(q0: u32, q1: u32) -> PyResult<PyChannel> {
+fn swap(q0: usize, q1: usize) -> PyResult<PyChannel> {
     Ok(PyChannel::new(swap_spec(q0, q1)?))
 }
 
 #[pyfunction]
-fn rz(theta: f64, qubit: u32) -> PyChannel {
+fn rz(theta: f64, qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Rz { theta, qubit })
 }
 
 #[pyfunction]
-fn rx(theta: f64, qubit: u32) -> PyChannel {
+fn rx(theta: f64, qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Rx { theta, qubit })
 }
 
 #[pyfunction]
-fn ry(theta: f64, qubit: u32) -> PyChannel {
+fn ry(theta: f64, qubit: usize) -> PyChannel {
     PyChannel::new(ChannelSpec::Ry { theta, qubit })
 }
 
 /// Shared by `gates.pauli_rotation` and `Circuit.pauli_rotation`. The compact form: `pauli[k]` is the Pauli acting on `qubits[k]`, identity everywhere else — full-length `IXYZ` strings are deliberately not accepted (unreadable at 127+ qubits, and a miscount would be silent).
 pub(crate) fn pauli_rotation_spec(
     pauli: &str,
-    qubits: &[u32],
+    qubits: &[usize],
     theta: f64,
 ) -> PyResult<ChannelSpec> {
     if pauli.chars().count() != qubits.len() {
@@ -194,13 +192,13 @@ pub(crate) fn pauli_rotation_spec(
 /// Argument order is `(what, where, how much)`, diverging from `rz(theta, qubit)` on purpose: it reads correctly for a multi-qubit generator, and makes an accidental transposition a `TypeError` instead of a silent angle/qubit swap.
 /// Qubit indices are checked against the circuit width when appended, not here — a factory-made `Channel` is width-agnostic by design.
 #[pyfunction]
-fn pauli_rotation(pauli: &str, qubits: Vec<u32>, theta: f64) -> PyResult<PyChannel> {
+fn pauli_rotation(pauli: &str, qubits: Vec<usize>, theta: f64) -> PyResult<PyChannel> {
     Ok(PyChannel::new(pauli_rotation_spec(pauli, &qubits, theta)?))
 }
 
 /// Shared by `gates.unitary_1q` and `Circuit.unitary_1q`.
 pub(crate) fn unitary_1q_spec(
-    qubit: u32,
+    qubit: usize,
     matrix: PyReadonlyArray2<'_, Complex64>,
 ) -> PyResult<ChannelSpec> {
     let m = read_unitary::<2>(matrix, "unitary_1q")?;
@@ -209,8 +207,8 @@ pub(crate) fn unitary_1q_spec(
 
 /// Shared by `gates.unitary_2q` and `Circuit.unitary_2q`.
 pub(crate) fn unitary_2q_spec(
-    q0: u32,
-    q1: u32,
+    q0: usize,
+    q1: usize,
     matrix: PyReadonlyArray2<'_, Complex64>,
 ) -> PyResult<ChannelSpec> {
     if q0 == q1 {
@@ -221,17 +219,23 @@ pub(crate) fn unitary_2q_spec(
 }
 
 /// An arbitrary single-qubit unitary from its 2x2 matrix.
+///
+/// Raises `ValueError` unless every entry of `U†U − I` is at most `1e-10` in absolute value.
 #[pyfunction]
-fn unitary_1q(qubit: u32, matrix: PyReadonlyArray2<'_, Complex64>) -> PyResult<PyChannel> {
+fn unitary_1q(qubit: usize, matrix: PyReadonlyArray2<'_, Complex64>) -> PyResult<PyChannel> {
     Ok(PyChannel::new(unitary_1q_spec(qubit, matrix)?))
 }
 
 /// An arbitrary two-qubit unitary from its 4x4 matrix.
 ///
 /// `q0` is the more significant tensor factor, i.e. the matrix acts on
-/// `|q0 q1>`.
+/// `|q0 q1>`. Raises `ValueError` unless every entry of `U†U − I` is at most `1e-10` in absolute value.
 #[pyfunction]
-fn unitary_2q(q0: u32, q1: u32, matrix: PyReadonlyArray2<'_, Complex64>) -> PyResult<PyChannel> {
+fn unitary_2q(
+    q0: usize,
+    q1: usize,
+    matrix: PyReadonlyArray2<'_, Complex64>,
+) -> PyResult<PyChannel> {
     Ok(PyChannel::new(unitary_2q_spec(q0, q1, matrix)?))
 }
 

@@ -1,9 +1,7 @@
 //! Build plumbing for the `mpi` feature, and nothing else.
 //!
 //! Without `--features mpi` this script emits no directive at all, so the
-//! default build's codegen and link line are exactly what they were before it
-//! existed (CLAUDE.md §Determinism policy: the default build must stay
-//! byte-identical).
+//! default build's codegen and link line do not depend on it.
 //!
 //! With the feature on it does two things `rsmpi` does not:
 //!

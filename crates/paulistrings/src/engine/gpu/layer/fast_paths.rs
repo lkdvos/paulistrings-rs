@@ -1,0 +1,227 @@
+//! The two layer paths that bypass the fused kernel: the key-preserving rescale and the permutation scatter.
+
+use cudarc::driver::{LaunchConfig, PushKernelArg};
+
+use super::*;
+use crate::engine::gpu::columns::{grow, DeviceColumns};
+use crate::engine::gpu::error::GpuError;
+use crate::engine::gpu::module::{layer_threads, thread_per, warp_per_bucket};
+use crate::engine::gpu::prepared::DevicePrepared;
+use crate::engine::gpu::scan::exclusive_scan;
+use crate::engine::gpu::sum::GpuSum;
+use crate::engine::gpu::truncation::KeepProgram;
+use crate::engine::timing::timed;
+
+/// `k_rescale`: the key-preserving fast path, into the spare columns at the input's offsets.
+pub(super) fn rescale_device<const W: usize>(
+    sum: &mut GpuSum<W>,
+    table: &DevicePrepared<W>,
+    keep: &KeepProgram,
+    scratch: &mut LayerScratch<W>,
+) -> Result<(), GpuError> {
+    let stream = sum.stream.clone();
+    let kernels = sum.kernels.clone();
+    let ordinal = sum.device();
+    let b = sum.hash.num_buckets();
+    let extent = scratch.extent.max(sum.len());
+    let mut out = match sum.spare.take() {
+        Some(spare) => spare,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, extent, b)?,
+    };
+    out.len = 0;
+    out.buckets = 0;
+    out.reserve(extent, b)?;
+    grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
+    let amplitude = &mut scratch.table.amplitude;
+    timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
+        stream.memcpy_htod(&table.amplitude, amplitude)?;
+        Ok(())
+    })?;
+    let b32 = b as u32;
+    timed!(let t0 = scratch.event(sum)?);
+    // SAFETY: arguments match `k_rescale` in rescale.cu; `out` has room for the input's extent.
+    unsafe {
+        stream
+            .launch_builder(&kernels.rescale)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.fingerprint)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lengths)
+            .arg(&b32)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&scratch.table.amplitude)
+            .arg(keep)
+            .arg(&mut out.x)
+            .arg(&mut out.z)
+            .arg(&mut out.coeff)
+            .arg(&mut out.fingerprint)
+            .arg(&mut out.start)
+            .arg(&mut out.lengths)
+            .launch(warp_per_bucket(b))?;
+    }
+    exclusive_scan(
+        &stream,
+        &kernels,
+        &out.lengths.slice(0..b),
+        &mut scratch.destination_offsets.slice_mut(0..b + 1),
+        b,
+        &mut scratch.scan,
+        &mut scratch.totals,
+    )?;
+    timed!(scratch.lap(sum, t0, |stats| &mut stats.rescale_ns)?);
+    let totals = &scratch.totals;
+    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+        let v = stream.clone_dtoh(totals)?;
+        stream.synchronize()?;
+        Ok(v[0])
+    })?;
+    out.len = total as usize;
+    out.buckets = b;
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    scratch.record.rescaled = true;
+    sum.debug_check();
+    Ok(())
+}
+
+/// `k_permute_count`'s and `k_permute_scatter`'s block width: the average source bucket rounded up to a power of two, between two warps and the fused layer's width for `w`.
+pub(in crate::engine::gpu) fn permute_threads(len: usize, buckets: usize, w: usize) -> u32 {
+    let avg = len.div_ceil(buckets.max(1));
+    (avg.max(64).next_power_of_two() as u32).min(layer_threads(w))
+}
+
+/// `k_permute_*`: the permutation path, into the spare columns as a tight CSR in bucket order.
+pub(super) fn permute_device<const W: usize>(
+    sum: &mut GpuSum<W>,
+    table: &DevicePrepared<W>,
+    keep: &KeepProgram,
+    scratch: &mut LayerScratch<W>,
+) -> Result<(), GpuError> {
+    let stream = sum.stream.clone();
+    let kernels = sum.kernels.clone();
+    let ordinal = sum.device();
+    let b = sum.hash.num_buckets();
+    let n_in = sum.len();
+    let (b32, e32) = (b as u32, table.entries as u32);
+    grow(&stream, &mut scratch.counts, b * table.entries, ordinal)?;
+    let mut out = match sum.spare.take() {
+        Some(spare) => spare,
+        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, n_in, b)?,
+    };
+    out.len = 0;
+    out.buckets = 0;
+    out.reserve(n_in, b)?;
+    let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
+    timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
+        stream.memcpy_htod(&table.amplitude, &mut buffers.amplitude)?;
+        stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
+        stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
+        stream.memcpy_htod(&table.fingerprint_delta, &mut buffers.fingerprint_delta)?;
+        stream.memcpy_htod(&table.entry_of, entry_of)?;
+        Ok(())
+    })?;
+    let block_per_bucket = LaunchConfig {
+        grid_dim: (b32, 1, 1),
+        block_dim: (permute_threads(n_in, b, W), 1, 1),
+        shared_mem_bytes: 0,
+    };
+    timed!(let t0 = scratch.event(sum)?);
+    // SAFETY: arguments match `k_permute_count` in permute.cu; `counts` holds `b * e` entries.
+    unsafe {
+        stream
+            .launch_builder(&kernels.permute_count)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lengths)
+            .arg(&table.mode)
+            .arg(&e32)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&table.rotation_cos)
+            .arg(&table.rotation_sin)
+            .arg(&scratch.table.amplitude)
+            .arg(&scratch.table.mask)
+            .arg(&scratch.table.nonzero_patterns)
+            .arg(&scratch.entry_of)
+            .arg(keep)
+            .arg(&mut scratch.counts)
+            .launch(block_per_bucket)?;
+    }
+    timed!(scratch.lap(sum, t0, |stats| &mut stats.gather_ns)?);
+    timed!(let t1 = scratch.event(sum)?);
+    // SAFETY: arguments match `k_permute_lengths`; `out.lens` holds `b` entries.
+    unsafe {
+        stream
+            .launch_builder(&kernels.permute_lengths)
+            .arg(&scratch.counts)
+            .arg(&scratch.table.bucket_delta)
+            .arg(&b32)
+            .arg(&e32)
+            .arg(&mut out.lengths)
+            .launch(thread_per(b, 256))?;
+    }
+    exclusive_scan(
+        &stream,
+        &kernels,
+        &out.lengths.slice(0..b),
+        &mut out.start.slice_mut(0..b + 1),
+        b,
+        &mut scratch.scan,
+        &mut scratch.totals,
+    )?;
+    timed!(scratch.lap(sum, t1, |stats| &mut stats.gather_ns)?);
+    timed!(let t2 = scratch.event(sum)?);
+    // SAFETY: arguments match `k_permute_scatter`; `out` has room for every input row, the scan's total at most.
+    unsafe {
+        stream
+            .launch_builder(&kernels.permute_scatter)
+            .arg(&sum.columns.x)
+            .arg(&sum.columns.z)
+            .arg(&sum.columns.coeff)
+            .arg(&sum.columns.fingerprint)
+            .arg(&sum.columns.start)
+            .arg(&sum.columns.lengths)
+            .arg(&table.mode)
+            .arg(&e32)
+            .arg(&table.support_size)
+            .arg(&table.qubit_0)
+            .arg(&table.qubit_1)
+            .arg(&table.rotation_cos)
+            .arg(&table.rotation_sin)
+            .arg(&scratch.table.amplitude)
+            .arg(&scratch.table.mask)
+            .arg(&scratch.table.nonzero_patterns)
+            .arg(&scratch.entry_of)
+            .arg(&scratch.table.bucket_delta)
+            .arg(&scratch.table.fingerprint_delta)
+            .arg(&scratch.counts)
+            .arg(&out.start)
+            .arg(keep)
+            .arg(&mut out.x)
+            .arg(&mut out.z)
+            .arg(&mut out.coeff)
+            .arg(&mut out.fingerprint)
+            .launch(block_per_bucket)?;
+    }
+    timed!(scratch.lap(sum, t2, |stats| &mut stats.merge_ns)?);
+    let totals = &scratch.totals;
+    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+        let v = stream.clone_dtoh(totals)?;
+        stream.synchronize()?;
+        Ok(v[0])
+    })?;
+    out.len = total as usize;
+    out.buckets = b;
+    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    scratch.extent = sum.len();
+    scratch.record.records = n_in as u64;
+    scratch.record.permuted = true;
+    sum.debug_check();
+    Ok(())
+}

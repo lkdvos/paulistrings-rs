@@ -266,12 +266,12 @@ For the Ising chain, $h_k = -J$ on the bonds and $h_k = -h$ on the fields, so th
 `coefficients_array()` returns the $c_i$ as a `complex128` array of length $N$.
 All three are copies, and all three list the terms in the same canonical order: partition-bucket index, then lexicographic order of $(\boldsymbol{p}_x, \boldsymbol{p}_z)$.
 This order is neither insertion order nor label order, and `propagate` can change it, so rows are paired only within one snapshot.
-`PauliSum.from_arrays` is the inverse: duplicate rows are summed, arrays narrower than the sum's width are zero-padded, and a bit set at or beyond site $L$ raises `ValueError`.
+`to_arrays()` returns all three at once, and `PauliSum.from_arrays` is the inverse: duplicate rows are summed, arrays narrower than the sum's width are zero-padded, and a bit set at or beyond site $L$ raises `ValueError`.
 
 ```python
 import numpy as np
 
-x, z, c = hamiltonian.x_array(), hamiltonian.z_array(), hamiltonian.coefficients_array()
+x, z, c = hamiltonian.to_arrays()
 print(x.dtype, x.shape, c.dtype, c.shape)
 
 rebuilt = PauliSum.from_arrays(x, z, c, num_qubits=L)

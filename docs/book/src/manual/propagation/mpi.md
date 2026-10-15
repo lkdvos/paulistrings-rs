@@ -2,7 +2,7 @@
 
 A distributed run is a [partitioned run](partitions.md) with one partition per MPI process: each rank holds a disjoint share of the terms, selected by designated rows of the GF(2) hash, and a layer exchanges only the rows that cross a rank boundary.
 Everything on the NUMA page still applies — the same layer loop, the same truncation rules, the same things that change.
-What is new is the transport (point-to-point MPI instead of in-process channels) and the launch ([`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) §Partitioning, subsection "Transport composition").
+What is new is the transport (point-to-point MPI instead of in-process channels) and the launch.
 
 ## Why: capacity
 
@@ -88,7 +88,7 @@ evolved = observable.propagate(circuit, policy, comm=comm, result="local", parti
 ```
 
 A gate that never changes the excluded bits never moves a string between ranks: CZ and `rz` leave x-bits alone, so rows drawn on x-bits only keep a CZ/`rz` circuit's exchange to its `rx` gates.
-The distributed [echo read-out](../measurements.md#echo) `rotated_overlap` requires rows that skip the coordinates it flips, the x-bits of its sites for `axis="x"`.
+Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank [echo read-out](../measurements.md#echo) needs.
 It cannot be combined with `partition_row_blocks=`.
 
 ## result="gather" versus result="local"
@@ -132,7 +132,6 @@ Built with both `mpi` and `cuda`, the Rust driver `gpu::MpiGpuSum` holds each ra
 
 <!-- doctest: skip -->
 ```rust
-use paulistrings::engine::partitioned::PartitionRowPolicy;
 use paulistrings::gpu::{local_device_for_comm, MpiGpuSum};
 use paulistrings::mpi::{rsmpi, MpiTransport};
 
@@ -140,14 +139,14 @@ let (universe, _) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialize
 let world = universe.world();
 let device = local_device_for_comm(&world)?;
 let transport = MpiTransport::from_communicator(&world);
-let mut split = MpiGpuSum::<2>::scatter_to_device(&observable, transport, device, &PartitionRowPolicy::Seeded(None))?;
+let mut split = MpiGpuSum::<2>::scatter_to_device(&observable, transport, device)?;
 split.propagate(&circuit, ApproxTopN(10_000_000), Direction::Heisenberg)?;
 if let Some(evolved) = split.gather()? {
     println!("{} terms", evolved.len());
 }
 ```
 
-`gpu::propagate_mpi_gpu` is the one-shot form.
+`scatter_to_device_with(&observable, transport, GpuScatterOptions { rows, ..GpuScatterOptions::new(&[device])? })` splits by other rows or layer options; `gpu::propagate_mpi_gpu` is the one-shot form.
 A device failure on any rank fails the call on every rank, with `GpuError::Poisoned` naming the failing rank on its peers, so the group never falls out of step.
 Launch with every node GPU visible to every task (`srun --gpus-per-node=<k> --mpi=pmix`, as `scripts/slurm/mpi-gpu.sbatch` does), where the locality pick matters.
 

@@ -117,7 +117,7 @@ The magnetization falls and the tracked term count climbs by more than two order
 | [Manual](manual/index.md) | operators, circuits, engine and propagation, measurements — read start to finish, or by topic |
 | [Examples](examples/index.md) | a guided first propagation, measured showcases and benchmarks, and comparisons against other tools |
 | [Library](library/index.md) | this book's Python API reference |
-| [Rust API](api/paulistrings/index.html) | rustdoc for the core crate, plus [`ARCHITECTURE.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/ARCHITECTURE.md) on GitHub — the hand-off point for Rust users, not part of this book |
+| [Rust API](api/paulistrings/index.html) | rustdoc for the core crate — the hand-off point for Rust users, not part of this book |
 
 
 Source, issues and the full research record: [github.com/lkdvos/paulistrings-rs](https://github.com/lkdvos/paulistrings-rs).

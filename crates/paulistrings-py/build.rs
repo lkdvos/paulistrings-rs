@@ -1,8 +1,7 @@
 //! Build plumbing for the `mpi` feature of the **bindings**, and nothing else.
 //!
 //! Without `--features mpi` this script emits no directive at all, so the
-//! default `_paulistrings` cdylib's link line is exactly what it was before
-//! the script existed (CLAUDE.md §Determinism policy).
+//! default `_paulistrings` cdylib's link line does not depend on it.
 //!
 //! With the feature on it re-adds one `-Wl,-rpath,<libdir>` per MPI library
 //! directory, so the extension module finds `libmpi.so.40` at `import` time

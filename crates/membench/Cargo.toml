@@ -13,7 +13,7 @@ cuda = ["dep:cudarc"]
 
 [dependencies]
 rayon = "1"
-cudarc = { version = "0.19.9", optional = true, default-features = false, features = [
+cudarc = { version = "0.19.10", optional = true, default-features = false, features = [
     "std",
     "driver",
     "nvrtc",

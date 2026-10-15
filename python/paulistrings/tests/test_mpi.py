@@ -38,6 +38,15 @@ import pytest
 import paulistrings
 from paulistrings import Circuit, PauliSum, truncation
 
+from ._runs_agree import (
+    assert_runs_agree,
+    assert_runs_agree_count_only,
+    discarded_norm,
+    heavy_cut,
+    single_cuts,
+    spread,
+)
+
 pytest.importorskip("mpi4py")
 
 # Before `mpi4py.MPI` is imported, because that import calls MPI_Init: a
@@ -111,24 +120,23 @@ needs_a_device_group = pytest.mark.skipif(
 # W = 2: two words per key, so the multi-word paths run on the wire too.
 NUM_QUBITS = 68
 NUM_TERMS = 20_000
-# The circuit's fanout is bounded by this, and it is loose enough that the
-# octave histogram keeps everything at the sizes here — so the comparisons are
-# against an untruncated answer while still exercising the *collective* layer
-# pass on every layer.
-POLICY = truncation.approx_topn(NUM_TERMS * 8)
+# Above the circuit's peak (about 11.5 x NUM_TERMS), so nothing is cut and the
+# comparisons are against an untruncated answer while still exercising the
+# *collective* layer pass on every layer.
+POLICY = truncation.approx_topn(NUM_TERMS * 16)
 # A policy that really does cut, to exercise the collective octave reduction
 # where the retained set is a strict subset.
-TIGHT_POLICY = truncation.approx_topn(NUM_TERMS // 4)
+TIGHT_POLICY = truncation.approx_topn(NUM_TERMS // 2)
 # Coefficients agree to floating point, not bit for bit: the distributed run
-# sums equal keys in a different order (ARCHITECTURE.md §Determinism).
+# sums equal keys in a different order.
 TOL = 1e-9
 # Qubits the circuit touches. The observable's support spans both words, so a
 # narrow window still exercises the multi-word key path.
 _WINDOW = 6
 
 
-def _observable(num_qubits=NUM_QUBITS, terms=NUM_TERMS, seed=20260908):
-    """A seeded random sum — identical on every rank, which is the contract."""
+def _observable(num_qubits=NUM_QUBITS, terms=NUM_TERMS, seed=20260908, light=False):
+    """A seeded random sum — identical on every rank, which is the contract — ``spread`` over octaves when ``light`` so a cut drops little weight."""
     rng = np.random.default_rng(seed + num_qubits)
     words = (num_qubits + 63) // 64
     x = rng.integers(0, 1 << 63, size=(terms, words), dtype=np.uint64)
@@ -138,24 +146,27 @@ def _observable(num_qubits=NUM_QUBITS, terms=NUM_TERMS, seed=20260908):
     x[:, words - 1] &= last
     z[:, words - 1] &= last
     coeffs = rng.normal(size=terms) + 1j * rng.normal(size=terms)
+    if light:
+        coeffs = spread(coeffs, rng)
     return PauliSum.from_arrays(x, z, coeffs, num_qubits=num_qubits)
 
 
-def _circuit(num_qubits=NUM_QUBITS):
+def _circuit(num_qubits=NUM_QUBITS, scale=1.0):
     """Rotation-heavy, with one `cnot` and one general two-qubit unitary.
 
     Generic angles, so every rotation splits the terms that anticommute with
     its generator and rows genuinely cross rank boundaries; the `unitary_2q` is
-    a fixed non-Clifford two-qubit gate, which is the dense-PTM path."""
+    a fixed non-Clifford two-qubit gate, which is the dense-PTM path. Angles
+    are multiplied by ``scale``; a small one keeps what a cut drops small."""
     circuit = Circuit(num_qubits)
     for q, angle in enumerate((0.37, 0.81, 1.13, 0.59)):
-        getattr(circuit, ("rz", "rx", "ry", "rz")[q])(angle, q)
-    circuit.pauli_rotation("XYZ", [0, 2, 4], 0.43)
+        getattr(circuit, ("rz", "rx", "ry", "rz")[q])(scale * angle, q)
+    circuit.pauli_rotation("XYZ", [0, 2, 4], scale * 0.43)
     circuit.cnot(0, 1)
     # A fixed two-qubit unitary with no special structure: exp(-i theta XX/2)
     # in the computational basis, written out so the test needs no linear
     # algebra to build it.
-    theta = 0.7
+    theta = 0.7 * scale
     c, s = np.cos(theta / 2), -1j * np.sin(theta / 2)
     xx = np.array(
         [[c, 0, 0, s], [0, c, s, 0], [0, s, c, 0], [s, 0, 0, c]], dtype=np.complex128
@@ -207,8 +218,18 @@ def observable():
 
 
 @pytest.fixture(scope="module")
+def light_observable():
+    return _observable(light=True)
+
+
+@pytest.fixture(scope="module")
 def circuit():
     return _circuit()
+
+
+@pytest.fixture(scope="module")
+def light_circuit():
+    return _circuit(scale=0.1)
 
 
 @pytest.fixture(scope="module")
@@ -234,16 +255,43 @@ def test_gather_returns_the_whole_sum_on_rank_zero(observable, circuit, referenc
         assert len(got) == 0
 
 
-def test_gather_agrees_under_a_truncating_approx_topn(observable, circuit):
-    """`approx_topn` all-reduces its octave histogram, so the retained set is
-    exactly the serial one even when it really does cut. Spelled with an
-    explicit `result="gather"`, which must mean what the default means."""
-    want = observable.propagate(circuit, TIGHT_POLICY)
-    got = observable.propagate(circuit, TIGHT_POLICY, comm=COMM, result="gather")
+def test_gather_agrees_under_a_truncating_approx_topn(light_observable, light_circuit):
+    """`approx_topn` all-reduces its octave histogram and boundary counts, so
+    the kept count is exactly the serial one even when it really does cut; the
+    boundary-octave terms are chosen in rank order (`assert_runs_agree`).
+    Spelled with an explicit `result="gather"`, which must mean what the
+    default means."""
+    want = light_observable.propagate(light_circuit, TIGHT_POLICY)
+    got = light_observable.propagate(light_circuit, TIGHT_POLICY, comm=COMM, result="gather")
     assert len(want) < NUM_TERMS, "the tight policy must actually truncate"
     if RANK == 0:
-        assert len(got) == len(want)
-        _assert_terms_close(got, want)
+        discarded = discarded_norm(light_observable, light_circuit, TIGHT_POLICY)
+        assert_runs_agree(got, want, TIGHT_POLICY, discarded, TOL)
+    else:
+        assert len(got) == 0
+
+
+def test_gather_agrees_after_a_single_cut():
+    """One cut that splits a boundary group, dropping little weight."""
+    for name, c, s, n in single_cuts(NUM_QUBITS):
+        policy = truncation.approx_topn(n)
+        want = s.propagate(c, policy)
+        got = s.propagate(c, policy, comm=COMM)
+        if RANK == 0:
+            assert_runs_agree(got, want, policy, discarded_norm(s, c, policy), TOL, name)
+        else:
+            assert len(got) == 0
+
+
+@pytest.mark.parametrize("direction", ["forward", "heisenberg"])
+def test_gather_keeps_the_serial_count_through_heavy_cuts(direction):
+    """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the group keeps the serial count."""
+    c, s = heavy_cut(12)
+    policy = truncation.approx_topn(400)
+    want = s.propagate(c, policy, direction=direction)
+    got = s.propagate(c, policy, direction=direction, comm=COMM)
+    if RANK == 0:
+        assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
     else:
         assert len(got) == 0
 
@@ -285,6 +333,21 @@ def test_local_shares_cover_exactly_the_gathered_keys(observable, circuit, refer
     assert fold == _key_checksum(reference)
 
 
+def test_local_share_arrays_reassemble_the_gathered_sum(observable, circuit, reference):
+    """`to_arrays` on a share is this rank's terms; gathered and fed to `from_arrays` they are the whole sum."""
+    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    x, z, c = local.to_arrays()
+    assert len(c) == len(local)
+    parts = COMM.allgather((x, z, c))
+    whole = PauliSum.from_arrays(
+        np.concatenate([p[0] for p in parts]),
+        np.concatenate([p[1] for p in parts]),
+        np.concatenate([p[2] for p in parts]),
+        NUM_QUBITS,
+    )
+    _assert_terms_close(whole, reference)
+
+
 # --------------------------------------------------------------------------
 # Stats
 
@@ -320,7 +383,7 @@ def test_in_process_stats_still_report_no_rank(observable, circuit):
     """`rank`/`size` are `None` for a run that is not distributed — the phase-1
     records are unchanged."""
     _, stats = observable.propagate_with_stats(circuit, POLICY)
-    assert stats.partition is None
+    assert stats.partition.rank is None and stats.partition.size is None
 
 
 def test_multi_rank_run_actually_exchanges(observable, circuit):
@@ -436,14 +499,14 @@ def test_one_device_per_rank_gathers_the_serial_answer(observable, circuit, refe
 
 
 @needs_a_device_group
-def test_one_device_per_rank_respects_a_truncating_policy_and_direction(observable, circuit):
-    want = observable.propagate(circuit, TIGHT_POLICY, direction="heisenberg")
-    got = observable.propagate(
-        circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto"
+def test_one_device_per_rank_respects_a_truncating_policy_and_direction(light_observable, light_circuit):
+    want = light_observable.propagate(light_circuit, TIGHT_POLICY, direction="heisenberg")
+    got = light_observable.propagate(
+        light_circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto"
     )
     if RANK == 0:
-        assert len(got) == len(want)
-        _assert_terms_close(got, want)
+        discarded = discarded_norm(light_observable, light_circuit, TIGHT_POLICY, "heisenberg")
+        assert_runs_agree(got, want, TIGHT_POLICY, discarded, TOL)
 
 
 @needs_a_device_group
@@ -488,74 +551,30 @@ def test_a_device_list_under_comm_is_a_value_error(observable, circuit):
 
 
 # --------------------------------------------------------------------------
-# Echo read-outs over a split, partition_row_exclude and collapse_sample
+# partition_row_exclude and collapse_sample
 
 # Qubits the circuit touches plus some it does not, over both words.
-ECHO_SITES = [0, 2, 3, 5, 64, 67]
-# Enough sites that a seeded draw reading none of their x-bits is a 2**-24 chance per row.
-WIDE_SITES = list(range(24))
+EXCLUDED = [0, 2, 3, 5, 64, 67]
 
 
 @pytest.mark.parametrize("axis", ["x", "z"])
-def test_echo_read_outs_of_excluding_local_shares_are_the_serial_ones(observable, circuit, reference, axis):
+def test_strings_differing_only_on_excluded_coordinates_share_a_rank(observable, circuit, reference, axis):
+    """What a per-rank read-out over classes of such strings relies on: clearing the excluded bits leaves no key on two ranks."""
     local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: ECHO_SITES}
+        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: EXCLUDED}
     )
-    hist = local.anticommute_histogram(ECHO_SITES, axis=axis, comm=COMM)
-    overlap = local.rotated_overlap(ECHO_SITES, 0.3, axis=axis, comm=COMM)
-    np.testing.assert_allclose(hist, reference.anticommute_histogram(ECHO_SITES, axis=axis), rtol=1e-9)
-    assert overlap == pytest.approx(reference.rotated_overlap(ECHO_SITES, 0.3, axis=axis), rel=1e-9)
-    # The core all-reduce hands every rank the same bits.
-    assert COMM.allgather(overlap) == [overlap] * SIZE
-    assert COMM.allgather(hist) == [hist] * SIZE
-
-
-def test_the_histogram_of_any_local_share_adds_up(observable, circuit, reference):
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
-    np.testing.assert_allclose(
-        local.anticommute_histogram(ECHO_SITES, comm=COMM),
-        reference.anticommute_histogram(ECHO_SITES),
-        rtol=1e-9,
-    )
-
-
-def test_cut_rows_read_no_x_bit_so_they_serve_an_x_axis_overlap(observable, circuit, reference):
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local", partition_row_blocks=_cut_blocks())
-    assert local.rotated_overlap(WIDE_SITES, 0.3, comm=COMM) == pytest.approx(
-        reference.rotated_overlap(WIDE_SITES, 0.3), rel=1e-9
-    )
-
-
-def test_a_gathered_result_serves_either_axis(observable, circuit, reference):
-    whole = observable.propagate(circuit, POLICY, comm=COMM)
-    for axis in ("x", "z"):
-        assert whole.rotated_overlap(WIDE_SITES, 0.3, axis=axis, comm=COMM) == pytest.approx(
-            reference.rotated_overlap(WIDE_SITES, 0.3, axis=axis), rel=1e-9
-        )
-
-
-def test_rows_reading_a_flipped_coordinate_are_refused(observable, circuit):
-    """Rows excluding the z-bits say nothing about the x-bits an ``axis="x"`` rotation flips, so every rank refuses alike; one rank has no rows at all."""
-    local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={"z": WIDE_SITES}
-    )
-    if SIZE > 1:
-        with pytest.raises(ValueError, match="partition_row_exclude"):
-            local.rotated_overlap(WIDE_SITES, 0.3, axis="x", comm=COMM)
+    x, z, _ = local.to_arrays()
+    mask = np.zeros(x.shape[1], dtype=np.uint64)
+    for q in EXCLUDED:
+        mask[q // 64] |= np.uint64(1 << (q % 64))
+    if axis == "x":
+        x = x & ~mask
     else:
-        local.rotated_overlap(WIDE_SITES, 0.3, axis="x", comm=COMM)
-
-
-def test_a_sum_outside_a_split_is_refused_under_comm(observable, circuit):
-    with pytest.raises(ValueError, match="not a propagate"):
-        observable.anticommute_histogram(ECHO_SITES, comm=COMM)
-    local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={"x": ECHO_SITES}
-    )
-    with pytest.raises(ValueError, match="not a propagate"):
-        (local + local).rotated_overlap(ECHO_SITES, 0.3, comm=COMM)
-    base = local.rotated_overlap(ECHO_SITES, 0.3, comm=COMM)
-    assert (local * 2.0).rotated_overlap(ECHO_SITES, 0.3, comm=COMM) == pytest.approx(4 * base, rel=1e-12)
+        z = z & ~mask
+    mine = {(tuple(a), tuple(b)) for a, b in zip(x.tolist(), z.tolist())}
+    every = COMM.allgather(mine)
+    assert sum(len(keys) for keys in every) == len(set().union(*every))
+    assert COMM.allreduce(len(local)) == len(reference)
 
 
 def test_distributed_partition_row_exclude_is_validated_first(observable, circuit):

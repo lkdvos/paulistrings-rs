@@ -1,17 +1,17 @@
 # propagate / propagate_with_stats
 
 ```text
-sum.propagate(circuit, policy=None, direction=None, engine=None,
-               small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
-               partitions=None, pin_memory=True, partition_row_seed=None,
-               partition_row_blocks=None, partition_row_exclude=None, comm=None,
-               result="gather", device=None) -> PauliSum
+sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
+               min_buckets=128, partitions=None, pin_memory=True,
+               partition_row_seed=None, partition_row_blocks=None,
+               partition_row_exclude=None, comm=None, result="gather",
+               device=None) -> PauliSum
 
-sum.propagate_with_stats(circuit, policy=None, direction=None, engine=None,
-                          small_sum_threshold=None, target_bucket_len=None, min_buckets=None,
-                          partitions=None, pin_memory=True, partition_row_seed=None,
-                          partition_row_blocks=None, partition_row_exclude=None, comm=None,
-                          result="gather", device=None)
+sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
+                          min_buckets=128, partitions=None, pin_memory=True,
+                          partition_row_seed=None, partition_row_blocks=None,
+                          partition_row_exclude=None, comm=None, result="gather",
+                          device=None)
     -> (PauliSum, PropagationStats)
 ```
 
@@ -25,17 +25,15 @@ The GIL is released for the duration of both calls.
 | `circuit` | `Circuit` | required | must share `num_qubits` with `sum` |
 | `policy` | `Truncation \| None` | `None` | `None` applies no per-term filtering beyond the engine's exact-zero drop |
 | `direction` | `"forward" \| "heisenberg" \| None` | `None` = `"forward"` | **the default is not the Heisenberg picture most examples here use** — pass it explicitly; see [Direction semantics](direction.md) |
-| `engine` | `"sorted" \| "auto" \| "direct" \| None` | `None` = `"sorted"` | `"sorted"`: always bucketed. `"auto"`: a term-by-term hash-map path below `small_sum_threshold`, unless the policy has a layer pass (e.g. `topn`). `"direct"`: same threshold, always. All three agree to floating-point tolerance |
-| `small_sum_threshold` | `int \| None` | `None` = `paulistrings.DEFAULT_SMALL_SUM_THRESHOLD` | term-count cutoff for `"auto"`/`"direct"` |
-| `target_bucket_len` | `int \| None` | `None` = `1024` | sorting engine's per-layer bucket-sizing knob |
-| `min_buckets` | `int \| None` | `None` = `128` | sorting engine's per-layer bucket-sizing knob |
+| `target_bucket_len` | `int` | `1024` | engine's per-layer bucket-sizing knob; at least 1, else `ValueError` |
+| `min_buckets` | `int` | `128` | engine's per-layer bucket-sizing knob; at least 16, else `ValueError` |
 | `partitions` | `None \| "auto" \| int \| list[list[int]]` | `None` | splits the sum across NUMA domains; see below |
 | `pin_memory` | `bool` | `True` | binds each partition's allocations to its node |
 | `partition_row_seed` | `int \| None` | `None` = the sum's own hash seed | which GF(2) rows decide a term's partition |
 | `partition_row_blocks` | `list[list[int]] \| None` | `None` | explicit disjoint qubit blocks, one per partition, instead of a seeded draw |
 | `partition_row_exclude` | `dict[str, list[int]] \| None` | `None` | `{"x": [...], "z": [...]}`: the seeded draw with these qubits' x-bits / z-bits read by no row |
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
-| `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share, which remembers its rows for the `comm=` [echo read-outs](measurement.md#under-comm) |
+| `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share, a plain `PauliSum` (`to_arrays()` reads it into numpy) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
 
 `PauliSum.num_buckets` reads back the realized bucket count, which can differ from `target_bucket_len`/`min_buckets` since bucketing only ever grows.
@@ -44,7 +42,7 @@ The GIL is released for the duration of both calls.
 
 | Value | Placement |
 |---|---|
-| `None` or `1` | unpartitioned — bit-for-bit today's path |
+| `None` or `1` | unpartitioned |
 | `"auto"` | one partition per NUMA node (falls back to unpartitioned on a single-node box) |
 | an `int` power of two `>= 2`, at most 64 | caps placement at that many nodes |
 | `list[list[int]]` | explicit disjoint CPU lists, one partition per list |
@@ -52,7 +50,7 @@ The GIL is released for the duration of both calls.
 In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
 
 `partition_row_blocks` excludes both `partition_row_seed` and `partition_row_exclude`; each of the three needs `partitions=`, `comm=` or a list of several devices.
-`partition_row_exclude={"x": sites}` keeps every class `rotated_overlap(sites, axis="x")` groups on one rank; `{"z": sites}` does the same for `axis="z"`.
+`partition_row_exclude={"x": sites}` keeps strings that differ only in the x-bits of `sites` on one rank; `{"z": sites}` does the same for z-bits.
 Under `comm=`, the block count in `partition_row_blocks` must equal the MPI group size, and the blocks must be identical on every rank.
 
 `comm=` requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
@@ -85,9 +83,9 @@ See [CUDA devices](../manual/propagation/gpu.md).
 sum.to_device(device=0) -> GpuPauliSum
 
 resident.propagate(circuit, policy=None, direction=None,
-                   target_bucket_len=None, min_buckets=None) -> None
+                   target_bucket_len=1024, min_buckets=128) -> None
 resident.propagate_with_stats(circuit, policy=None, direction=None,
-                              target_bucket_len=None, min_buckets=None) -> PropagationStats
+                              target_bucket_len=1024, min_buckets=128) -> PropagationStats
 resident.to_host() -> PauliSum
 ```
 
@@ -119,9 +117,9 @@ A broadcast call such as `circuit.depolarize(p, [0, 1])` contributes two layers,
 | `.final_terms` | `int` | `terms_out[-1]`, or the input's count for a zero-layer circuit |
 | `.circuit_index` | `list[int]` | this layer's position in the circuit as written, independent of `direction` |
 | `.application_index` | `list[int]` | this layer's position in the propagation loop, `0..layers` regardless of `direction` |
-| `.gate_name` | `list[str]` | the applied channel's debug name per layer |
+| `.gate_name` | `list[str]` | the applied channel's debug name per layer: the `PtmChannel` constructor name (`hadamard`, `cnot`, `depolarizing`, …; `phase_gate_adjoint` for `sdg`) or `PauliRotation` |
 | `.nanos` | `list[int]` | elapsed wall-clock nanoseconds per layer; for a partitioned/distributed run, the max over partitions/ranks |
-| `.partition` | `PartitionStats \| None` | per-partition detail for a `partitions=`/`comm=`/`device=` call, else `None` |
+| `.partition` | `PartitionStats` | per-partition detail; one partition for an unpartitioned call |
 | `.collapses` | `int \| None` | collapses a `truncation.collapse_sample` made during this call, `None` without one; under `comm=` rank 0's count, all-reduced so every rank reports it |
 
 ## `PartitionStats`

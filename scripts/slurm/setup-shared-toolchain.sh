@@ -25,7 +25,7 @@ rustup toolchain install "$toolchain" --profile minimal --no-self-update
 rustup default "$toolchain" >/dev/null
 echo "== toolchain"; cargo --version; rustc --version
 echo "== registry (cargo fetch, all workspace targets)"
-cargo fetch
+cargo fetch --locked
 echo "== offline check"
 CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-shared-check-$$" cargo check --offline -p paulistrings --features phase-timing --example phase_breakdown
 echo "== offline check, cuda feature (cudarc; no toolkit needed to compile)"

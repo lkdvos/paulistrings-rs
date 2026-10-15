@@ -16,7 +16,7 @@ features = ["phase-timing", "test-utils", "cuda"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-# Every feature is off by default; the default build must stay byte- and performance-identical without them.
+# Every feature is off by default.
 # Per-phase timing counters in the engine.
 phase-timing = []
 # `test_support` (the differential oracle and shared fixtures), on for the crate's own dev builds via the self-dependency below.

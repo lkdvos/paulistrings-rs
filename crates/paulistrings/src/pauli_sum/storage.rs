@@ -38,7 +38,7 @@ const PARALLEL_MIN_TERMS: usize = DEFAULT_MIN_BUCKETS * MIN_TERMS_PER_TASK;
 /// Default target terms per bucket.
 pub const DEFAULT_TARGET_BUCKET_LEN: usize = 1024;
 
-/// Default floor on the bucket count, fixed rather than thread-derived, so the partition is a function of the sum alone and the output is bitwise identical across thread counts (`tests/propagate_bucketed.rs` pins it).
+/// Default floor on the bucket count, fixed rather than thread-derived, so the partition is a function of the sum alone.
 /// Must be `>= 16`, or `desired_bits` stops giving a sum of `<= 1024` terms a single bucket.
 pub const DEFAULT_MIN_BUCKETS: usize = 128;
 

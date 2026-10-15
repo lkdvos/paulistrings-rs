@@ -345,7 +345,7 @@ impl<const W: usize> Channel<W> for PtmChannel {
         self.apply_rows(true, input_x, input_z, coeff, out);
     }
 
-    /// Tabulated straight from the stored PTM, without probing `apply`; a test holds it bit-equal to the probe.
+    /// Tabulated straight from the stored PTM, without probing `apply`; a test holds it equal to the probe's table.
     fn prepare_for_layer(
         &self,
         hash: &Gf2Hash<W>,

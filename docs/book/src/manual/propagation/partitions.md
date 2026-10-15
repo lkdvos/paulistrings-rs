@@ -36,7 +36,7 @@ evolved = observable.propagate(
 partitions=["0-7,16-23", "8-15,24-31"]
 ```
 
-`partitions=None` or `partitions=1` is the ordinary unpartitioned run, bit for bit.
+`partitions=None` or `partitions=1` is the ordinary unpartitioned run.
 On a single-node box `"auto"` also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a `ValueError` that points at explicit CPU lists.
 
 [`paulistrings.numa_nodes()`](../../library/module-helpers.md) reports what the machine offers, as one CPU list per node intersected with this process's affinity mask, so a script can decide for itself before choosing.
@@ -73,7 +73,6 @@ Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is al
 - **`P` is a power of two, at most 64.** A partition is named by `log2(P)` GF(2) hash rows, and the engine caps that at 6 (`P_MAX_BITS`).
 - **Peak memory is above a single-pool run's.** A partitioned run holds `P` shares of the sum plus one layer's exchange buffers, which are pooled and reused rather than freed between layers.
 - **Results agree to floating-point tolerance, not bit for bit** — as they do across bucket counts.
-  At `P = 1` the output is bitwise the unpartitioned engine's.
 
 ## See it in use
 

@@ -116,7 +116,6 @@ The correctness bar is agreement to floating-point tolerance, not bit-identical 
 Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
 Compare evolved sums with `numpy.allclose` on `coefficients_array()`, as [Splitting a circuit is free](incremental.md#splitting-a-circuit-is-free) does, never with equality.
 
-Bit-identical output is only expected between runs at a fixed bucket count and the same hash seed — cosets are write-disjoint and each is applied sequentially, so this holds *across thread counts too*, and a `partitions=1` run reproduces the unpartitioned path byte for byte; across bucket counts, seeds or partition counts the bar drops back to tolerance.
 Term counts, on the other hand, are exact integers and are the load-independent quantity every benchmark on this site quotes and gates on.
 
 ## Untruncated runs

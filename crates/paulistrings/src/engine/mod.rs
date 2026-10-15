@@ -1,6 +1,4 @@
 //! The propagation front door [`propagate`], one partition of the partitioned layer loop; one layer is applied in `bucketed`.
-//!
-//! At a fixed bucket count and hash seed the output is bitwise identical across thread counts and repeat runs, since cosets are write-disjoint and sequential inside; tests pin it as a tripwire, and across bucket counts the bar is tolerance.
 
 pub(crate) mod backend;
 pub(crate) mod bucketed;

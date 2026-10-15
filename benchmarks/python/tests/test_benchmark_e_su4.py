@@ -13,7 +13,7 @@ Unlike Benchmark A's Clifford points, `random_su4_staircase` has no exact
 integer to check against at any size -- every gate is an independent
 Haar-random SU(4) block, so the only *exact* ground truth available is dense
 statevector simulation, and the only *cheap, dependency-free* check is
-self-consistency (a deterministic seed must reproduce itself bit-for-bit in
+self-consistency (a deterministic seed must reproduce itself exactly in
 term count, and to floating-point tolerance in the contracted expectation).
 """
 

@@ -9,7 +9,7 @@ use crate::cells::{CellResult, DeviceCellStats};
 /// Always printed first for every cell, in every format: `n=` and `layers=` are a contract other
 /// scripts grep for (machine contract (b) in `benchmarks/PROFILING.md`).
 pub(crate) fn print_cell_line(cell: &CellResult) {
-    // Empty for every non-`--mpi` cell, so the line is byte-identical to before the flag existed.
+    // Empty for every non-`--mpi` cell, so those lines keep their format.
     let mpi = match cell.mpi {
         Some((rank, ranks)) => format!(" rank={rank}/{ranks} vmhwm_kb={}", cell.vmhwm_kb),
         None => String::new(),

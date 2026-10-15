@@ -6,7 +6,7 @@
 //! 3. the policy's layer pass, on every layer, if `finalizes_layer` is true.
 //!
 //! Between agreements a partition keeps its count even when its own proposal is higher, so the counts stay equal without communicating, and the schedule depends on the layer index and the plan alone.
-//! At `P = 1` there is no group: the loop skips the reduction and refines every layer, which keeps it bitwise `propagate`.
+//! At `P = 1` there is no group: the loop skips the reduction and refines every layer, as `propagate` does.
 
 use crate::channel::Prepare;
 use std::sync::atomic::{AtomicU32, Ordering};

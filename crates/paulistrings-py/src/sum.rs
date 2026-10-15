@@ -511,7 +511,7 @@ pub(crate) fn propagate_options(
     Ok(options)
 }
 
-/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path, bit for bit today's behaviour.
+/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path.
 /// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or `list[list[int]]` (one partition per CPU list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
 /// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
 fn parse_partitions(
@@ -864,7 +864,7 @@ fn mpi_unavailable_error() -> PyErr {
 /// How one propagate call runs. Decided at the boundary, with the GIL held,
 /// and consumed once inside the width dispatch.
 enum RunMode {
-    /// One pool over the whole process — today's path, bit for bit.
+    /// One pool over the whole process, unpartitioned.
     Classic,
     /// One pinned pool per NUMA domain, in this process (`partitions=`).
     Partitioned(PartitionConfig, PartitionRowPolicy),
@@ -2095,7 +2095,7 @@ impl PauliSum {
     /// `target_bucket_len` (at least 1) and `min_buckets` (at least 16) are the engine's per-layer bucket-sizing knobs, raising `ValueError` below those bounds. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since `rebucket` only ever grows a sum's partition.
     /// The GIL is released for the duration.
     ///
-    /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned and bit-for-bit today's path; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
+    /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
     /// In partitioned mode `RAYON_NUM_THREADS` is ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.

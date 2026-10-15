@@ -34,8 +34,8 @@ What this script produces, each following the module's four pieces:
    headline: wall time and peak memory vs. system size. Oracle-checked up to
    `n=24` (Aer's practical ceiling for a same-process sweep here); larger `n`
    is reported unchecked and labeled as such in `extra["oracle_checked"]`.
-5. `check_determinism()` -- the same seed run twice must give byte-for-byte
-   identical term counts and an expectation matching to 1e-12. This is
+5. `check_determinism()` -- the same seed run twice must give identical
+   term counts and an expectation matching to 1e-12. This is
    also asserted in CI, in
    `python/paulistrings/tests/test_benchmark_e_su4.py`; the check here is a
    smoke re-run at the driver's own working sizes, not a substitute.

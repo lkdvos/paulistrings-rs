@@ -167,7 +167,6 @@ On a pair the driver reports as unsupported the copy stages through the host ins
 
 **Results agree to floating-point tolerance, not bit for bit.**
 The device sums equal keys in a different order from the host, as a different bucket count does.
-No reduction uses a floating-point atomic, so two runs on the same device give the same bits.
 
 **Storage order is the host's canonical order, but for the device's own bucket count.**
 The download re-sorts each bucket to the host's lexicographic order, and the device chooses its bucket count by rows per block rather than terms per bucket, so `x_array()` of a device result can list the terms in a different order from a host run's.

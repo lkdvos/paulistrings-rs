@@ -42,7 +42,7 @@ The GIL is released for the duration of both calls.
 
 | Value | Placement |
 |---|---|
-| `None` or `1` | unpartitioned — bit-for-bit today's path |
+| `None` or `1` | unpartitioned |
 | `"auto"` | one partition per NUMA node (falls back to unpartitioned on a single-node box) |
 | an `int` power of two `>= 2`, at most 64 | caps placement at that many nodes |
 | `list[list[int]]` | explicit disjoint CPU lists, one partition per list |

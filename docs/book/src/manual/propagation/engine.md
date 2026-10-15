@@ -51,8 +51,7 @@ Load balance comes from the random hash plus work-stealing.
 
 ![Bucket space partitioned into cosets](../../assets/design/bucket-cosets.svg)
 
-At a fixed bucket count and hash seed this structure also makes the output bitwise identical across thread counts and repeat runs: cosets are write-disjoint and work within one is sequential.
-Across bucket counts or seeds, output agrees to floating-point tolerance — equal-key summation order is deliberately unspecified.
+Output agrees to floating-point tolerance across runs — equal-key summation order is deliberately unspecified.
 
 ## In-place layer execution
 

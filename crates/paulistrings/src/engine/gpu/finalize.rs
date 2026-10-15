@@ -193,7 +193,7 @@ fn radix_select_bits<const W: usize>(
 }
 
 /// Keep the terms whose `|c|²` bits shifted right by `shift` exceed `boundary`, plus the first `quota` equal to it in bucket order, in each bucket's order and at its start offset.
-/// The quota is split by a per-bucket count and an exclusive scan, so the kept set is deterministic.
+/// The quota is split by a per-bucket count and an exclusive scan, so the kept equal terms are the first `quota` in bucket order, never a race winner.
 fn retain_device<const W: usize>(
     sum: &mut GpuSum<W>,
     scratch: &mut LayerScratch<W>,

@@ -210,7 +210,7 @@ impl<const W: usize, B: PartitionStorage<W>> DriverFrame<'_, W, B> {
 
 /// Propagates `sum` through `circuit` on a partitioned engine built from `config`, and gathers the result.
 ///
-/// A caller propagating repeatedly should hold a [`PartitionRuntime`](super::runtime::PartitionRuntime) and a [`PartitionedSum`] instead, so pools, split and scratch survive between calls.
+/// A caller propagating repeatedly should hold a [`PartitionRuntime`] and a [`PartitionedSum`] instead, so pools, split and scratch survive between calls.
 ///
 /// # Errors
 ///

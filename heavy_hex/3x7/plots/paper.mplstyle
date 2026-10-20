@@ -1,0 +1,29 @@
+# apply with plt.style.use("/paper.mplstyle")
+
+font.size:             16
+font.family:           Helvetica
+axes.titlesize:        16
+axes.spines.top:       False
+axes.spines.right:     False
+keymap.quit:           1
+
+lines.linewidth:       2.5
+lines.markersize:      7.5
+lines.markeredgecolor: black
+lines.markeredgewidth: 1.5
+
+axes.linewidth:        1.5
+grid.linestyle:        dashed
+grid.linewidth:        1.5
+
+xtick.major.width:     1.5
+xtick.major.size:      7.5
+xtick.minor.width:     1.5
+xtick.minor.size:      4.0
+xtick.direction:       in
+
+ytick.major.width:     1.5
+ytick.major.size:      7.5
+ytick.minor.width:     1.5
+ytick.minor.size:      4.0
+ytick.direction:       in

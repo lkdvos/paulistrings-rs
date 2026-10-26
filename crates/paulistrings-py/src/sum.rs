@@ -490,8 +490,31 @@ pub(crate) fn propagate_options(
     Ok(options)
 }
 
+/// The explicit-placement spelling of `partitions=`: a sequence whose elements are each a `list[int]` or a cpulist string (`"0-7,16-23"`), or `None` if `obj` is not of that shape.
+/// A string naming no CPU becomes an empty list, so the caller's empty-set check reports it by position.
+fn cpu_lists(obj: &Bound<'_, PyAny>) -> PyResult<Option<Vec<Vec<usize>>>> {
+    let Ok(elements) = obj.extract::<Vec<Bound<'_, PyAny>>>() else {
+        return Ok(None);
+    };
+    let mut sets = Vec::with_capacity(elements.len());
+    for element in &elements {
+        if let Ok(cpulist) = element.extract::<String>() {
+            match CpuSet::parse(&cpulist) {
+                Ok(CpuSet(cpus)) => sets.push(cpus),
+                Err(TopologyError::EmptySet) => sets.push(Vec::new()),
+                Err(err) => return Err(topology_error(err)),
+            }
+        } else if let Ok(cpus) = element.extract::<Vec<usize>>() {
+            sets.push(cpus);
+        } else {
+            return Ok(None);
+        }
+    }
+    Ok(Some(sets))
+}
+
 /// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path.
-/// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or `list[list[int]]` (one partition per CPU list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
+/// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or a list of CPU lists, each a `list[int]` or a cpulist string (one partition per list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
 /// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
 fn parse_partitions(
     partitions: Option<&Bound<'_, PyAny>>,
@@ -546,7 +569,7 @@ fn parse_partitions(
                 Placement::Auto { max_partitions: Some(k) }
             }
         }
-    } else if let Ok(sets) = obj.extract::<Vec<Vec<usize>>>() {
+    } else if let Some(sets) = cpu_lists(obj)? {
         if sets.is_empty() {
             return Err(PyValueError::new_err(
                 "partitions=[]: pass at least one CPU list, or None for the unpartitioned path",
@@ -572,7 +595,7 @@ fn parse_partitions(
     } else {
         return Err(PyTypeError::new_err(
             "partitions must be None, an int power of two, a list of CPU lists \
-             (e.g. [[0, 1], [2, 3]]), or 'auto'",
+             (e.g. [[0, 1], [2, 3]] or [\"0-1\", \"2-3\"]), or 'auto'",
         ));
     };
 
@@ -1986,7 +2009,7 @@ impl PauliSum {
     /// `target_bucket_len` (at least 1) and `min_buckets` (at least 16) are the engine's per-layer bucket-sizing knobs, raising `ValueError` below those bounds. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since `rebucket` only ever grows a sum's partition.
     /// The GIL is released for the duration.
     ///
-    /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
+    /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; a list of explicit disjoint CPU lists, each a `list[int]` or a cpulist string, gives one partition per list (`[[0, 1], [2, 3]]` or `["0-1", "2-3"]`, mixable). `pin_memory` (default `True`) binds each partition's allocations to its node.
     /// In partitioned mode `RAYON_NUM_THREADS` is ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.

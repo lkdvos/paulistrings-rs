@@ -253,6 +253,33 @@ def test_pin_memory_false_matches():
     _assert_terms_close(got, want)
 
 
+def _cpulist(cpus):
+    """``cpus`` in the comma-separated ``"0,1"`` spelling of a cpulist."""
+    return ",".join(str(cpu) for cpu in cpus)
+
+
+def test_cpulist_strings_match_int_lists():
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    sets = _cpu_sets()
+    want, want_stats = s.propagate_with_stats(c, partitions=sets)
+    got, got_stats = s.propagate_with_stats(c, partitions=[_cpulist(cpus) for cpus in sets])
+    _assert_terms_close(got, want)
+    _assert_counts_equal(got_stats, want_stats)
+    assert got_stats.partition.partitions == 2
+
+
+def test_cpulist_strings_take_ranges_and_mix_with_int_lists():
+    allowed = sorted(os.sched_getaffinity(0))
+    low = next((cpu for cpu in allowed if cpu + 1 in allowed), None)
+    rest = [cpu for cpu in allowed if low is None or cpu not in (low, low + 1)]
+    if low is None or len(rest) < 2:
+        pytest.skip("needs two adjacent CPUs and two more in the affinity mask")
+    s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
+    want = s.propagate(c, partitions=[[low, low + 1, rest[0]], [rest[1]]])
+    got = s.propagate(c, partitions=[f"{low}-{low + 1},{rest[0]}", [rest[1]]])
+    _assert_terms_close(got, want)
+
+
 def test_auto_places_one_partition_per_numa_node():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
     got, stats = s.propagate_with_stats(c, partitions="auto")
@@ -346,6 +373,10 @@ def test_exact_topn_is_rejected_in_partitioned_mode(policy):
         ([[10**6]], "affinity mask"),
         ([[0], [1], [2]], "power of two"),
         ("foo", "'auto'"),
+        (["x"], "not a cpulist"),
+        ([""], "empty"),
+        (["0", "0"], "disjoint"),
+        (["0-1", [1]], "disjoint"),
     ],
 )
 def test_bad_partitions_are_value_errors(partitions, message):
@@ -364,7 +395,7 @@ def test_more_partitions_than_nodes_is_rejected():
         s.propagate(c, partitions=too_many)
 
 
-@pytest.mark.parametrize("partitions", [2.5, True, {"cpus": [0]}, [0, 1]])
+@pytest.mark.parametrize("partitions", [2.5, True, {"cpus": [0]}, [0, 1], [[0], 1.5]])
 def test_bad_partitions_types_are_type_errors(partitions):
     s, c = _observable(WIDTHS[0], terms=64), _clifford_circuit(WIDTHS[0], layers=1)
     with pytest.raises(TypeError):

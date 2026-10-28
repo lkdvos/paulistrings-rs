@@ -603,70 +603,20 @@ fn parse_partitions(
     Ok(PartitionConfig { placement, bind_memory: pin_memory, threads_per_partition: None })
 }
 
-/// `threads=` → [`PartitionConfig::threads_per_partition`] for `partitions` partitions, capped at `cap` when the CPU lists are explicit: an `int` is the process total split evenly, and `"all"` is `None`, the placement's own count.
-/// `None` reads a positive `RAYON_NUM_THREADS` as that `int`, and anything else (unset, empty, `0`, not a number) as `"all"`, as Rayon does.
-/// A bool or non-int is a `TypeError`; a count below one or below `partitions`, or another string, a `ValueError`.
-fn threads_per_partition(
-    obj: Option<&Bound<'_, PyAny>>,
-    partitions: usize,
-    cap: Option<usize>,
-) -> PyResult<Option<usize>> {
-    let (total, source) = if let Some(obj) = obj.filter(|obj| !obj.is_none()) {
-        if let Ok(name) = obj.extract::<String>() {
-            return match name.as_str() {
-                "all" => Ok(None),
-                other => Err(PyValueError::new_err(format!(
-                    "threads must be None, an int >= 1, or 'all', got {other:?}"
-                ))),
-            };
-        }
-        // `bool` is an `int` subclass, so `threads=True` would otherwise parse as `1`.
-        if obj.is_instance_of::<PyBool>() {
-            return Err(PyTypeError::new_err(
-                "threads must be None, an int >= 1, or 'all', not a bool",
-            ));
-        }
-        let count: i64 = obj
-            .extract()
-            .map_err(|_| PyTypeError::new_err("threads must be None, an int >= 1, or 'all'"))?;
-        match usize::try_from(count) {
-            Ok(total) if total >= 1 => (total, "threads"),
-            _ => {
-                return Err(PyValueError::new_err(format!(
-                    "threads={count}: a run needs at least one thread"
-                )))
-            }
-        }
-    } else {
-        match std::env::var("RAYON_NUM_THREADS").ok().and_then(|value| value.parse().ok()) {
-            Some(total) if total >= 1 => (total, "RAYON_NUM_THREADS"),
-            _ => return Ok(None),
-        }
-    };
+/// `RAYON_NUM_THREADS`, read once per process, split across `partitions` and capped at `cap`; `None` (unset, `0`, not a number) is the placement's own count.
+fn threads_per_partition(partitions: usize, cap: Option<usize>) -> PyResult<Option<usize>> {
+    static TOTAL: OnceLock<Option<usize>> = OnceLock::new();
+    let total = TOTAL.get_or_init(|| {
+        std::env::var("RAYON_NUM_THREADS").ok()?.parse().ok().filter(|&total: &usize| total > 0)
+    });
+    let Some(total) = *total else { return Ok(None) };
     if total < partitions {
         return Err(PyValueError::new_err(format!(
-            "{source}={total} is fewer than the {partitions} partitions; each partition needs at \
-             least one thread"
+            "RAYON_NUM_THREADS={total} is fewer than the {partitions} partitions; each partition \
+             needs at least one thread"
         )));
     }
-    let per_partition = total / partitions;
-    Ok(Some(cap.map_or(per_partition, |cap| per_partition.min(cap))))
-}
-
-/// Runs `readout` on the global pool for `threads=None`, else inside the cached one-partition unpinned runtime of [`runtime_for`] that `threads=` resolves to.
-fn with_threads<R: Send>(
-    threads: Option<&Bound<'_, PyAny>>,
-    readout: impl FnOnce() -> R + Send,
-) -> PyResult<R> {
-    let Some(threads) = threads.filter(|threads| !threads.is_none()) else {
-        return Ok(readout());
-    };
-    let config = PartitionConfig {
-        placement: Placement::Unpinned { partitions: 1 },
-        bind_memory: false,
-        threads_per_partition: threads_per_partition(Some(threads), 1, None)?,
-    };
-    Ok(runtime_for(&config).map_err(topology_error)?.install(readout))
+    Ok(Some((total / partitions).min(cap.unwrap_or(usize::MAX))))
 }
 
 /// `partition_row_blocks=` → an explicit "cut" policy, one disjoint qubit block per partition, fed straight to the core [`PartitionRows::cut`](paulistrings::PartitionRows::cut).
@@ -1108,18 +1058,11 @@ fn parse_run_mode(
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
     device: Option<&Bound<'_, PyAny>>,
-    threads: Option<&Bound<'_, PyAny>>,
     policy: &BuiltinTruncation,
     num_qubits: usize,
 ) -> PyResult<RunMode> {
     let distributed = comm_requested(comm);
-    let device = device.filter(|obj| !obj.is_none());
-    if device.is_some() && threads.is_some_and(|obj| !obj.is_none()) {
-        return Err(PyValueError::new_err(
-            "threads= and device= are alternatives: a device= run sizes its own host pools",
-        ));
-    }
-    if let Some(device) = device {
+    if let Some(device) = device.filter(|obj| !obj.is_none()) {
         return parse_device_mode(
             py,
             device,
@@ -1187,7 +1130,7 @@ fn parse_run_mode(
                     &format!("comm= with {ranks} rank(s)"),
                 )?;
             }
-            let threads = threads_per_partition(threads, 1, None)?;
+            let threads = threads_per_partition(1, None)?;
             let transport = crate::mpi::transport_from_comm(py, comm)?;
             return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(
                 transport, rows, gather, threads,
@@ -1211,7 +1154,7 @@ fn parse_run_mode(
         Placement::Explicit(sets) => sets.iter().map(CpuSet::len).min(),
         _ => None,
     };
-    config.threads_per_partition = threads_per_partition(threads, num_partitions, cap)?;
+    config.threads_per_partition = threads_per_partition(num_partitions, cap)?;
     Ok(RunMode::Partitioned(config, rows))
 }
 
@@ -1888,9 +1831,8 @@ impl PauliSum {
     ///
     /// `state` is either a uniform name — `"x+"`, `"y+"`, `"z+"`, the `+1` eigenstate of that Pauli on every qubit, matched case-insensitively — or a per-qubit label string of exactly `num_qubits` characters in qiskit's `Statevector.from_label` alphabet (`0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±, case-sensitive). Qubit indexing matches `from_strings`.
     /// Cost is one masked pass over the terms either way, never an expansion over basis states. Returns a Python complex; take `.real` when the operator is Hermitian.
-    /// `threads` is as on `propagate`: `None` (default) runs on Rayon's global pool, sized by `RAYON_NUM_THREADS` or else every CPU; an `int` or `"all"` sets the count for this call.
-    #[pyo3(signature = (state="x+", *, threads=None))]
-    fn expectation(&self, state: &str, threads: Option<&Bound<'_, PyAny>>) -> PyResult<Complex64> {
+    #[pyo3(signature = (state="x+"))]
+    fn expectation(&self, state: &str) -> PyResult<Complex64> {
         // The uniform names win first, case-insensitively, so `"x+"` keeps
         // meaning |+...+> at any qubit count. They cannot collide with a label
         // string: `x`, `y` and `z` are not in the per-qubit alphabet.
@@ -1901,7 +1843,7 @@ impl PauliSum {
             _ => None,
         };
         if let Some(st) = uniform {
-            return with_threads(threads, || self.inner.expectation_uniform(st));
+            return Ok(self.inner.expectation_uniform(st));
         }
         let num_qubits = self.inner.num_qubits();
         let mut axes: Vec<(PauliAxis, bool)> = Vec::with_capacity(num_qubits);
@@ -1925,7 +1867,7 @@ impl PauliSum {
                 axes.len(),
             )));
         }
-        with_threads(threads, || self.inner.expectation_labels(&axes))
+        Ok(self.inner.expectation_labels(&axes))
     }
 
     /// Expectation value in a stabilizer state given by its generators.
@@ -1933,28 +1875,20 @@ impl PauliSum {
     /// `generators` is a list of exactly `num_qubits` signed Pauli strings — `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"` for `+` — in the same `I/X/Y/Z` alphabet and qubit indexing as `from_strings`. They must be pairwise commuting and independent over GF(2); anything else is a `ValueError`.
     /// Reads any stabilizer state (Bell, GHZ, cluster, Clifford-circuit output; see `paulistrings.interop.stabilizers_from_stim`), where `expectation` reads only product states. Cost is `O(terms · num_qubits² / 64)` after a one-off `O(num_qubits³ / 64)` reduction of the generators; prefer `expectation` when the state factorizes.
     /// Returns a Python complex; take `.real` when the operator is Hermitian.
-    /// `threads` is as on `expectation`.
     ///
     /// ```python
     /// bell = ["XX", "ZZ"]                      # (|00> + |11>) / sqrt(2)
     /// PauliSum.from_strings({"YY": 1.0}, num_qubits=2).expectation_stabilizer(bell)
     /// # (-1+0j), since XX·ZZ = -YY
     /// ```
-    #[pyo3(signature = (generators, *, threads=None))]
-    fn expectation_stabilizer(
-        &self,
-        generators: Vec<String>,
-        threads: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Complex64> {
-        with_threads(threads, || self.inner.expectation_stabilizer(&generators))?
+    fn expectation_stabilizer(&self, generators: Vec<String>) -> PyResult<Complex64> {
+        self.inner.expectation_stabilizer(&generators)
     }
 
     /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.
     ///
     /// On the Pauli basis this is `sum(conj(a_i) * b_i)` over shared keys.
-    /// `threads` is as on `expectation`.
-    #[pyo3(signature = (other, *, threads=None))]
-    fn overlap(&self, other: &Self, threads: Option<&Bound<'_, PyAny>>) -> PyResult<Complex64> {
+    fn overlap(&self, other: &Self) -> PyResult<Complex64> {
         if self.inner.num_qubits() != other.inner.num_qubits() {
             return Err(PyValueError::new_err(format!(
                 "overlap: num_qubits mismatch ({} vs {})",
@@ -1962,7 +1896,7 @@ impl PauliSum {
                 other.inner.num_qubits(),
             )));
         }
-        with_threads(threads, || self.inner.overlap(&other.inner))?.ok_or_else(|| {
+        self.inner.overlap(&other.inner).ok_or_else(|| {
             PyValueError::new_err("overlap: sums were monomorphized at different widths")
         })
     }
@@ -2036,24 +1970,18 @@ impl PauliSum {
     /// `(x, z, coefficients)` as NumPy arrays, the exact inverse of `from_arrays`: `x`/`z` are `uint64` of shape `(len, width)` and `coefficients` is `complex128` of shape `(len,)`, row `i` of each describing the same term.
     ///
     /// On a `propagate(..., comm=..., result="local")` share it is this rank's terms only.
-    /// `threads` is as on `expectation`.
     #[allow(clippy::type_complexity)]
-    #[pyo3(signature = (*, threads=None))]
     fn to_arrays<'py>(
         &self,
         py: Python<'py>,
-        threads: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<(
-        Bound<'py, PyArray2<u64>>,
-        Bound<'py, PyArray2<u64>>,
-        Bound<'py, PyArray1<Complex64>>,
-    )> {
-        let (w, x_flat, z_flat, coeffs) = with_threads(threads, || self.inner.columns_flat())?;
+    ) -> (Bound<'py, PyArray2<u64>>, Bound<'py, PyArray2<u64>>, Bound<'py, PyArray1<Complex64>>)
+    {
+        let (w, x_flat, z_flat, coeffs) = self.inner.columns_flat();
         let n = coeffs.len();
         let reshape = |flat: Vec<u64>| {
             flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
         };
-        Ok((reshape(x_flat), reshape(z_flat), coeffs.into_pyarray_bound(py)))
+        (reshape(x_flat), reshape(z_flat), coeffs.into_pyarray_bound(py))
     }
 
     /// Active monomorphized width `W` (number of `u64` words per term).
@@ -2072,9 +2000,8 @@ impl PauliSum {
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; a list of explicit disjoint CPU lists, each a `list[int]` or a cpulist string, gives one partition per list (`[[0, 1], [2, 3]]` or `["0-1", "2-3"]`, mixable). `pin_memory` (default `True`) binds each partition's allocations to its node.
     /// In partitioned mode `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
     ///
-    /// `threads` sets the thread count: `None` (default) takes a positive `RAYON_NUM_THREADS` as that `int`, and otherwise acts as `"all"`, as Rayon does.
-    /// An `int` is the total for this process, split evenly across its partitions (`ValueError` when it is fewer than the partitions, and capped at each explicit CPU list's length); `"all"` runs one thread per CPU this process may run on, or per CPU of each partition's placement.
-    /// A count above the CPUs this process may run on is allowed and logs a warning, and `threads` with `device` is a `ValueError`.
+    /// `RAYON_NUM_THREADS`, read once per process, sets the thread count: a positive count is the total, split evenly across the partitions (`ValueError` when it is fewer than the partitions, and capped at each explicit CPU list's length); unset, `0` or not a number runs one thread per CPU this process may run on, or per CPU of each partition's placement.
+    /// A count above the CPUs this process may run on is allowed and logs a warning.
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
@@ -2091,7 +2018,7 @@ impl PauliSum {
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None, threads=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -2109,7 +2036,6 @@ impl PauliSum {
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
-        threads: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
@@ -2128,7 +2054,6 @@ impl PauliSum {
             comm,
             gather,
             device,
-            threads,
             &policy,
             self.inner.num_qubits(),
         )?;
@@ -2142,7 +2067,7 @@ impl PauliSum {
     /// `PropagationStats.partition` holds the per-partition detail, summed to the layer-level `terms_in`/`terms_out`; an unpartitioned call reports one partition.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None, threads=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -2160,7 +2085,6 @@ impl PauliSum {
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
-        threads: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
@@ -2179,7 +2103,6 @@ impl PauliSum {
             comm,
             gather,
             device,
-            threads,
             &policy,
             self.inner.num_qubits(),
         )?;

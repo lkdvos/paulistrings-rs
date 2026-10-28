@@ -35,7 +35,6 @@ The GIL is released for the duration of both calls.
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
 | `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share, a plain `PauliSum` (`to_arrays()` reads it into numpy) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
-| `threads` | `None \| int \| "all"` | `None` = `RAYON_NUM_THREADS`, else every CPU of the placement | an `int` is the total for this process, split evenly across its partitions (`ValueError` below the partition count, capped at an explicit CPU list's length); `"all"` is one thread per CPU each partition may run on (under `comm=`, the rank's launcher binding); a count above the allowed CPUs logs a warning; `ValueError` with `device`; see [Threads](../manual/propagation/settings.md#threads) |
 
 `PauliSum.num_buckets` reads back the realized bucket count, which can differ from `target_bucket_len`/`min_buckets` since bucketing only ever grows.
 

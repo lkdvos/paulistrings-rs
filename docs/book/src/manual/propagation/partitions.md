@@ -58,9 +58,9 @@ The other fields are under [`PartitionStats`](../../library/propagate.md#partiti
 
 ## What changes under partitioning
 
-**Each partition runs one thread per CPU of its placement unless `threads=` or `RAYON_NUM_THREADS` says otherwise.**
+**Each partition runs one thread per CPU of its placement unless `RAYON_NUM_THREADS` says otherwise.**
 The engine builds one pool per partition, pinned to the partition's CPUs: an explicit list's CPUs, or for `"auto"` and an integer count the CPUs of the partition's NUMA node inside this process's affinity mask.
-`threads=N`, or `RAYON_NUM_THREADS=N` without it, splits `N` evenly across the partitions, capped at an explicit list's length ([Threads](settings.md#threads)).
+`RAYON_NUM_THREADS=N` splits `N` evenly across the partitions, capped at an explicit list's length ([Threads](settings.md#threads)).
 
 **Exact `topn` is unavailable.**
 Choosing the `n`-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run raises `NotImplementedError` on `truncation.topn`.

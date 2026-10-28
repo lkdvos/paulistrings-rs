@@ -1,7 +1,5 @@
 # Measurement
 
-`expectation`, `expectation_stabilizer` and `overlap` take a keyword-only `threads=` with the values of [`propagate`'s](propagate.md) `threads`: `None` (default) runs on Rayon's global pool, sized by `RAYON_NUM_THREADS` or else every CPU, and an `int` or `"all"` sets the count for that call ([Threads](../manual/propagation/settings.md#threads)).
-
 ## `expectation(state="x+")`
 
 Expectation value in a single-qubit product state. `state` is either:

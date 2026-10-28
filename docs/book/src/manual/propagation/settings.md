@@ -89,24 +89,17 @@ Set them before the first call, and alike on every rank of a `comm=` run.
 
 ## Threads {#threads}
 
-Every call takes `threads=`: an `int` or `"all"`.
-Without it, `RAYON_NUM_THREADS` sets the count, and with neither, every CPU the call's placement allows is used, as Rayon does.
+`RAYON_NUM_THREADS` sets the thread count of every call, read once per process; unset, `0` or not a number means every CPU the call's placement allows, as Rayon does.
 Under MPI, the launcher's binding decides which CPUs a rank may run on.
-
-```python
-evolved = observable.propagate(circuit, policy, direction="heisenberg", threads=16)
-```
+Set it **before the interpreter starts**: a value set from inside a running script does not reach the calls.
 
 ```bash
 RAYON_NUM_THREADS=16 python my_script.py
 ```
 
-`threads=N` is the total for the process, split evenly across its partitions, so `partitions=2, threads=16` runs eight threads on each; fewer threads than partitions is a `ValueError`, and an explicit CPU list caps its partition's threads at the list's length ([NUMA partitions](partitions.md)).
-`"all"` takes every CPU in the process's affinity mask for a plain call, each partition's CPUs for `partitions=`, and the rank's launcher binding for `comm=` ([MPI ranks](mpi.md#launching)).
+`RAYON_NUM_THREADS=N` is the total for the process, split evenly across its partitions, so `partitions=2` with `RAYON_NUM_THREADS=16` runs eight threads on each; fewer threads than partitions is a `ValueError`, and an explicit CPU list caps its partition's threads at the list's length ([NUMA partitions](partitions.md)).
+Without it, a plain call takes every CPU in the process's affinity mask, `partitions=` each partition's CPUs, and `comm=` the rank's launcher binding ([MPI ranks](mpi.md#launching)).
 A count above the CPUs the placement allows runs anyway and logs a warning naming both numbers.
-`threads=` with `device=` is a `ValueError`.
-A positive `RAYON_NUM_THREADS` acts as `threads=N`, with the same split and the same `ValueError`; unset, `0` or not a number acts as `threads="all"`; an explicit `threads=` overrides it.
-`expectation`, `expectation_stabilizer`, `overlap` and `to_arrays` take `threads=` too, with the same values; without it they run on Rayon's global pool, which reads `RAYON_NUM_THREADS` once at its first use, so export the variable before the interpreter starts.
 
 More threads are not always faster, and the layer class decides.
 On the reference two-socket host, dense-PTM-heavy circuits (general two-qubit unitaries) saturate the machine's write bandwidth at about 16 threads and extra threads only add contention, while sparse-rotation and Clifford circuits stay latency-bound and take the full thread count profitably — 11–13× at 32 threads.

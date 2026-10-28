@@ -119,7 +119,7 @@ srun --ntasks-per-node=2 -c 32 --cpu-bind=ldoms --mpi=pmix python script.py
 ```
 
 `--ntasks-per-node` is the node's NUMA-domain count and `-c` its cores per domain.
-A rank runs one thread per CPU the launcher bound it to, unless `threads=` or `RAYON_NUM_THREADS` sets the count ([Threads](settings.md#threads)).
+A rank runs one thread per CPU the launcher bound it to, unless `RAYON_NUM_THREADS` sets the count ([Threads](settings.md#threads)).
 The binding flags are what make that a NUMA domain: an unbound launch leaves every rank's affinity mask over the whole node, so each rank starts a pool over every CPU of the node and the ranks contend for the same cores.
 
 On Rusty, `scripts/slurm/mpi-ranks.sbatch` does the arithmetic: it reads the node's domain count, rounds `nodes × domains` down to a power of two, and runs the differential net and then the probe at that rank count.

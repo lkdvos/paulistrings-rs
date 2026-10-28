@@ -33,7 +33,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 | `.coefficients_array()` | coefficient column as a 1-D `complex128` NumPy array |
 | `.x_array()` | X-part column, 2-D `uint64` array, shape `(len, width)` |
 | `.z_array()` | Z-part column, 2-D `uint64` array, shape `(len, width)` |
-| `.to_arrays(*, threads=None)` | `(x_array(), z_array(), coefficients_array())` from one snapshot, the inverse of `from_arrays`; a `result="local"` share gives this rank's terms; `threads` as on [`propagate`](propagate.md) |
+| `.to_arrays()` | `(x_array(), z_array(), coefficients_array())` from one snapshot, the inverse of `from_arrays`; a `result="local"` share gives this rank's terms |
 | `str(sum)`, `repr(sum)` | `coefficient*label` for the first few terms, `+`-joined, `... (N more terms)` past that; `0` for the empty sum |
 
 All five array/list accessors return the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`), consistently across calls.

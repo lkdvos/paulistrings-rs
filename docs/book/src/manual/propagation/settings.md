@@ -89,13 +89,17 @@ Set them before the first call, and alike on every rank of a `comm=` run.
 
 ## Threads {#threads}
 
-In a single unpartitioned process, set the thread count via `RAYON_NUM_THREADS` **before the interpreter starts** — Rayon builds its global pool at the first `propagate` call and never resizes it, so setting the variable from inside an already-running script does not reliably reach it:
+`RAYON_NUM_THREADS` sets the thread count of every call, read once per process; unset, `0` or not a number means every CPU the call's placement allows, as Rayon does.
+Under MPI, the launcher's binding decides which CPUs a rank may run on.
+Set it **before the interpreter starts**: a value set from inside a running script does not reach the calls.
 
 ```bash
-RAYON_NUM_THREADS=32 python my_script.py
+RAYON_NUM_THREADS=16 python my_script.py
 ```
 
-`RAYON_NUM_THREADS` does not reach a partitioned run; there the thread count comes from the placement ([NUMA partitions](partitions.md)).
+`RAYON_NUM_THREADS=N` is the total for the process, split evenly across its partitions, so `partitions=2` with `RAYON_NUM_THREADS=16` runs eight threads on each; fewer threads than partitions is a `ValueError`, and an explicit CPU list caps its partition's threads at the list's length ([NUMA partitions](partitions.md)).
+Without it, a plain call takes every CPU in the process's affinity mask, `partitions=` each partition's CPUs, and `comm=` the rank's launcher binding ([MPI ranks](mpi.md#launching)).
+A count above the CPUs the placement allows runs anyway and logs a warning naming both numbers.
 
 More threads are not always faster, and the layer class decides.
 On the reference two-socket host, dense-PTM-heavy circuits (general two-qubit unitaries) saturate the machine's write bandwidth at about 16 threads and extra threads only add contention, while sparse-rotation and Clifford circuits stay latency-bound and take the full thread count profitably — 11–13× at 32 threads.

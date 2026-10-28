@@ -391,6 +391,15 @@ impl PartitionConfig {
             for slot in &mut slots {
                 slot.threads = threads.max(1);
             }
+            let total = slots.len() * threads.max(1);
+            let allowed = allowed_cpus().len();
+            if total > allowed {
+                log::warn!(
+                    target: LOG_TARGET,
+                    "{total} threads exceed the {allowed} CPUs this process may run on, so \
+                     threads will share CPUs",
+                );
+            }
         }
         Ok(slots)
     }

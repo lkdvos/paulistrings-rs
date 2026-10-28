@@ -27,7 +27,7 @@ The GIL is released for the duration of both calls.
 | `direction` | `"forward" \| "heisenberg" \| None` | `None` = `"forward"` | **the default is not the Heisenberg picture most examples here use** — pass it explicitly; see [Direction semantics](direction.md) |
 | `target_bucket_len` | `int` | `1024` | engine's per-layer bucket-sizing knob; at least 1, else `ValueError` |
 | `min_buckets` | `int` | `128` | engine's per-layer bucket-sizing knob; at least 16, else `ValueError` |
-| `partitions` | `None \| "auto" \| int \| list[list[int]]` | `None` | splits the sum across NUMA domains; see below |
+| `partitions` | `None \| "auto" \| int \| list[list[int] \| str]` | `None` | splits the sum across NUMA domains; see below |
 | `pin_memory` | `bool` | `True` | binds each partition's allocations to its node |
 | `partition_row_seed` | `int \| None` | `None` = the sum's own hash seed | which GF(2) rows decide a term's partition |
 | `partition_row_blocks` | `list[list[int]] \| None` | `None` | explicit disjoint qubit blocks, one per partition, instead of a seeded draw |
@@ -43,11 +43,11 @@ The GIL is released for the duration of both calls.
 | Value | Placement |
 |---|---|
 | `None` or `1` | unpartitioned |
-| `"auto"` | one partition per NUMA node (falls back to unpartitioned on a single-node box) |
+| `"auto"` | one partition per NUMA node (one partition on a single-node box) |
 | an `int` power of two `>= 2`, at most 64 | caps placement at that many nodes |
-| `list[list[int]]` | explicit disjoint CPU lists, one partition per list |
+| `list[list[int] \| str]` | explicit disjoint CPU lists, one partition per list, each a `list[int]` or a cpulist string such as `"0-7,16-23"` |
 
-In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+In partitioned mode `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
 
 `partition_row_blocks` excludes both `partition_row_seed` and `partition_row_exclude`; each of the three needs `partitions=`, `comm=` or a list of several devices.
 `partition_row_exclude={"x": sites}` keeps strings that differ only in the x-bits of `sites` on one rank; `{"z": sites}` does the same for z-bits.

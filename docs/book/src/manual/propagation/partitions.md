@@ -29,15 +29,16 @@ evolved = observable.propagate(
 )
 ```
 
-`partitions` takes `"auto"`, an integer (a power of two, at most 64), or an explicit list of CPU lists — one per partition, in the `"0-7,16-23"` spelling — when the automatic split is not the one you want:
+`partitions` takes `"auto"`, an integer (a power of two, at most 64), or an explicit list of CPU lists when the automatic split is not the one you want — one per partition, each a string in the `numactl -H` spelling or a list of CPU ids, mixable:
 
 <!-- doctest: skip -->
 ```python
 partitions=["0-7,16-23", "8-15,24-31"]
+partitions=[[0, 1, 2, 3], [4, 5, 6, 7]]
 ```
 
 `partitions=None` or `partitions=1` is the ordinary unpartitioned run.
-On a single-node box `"auto"` also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a `ValueError` that points at explicit CPU lists.
+On a single-node box `"auto"` is one partition on that node, and an integer larger than the node count this process may run on is a `ValueError` that points at explicit CPU lists.
 
 [`paulistrings.numa_nodes()`](../../library/module-helpers.md) reports what the machine offers, as one CPU list per node intersected with this process's affinity mask, so a script can decide for itself before choosing.
 `pin_memory=False` pins the threads but not their allocations; the default binds both, which is the point of the placement.
@@ -57,10 +58,9 @@ The other fields are under [`PartitionStats`](../../library/propagate.md#partiti
 
 ## What changes under partitioning
 
-**`RAYON_NUM_THREADS` is ignored.**
-The partitioned engine builds one pool per partition from the placement, not from Rayon's global pool.
-An explicit CPU-list placement takes each partition's thread count from its list length; `"auto"` and an integer count take it from the CPUs of the partition's NUMA node inside this process's affinity mask.
-The variable still governs an unpartitioned run ([Stats, memory and logging](settings.md#threads)).
+**Each partition runs one thread per CPU of its placement unless `threads=` or `RAYON_NUM_THREADS` says otherwise.**
+The engine builds one pool per partition, pinned to the partition's CPUs: an explicit list's CPUs, or for `"auto"` and an integer count the CPUs of the partition's NUMA node inside this process's affinity mask.
+`threads=N`, or `RAYON_NUM_THREADS=N` without it, splits `N` evenly across the partitions, capped at an explicit list's length ([Threads](settings.md#threads)).
 
 **Exact `topn` is unavailable.**
 Choosing the `n`-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run raises `NotImplementedError` on `truncation.topn`.

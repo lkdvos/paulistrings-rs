@@ -9,8 +9,9 @@ use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::BuiltinTruncation;
 use paulistrings::Collectives;
 use paulistrings::{
-    Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRuntime, PartitionTrace,
-    PauliSum as CorePauliSum, PropagateOptions, ScatterOptions, ScatterRows, TopologyError,
+    Circuit as CoreCircuit, Direction, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
+    PartitionTrace, PauliSum as CorePauliSum, PropagateOptions, ScatterOptions, ScatterRows,
+    TopologyError,
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -119,6 +120,8 @@ pub struct MpiRun {
     rows: PartitionRowPolicy,
     /// `true` for `result="gather"`, `false` for `result="local"`.
     gather: bool,
+    /// This rank's pool size, `None` for the placement's own count.
+    threads: Option<usize>,
 }
 
 /// This rank's side of a distributed propagate.
@@ -136,8 +139,13 @@ pub struct MpiOutcome<const W: usize> {
 }
 
 impl MpiRun {
-    pub fn new(transport: MpiTransport, rows: PartitionRowPolicy, gather: bool) -> Self {
-        Self { transport, rows, gather }
+    pub fn new(
+        transport: MpiTransport,
+        rows: PartitionRowPolicy,
+        gather: bool,
+        threads: Option<usize>,
+    ) -> Self {
+        Self { transport, rows, gather, threads }
     }
 
     /// Scatter, propagate, and take this rank's answer. **Collective**, and so is the `collapses` reduction, which every rank enters alike since the policy is replicated.
@@ -150,9 +158,10 @@ impl MpiRun {
         options: PropagateOptions,
         traced: bool,
     ) -> Result<MpiOutcome<W>, TopologyError> {
-        let Self { transport, rows, gather } = self;
+        let Self { transport, rows, gather, threads } = self;
+        let config = PartitionConfig { threads_per_partition: threads, ..default_config() };
         let scatter_options = ScatterOptions {
-            runtime: PartitionRuntime::new(&default_config())?,
+            runtime: PartitionRuntime::new(&config)?,
             rows: ScatterRows::Policy(rows),
         };
         let mut split = MpiSum::<W>::scatter_with(sum.clone(), transport, scatter_options);

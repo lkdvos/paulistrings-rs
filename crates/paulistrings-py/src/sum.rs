@@ -10,10 +10,9 @@ use paulistrings::BuiltinTruncation;
 use paulistrings::PauliString;
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
-    propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, PartitionConfig,
-    PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
-    PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
-    ScatterRows, StabilizerState, TopologyError,
+    Circuit as CoreCircuit, Direction, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
+    PartitionTrace, PartitionedSum, PauliAxis, PauliSum as CorePauliSum, Placement, ProductBasis,
+    PropagateOptions, ScatterOptions, ScatterRows, StabilizerState, TopologyError,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -513,19 +512,21 @@ fn cpu_lists(obj: &Bound<'_, PyAny>) -> PyResult<Option<Vec<Vec<usize>>>> {
     Ok(Some(sets))
 }
 
-/// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path.
-/// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or a list of CPU lists, each a `list[int]` or a cpulist string (one partition per list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
-/// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
+/// `partitions=` / `pin_memory=` → a core [`PartitionConfig`], with `threads_per_partition` left for [`threads_per_partition`].
+/// Accepted: `None`/`1` (one unpinned partition), `"auto"` (one partition per NUMA node), an `int` power of two `>= 2` (capped at that many partitions), or a list of CPU lists, each a `list[int]` or a cpulist string (one partition per list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
+/// Resolved against the machine by the caller, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
 fn parse_partitions(
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
-) -> PyResult<Option<PartitionConfig>> {
-    let Some(obj) = partitions else {
-        return Ok(None);
+) -> PyResult<PartitionConfig> {
+    let unpartitioned = PartitionConfig {
+        placement: Placement::Unpinned { partitions: 1 },
+        bind_memory: false,
+        threads_per_partition: None,
     };
-    if obj.is_none() {
-        return Ok(None);
-    }
+    let Some(obj) = partitions.filter(|obj| !obj.is_none()) else {
+        return Ok(unpartitioned);
+    };
 
     let placement = if let Ok(name) = obj.extract::<String>() {
         match name.as_str() {
@@ -549,7 +550,7 @@ fn parse_partitions(
                      unpartitioned path)",
                 ))
             }
-            1 => return Ok(None),
+            1 => return Ok(unpartitioned),
             k if !k.is_power_of_two() => {
                 return Err(PyValueError::new_err(format!(
                     "partitions={k} is not a power of two; a partition index is a fixed set of \
@@ -599,14 +600,73 @@ fn parse_partitions(
         ));
     };
 
-    let config =
-        PartitionConfig { placement, bind_memory: pin_memory, threads_per_partition: None };
-    let num_partitions = config.num_partitions().map_err(topology_error)?;
-    if num_partitions == 1 && matches!(config.placement, Placement::Auto { .. }) {
-        // A single-node box: nothing to partition, so run the classic path rather than pay for a pool build and pin a thread nobody asked to pin. An explicit one-element CPU list is still honoured.
-        return Ok(None);
+    Ok(PartitionConfig { placement, bind_memory: pin_memory, threads_per_partition: None })
+}
+
+/// `threads=` → [`PartitionConfig::threads_per_partition`] for `partitions` partitions, capped at `cap` when the CPU lists are explicit: an `int` is the process total split evenly, and `"all"` is `None`, the placement's own count.
+/// `None` reads a positive `RAYON_NUM_THREADS` as that `int`, and anything else (unset, empty, `0`, not a number) as `"all"`, as Rayon does.
+/// A bool or non-int is a `TypeError`; a count below one or below `partitions`, or another string, a `ValueError`.
+fn threads_per_partition(
+    obj: Option<&Bound<'_, PyAny>>,
+    partitions: usize,
+    cap: Option<usize>,
+) -> PyResult<Option<usize>> {
+    let (total, source) = if let Some(obj) = obj.filter(|obj| !obj.is_none()) {
+        if let Ok(name) = obj.extract::<String>() {
+            return match name.as_str() {
+                "all" => Ok(None),
+                other => Err(PyValueError::new_err(format!(
+                    "threads must be None, an int >= 1, or 'all', got {other:?}"
+                ))),
+            };
+        }
+        // `bool` is an `int` subclass, so `threads=True` would otherwise parse as `1`.
+        if obj.is_instance_of::<PyBool>() {
+            return Err(PyTypeError::new_err(
+                "threads must be None, an int >= 1, or 'all', not a bool",
+            ));
+        }
+        let count: i64 = obj
+            .extract()
+            .map_err(|_| PyTypeError::new_err("threads must be None, an int >= 1, or 'all'"))?;
+        match usize::try_from(count) {
+            Ok(total) if total >= 1 => (total, "threads"),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "threads={count}: a run needs at least one thread"
+                )))
+            }
+        }
+    } else {
+        match std::env::var("RAYON_NUM_THREADS").ok().and_then(|value| value.parse().ok()) {
+            Some(total) if total >= 1 => (total, "RAYON_NUM_THREADS"),
+            _ => return Ok(None),
+        }
+    };
+    if total < partitions {
+        return Err(PyValueError::new_err(format!(
+            "{source}={total} is fewer than the {partitions} partitions; each partition needs at \
+             least one thread"
+        )));
     }
-    Ok(Some(config))
+    let per_partition = total / partitions;
+    Ok(Some(cap.map_or(per_partition, |cap| per_partition.min(cap))))
+}
+
+/// Runs `readout` on the global pool for `threads=None`, else inside the cached one-partition unpinned runtime of [`runtime_for`] that `threads=` resolves to.
+fn with_threads<R: Send>(
+    threads: Option<&Bound<'_, PyAny>>,
+    readout: impl FnOnce() -> R + Send,
+) -> PyResult<R> {
+    let Some(threads) = threads.filter(|threads| !threads.is_none()) else {
+        return Ok(readout());
+    };
+    let config = PartitionConfig {
+        placement: Placement::Unpinned { partitions: 1 },
+        bind_memory: false,
+        threads_per_partition: threads_per_partition(Some(threads), 1, None)?,
+    };
+    Ok(runtime_for(&config).map_err(topology_error)?.install(readout))
 }
 
 /// `partition_row_blocks=` → an explicit "cut" policy, one disjoint qubit block per partition, fed straight to the core [`PartitionRows::cut`](paulistrings::PartitionRows::cut).
@@ -854,9 +914,7 @@ fn mpi_unavailable_error() -> PyErr {
 /// How one propagate call runs. Decided at the boundary, with the GIL held,
 /// and consumed once inside the width dispatch.
 enum RunMode {
-    /// One pool over the whole process, unpartitioned.
-    Classic,
-    /// One pinned pool per NUMA domain, in this process (`partitions=`).
+    /// One pool per partition, in this process (`partitions=`, or one unpinned partition without it).
     Partitioned(PartitionConfig, PartitionRowPolicy),
     /// One partition per MPI rank (`comm=`). Carries the adopted communicator,
     /// so building the mode is the collective step and dropping it frees the
@@ -933,27 +991,6 @@ impl RunMode {
     ) -> Result<RunOutput<W>, PropagateFailure> {
         let before = collapse_count(policy);
         match self {
-            RunMode::Classic => {
-                let mut scratch = LayerScratch::<W>::new();
-                if traced {
-                    scratch.enable_trace();
-                }
-                let out = with_lowered_policy!(policy, |lowered| propagate_with(
-                    circuit,
-                    sum.clone(),
-                    lowered,
-                    direction,
-                    &mut scratch,
-                    options,
-                ));
-                Ok(RunOutput {
-                    sum: out,
-                    trace: scratch
-                        .take_trace()
-                        .map(|trace| RunTrace { trace, placement: TracePlacement::partitions(1) }),
-                    collapses: collapses_since(policy, before),
-                })
-            }
             RunMode::Partitioned(config, rows) => {
                 // The runtime (and its pinned pools) is cached per config, so
                 // a Trotter loop of many short calls builds it once.
@@ -1071,11 +1108,18 @@ fn parse_run_mode(
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
     device: Option<&Bound<'_, PyAny>>,
+    threads: Option<&Bound<'_, PyAny>>,
     policy: &BuiltinTruncation,
     num_qubits: usize,
 ) -> PyResult<RunMode> {
     let distributed = comm_requested(comm);
-    if let Some(device) = device.filter(|obj| !obj.is_none()) {
+    let device = device.filter(|obj| !obj.is_none());
+    if device.is_some() && threads.is_some_and(|obj| !obj.is_none()) {
+        return Err(PyValueError::new_err(
+            "threads= and device= are alternatives: a device= run sizes its own host pools",
+        ));
+    }
+    if let Some(device) = device {
         return parse_device_mode(
             py,
             device,
@@ -1112,15 +1156,18 @@ fn parse_run_mode(
              locality cut vs. a seeded draw that skips some coordinates); pass at most one",
         ));
     }
-    // Checked against the kwarg rather than the resolved config: `partitions="auto"` on a one-node box runs unpartitioned, where an exclusion is merely moot.
-    if exclude.is_some() && !distributed && partitions.is_none_or(|obj| obj.is_none()) {
-        return Err(PyValueError::new_err(
-            "partition_row_exclude= needs partitions= or comm= (it has no effect on the \
-             unpartitioned path)",
-        ));
+    let rows_given = exclude.is_some() || row_blocks.is_some();
+    if rows_given && !distributed && partitions.is_none_or(|obj| obj.is_none()) {
+        let kwarg =
+            if exclude.is_some() { "partition_row_exclude=" } else { "partition_row_blocks=" };
+        return Err(PyValueError::new_err(format!(
+            "{kwarg} needs partitions= or comm= (it has no effect on the unpartitioned path)"
+        )));
     }
-    let config = parse_partitions(partitions, pin_memory)?;
-    if (distributed || config.is_some()) && !policy.supports_partitioned() {
+    let mut config = parse_partitions(partitions, pin_memory)?;
+    // `num_partitions()` builds no pool, unlike `PartitionRuntime::new`.
+    let num_partitions = config.num_partitions().map_err(topology_error)?;
+    if (distributed || num_partitions > 1) && !policy.supports_partitioned() {
         return Err(topn_partitioned_error(if distributed { None } else { partitions }));
     }
     let rows = row_policy(row_blocks, exclude, partition_row_seed);
@@ -1140,8 +1187,11 @@ fn parse_run_mode(
                     &format!("comm= with {ranks} rank(s)"),
                 )?;
             }
+            let threads = threads_per_partition(threads, 1, None)?;
             let transport = crate::mpi::transport_from_comm(py, comm)?;
-            return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(transport, rows, gather)));
+            return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(
+                transport, rows, gather, threads,
+            )));
         }
         #[cfg(not(feature = "mpi"))]
         {
@@ -1149,25 +1199,20 @@ fn parse_run_mode(
             return Err(mpi_unavailable_error());
         }
     }
-    if let (Some(config), PartitionRowPolicy::Cut(row_blocks)) = (&config, &rows) {
-        // `num_partitions()` builds no pool, unlike `PartitionRuntime::new`.
-        let num_partitions = config.num_partitions().map_err(topology_error)?;
+    if let PartitionRowPolicy::Cut(row_blocks) = &rows {
         validate_partition_row_blocks(
             row_blocks,
             num_qubits,
             num_partitions,
             &format!("partitions={num_partitions}"),
         )?;
-    } else if config.is_none() && matches!(rows, PartitionRowPolicy::Cut(_)) {
-        return Err(PyValueError::new_err(
-            "partition_row_blocks= needs partitions= or comm= (it has no effect on the \
-             unpartitioned path)",
-        ));
     }
-    Ok(match config {
-        Some(config) => RunMode::Partitioned(config, rows),
-        None => RunMode::Classic,
-    })
+    let cap = match &config.placement {
+        Placement::Explicit(sets) => sets.iter().map(CpuSet::len).min(),
+        _ => None,
+    };
+    config.threads_per_partition = threads_per_partition(threads, num_partitions, cap)?;
+    Ok(RunMode::Partitioned(config, rows))
 }
 
 /// `parse_run_mode`'s `device=` branch: every conflict and spelling error is a `ValueError` or `TypeError` before anything is resolved, then exact `topn`, then whether this build and machine can honour the request.
@@ -1843,8 +1888,9 @@ impl PauliSum {
     ///
     /// `state` is either a uniform name — `"x+"`, `"y+"`, `"z+"`, the `+1` eigenstate of that Pauli on every qubit, matched case-insensitively — or a per-qubit label string of exactly `num_qubits` characters in qiskit's `Statevector.from_label` alphabet (`0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±, case-sensitive). Qubit indexing matches `from_strings`.
     /// Cost is one masked pass over the terms either way, never an expansion over basis states. Returns a Python complex; take `.real` when the operator is Hermitian.
-    #[pyo3(signature = (state="x+"))]
-    fn expectation(&self, state: &str) -> PyResult<Complex64> {
+    /// `threads` is as on `propagate`: `None` (default) runs on Rayon's global pool, sized by `RAYON_NUM_THREADS` or else every CPU; an `int` or `"all"` sets the count for this call.
+    #[pyo3(signature = (state="x+", *, threads=None))]
+    fn expectation(&self, state: &str, threads: Option<&Bound<'_, PyAny>>) -> PyResult<Complex64> {
         // The uniform names win first, case-insensitively, so `"x+"` keeps
         // meaning |+...+> at any qubit count. They cannot collide with a label
         // string: `x`, `y` and `z` are not in the per-qubit alphabet.
@@ -1855,7 +1901,7 @@ impl PauliSum {
             _ => None,
         };
         if let Some(st) = uniform {
-            return Ok(self.inner.expectation_uniform(st));
+            return with_threads(threads, || self.inner.expectation_uniform(st));
         }
         let num_qubits = self.inner.num_qubits();
         let mut axes: Vec<(PauliAxis, bool)> = Vec::with_capacity(num_qubits);
@@ -1879,7 +1925,7 @@ impl PauliSum {
                 axes.len(),
             )));
         }
-        Ok(self.inner.expectation_labels(&axes))
+        with_threads(threads, || self.inner.expectation_labels(&axes))
     }
 
     /// Expectation value in a stabilizer state given by its generators.
@@ -1887,20 +1933,28 @@ impl PauliSum {
     /// `generators` is a list of exactly `num_qubits` signed Pauli strings — `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"` for `+` — in the same `I/X/Y/Z` alphabet and qubit indexing as `from_strings`. They must be pairwise commuting and independent over GF(2); anything else is a `ValueError`.
     /// Reads any stabilizer state (Bell, GHZ, cluster, Clifford-circuit output; see `paulistrings.interop.stabilizers_from_stim`), where `expectation` reads only product states. Cost is `O(terms · num_qubits² / 64)` after a one-off `O(num_qubits³ / 64)` reduction of the generators; prefer `expectation` when the state factorizes.
     /// Returns a Python complex; take `.real` when the operator is Hermitian.
+    /// `threads` is as on `expectation`.
     ///
     /// ```python
     /// bell = ["XX", "ZZ"]                      # (|00> + |11>) / sqrt(2)
     /// PauliSum.from_strings({"YY": 1.0}, num_qubits=2).expectation_stabilizer(bell)
     /// # (-1+0j), since XX·ZZ = -YY
     /// ```
-    fn expectation_stabilizer(&self, generators: Vec<String>) -> PyResult<Complex64> {
-        self.inner.expectation_stabilizer(&generators)
+    #[pyo3(signature = (generators, *, threads=None))]
+    fn expectation_stabilizer(
+        &self,
+        generators: Vec<String>,
+        threads: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Complex64> {
+        with_threads(threads, || self.inner.expectation_stabilizer(&generators))?
     }
 
     /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.
     ///
     /// On the Pauli basis this is `sum(conj(a_i) * b_i)` over shared keys.
-    fn overlap(&self, other: &Self) -> PyResult<Complex64> {
+    /// `threads` is as on `expectation`.
+    #[pyo3(signature = (other, *, threads=None))]
+    fn overlap(&self, other: &Self, threads: Option<&Bound<'_, PyAny>>) -> PyResult<Complex64> {
         if self.inner.num_qubits() != other.inner.num_qubits() {
             return Err(PyValueError::new_err(format!(
                 "overlap: num_qubits mismatch ({} vs {})",
@@ -1908,7 +1962,7 @@ impl PauliSum {
                 other.inner.num_qubits(),
             )));
         }
-        self.inner.overlap(&other.inner).ok_or_else(|| {
+        with_threads(threads, || self.inner.overlap(&other.inner))?.ok_or_else(|| {
             PyValueError::new_err("overlap: sums were monomorphized at different widths")
         })
     }
@@ -1982,18 +2036,24 @@ impl PauliSum {
     /// `(x, z, coefficients)` as NumPy arrays, the exact inverse of `from_arrays`: `x`/`z` are `uint64` of shape `(len, width)` and `coefficients` is `complex128` of shape `(len,)`, row `i` of each describing the same term.
     ///
     /// On a `propagate(..., comm=..., result="local")` share it is this rank's terms only.
+    /// `threads` is as on `expectation`.
     #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (*, threads=None))]
     fn to_arrays<'py>(
         &self,
         py: Python<'py>,
-    ) -> (Bound<'py, PyArray2<u64>>, Bound<'py, PyArray2<u64>>, Bound<'py, PyArray1<Complex64>>)
-    {
-        let (w, x_flat, z_flat, coeffs) = self.inner.columns_flat();
+        threads: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<(
+        Bound<'py, PyArray2<u64>>,
+        Bound<'py, PyArray2<u64>>,
+        Bound<'py, PyArray1<Complex64>>,
+    )> {
+        let (w, x_flat, z_flat, coeffs) = with_threads(threads, || self.inner.columns_flat())?;
         let n = coeffs.len();
         let reshape = |flat: Vec<u64>| {
             flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
         };
-        (reshape(x_flat), reshape(z_flat), coeffs.into_pyarray_bound(py))
+        Ok((reshape(x_flat), reshape(z_flat), coeffs.into_pyarray_bound(py)))
     }
 
     /// Active monomorphized width `W` (number of `u64` words per term).
@@ -2010,7 +2070,11 @@ impl PauliSum {
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; a list of explicit disjoint CPU lists, each a `list[int]` or a cpulist string, gives one partition per list (`[[0, 1], [2, 3]]` or `["0-1", "2-3"]`, mixable). `pin_memory` (default `True`) binds each partition's allocations to its node.
-    /// In partitioned mode `RAYON_NUM_THREADS` is ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+    /// In partitioned mode `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+    ///
+    /// `threads` sets the thread count: `None` (default) takes a positive `RAYON_NUM_THREADS` as that `int`, and otherwise acts as `"all"`, as Rayon does.
+    /// An `int` is the total for this process, split evenly across its partitions (`ValueError` when it is fewer than the partitions, and capped at each explicit CPU list's length); `"all"` runs one thread per CPU this process may run on, or per CPU of each partition's placement.
+    /// A count above the CPUs this process may run on is allowed and logs a warning, and `threads` with `device` is a `ValueError`.
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
@@ -2027,7 +2091,7 @@ impl PauliSum {
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None, threads=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -2045,6 +2109,7 @@ impl PauliSum {
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
+        threads: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
@@ -2063,6 +2128,7 @@ impl PauliSum {
             comm,
             gather,
             device,
+            threads,
             &policy,
             self.inner.num_qubits(),
         )?;
@@ -2076,7 +2142,7 @@ impl PauliSum {
     /// `PropagationStats.partition` holds the per-partition detail, summed to the layer-level `terms_in`/`terms_out`; an unpartitioned call reports one partition.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None, threads=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -2094,6 +2160,7 @@ impl PauliSum {
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
+        threads: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<(Self, PropagationStats)> {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
@@ -2112,6 +2179,7 @@ impl PauliSum {
             comm,
             gather,
             device,
+            threads,
             &policy,
             self.inner.num_qubits(),
         )?;

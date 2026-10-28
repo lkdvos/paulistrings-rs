@@ -81,7 +81,7 @@ impl PartitionRuntime {
     }
 
     /// Runs `f` on partition 0's pool: the distributed shape of [`map_partitions`](Self::map_partitions).
-    pub(crate) fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+    pub fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
         self.pools[0].install(f)
     }
 

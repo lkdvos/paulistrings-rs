@@ -35,6 +35,7 @@ The GIL is released for the duration of both calls.
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
 | `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share, a plain `PauliSum` (`to_arrays()` reads it into numpy) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
+| `threads` | `None \| int \| "all"` | `None` = `RAYON_NUM_THREADS`, else every CPU of the placement | an `int` is the total for this process, split evenly across its partitions (`ValueError` below the partition count, capped at an explicit CPU list's length); `"all"` is one thread per CPU each partition may run on (under `comm=`, the rank's launcher binding); a count above the allowed CPUs logs a warning; `ValueError` with `device`; see [Threads](../manual/propagation/settings.md#threads) |
 
 `PauliSum.num_buckets` reads back the realized bucket count, which can differ from `target_bucket_len`/`min_buckets` since bucketing only ever grows.
 
@@ -43,11 +44,11 @@ The GIL is released for the duration of both calls.
 | Value | Placement |
 |---|---|
 | `None` or `1` | unpartitioned |
-| `"auto"` | one partition per NUMA node (falls back to unpartitioned on a single-node box) |
+| `"auto"` | one partition per NUMA node (one partition on a single-node box) |
 | an `int` power of two `>= 2`, at most 64 | caps placement at that many nodes |
 | `list[list[int] \| str]` | explicit disjoint CPU lists, one partition per list, each a `list[int]` or a cpulist string such as `"0-7,16-23"` |
 
-In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+In partitioned mode `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
 
 `partition_row_blocks` excludes both `partition_row_seed` and `partition_row_exclude`; each of the three needs `partitions=`, `comm=` or a list of several devices.
 `partition_row_exclude={"x": sites}` keeps strings that differ only in the x-bits of `sites` on one rank; `{"z": sites}` does the same for z-bits.

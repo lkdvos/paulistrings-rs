@@ -110,6 +110,11 @@ Every benchmark on this site is run single-threaded, `RAYON_NUM_THREADS=1` expor
 They are tuning knobs for the engine's own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
 `target_bucket_len` must be at least 1 and `min_buckets` at least 16; anything smaller is a `ValueError`.
 
+The buckets are the classes of a GF(2)-linear hash, whose rows a sum carries through `propagate`; `PauliSum.hash_family` and `PauliSum.hash_seed` read them back.
+`sum.with_hash(family, seed=None)` returns a copy partitioned by another hash: `"dense"` (the default), `"sparse:<k>"` with `k` coordinates per row, or `"projection"`, which reads one coordinate per row and piles low-weight strings into one bucket.
+Every family is full rank, so no bucket is unreachable; a sparse weight that cannot be is a `ValueError`.
+Every family gives the same results within tolerance; only the speed differs, which is what they exist to measure.
+
 ## Determinism
 
 The correctness bar is agreement to floating-point tolerance, not bit-identical output.

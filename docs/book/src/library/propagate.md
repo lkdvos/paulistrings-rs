@@ -4,13 +4,15 @@
 sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
                min_buckets=128, partitions=None, pin_memory=True,
                partition_row_seed=None, partition_row_blocks=None,
-               partition_row_exclude=None, comm=None, result="gather",
+               partition_row_exclude=None, partition_row_family=None,
+               partition_rows=None, comm=None, result="gather",
                device=None) -> PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
                           min_buckets=128, partitions=None, pin_memory=True,
                           partition_row_seed=None, partition_row_blocks=None,
-                          partition_row_exclude=None, comm=None, result="gather",
+                          partition_row_exclude=None, partition_row_family=None,
+                          partition_rows=None, comm=None, result="gather",
                           device=None)
     -> (PauliSum, PropagationStats)
 ```
@@ -32,6 +34,8 @@ The GIL is released for the duration of both calls.
 | `partition_row_seed` | `int \| None` | `None` = the sum's own hash seed | which GF(2) rows decide a term's partition |
 | `partition_row_blocks` | `list[list[int]] \| None` | `None` | explicit disjoint qubit blocks, one per partition, instead of a seeded draw |
 | `partition_row_exclude` | `dict[str, list[int]] \| None` | `None` | `{"x": [...], "z": [...]}`: the seeded draw with these qubits' x-bits / z-bits read by no row |
+| `partition_row_family` | `str \| None` | `None` = `"dense"` | `"dense"`, `"sparse:<k>"` or `"projection"`: the family that draws the rows, honouring the seed and the exclusion |
+| `partition_rows` | `bool array \| None` | `None` | the rows outright, shape `(log2(P), 2 * num_qubits)`, x-bits first, as `PauliSum.hash_rows()` lays them out |
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
 | `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share, a plain `PauliSum` (`to_arrays()` reads it into numpy) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
@@ -49,7 +53,8 @@ The GIL is released for the duration of both calls.
 
 In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
 
-`partition_row_blocks` excludes both `partition_row_seed` and `partition_row_exclude`; each of the three needs `partitions=`, `comm=` or a list of several devices.
+`partition_row_blocks` excludes `partition_row_seed`, `partition_row_exclude` and `partition_row_family`, and `partition_rows` excludes every other row keyword; all but the seed need `partitions=`, `comm=` or a list of several devices.
+Rows that leave some partitions unreachable, or overlap the span of the bucket hash's rows, run with a `RuntimeWarning` naming the shortfall.
 `partition_row_exclude={"x": sites}` keeps strings that differ only in the x-bits of `sites` on one rank; `{"z": sites}` does the same for z-bits.
 Under `comm=`, the block count in `partition_row_blocks` must equal the MPI group size, and the blocks must be identical on every rank.
 

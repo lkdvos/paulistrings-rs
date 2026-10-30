@@ -10,7 +10,10 @@ use paulistrings::test_support::{
     DiscardMeter,
 };
 use paulistrings::{And, CoefficientThreshold, TopN, WeightCutoff};
-use paulistrings::{BuildAccumulator, Circuit, Direction, PauliString, PauliSum, TruncationPolicy};
+use paulistrings::{
+    BuildAccumulator, Circuit, Direction, HashFamily, HashOrigin, PauliString, PauliSum,
+    TruncationPolicy,
+};
 use paulistrings::{Channel, PauliRotation, PtmChannel};
 
 struct NoTruncation;
@@ -223,6 +226,26 @@ fn eleven_channel_circuit_matches_the_naive_oracle_under_truncation() {
     let want = replay_naive(&input, &chans, &policy, Direction::Heisenberg);
     let got = paulistrings::propagate(&circuit, input, &policy, Direction::Heisenberg);
     assert_close(&got, &want, "truncated heisenberg");
+}
+
+/// Every hash family partitions correctly, and propagation keeps the family a sum carries.
+#[test]
+fn eleven_channel_circuit_matches_the_naive_oracle_under_every_hash_family() {
+    let input = rand_sum::<1>(1500, 8, 0x8D);
+    let chans = mixed_channels();
+    let mut circuit = Circuit::<1>::new(8);
+    for ch in mixed_channels() {
+        circuit.push_boxed(ch);
+    }
+    let want = replay_naive(&input, &chans, &NoTruncation, Direction::Heisenberg);
+    for family in
+        [HashFamily::Sparse { weight: 3 }, HashFamily::Sparse { weight: 5 }, HashFamily::Projection]
+    {
+        let rehashed = input.clone().with_hash_family(family, 0x5EED);
+        let got = paulistrings::propagate(&circuit, rehashed, &NoTruncation, Direction::Heisenberg);
+        assert_eq!(got.hash().origin(), HashOrigin::Drawn(family));
+        assert_close(&got, &want, &format!("{family:?}"));
+    }
 }
 
 // ---- a realistic 2D Ising quench, both engines ----

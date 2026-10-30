@@ -15,6 +15,7 @@ use paulistrings::{
     PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
     ScatterRows, StabilizerState, TopologyError,
 };
+use paulistrings::{HashFamily, HashOrigin, P_MAX_BITS};
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyComplex, PyDict};
@@ -68,6 +69,50 @@ impl PauliSumImpl {
 
     pub fn identity_coefficient(&self) -> Complex64 {
         for_each_width!(self, |s| s.identity_coefficient())
+    }
+
+    pub fn hash_origin(&self) -> HashOrigin {
+        for_each_width!(self, |s| s.hash().origin())
+    }
+
+    /// The bucket hash's rows as coordinate flags: row `i`, column `c` is set when row `i` reads coordinate `c` (x-bits first, then z-bits).
+    pub fn hash_rows(&self) -> Vec<Vec<bool>> {
+        for_each_width!(self, |s| {
+            let (rows_x, rows_z) = s.hash().rows();
+            rows_x.iter().zip(rows_z).map(|(x, z)| coordinate_flags(x, z, s.num_qubits())).collect()
+        })
+    }
+
+    pub fn hash_rank_deficiency(&self) -> Option<String> {
+        for_each_width!(self, |s| s.hash().rank_deficiency())
+    }
+
+    /// The same terms bucketed by `rows` (coordinate lists) completed with dense rows from `seed`, at the current bucket count.
+    pub fn with_hash_rows(&self, rows: &[Vec<usize>], seed: u64) -> Self {
+        for_each_width_convert!(PauliSumImpl => PauliSumImpl, self.clone(), |s| {
+            let hash = paulistrings::Gf2Hash::from_coordinates(s.num_qubits(), s.hash().bits(), seed, rows);
+            s.with_bucket_hash(hash)
+        })
+    }
+
+    /// Why the rows `policy` names for `2^bits` partitions fall short against this sum's bucket hash; empty when they do not.
+    pub fn partition_rank_deficiency(&self, policy: &PartitionRowPolicy, bits: u8) -> Vec<String> {
+        for_each_width!(self, |s| policy
+            .rows(s.num_qubits(), bits, s.hash().seed())
+            .rank_deficiency(s.hash()))
+    }
+
+    pub fn hash_seed(&self) -> u64 {
+        for_each_width!(self, |s| s.hash().seed())
+    }
+
+    pub fn bucket_lengths(&self) -> Vec<usize> {
+        for_each_width!(self, |s| s.bucket_lengths())
+    }
+
+    /// The same terms partitioned by `family`'s rows from `seed`; the caller validated a sparse weight against the qubit count.
+    pub fn with_hash_family(&self, family: HashFamily, seed: u64) -> Self {
+        for_each_width_convert!(PauliSumImpl => PauliSumImpl, self.clone(), |s| s.with_hash_family(family, seed))
     }
 
     /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
@@ -1020,21 +1065,6 @@ fn run_devices<const W: usize>(
     Ok((out, trace))
 }
 
-/// The rows a partitioned run splits by: a cut, the seeded draw minus the excluded coordinates, or the plain seeded draw.
-fn row_policy(
-    row_blocks: Option<Vec<Vec<usize>>>,
-    exclude: Option<(Vec<usize>, Vec<usize>)>,
-    seed: Option<u64>,
-) -> PartitionRowPolicy {
-    match (row_blocks, exclude) {
-        (Some(blocks), _) => PartitionRowPolicy::Cut(blocks),
-        (None, Some((exclude_x, exclude_z))) => {
-            PartitionRowPolicy::SeededExcluding { seed, exclude_x, exclude_z }
-        }
-        (None, None) => PartitionRowPolicy::Seeded(seed),
-    }
-}
-
 /// Turn the placement kwargs into a [`RunMode`], with the GIL held.
 /// Order matters: everything that can raise on the caller's spelling is decided before the communicator is adopted, since adopting it is collective — a rank that raises early never enters the collective, so the whole group raises together.
 #[allow(clippy::too_many_arguments)]
@@ -1042,15 +1072,14 @@ fn parse_run_mode(
     py: Python<'_>,
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
-    partition_row_seed: Option<u64>,
-    partition_row_blocks: Option<&Bound<'_, PyAny>>,
-    partition_row_exclude: Option<&Bound<'_, PyAny>>,
+    rows: RowKwargs,
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
     device: Option<&Bound<'_, PyAny>>,
     policy: &BuiltinTruncation,
-    num_qubits: usize,
+    sum: &PauliSumImpl,
 ) -> PyResult<RunMode> {
+    let num_qubits = sum.num_qubits();
     let distributed = comm_requested(comm);
     if let Some(device) = device.filter(|obj| !obj.is_none()) {
         return parse_device_mode(
@@ -1059,11 +1088,9 @@ fn parse_run_mode(
             partitions.is_some_and(|obj| !obj.is_none()),
             comm.filter(|_| distributed),
             gather,
-            partition_row_seed,
-            partition_row_blocks,
-            partition_row_exclude,
+            rows,
             policy,
-            num_qubits,
+            sum,
         );
     }
     // Before `parse_partitions`, so the conflict is reported as a conflict
@@ -1075,50 +1102,31 @@ fn parse_run_mode(
              numa) rather than to propagate",
         ));
     }
-    let row_blocks = parse_partition_row_blocks(partition_row_blocks)?;
-    if partition_row_seed.is_some() && row_blocks.is_some() {
-        return Err(PyValueError::new_err(
-            "partition_row_seed= and partition_row_blocks= are alternatives (a seeded random \
-             draw vs. an explicit locality cut); pass at most one",
-        ));
-    }
-    let exclude = parse_partition_row_exclude(partition_row_exclude, num_qubits)?;
-    if exclude.is_some() && row_blocks.is_some() {
-        return Err(PyValueError::new_err(
-            "partition_row_blocks= and partition_row_exclude= are alternatives (an explicit \
-             locality cut vs. a seeded draw that skips some coordinates); pass at most one",
-        ));
-    }
-    // Checked against the kwarg rather than the resolved config: `partitions="auto"` on a one-node box runs unpartitioned, where an exclusion is merely moot.
-    if exclude.is_some() && !distributed && partitions.is_none_or(|obj| obj.is_none()) {
-        return Err(PyValueError::new_err(
-            "partition_row_exclude= needs partitions= or comm= (it has no effect on the \
-             unpartitioned path)",
-        ));
+    // Checked against the kwarg rather than the resolved config: `partitions="auto"` on a one-node box runs unpartitioned, where the rows are merely moot.
+    if let Some(keyword) = rows.split_only_keyword() {
+        if !distributed && partitions.is_none_or(|obj| obj.is_none()) {
+            return Err(PyValueError::new_err(format!(
+                "{keyword}= needs partitions= or comm= (it has no effect on the unpartitioned path)"
+            )));
+        }
     }
     let config = parse_partitions(partitions, pin_memory)?;
     if (distributed || config.is_some()) && !policy.supports_partitioned() {
         return Err(topn_partitioned_error(if distributed { None } else { partitions }));
     }
-    let rows = row_policy(row_blocks, exclude, partition_row_seed);
     if distributed {
         #[cfg(feature = "mpi")]
         {
             let comm = comm.expect("comm is Some");
-            if let PartitionRowPolicy::Cut(blocks) = &rows {
-                // `MPI_Comm_size` is local and every rank reads the same
-                // number, so validating here still rejects on every rank alike
-                // — before the collective duplicate below.
-                let ranks = crate::mpi::comm_size(comm)?;
-                validate_partition_row_blocks(
-                    blocks,
-                    num_qubits,
-                    ranks,
-                    &format!("comm= with {ranks} rank(s)"),
-                )?;
-            }
+            // `MPI_Comm_size` is local and every rank reads the same number, so validating here still rejects on every rank alike — before the collective duplicate below.
+            let ranks = crate::mpi::comm_size(comm)?;
+            rows.validate_count(num_qubits, ranks, &format!("comm= with {ranks} rank(s)"))?;
+            let row_policy = rows.policy();
+            warn_partition_rows(py, sum, &row_policy, ranks)?;
             let transport = crate::mpi::transport_from_comm(py, comm)?;
-            return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(transport, rows, gather)));
+            return Ok(RunMode::Distributed(crate::mpi::MpiRun::new(
+                transport, row_policy, gather,
+            )));
         }
         #[cfg(not(feature = "mpi"))]
         {
@@ -1126,23 +1134,19 @@ fn parse_run_mode(
             return Err(mpi_unavailable_error());
         }
     }
-    if let (Some(config), PartitionRowPolicy::Cut(row_blocks)) = (&config, &rows) {
-        // `num_partitions()` builds no pool, unlike `PartitionRuntime::new`.
-        let num_partitions = config.num_partitions().map_err(topology_error)?;
-        validate_partition_row_blocks(
-            row_blocks,
-            num_qubits,
-            num_partitions,
-            &format!("partitions={num_partitions}"),
-        )?;
-    } else if config.is_none() && matches!(rows, PartitionRowPolicy::Cut(_)) {
-        return Err(PyValueError::new_err(
-            "partition_row_blocks= needs partitions= or comm= (it has no effect on the \
-             unpartitioned path)",
-        ));
-    }
     Ok(match config {
-        Some(config) => RunMode::Partitioned(config, rows),
+        Some(config) => {
+            // `num_partitions()` builds no pool, unlike `PartitionRuntime::new`.
+            let num_partitions = config.num_partitions().map_err(topology_error)?;
+            rows.validate_count(
+                num_qubits,
+                num_partitions,
+                &format!("partitions={num_partitions}"),
+            )?;
+            let row_policy = rows.policy();
+            warn_partition_rows(py, sum, &row_policy, num_partitions)?;
+            RunMode::Partitioned(config, row_policy)
+        }
         None => RunMode::Classic,
     })
 }
@@ -1156,12 +1160,11 @@ fn parse_device_mode(
     partitioned: bool,
     comm: Option<&Bound<'_, PyAny>>,
     gather: bool,
-    partition_row_seed: Option<u64>,
-    partition_row_blocks: Option<&Bound<'_, PyAny>>,
-    partition_row_exclude: Option<&Bound<'_, PyAny>>,
+    rows: RowKwargs,
     policy: &BuiltinTruncation,
-    num_qubits: usize,
+    sum: &PauliSumImpl,
 ) -> PyResult<RunMode> {
+    let num_qubits = sum.num_qubits();
     if partitioned {
         return Err(PyValueError::new_err(
             "device= and partitions= are alternatives: a device list already places one \
@@ -1176,20 +1179,6 @@ fn parse_device_mode(
     let request = crate::gpu::parse_device(device)?;
     let shown = device.repr().map_or_else(|_| "…".to_string(), |repr| repr.to_string());
     let shown = format!("device={shown}");
-    let row_blocks = parse_partition_row_blocks(partition_row_blocks)?;
-    if partition_row_seed.is_some() && row_blocks.is_some() {
-        return Err(PyValueError::new_err(
-            "partition_row_seed= and partition_row_blocks= are alternatives (a seeded random \
-             draw vs. an explicit locality cut); pass at most one",
-        ));
-    }
-    let exclude = parse_partition_row_exclude(partition_row_exclude, num_qubits)?;
-    if exclude.is_some() && row_blocks.is_some() {
-        return Err(PyValueError::new_err(
-            "partition_row_blocks= and partition_row_exclude= are alternatives (an explicit \
-             locality cut vs. a seeded draw that skips some coordinates); pass at most one",
-        ));
-    }
     if let (Some(_), crate::gpu::DeviceRequest::Ordinals(list)) = (comm, &request) {
         if list.len() > 1 {
             return Err(PyValueError::new_err(format!(
@@ -1200,7 +1189,7 @@ fn parse_device_mode(
     }
     #[cfg(not(feature = "cuda"))]
     {
-        let _ = (py, request, row_blocks, exclude, num_qubits, policy);
+        let _ = (py, request, rows, num_qubits, policy, sum);
         match comm {
             Some(_) => Err(crate::gpu::device_comm_unavailable_error()),
             None => Err(crate::gpu::cuda_unavailable_error()),
@@ -1232,81 +1221,64 @@ fn parse_device_mode(
                 &request,
                 &shown,
                 gather,
-                partition_row_seed,
-                row_blocks,
-                exclude,
-                num_qubits,
+                rows,
+                sum,
             );
         };
-        match &row_blocks {
-            Some(_) if devices.len() == 1 => {
+        if let Some(keyword) = rows.split_only_keyword() {
+            if devices.len() == 1 {
                 return Err(PyValueError::new_err(format!(
-                    "partition_row_blocks= needs partitions=, comm= or several devices (it has \
-                     no effect on the one-device run {shown})"
+                    "{keyword}= needs partitions=, comm= or several devices (it has no effect on \
+                     the one-device run {shown})"
                 )));
             }
-            Some(blocks) => validate_partition_row_blocks(
-                blocks,
-                num_qubits,
-                devices.len(),
-                &format!("{shown} ({} partitions)", devices.len()),
-            )?,
-            None => {}
         }
-        if exclude.is_some() && devices.len() == 1 {
-            return Err(PyValueError::new_err(format!(
-                "partition_row_exclude= needs partitions=, comm= or several devices (it has no \
-                 effect on the one-device run {shown})"
-            )));
-        }
-        let rows = row_policy(row_blocks, exclude, partition_row_seed);
+        rows.validate_count(
+            num_qubits,
+            devices.len(),
+            &format!("{shown} ({} partitions)", devices.len()),
+        )?;
+        let row_policy = rows.policy();
+        warn_partition_rows(py, sum, &row_policy, devices.len())?;
         let config = PartitionConfig {
             placement: Placement::Devices { devices: devices.clone(), per_device: 1 },
             bind_memory: false,
             threads_per_partition: None,
         };
-        Ok(RunMode::Devices(config, devices, rows))
+        Ok(RunMode::Devices(config, devices, row_policy))
     }
 }
 
-/// `parse_device_mode` under `comm=`: validate the blocks against the group size, adopt the communicator, and agree this rank's device over the group.
+/// `parse_device_mode` under `comm=`: validate the rows against the group size, adopt the communicator, and agree this rank's device over the group.
 #[cfg(feature = "cuda")]
-#[allow(clippy::too_many_arguments)]
 fn parse_distributed_device_mode(
     py: Python<'_>,
     comm: &Bound<'_, PyAny>,
     request: &crate::gpu::DeviceRequest,
     shown: &str,
     gather: bool,
-    partition_row_seed: Option<u64>,
-    row_blocks: Option<Vec<Vec<usize>>>,
-    exclude: Option<(Vec<usize>, Vec<usize>)>,
-    num_qubits: usize,
+    rows: RowKwargs,
+    sum: &PauliSumImpl,
 ) -> PyResult<RunMode> {
     #[cfg(feature = "mpi")]
     {
-        if let Some(blocks) = &row_blocks {
-            let ranks = crate::mpi::comm_size(comm)?;
-            validate_partition_row_blocks(
-                blocks,
-                num_qubits,
-                ranks,
-                &format!("comm= with {ranks} rank(s)"),
-            )?;
-        }
-        let rows = row_policy(row_blocks, exclude, partition_row_seed);
+        let ranks = crate::mpi::comm_size(comm)?;
+        rows.validate_count(sum.num_qubits(), ranks, &format!("comm= with {ranks} rank(s)"))?;
+        let row_policy = rows.policy();
+        warn_partition_rows(py, sum, &row_policy, ranks)?;
         let transport = crate::mpi::transport_from_comm(py, comm)?;
         let rank = paulistrings::Collectives::rank(&transport);
         // Collective on every rank whatever each asked for, so an `"auto"` rank never waits on one that named an ordinal.
         let auto = paulistrings::gpu::local_device_for_comm(transport.communicator());
         let local = crate::gpu::resolve_rank_device(request, shown, rank, auto);
         let device = crate::mpi::agree_device(py, &transport, local, shown)?;
-        Ok(RunMode::DistributedDevice(crate::mpi::MpiGpuRun::new(transport, rows, gather, device)))
+        Ok(RunMode::DistributedDevice(crate::mpi::MpiGpuRun::new(
+            transport, row_policy, gather, device,
+        )))
     }
     #[cfg(not(feature = "mpi"))]
     {
-        let _ =
-            (py, comm, request, shown, gather, partition_row_seed, row_blocks, exclude, num_qubits);
+        let _ = (py, comm, request, shown, gather, rows, sum);
         Err(crate::gpu::device_comm_unavailable_error())
     }
 }
@@ -1709,6 +1681,200 @@ fn format_sum(inner: &PauliSumImpl) -> String {
     parts.join(" + ")
 }
 
+/// Rows a bucket hash holds, the most `with_hash(rows=...)` may give.
+const B_MAX_ROWS: usize = 22;
+
+/// `"dense"`, `"sparse:<weight>"` or `"projection"`; the weight is checked against the coordinates a row may read by the caller.
+fn parse_hash_family(family: &str) -> PyResult<HashFamily> {
+    let invalid = || {
+        PyValueError::new_err(format!(
+            "hash family must be 'dense', 'sparse:<weight>' or 'projection', got {family:?}"
+        ))
+    };
+    Ok(match family {
+        "dense" => HashFamily::Dense,
+        "projection" => HashFamily::Projection,
+        _ => HashFamily::Sparse {
+            weight: family
+                .strip_prefix("sparse:")
+                .ok_or_else(invalid)?
+                .parse()
+                .map_err(|_| invalid())?,
+        },
+    })
+}
+
+fn format_hash_origin(origin: HashOrigin) -> String {
+    match origin {
+        HashOrigin::Drawn(HashFamily::Dense) => "dense".to_string(),
+        HashOrigin::Drawn(HashFamily::Sparse { weight }) => format!("sparse:{weight}"),
+        HashOrigin::Drawn(HashFamily::Projection) => "projection".to_string(),
+        HashOrigin::Explicit { rows } => format!("explicit:{rows}"),
+    }
+}
+
+/// One row's `2 · num_qubits` coordinate flags, x-bits first.
+fn coordinate_flags<const W: usize>(x: &[u64; W], z: &[u64; W], num_qubits: usize) -> Vec<bool> {
+    let bit = |half: &[u64; W], q: usize| (half[q / 64] >> (q % 64)) & 1 == 1;
+    (0..num_qubits).map(|q| bit(x, q)).chain((0..num_qubits).map(|q| bit(z, q))).collect()
+}
+
+/// A boolean matrix of shape `(k, 2 · num_qubits)`, `k <= max_rows`, as the coordinate lists of its rows; `name` is the keyword in errors.
+fn parse_row_matrix(
+    py: Python<'_>,
+    rows: &Bound<'_, PyAny>,
+    num_qubits: usize,
+    max_rows: usize,
+    name: &str,
+) -> PyResult<Vec<Vec<usize>>> {
+    let numpy = py.import_bound("numpy")?;
+    let kwargs = PyDict::new_bound(py);
+    kwargs.set_item("dtype", "bool")?;
+    let array = numpy.call_method("asarray", (rows,), Some(&kwargs)).map_err(|err| {
+        PyValueError::new_err(format!(
+            "{name} must be a boolean array of shape (k, 2 * num_qubits): {err}"
+        ))
+    })?;
+    let shape: Vec<usize> = array.getattr("shape")?.extract()?;
+    let width = 2 * num_qubits;
+    if shape.len() != 2 || shape[1] != width || shape[0] > max_rows {
+        return Err(PyValueError::new_err(format!(
+            "{name} must have shape (k, {width}) with k <= {max_rows} — one column per coordinate, the {num_qubits} x-bits then the {num_qubits} z-bits — got shape {shape:?}"
+        )));
+    }
+    let flags: Vec<Vec<bool>> = array.call_method0("tolist")?.extract()?;
+    Ok(flags.iter().map(|row| (0..width).filter(|&c| row[c]).collect()).collect())
+}
+
+/// A Python `RuntimeWarning`, attributed to the caller's line.
+fn warn_runtime(py: Python<'_>, message: &str) -> PyResult<()> {
+    PyErr::warn_bound(py, &py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(), message, 1)
+}
+
+/// The partition-row keywords of `propagate` and `repartition`, parsed and checked against each other with the GIL held.
+struct RowKwargs {
+    seed: Option<u64>,
+    blocks: Option<Vec<Vec<usize>>>,
+    exclude: Option<(Vec<usize>, Vec<usize>)>,
+    family: Option<HashFamily>,
+    rows: Option<Vec<Vec<usize>>>,
+}
+
+impl RowKwargs {
+    #[allow(clippy::too_many_arguments)]
+    fn parse(
+        py: Python<'_>,
+        seed: Option<u64>,
+        blocks: Option<&Bound<'_, PyAny>>,
+        exclude: Option<&Bound<'_, PyAny>>,
+        family: Option<&str>,
+        rows: Option<&Bound<'_, PyAny>>,
+        num_qubits: usize,
+    ) -> PyResult<Self> {
+        let blocks = parse_partition_row_blocks(blocks)?;
+        if seed.is_some() && blocks.is_some() {
+            return Err(PyValueError::new_err(
+                "partition_row_seed= and partition_row_blocks= are alternatives (a seeded random \
+                 draw vs. an explicit locality cut); pass at most one",
+            ));
+        }
+        let exclude = parse_partition_row_exclude(exclude, num_qubits)?;
+        if exclude.is_some() && blocks.is_some() {
+            return Err(PyValueError::new_err(
+                "partition_row_blocks= and partition_row_exclude= are alternatives (an explicit \
+                 locality cut vs. a seeded draw that skips some coordinates); pass at most one",
+            ));
+        }
+        let family = family.map(parse_hash_family).transpose()?;
+        if family.is_some() && blocks.is_some() {
+            return Err(PyValueError::new_err(
+                "partition_row_blocks= and partition_row_family= are alternatives (an explicit \
+                 locality cut vs. a drawn family); pass at most one",
+            ));
+        }
+        let rows = rows
+            .filter(|obj| !obj.is_none())
+            .map(|obj| parse_row_matrix(py, obj, num_qubits, P_MAX_BITS as usize, "partition_rows"))
+            .transpose()?;
+        if rows.is_some()
+            && (seed.is_some() || blocks.is_some() || exclude.is_some() || family.is_some())
+        {
+            return Err(PyValueError::new_err(
+                "partition_rows= gives the rows outright, so it takes none of partition_row_seed=, \
+                 partition_row_blocks=, partition_row_exclude= or partition_row_family=",
+            ));
+        }
+        if let Some(family) = family {
+            let excluded = exclude.as_ref().map_or(0, |(x, z)| x.len() + z.len());
+            family.validate(2 * num_qubits - excluded).map_err(PyValueError::new_err)?;
+        }
+        Ok(Self { seed, blocks, exclude, family, rows })
+    }
+
+    /// The keyword that only means something when the sum is split, if one was given.
+    fn split_only_keyword(&self) -> Option<&'static str> {
+        if self.blocks.is_some() {
+            Some("partition_row_blocks")
+        } else if self.rows.is_some() {
+            Some("partition_rows")
+        } else if self.family.is_some() {
+            Some("partition_row_family")
+        } else if self.exclude.is_some() {
+            Some("partition_row_exclude")
+        } else {
+            None
+        }
+    }
+
+    /// Check what can be checked once the partition count is known: a cut's blocks or the explicit rows' count; `what` names where the count came from.
+    fn validate_count(&self, num_qubits: usize, partitions: usize, what: &str) -> PyResult<()> {
+        if let Some(blocks) = &self.blocks {
+            validate_partition_row_blocks(blocks, num_qubits, partitions, what)?;
+        }
+        if let Some(rows) = &self.rows {
+            let bits = partitions.trailing_zeros() as usize;
+            if rows.len() != bits {
+                return Err(PyValueError::new_err(format!(
+                    "partition_rows has {} rows, but {what} needs {bits}: one per partition bit",
+                    rows.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn policy(&self) -> PartitionRowPolicy {
+        let (exclude_x, exclude_z) = self.exclude.clone().unwrap_or_default();
+        match (&self.rows, &self.blocks, self.family, &self.exclude) {
+            (Some(rows), ..) => PartitionRowPolicy::Coordinates(rows.clone()),
+            (None, Some(blocks), ..) => PartitionRowPolicy::Cut(blocks.clone()),
+            (None, None, Some(family), _) => {
+                PartitionRowPolicy::Family { family, seed: self.seed, exclude_x, exclude_z }
+            }
+            (None, None, None, Some(_)) => {
+                PartitionRowPolicy::SeededExcluding { seed: self.seed, exclude_x, exclude_z }
+            }
+            (None, None, None, None) => PartitionRowPolicy::Seeded(self.seed),
+        }
+    }
+}
+
+/// A `RuntimeWarning` for every way the rows `policy` names for `partitions` partitions fall short against `sum`'s bucket hash.
+fn warn_partition_rows(
+    py: Python<'_>,
+    sum: &PauliSumImpl,
+    policy: &PartitionRowPolicy,
+    partitions: usize,
+) -> PyResult<()> {
+    if partitions <= 1 {
+        return Ok(());
+    }
+    for reason in sum.partition_rank_deficiency(policy, partitions.trailing_zeros() as u8) {
+        warn_runtime(py, &reason)?;
+    }
+    Ok(())
+}
+
 /// The scalar `*` accepts. Naming the two-sum case explicitly, since `a * b` on two sums is the one multiplication a reader is most likely to expect and the least likely to get.
 fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if factor.downcast::<PauliSum>().is_ok() {
@@ -1809,6 +1975,73 @@ impl PauliSum {
     #[getter]
     fn num_buckets(&self) -> usize {
         self.inner.num_buckets()
+    }
+
+    /// Where the bucket hash's rows came from: `"dense"`, `"sparse:<weight>"` or `"projection"` for a drawn family, `"explicit:<k>"` for `k` given rows completed by dense ones.
+    #[getter]
+    fn hash_family(&self) -> String {
+        format_hash_origin(self.inner.hash_origin())
+    }
+
+    /// The seed the bucket hash's rows were drawn from.
+    #[getter]
+    fn hash_seed(&self) -> u64 {
+        self.inner.hash_seed()
+    }
+
+    /// Terms per bucket, in bucket order, as a NumPy `uint64` array: how evenly the hash spreads this sum.
+    fn bucket_lengths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u64>> {
+        self.inner
+            .bucket_lengths()
+            .into_iter()
+            .map(|n| n as u64)
+            .collect::<Vec<u64>>()
+            .into_pyarray_bound(py)
+    }
+
+    /// The bucket hash's 22 rows as a boolean NumPy array of shape `(22, 2 * num_qubits)`: entry `[i, c]` is set when row `i` reads coordinate `c`, the x-bit of qubit `c` for `c < num_qubits` and the z-bit of qubit `c - num_qubits` above. The first `log2(num_buckets)` rows are active.
+    fn hash_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
+        let rows = self.inner.hash_rows();
+        Ok(PyArray2::from_vec2_bound(py, &rows)?)
+    }
+
+    /// A copy with the same terms, partitioned into buckets by another GF(2)-linear hash; `propagate` keeps the hash a sum carries.
+    ///
+    /// Pass a `family` or explicit `rows`, not both.
+    /// `family` is `"dense"` (the default, every coordinate of a row set with probability 1/2), `"sparse:<k>"` (exactly `k` coordinates per row, `1 <= k <= 2 * num_qubits`) or `"projection"` (one coordinate per row, so the bucket is a few bits of the string); `seed` (default: this sum's) draws the rows.
+    /// `rows` is a boolean array of shape `(k, 2 * num_qubits)`, `k <= 22`, laid out as `hash_rows()` returns it; they become the first `k` rows, and dense rows drawn from `seed` complete the 22.
+    /// Linearly dependent rows are accepted with a `RuntimeWarning`: past their rank, some buckets can never hold a term.
+    /// Every hash gives the same results; they differ only in how evenly they spread the terms over buckets, and hence in speed.
+    #[pyo3(signature = (family=None, seed=None, rows=None))]
+    fn with_hash(
+        &self,
+        py: Python<'_>,
+        family: Option<&str>,
+        seed: Option<u64>,
+        rows: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let num_qubits = self.inner.num_qubits();
+        let seed = seed.unwrap_or_else(|| self.inner.hash_seed());
+        let rehashed = match (family, rows) {
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err(
+                    "with_hash takes family= or rows=, not both: explicit rows replace the family's draw",
+                ))
+            }
+            (None, Some(rows)) => {
+                let rows = parse_row_matrix(py, rows, num_qubits, B_MAX_ROWS, "rows")?;
+                self.inner.with_hash_rows(&rows, seed)
+            }
+            (family, None) => {
+                let family = parse_hash_family(family.unwrap_or("dense"))?;
+                family.validate(2 * num_qubits).map_err(PyValueError::new_err)?;
+                self.inner.with_hash_family(family, seed)
+            }
+        };
+        if let Some(reason) = rehashed.hash_rank_deficiency() {
+            warn_runtime(py, &reason)?;
+        }
+        Ok(Self::plain(rehashed))
     }
 
     /// Snapshot of the coefficient column as a list of Python complex values.
@@ -1992,6 +2225,8 @@ impl PauliSum {
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
     /// `partition_row_exclude`, a dict `{"x": [qubits], "z": [qubits]}` and the other alternative to `partition_row_blocks`, keeps the seeded draw (`partition_row_seed` still applies) but clears the named x-bits and z-bits from every row, so strings differing only there share a partition.
+    /// `partition_row_family` (`"dense"`, `"sparse:<k>"` or `"projection"`, as for `with_hash`) draws the rows by that family instead, still honouring `partition_row_seed` and `partition_row_exclude`; `partition_rows`, a boolean array of shape `(log2(P), 2 * num_qubits)` laid out as `hash_rows()`, gives them outright and takes no other row keyword.
+    /// Rows that leave partitions unreachable, or that overlap the span of the bucket hash's rows, run with a `RuntimeWarning`.
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
     /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
@@ -2004,7 +2239,7 @@ impl PauliSum {
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_row_family=None, partition_rows=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -2019,6 +2254,8 @@ impl PauliSum {
         partition_row_seed: Option<u64>,
         partition_row_blocks: Option<&Bound<'_, PyAny>>,
         partition_row_exclude: Option<&Bound<'_, PyAny>>,
+        partition_row_family: Option<&str>,
+        partition_rows: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
@@ -2034,14 +2271,20 @@ impl PauliSum {
             py,
             partitions,
             pin_memory,
-            partition_row_seed,
-            partition_row_blocks,
-            partition_row_exclude,
+            RowKwargs::parse(
+                py,
+                partition_row_seed,
+                partition_row_blocks,
+                partition_row_exclude,
+                partition_row_family,
+                partition_rows,
+                self.inner.num_qubits(),
+            )?,
             comm,
             gather,
             device,
             &policy,
-            self.inner.num_qubits(),
+            &self.inner,
         )?;
         let (sum, _, _) = self.run(py, circuit, mode, &policy, dir, options, false)?;
         Ok(sum)
@@ -2053,7 +2296,7 @@ impl PauliSum {
     /// `PropagationStats.partition` holds the per-partition detail, summed to the layer-level `terms_in`/`terms_out`; an unpartitioned call reports one partition.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_row_family=None, partition_rows=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -2068,6 +2311,8 @@ impl PauliSum {
         partition_row_seed: Option<u64>,
         partition_row_blocks: Option<&Bound<'_, PyAny>>,
         partition_row_exclude: Option<&Bound<'_, PyAny>>,
+        partition_row_family: Option<&str>,
+        partition_rows: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
@@ -2083,14 +2328,20 @@ impl PauliSum {
             py,
             partitions,
             pin_memory,
-            partition_row_seed,
-            partition_row_blocks,
-            partition_row_exclude,
+            RowKwargs::parse(
+                py,
+                partition_row_seed,
+                partition_row_blocks,
+                partition_row_exclude,
+                partition_row_family,
+                partition_rows,
+                self.inner.num_qubits(),
+            )?,
             comm,
             gather,
             device,
             &policy,
-            self.inner.num_qubits(),
+            &self.inner,
         )?;
         let (sum, trace, collapses) = self.run(py, circuit, mode, &policy, dir, options, true)?;
         let stats = PropagationStats::from_run_trace(

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use super::hash::Gf2Hash;
+use super::hash::{Gf2Hash, HashFamily};
 use crate::pauli_string::PauliString;
 
 /// Default seed for the partitioning hash.
@@ -337,6 +337,26 @@ impl<const W: usize> PauliSum<W> {
     /// The partitioning hash.
     pub fn hash(&self) -> &Gf2Hash<W> {
         &self.hash
+    }
+
+    /// Terms per bucket, in bucket order: the occupancy the hash produces.
+    pub fn bucket_lengths(&self) -> Vec<usize> {
+        self.buckets.iter().map(BucketColumns::len).collect()
+    }
+
+    /// Repartition under `hash`, keeping every term, at `hash`'s bucket count.
+    ///
+    /// # Panics
+    ///
+    /// If `hash` was built for a different qubit count.
+    pub fn with_bucket_hash(self, hash: Gf2Hash<W>) -> Self {
+        self.with_hash(hash)
+    }
+
+    /// Repartition under the rows `family` draws from `seed`, at the current bucket count; propagation keeps the hash a sum carries.
+    pub fn with_hash_family(self, family: HashFamily, seed: u64) -> Self {
+        let hash = Gf2Hash::with_family(self.num_qubits, self.hash.bits(), seed, family);
+        self.with_hash(hash)
     }
 
     /// Borrow bucket `b`'s columns as `(x, z, coeff)`.

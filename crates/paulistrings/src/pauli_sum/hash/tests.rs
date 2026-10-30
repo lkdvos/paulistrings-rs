@@ -640,10 +640,12 @@ fn partition_from_rows_length_mismatch_panics() {
 }
 
 #[test]
-#[should_panic(expected = "row 1 masks to zero")]
-fn partition_from_rows_all_zero_row_panics() {
+fn a_partition_row_that_masks_to_zero_is_accepted_and_reported() {
     // Row 1 is nonzero only outside the 8 live qubit columns.
-    let _ = PartitionRows::<1>::from_rows(8, vec![[0x1], [1 << 20]], vec![[0x0], [1 << 30]]);
+    let rows = PartitionRows::<1>::from_rows(8, vec![[0x1], [1 << 20]], vec![[0x0], [1 << 30]]);
+    assert_eq!(rows.independent_rows(), 1);
+    let reasons = rows.rank_deficiency(&Gf2Hash::<1>::new(8, 2, 1));
+    assert!(reasons.iter().any(|r| r.contains("only 2 of the 4 partitions")), "{reasons:?}");
 }
 
 #[test]
@@ -780,6 +782,293 @@ fn a_partition_row_copied_from_the_hash_is_not_independent() {
     // Only the active rows count: at zero bucket bits there is nothing to be dependent on, and the two partition rows are independent among themselves.
     let h0 = Gf2Hash::<2>::new(128, 0, 0x5EED);
     assert!(p.is_independent_of(&h0));
+}
+
+const FAMILIES: [HashFamily; 4] = [
+    HashFamily::Dense,
+    HashFamily::Sparse { weight: 3 },
+    HashFamily::Sparse { weight: 2 },
+    HashFamily::Projection,
+];
+
+/// The coordinates a row sets: `q` for an x-bit on qubit `q`, `num_qubits + q` for a z-bit.
+fn coordinates<const W: usize>(row: ([u64; W], [u64; W]), num_qubits: usize) -> Vec<usize> {
+    (0..num_qubits)
+        .filter(|&q| (row.0[q / 64] >> (q % 64)) & 1 == 1)
+        .chain(
+            (0..num_qubits)
+                .filter(|&q| (row.1[q / 64] >> (q % 64)) & 1 == 1)
+                .map(|q| num_qubits + q),
+        )
+        .collect()
+}
+
+#[test]
+fn new_draws_the_dense_family() {
+    let a = Gf2Hash::<2>::new(127, 8, 0x5EED);
+    let b = Gf2Hash::<2>::with_family(127, 8, 0x5EED, HashFamily::Dense);
+    assert_eq!(a.origin(), HashOrigin::Drawn(HashFamily::Dense));
+    assert!(a.same_rows_as(&b));
+    for i in 0..B_MAX_BITS as usize {
+        assert_eq!(a.row(i), b.row(i), "row {i}");
+    }
+}
+
+#[test]
+fn same_rows_as_tells_the_families_apart() {
+    for (i, &a) in FAMILIES.iter().enumerate() {
+        for (j, &b) in FAMILIES.iter().enumerate() {
+            let same = Gf2Hash::<2>::with_family(127, 8, 0x5EED, a)
+                .same_rows_as(&Gf2Hash::<2>::with_family(127, 8, 0x5EED, b));
+            assert_eq!(same, i == j, "{a:?} vs {b:?}");
+        }
+    }
+    let three = Gf2Hash::<2>::with_family(127, 8, 1, HashFamily::Sparse { weight: 3 });
+    let four = Gf2Hash::<2>::with_family(127, 8, 1, HashFamily::Sparse { weight: 4 });
+    assert!(!three.same_rows_as(&four));
+}
+
+#[test]
+fn every_family_is_linear_and_masked() {
+    fn check<const W: usize>(num_qubits: usize) {
+        let mut rng = Xs64::new(0x11E);
+        for family in FAMILIES {
+            let h = Gf2Hash::<W>::with_family(num_qubits, 12, 0x5EED, family);
+            for _ in 0..200 {
+                let p = rand_key::<W>(&mut rng, num_qubits);
+                let q = rand_key::<W>(&mut rng, num_qubits);
+                assert_eq!(bucket(&h, &xor(&p, &q)), bucket(&h, &p) ^ bucket(&h, &q), "{family:?}");
+            }
+            for i in 0..B_MAX_BITS as usize {
+                let (x, z) = h.row(i);
+                for w in 0..W {
+                    let outside = !word_mask(num_qubits, w);
+                    assert_eq!(
+                        (x[w] | z[w]) & outside,
+                        0,
+                        "{family:?} row {i} sets a bit past qubit {num_qubits}"
+                    );
+                }
+            }
+        }
+    }
+    check::<1>(37);
+    check::<2>(100);
+}
+
+#[test]
+fn rows_of_every_family_do_not_depend_on_the_width() {
+    for family in FAMILIES {
+        for n in [5usize, 64] {
+            let h1 = Gf2Hash::<1>::with_family(n, 8, 0x5EED, family);
+            let h2 = Gf2Hash::<2>::with_family(n, 8, 0x5EED, family);
+            for i in 0..B_MAX_BITS as usize {
+                let (x1, z1) = h1.row(i);
+                assert_eq!(h2.row(i), ([x1[0], 0], [z1[0], 0]), "{family:?} n={n} row {i}");
+            }
+        }
+    }
+}
+
+#[test]
+fn sparse_rows_set_exactly_their_weight() {
+    fn check<const W: usize>(num_qubits: usize) {
+        for weight in [1u16, 3, 7] {
+            let h =
+                Gf2Hash::<W>::with_family(num_qubits, 4, 0xC0FFEE, HashFamily::Sparse { weight });
+            for i in 0..B_MAX_BITS as usize {
+                assert_eq!(
+                    coordinates(h.row(i), num_qubits).len(),
+                    weight as usize,
+                    "weight {weight} row {i}"
+                );
+            }
+        }
+    }
+    check::<1>(5);
+    check::<1>(64);
+    check::<2>(127);
+}
+
+#[test]
+#[should_panic(expected = "Sparse")]
+fn a_sparse_weight_above_the_coordinate_count_panics() {
+    Gf2Hash::<1>::with_family(3, 4, 1, HashFamily::Sparse { weight: 7 });
+}
+
+#[test]
+#[should_panic(expected = "Sparse")]
+fn a_zero_sparse_weight_panics() {
+    Gf2Hash::<1>::with_family(3, 4, 1, HashFamily::Sparse { weight: 0 });
+}
+
+#[test]
+fn projection_rows_are_single_coordinates_distinct_until_they_run_out() {
+    let wide = Gf2Hash::<2>::with_family(127, 4, 0x5EED, HashFamily::Projection);
+    let picked: Vec<Vec<usize>> =
+        (0..B_MAX_BITS as usize).map(|i| coordinates(wide.row(i), 127)).collect();
+    assert!(picked.iter().all(|c| c.len() == 1));
+    let distinct: std::collections::HashSet<usize> = picked.iter().map(|c| c[0]).collect();
+    assert_eq!(distinct.len(), B_MAX_BITS as usize);
+    // Five qubits have ten coordinates: rows 0..10 use each once, then the cycle repeats.
+    let narrow = Gf2Hash::<1>::with_family(5, 4, 0x5EED, HashFamily::Projection);
+    let first: std::collections::HashSet<Vec<usize>> =
+        (0..10).map(|i| coordinates(narrow.row(i), 5)).collect();
+    assert_eq!(first.len(), 10);
+    assert_eq!(narrow.row(12), narrow.row(2));
+}
+
+/// A projection reads only `bits` coordinates, which low-weight strings mostly leave at zero, so bucket 0 holds most of them.
+#[test]
+fn projection_occupancy_collapses_on_low_weight_keys() {
+    let num_qubits = 64;
+    let h = Gf2Hash::<1>::with_family(num_qubits, 6, 0x0CC1, HashFamily::Projection);
+    let mut rng = Xs64::new(0xBA1);
+    let mut seen = std::collections::HashSet::new();
+    let mut in_zero = 0usize;
+    while seen.len() < 4096 {
+        let p = low_weight_key::<1>(&mut rng, num_qubits, 4);
+        if seen.insert((p.x, p.z)) {
+            in_zero += (bucket(&h, &p) == 0) as usize;
+        }
+    }
+    // A dense hash puts 4096 / 64 = 64 keys there.
+    assert!(in_zero > 4096 / 2, "{in_zero} of 4096 weight-4 keys in bucket 0");
+}
+
+/// The first `min(B_MAX_BITS, 2 · num_qubits)` rows are independent, so no active bucket is unreachable.
+#[test]
+fn every_family_is_full_rank() {
+    fn check<const W: usize>(num_qubits: usize, family: HashFamily) {
+        let h = Gf2Hash::<W>::with_family(num_qubits, 4, 0x5EED, family);
+        let needed = (2 * num_qubits).min(B_MAX_BITS as usize);
+        let rows: Vec<_> = (0..needed).map(|i| h.row(i)).collect();
+        assert_eq!(gf2_rank_wide(&rows), needed, "{family:?} over {num_qubits} qubits");
+        for i in 0..B_MAX_BITS as usize {
+            assert_ne!(
+                h.row(i),
+                ([0; W], [0; W]),
+                "{family:?} over {num_qubits} qubits: row {i} is zero"
+            );
+        }
+    }
+    for n in [1usize, 3, 5, 11, 64] {
+        for family in [HashFamily::Dense, HashFamily::Sparse { weight: 1 }, HashFamily::Projection]
+        {
+            check::<1>(n, family);
+        }
+    }
+    check::<1>(5, HashFamily::Sparse { weight: 3 });
+    check::<1>(12, HashFamily::Sparse { weight: 2 });
+    for family in FAMILIES {
+        check::<2>(127, family);
+    }
+}
+
+/// Full-rank draws only redraw dependent rows, which over 127 qubits never happens: the default hash is the plain splitmix64 draw.
+#[test]
+fn the_default_hash_is_the_plain_draw_where_that_is_already_full_rank() {
+    let seed = crate::pauli_sum::storage::DEFAULT_HASH_SEED;
+    let h = Gf2Hash::<2>::new(127, 4, seed);
+    let plain = Gf2Matrix::<2>::draw(127, B_MAX_BITS as usize, seed, &[0; 2], &[0; 2]);
+    for i in 0..B_MAX_BITS as usize {
+        assert_eq!(h.row(i), plain.row(i), "row {i}");
+    }
+}
+
+/// A family that cannot reach full rank still builds, and says by how much it falls short.
+#[test]
+fn rank_deficiency_reports_exactly_the_families_that_fall_short() {
+    let deficit = |n: usize, weight: u16| {
+        Gf2Hash::<1>::with_family(n, 4, 1, HashFamily::Sparse { weight }).rank_deficiency()
+    };
+    assert_eq!(deficit(12, 2), None, "even weight: 23 independent rows reachable, 22 needed");
+    assert!(deficit(11, 2).unwrap().contains("first 22 rows have rank 21"));
+    assert!(deficit(5, 10).unwrap().contains("first 10 rows have rank 1"));
+    assert_eq!(deficit(5, 9), None);
+    assert_eq!(Gf2Hash::<1>::with_family(1, 4, 1, HashFamily::Projection).rank_deficiency(), None);
+    assert!(HashFamily::Sparse { weight: 0 }
+        .validate(10)
+        .unwrap_err()
+        .contains("must lie in 1..=10"));
+}
+
+#[test]
+fn explicit_rows_lead_and_dense_rows_complete_the_hash_to_full_rank() {
+    let given = vec![vec![0, 127], vec![5], vec![200, 3, 64]];
+    let h = Gf2Hash::<2>::from_coordinates(127, 6, 0x5EED, &given);
+    assert_eq!(h.origin(), HashOrigin::Explicit { rows: 3 });
+    for (i, row) in given.iter().enumerate() {
+        assert_eq!(
+            coordinates(h.row(i), 127),
+            {
+                let mut r = row.clone();
+                r.sort();
+                r
+            },
+            "row {i}"
+        );
+    }
+    assert_eq!(h.rank_deficiency(), None);
+    let dense = Gf2Hash::<2>::new(127, 6, 7);
+    let copied: Vec<Vec<usize>> =
+        (0..B_MAX_BITS as usize).map(|i| coordinates(dense.row(i), 127)).collect();
+    assert!(
+        Gf2Hash::<2>::from_coordinates(127, 6, 99, &copied).same_rows_as(&dense),
+        "rows decide sameness, not how they were made"
+    );
+}
+
+#[test]
+fn dependent_explicit_rows_are_accepted_and_reported() {
+    let h = Gf2Hash::<1>::from_coordinates(40, 2, 1, &[vec![3], vec![3], vec![]]);
+    // A duplicate and an empty row add nothing, so the three given rows have rank 1 and the 19 dense ones complete it to 20.
+    assert!(h.rank_deficiency().unwrap().contains("rank 20"), "{:?}", h.rank_deficiency());
+    assert_eq!(h.bucket_of(&[1 << 3], &[0]), 0b011, "both copies of the row read qubit 3's x-bit");
+}
+
+#[test]
+#[should_panic(expected = "coordinate 254 is outside 0..254")]
+fn an_explicit_coordinate_past_the_register_panics() {
+    Gf2Hash::<2>::from_coordinates(127, 2, 1, &[vec![254]]);
+}
+
+#[test]
+fn partition_families_draw_their_rows_and_honour_the_exclusion() {
+    let none = [0u64; 2];
+    let dense = PartitionRows::<2>::from_family(127, 3, 9, HashFamily::Dense, &none, &none);
+    assert_eq!(
+        dense,
+        PartitionRows::<2>::from_seed(127, 3, 9),
+        "the dense family is the seeded draw"
+    );
+    let all_z = [u64::MAX, u64::MAX >> 1];
+    let sparse =
+        PartitionRows::<2>::from_family(127, 3, 9, HashFamily::Sparse { weight: 5 }, &none, &all_z);
+    let (rows_x, rows_z) = sparse.rows();
+    assert!(rows_z.iter().all(|row| *row == [0, 0]), "x-only rows read no z-bit");
+    assert!(rows_x.iter().all(|row| row[0].count_ones() + row[1].count_ones() == 5));
+    assert_eq!(sparse.independent_rows(), 3);
+    let projection =
+        PartitionRows::<2>::from_family(127, 2, 9, HashFamily::Projection, &none, &none);
+    assert_eq!(projection.rank_deficiency(&Gf2Hash::<2>::new(127, 4, 1)), Vec::<String>::new());
+}
+
+#[test]
+fn partition_rank_deficiency_names_dependent_rows_and_overlap_with_the_buckets() {
+    let hash = Gf2Hash::<1>::new(40, 4, 3);
+    let duplicate = PartitionRows::<1>::from_coordinates(40, &[vec![7], vec![7]]);
+    let reasons = duplicate.rank_deficiency(&hash);
+    assert!(reasons.iter().any(|r| r.contains("only 2 of the 4 partitions")), "{reasons:?}");
+    let (x, z) = hash.row(0);
+    let overlapping = PartitionRows::<1>::from_rows(40, vec![x], vec![z]);
+    let reasons = overlapping.rank_deficiency(&hash);
+    assert!(
+        reasons.iter().any(|r| r.contains("overlap the span of the bucket hash")),
+        "{reasons:?}"
+    );
+    let fine = PartitionRows::<1>::from_seed(40, 2, 11);
+    assert!(fine.rank_deficiency(&hash).is_empty());
 }
 
 mod props {

@@ -1,7 +1,7 @@
 use super::*;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
-use crate::pauli_sum::PartitionRows;
+use crate::pauli_sum::{HashOrigin, PartitionRows};
 use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
 /// Low-weight keys, where a badly chosen hash would collapse into one bucket.
@@ -50,6 +50,48 @@ fn assert_same_sum<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) {
         v
     };
     assert_eq!(ta, tb, "terms");
+}
+
+#[test]
+fn with_hash_family_keeps_every_term_under_every_family() {
+    fn check<const W: usize>(num_qubits: usize) {
+        let sum = rand_low_weight_sum::<W>(3000, num_qubits, 3, 0xFA);
+        for family in [HashFamily::Dense, HashFamily::Sparse { weight: 2 }, HashFamily::Projection]
+        {
+            let rehashed = sum.clone().with_hash_family(family, 0x5EED);
+            rehashed.assert_invariants();
+            assert_eq!(
+                (rehashed.hash().origin(), rehashed.hash().seed()),
+                (HashOrigin::Drawn(family), 0x5EED)
+            );
+            assert_eq!(rehashed.hash().bits(), sum.hash().bits());
+            assert_same_sum(&sum, &rehashed);
+        }
+    }
+    check::<1>(40);
+    check::<2>(127);
+}
+
+#[test]
+fn bucket_lengths_count_every_term_in_its_bucket() {
+    let sum = rand_sum::<2>(2000, 127, 0xC0).with_hash_family(HashFamily::Sparse { weight: 3 }, 1);
+    let lengths = sum.bucket_lengths();
+    assert_eq!(lengths.len(), sum.num_buckets());
+    assert_eq!(lengths.iter().sum::<usize>(), sum.len());
+    let mut counted = vec![0usize; sum.num_buckets()];
+    for (x, z, _) in sum.iter() {
+        counted[sum.hash().bucket_of(x, z) as usize] += 1;
+    }
+    assert_eq!(lengths, counted);
+}
+
+#[test]
+fn sums_under_different_families_still_add() {
+    let a = rand_sum::<2>(500, 127, 0xA);
+    let b = rand_sum::<2>(500, 127, 0xB);
+    let sum = a.add(&b.clone().with_hash_family(HashFamily::Projection, 1));
+    assert_eq!(sum.hash().origin(), HashOrigin::Drawn(HashFamily::Dense));
+    assert_same_sum(&sum, &a.add(&b));
 }
 
 #[test]

@@ -7,7 +7,7 @@ pub(crate) mod hash;
 mod partition;
 pub(crate) mod storage;
 
-pub use hash::{Gf2Hash, PartitionRows, P_MAX_BITS};
+pub use hash::{Gf2Hash, HashFamily, HashOrigin, PartitionRows, P_MAX_BITS};
 pub use storage::PauliSum;
 
 #[cfg(test)]

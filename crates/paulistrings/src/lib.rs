@@ -40,7 +40,7 @@ pub use engine::transport::Transport;
 pub use engine::{propagate, propagate_with, Direction, PropagateOptions};
 pub use pauli_string::PauliString;
 pub use pauli_sum::accumulator::BuildAccumulator;
-pub use pauli_sum::{Gf2Hash, PartitionRows, PauliSum, P_MAX_BITS};
+pub use pauli_sum::{Gf2Hash, HashFamily, HashOrigin, PartitionRows, PauliSum, P_MAX_BITS};
 pub use phase::Phase;
 pub use readout::{PauliAxis, ProductBasis, StabilizerError, StabilizerState};
 pub use truncation::{

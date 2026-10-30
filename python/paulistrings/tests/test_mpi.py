@@ -452,6 +452,56 @@ def test_a_locality_cut_holds_the_terms_it_names():
     assert held == blocks[RANK]
 
 
+# --------------------------------------------------------------------------
+# repartition
+
+
+def test_repartition_moves_every_term_to_the_rank_its_new_rows_name():
+    """Shares split by the default random rows, repartitioned by a cut, hold
+    exactly their block's single-`Z` terms — the hand-computable split of
+    `test_a_locality_cut_holds_the_terms_it_names` — and lose none."""
+    blocks = _cut_blocks(NUM_QUBITS, SIZE)
+    terms = {"I" * q + "Z" + "I" * (NUM_QUBITS - q - 1): 1.0 + q for q in range(NUM_QUBITS)}
+    s = PauliSum.from_strings(terms, num_qubits=NUM_QUBITS)
+    local = s.propagate(Circuit(NUM_QUBITS), comm=COMM, result="local")
+    moved = local.repartition(COMM, partition_row_blocks=blocks)
+    assert COMM.allreduce(len(moved)) == NUM_QUBITS
+    zs = moved.z_array()
+    held = sorted(int(row[w]).bit_length() - 1 + 64 * w
+                  for row in zs for w in range(zs.shape[1]) if row[w])
+    assert held == blocks[RANK]
+
+
+def test_chaining_shares_through_a_repartition_matches_the_serial_run(observable, circuit, reference):
+    """`result="local"` shares carried into a call that splits by other rows:
+    repartitioned first, nothing is lost and the call gathers the serial
+    answer. The second circuit is empty, so the policy cuts nothing twice."""
+    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    moved = local.repartition(COMM, partition_row_seed=0xC0FFEE)
+    fold = COMM.allreduce(_key_checksum(moved), op=MPI.BXOR)
+    got = moved.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM, partition_row_seed=0xC0FFEE)
+    assert fold == _key_checksum(reference)
+    if RANK == 0:
+        _assert_terms_close(got, reference)
+
+
+def test_without_a_repartition_a_call_split_by_other_rows_drops_terms(observable, circuit, reference):
+    """Why `repartition` exists: that call only filters each share, so on more
+    than one rank it keeps just the terms already on their new rank."""
+    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    kept = local.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM, partition_row_seed=0xC0FFEE, result="local")
+    total = COMM.allreduce(len(kept))
+    if SIZE > 1:
+        assert total < len(reference)
+    else:
+        assert total == len(reference)
+
+
+def test_repartition_takes_one_spelling_of_the_rows(observable):
+    with pytest.raises(ValueError, match="are alternatives"):
+        observable.repartition(COMM, partition_row_seed=1, partition_row_blocks=_cut_blocks())
+
+
 def test_distributed_seed_and_blocks_are_mutually_exclusive(observable, circuit):
     with pytest.raises(ValueError, match="alternatives"):
         observable.propagate(

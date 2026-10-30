@@ -1983,6 +1983,59 @@ impl PauliSum {
         Ok(Self::plain(rehashed))
     }
 
+    /// This rank's share of a distributed sum, moved so that every rank holds exactly the terms the new partition rows assign it; collective over `comm`.
+    ///
+    /// Use it on `result="local"` shares before a `propagate(comm=...)` that splits by other rows: that call only filters each rank's share and would drop the terms that now belong elsewhere.
+    /// The rows take the keywords of `propagate` (`partition_row_seed`, `partition_row_blocks`, `partition_row_exclude`, `partition_rows`), defaulting to the seeded dense draw at the sum's own hash seed, and warn as they do there.
+    /// Every rank must pass the same rows and hold a share under the same bucket hash; a disagreement raises on every rank.
+    #[pyo3(signature = (comm, *, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None))]
+    fn repartition(
+        &self,
+        py: Python<'_>,
+        comm: &Bound<'_, PyAny>,
+        partition_row_seed: Option<u64>,
+        partition_row_blocks: Option<&Bound<'_, PyAny>>,
+        partition_row_exclude: Option<&Bound<'_, PyAny>>,
+        partition_rows: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let num_qubits = self.inner.num_qubits();
+        let rows = RowKwargs::parse(
+            py,
+            partition_row_seed,
+            partition_row_blocks,
+            partition_row_exclude,
+            partition_rows,
+            num_qubits,
+        )?;
+        #[cfg(feature = "mpi")]
+        {
+            let ranks = crate::mpi::comm_size(comm)?;
+            if !ranks.is_power_of_two() {
+                return Err(PyValueError::new_err(format!(
+                    "repartition needs a power-of-two group, since a partition is named by log2(P) GF(2) rows; comm= has {ranks} ranks"
+                )));
+            }
+            rows.validate_count(num_qubits, ranks, &format!("comm= with {ranks} rank(s)"))?;
+            let policy = rows.policy();
+            warn_partition_rows(py, &self.inner, &policy, ranks)?;
+            let bits = ranks.trailing_zeros() as u8;
+            let transport = crate::mpi::transport_from_comm(py, comm)?;
+            let share = self.inner.clone();
+            let moved = py.allow_threads(move || {
+                for_each_width_convert!(PauliSumImpl => PauliSumImpl, share, |s| {
+                    let split = policy.rows(num_qubits, bits, s.hash().seed());
+                    paulistrings::repartition_share(s, &split, &transport)
+                })
+            });
+            Ok(Self::plain(moved))
+        }
+        #[cfg(not(feature = "mpi"))]
+        {
+            let _ = (py, comm, rows);
+            Err(mpi_unavailable_error())
+        }
+    }
+
     /// Snapshot of the coefficient column as a list of Python complex values.
     fn coefficients(&self) -> Vec<Complex64> {
         self.inner.coeffs()

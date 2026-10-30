@@ -111,6 +111,17 @@ value = comm.allreduce(local.expectation("z+"))
 
 Prefer `"local"` when the answer is a scalar: gathering materializes the whole sum on rank 0, and that rank transiently holds one extra rank's copy on top of it.
 
+A share can be fed straight back into the next `propagate(comm=...)` split by the same rows: that call keeps each rank's share where it is.
+A call split by other rows only filters each share and would drop the terms that now belong to another rank, so move them first, collectively:
+
+<!-- doctest: skip -->
+```python
+local = local.repartition(comm, partition_row_seed=7)
+local = local.propagate(circuit, policy, comm=comm, partition_row_seed=7, result="local")
+```
+
+`repartition` takes the same row keywords as `propagate` and sends every term to the rank they name, in one exchange between all ranks, without gathering anything.
+
 ## Launching
 
 One rank per NUMA domain, bound to it — that is the placement the in-process engine would have made with explicit CPU lists, done by the launcher instead:

@@ -67,6 +67,40 @@ impl<const W: usize> PauliSum<W> {
         Self { buckets, hash: self.hash.clone(), num_qubits: self.num_qubits, len }
     }
 
+    /// The terms split by the partition `rows` assigns them, in one pass: entry `r` is what [`Self::filter_partition`] gives for `r`.
+    pub(crate) fn split_partitions(&self, rows: &PartitionRows<W>) -> Vec<Self> {
+        debug_assert_eq!(
+            self.num_qubits,
+            rows.num_qubits(),
+            "PauliSum::split_partitions: num_qubits mismatch"
+        );
+        let partitions = rows.num_partitions();
+        let per_bucket: Vec<Vec<BucketColumns<W>>> =
+            map_buckets(self.len, &self.buckets, |columns| {
+                let mut out: Vec<BucketColumns<W>> =
+                    (0..partitions).map(|_| BucketColumns::new()).collect();
+                for i in 0..columns.len() {
+                    let rank = rows.partition_of(&columns.x[i], &columns.z[i]) as usize;
+                    out[rank].push(columns.x[i], columns.z[i], columns.coeff[i]);
+                }
+                out
+            });
+        let mut parts: Vec<Vec<BucketColumns<W>>> =
+            (0..partitions).map(|_| Vec::with_capacity(self.buckets.len())).collect();
+        for bucket in per_bucket {
+            for (rank, columns) in bucket.into_iter().enumerate() {
+                parts[rank].push(columns);
+            }
+        }
+        parts
+            .into_iter()
+            .map(|buckets| {
+                let len = buckets.iter().map(|c| c.len()).sum();
+                Self { buckets, hash: self.hash.clone(), num_qubits: self.num_qubits, len }
+            })
+            .collect()
+    }
+
     /// Gather key-disjoint sums sharing hash rows and bucket count back into one; panics on an empty or misaligned input.
     pub(crate) fn merge_partitions(parts: Vec<Self>) -> Self {
         let first = parts.first().expect("PauliSum::merge_partitions: no inputs to merge");

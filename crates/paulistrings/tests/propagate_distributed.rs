@@ -20,16 +20,17 @@ use paulistrings::test_support::{
     spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter, z0_sum, zz_rotation,
     KeepAll,
 };
+use paulistrings::Collectives;
 use paulistrings::PtmChannel;
 use paulistrings::{
     propagate, BuildAccumulator, BuiltinTruncation, Circuit, Direction, PauliString, PauliSum,
     TruncationPolicy,
 };
-use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 use paulistrings::{
-    DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime, ScatterOptions,
-    ScatterRows,
+    repartition_share, DistributedSum, Gf2Hash, PartitionConfig, PartitionRowPolicy, PartitionRows,
+    PartitionRuntime, PartitionedSum, ScatterOptions, ScatterRows,
 };
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, CollapseSample, WeightCutoff};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by. Long
@@ -593,4 +594,108 @@ fn collapse_sample_distributed_picks_by_weight() {
         assert_eq!(policy.collapses(), 1);
     }
     assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
+}
+
+/// A run repartitioned mid-way by other rows, and its buckets rehashed by another family, continues exactly as the unpartitioned run: no term is lost or duplicated, and every rank holds only its new partition's keys.
+#[test]
+fn repartitioning_and_rehashing_mid_run_match_propagate() {
+    let n = 12;
+    let sum = rand_sum::<1>(600, n, 0x2E9A);
+    let circuit = mixed_circuit::<1>(n);
+    let half = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    let want = propagate(&circuit, half.clone(), &KeepAll, Direction::Forward);
+    for size in [2u32, 4] {
+        let bits = size.trailing_zeros() as u8;
+        let gathered = on_ranks(size, |transport| {
+            let mut split = DistributedSum::scatter_with(
+                sum.clone(),
+                transport,
+                unpinned_scatter(1, 2, ROW_SEED),
+            );
+            split.propagate(&circuit, &KeepAll, Direction::Forward);
+            let held = split.len();
+            split.repartition(PartitionRows::from_seed(n, bits, ROW_SEED ^ 0xFFFF));
+            split.assert_invariants();
+            assert_eq!(split.len(), held, "repartitioning keeps every term");
+            // A projection onto three coordinates leads; dense rows from the seed fill the rest.
+            let hash =
+                Gf2Hash::from_rows(n, 4, 0xB0C, vec![[0b1], [0], [0b10]], vec![[0], [0b100], [0]]);
+            split.rehash_buckets(hash.clone());
+            split.assert_invariants();
+            assert_eq!(split.local().hash().rows(), hash.rows());
+            let midway = split.gather();
+            split.propagate(&circuit, &KeepAll, Direction::Forward);
+            (midway, split.gather())
+        });
+        let (midway, out) = &gathered[0];
+        assert_terms_close(
+            midway.as_ref().expect("rank 0 gathers"),
+            &half,
+            TOL,
+            &format!("midway ranks={size}"),
+        );
+        assert_terms_close(
+            out.as_ref().expect("rank 0 gathers"),
+            &want,
+            TOL,
+            &format!("ranks={size}"),
+        );
+    }
+}
+
+/// `repartition_share` moves shares that were split by other rows, the form `result="local"` chaining hands from one call to the next.
+#[test]
+fn repartition_share_moves_every_term_to_its_new_rank() {
+    let n = 10;
+    let sum = rand_sum::<1>(500, n, 0x5A4E);
+    let old = PartitionRows::<1>::from_seed(n, 2, 1);
+    let new = PartitionRows::<1>::from_seed(n, 2, 2);
+    let shares = on_ranks(4, |transport| {
+        let share = PartitionedSum::scatter_with(
+            sum.clone(),
+            ScatterOptions {
+                runtime: PartitionRuntime::new(&unpinned_partitions(4, 1))
+                    .expect("an unpinned placement resolves"),
+                rows: ScatterRows::Explicit(old.clone()),
+            },
+        )
+        .partition(transport.rank() as usize)
+        .clone();
+        repartition_share(share, &new, &transport)
+    });
+    let mut total = 0;
+    for (rank, share) in shares.iter().enumerate() {
+        for (x, z, _) in share.iter() {
+            assert_eq!(new.partition_of(x, z), rank as u32);
+        }
+        total += share.len();
+    }
+    assert_eq!(total, sum.len());
+}
+
+/// Ranks that disagree about the new rows would misroute terms, so the repartition refuses.
+#[test]
+#[should_panic(expected = "disagree")]
+fn ranks_repartitioning_by_different_rows_are_caught() {
+    let n = 8;
+    let sum = rand_sum::<1>(50, n, 0x0D1F);
+    let mut group = InProcessTransport::group(2);
+    let one = group.pop().expect("rank 1");
+    let zero = group.pop().expect("rank 0");
+    std::thread::scope(|scope| {
+        let sum = &sum;
+        scope.spawn(move || {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut split = DistributedSum::scatter_with(
+                    sum.clone(),
+                    one,
+                    unpinned_scatter(1, 2, ROW_SEED),
+                );
+                split.repartition(PartitionRows::from_seed(n, 1, 7));
+            }));
+        });
+        let mut split =
+            DistributedSum::scatter_with(sum.clone(), zero, unpinned_scatter(1, 2, ROW_SEED));
+        split.repartition(PartitionRows::from_seed(n, 1, 8));
+    });
 }

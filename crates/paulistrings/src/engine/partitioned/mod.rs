@@ -17,7 +17,9 @@ pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;
 
-pub use distributed::{DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows};
+pub use distributed::{
+    repartition_share, DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows,
+};
 pub use driver::propagate_partitioned;
 pub use runtime::PartitionRuntime;
 pub use sum::PartitionedSum;

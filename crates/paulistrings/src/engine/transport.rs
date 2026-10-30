@@ -236,9 +236,9 @@ impl Transport for SoloTransport {
 /// The partition every gather lands on.
 pub(super) const ROOT: usize = 0;
 
-/// A [`Payload`] that is already bytes, the default gather's wire form.
+/// A [`Payload`] that is already bytes, the wire form of the default gather and of a repartition.
 #[derive(Default)]
-struct ByteParts(Vec<Vec<u8>>);
+pub(crate) struct ByteParts(pub(crate) Vec<Vec<u8>>);
 
 impl Payload for ByteParts {
     fn byte_parts(&self) -> Vec<&[u8]> {

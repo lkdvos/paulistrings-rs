@@ -596,7 +596,7 @@ fn collapse_sample_distributed_picks_by_weight() {
     assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
 }
 
-/// A run repartitioned mid-way by other rows, and its buckets rehashed by another family, continues exactly as the unpartitioned run: no term is lost or duplicated, and every rank holds only its new partition's keys.
+/// A run repartitioned mid-way by other rows, and its buckets rehashed by explicit rows, continues exactly as the unpartitioned run: no term is lost or duplicated, and every rank holds only its new partition's keys.
 #[test]
 fn repartitioning_and_rehashing_mid_run_match_propagate() {
     let n = 12;

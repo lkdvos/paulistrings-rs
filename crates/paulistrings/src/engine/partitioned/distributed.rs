@@ -504,38 +504,63 @@ pub fn repartition_share<const W: usize, X: Transport>(
     let rank = transport.rank() as usize;
     let hash = share.hash().clone();
     let num_qubits = share.num_qubits();
-    let mut pieces: Vec<Option<PauliSum<W>>> =
-        share.split_partitions(rows).into_iter().map(Some).collect();
+    let mut send: Vec<Option<ByteParts>> =
+        encode_split(&share, rows).into_iter().map(Some).collect();
     drop(share);
-    let mine = pieces[rank].take().expect("this rank's own piece");
-    // Every rank sends to every other, an empty piece included, so a transport inferring its partners from the `Some` slots sees a symmetric exchange.
-    let send: Vec<Option<ByteParts>> =
-        pieces.iter().map(|piece| piece.as_ref().map(encode_share)).collect();
-    drop(pieces);
+    let mut own = send[rank].take();
+    // Every rank sends to every other, an empty payload included, so a transport inferring its partners from the `Some` slots sees a symmetric exchange.
     let mut received = transport.exchange(send, &mut Vec::new());
-    let mut parts = Vec::with_capacity(size);
-    parts.push(mine);
-    for (from, payload) in received.iter_mut().enumerate() {
-        if from == rank {
-            continue;
-        }
-        let payload =
-            payload.take().unwrap_or_else(|| panic!("repartition: rank {from} sent nothing"));
-        parts.push(decode_rank(&payload.0, hash.clone(), num_qubits, from));
-    }
+    let parts: Vec<PauliSum<W>> = (0..size)
+        .map(|from| {
+            let payload = if from == rank {
+                own.take().expect("this rank's own payload").0
+            } else {
+                received[from]
+                    .take()
+                    .unwrap_or_else(|| panic!("repartition: rank {from} sent nothing"))
+                    .0
+            };
+            decode_rank(&payload, hash.clone(), num_qubits, from)
+        })
+        .collect();
     PauliSum::merge_partitions(parts)
 }
 
-/// A share in the gather's wire form: bucket lengths, then the x, z and coefficient columns.
-fn encode_share<const W: usize>(share: &PauliSum<W>) -> ByteParts {
-    let lens: Vec<u64> = (0..share.num_buckets()).map(|b| share.bucket_len(b) as u64).collect();
-    let (x, z, coeff) = share.to_arrays();
-    ByteParts(vec![
-        bytemuck::cast_slice(&lens).to_vec(),
-        bytemuck::cast_slice(x.as_flattened()).to_vec(),
-        bytemuck::cast_slice(z.as_flattened()).to_vec(),
-        bytemuck::cast_slice(&coeff).to_vec(),
-    ])
+/// `share` cut by the partition `rows` assigns each term, one payload per partition in the gather's wire form (bucket lengths, then the x, z and coefficient columns), keeping every bucket's order.
+/// One sequential pass straight into the wire columns, so the split never holds a bucket structure per partition and bucket.
+fn encode_split<const W: usize>(share: &PauliSum<W>, rows: &PartitionRows<W>) -> Vec<ByteParts> {
+    let partitions = rows.num_partitions();
+    let buckets = share.num_buckets();
+    let mut lens: Vec<Vec<u64>> = vec![Vec::with_capacity(buckets); partitions];
+    let mut x: Vec<Vec<[u64; W]>> = vec![Vec::new(); partitions];
+    let mut z: Vec<Vec<[u64; W]>> = vec![Vec::new(); partitions];
+    let mut coeff: Vec<Vec<Complex64>> = vec![Vec::new(); partitions];
+    for b in 0..buckets {
+        let (bucket_x, bucket_z, bucket_coeff) = share.bucket(b);
+        let before: Vec<usize> = coeff.iter().map(Vec::len).collect();
+        for ((key_x, key_z), &c) in bucket_x.iter().zip(bucket_z).zip(bucket_coeff) {
+            let to = rows.partition_of(key_x, key_z) as usize;
+            x[to].push(*key_x);
+            z[to].push(*key_z);
+            coeff[to].push(c);
+        }
+        for (to, lens) in lens.iter_mut().enumerate() {
+            lens.push((coeff[to].len() - before[to]) as u64);
+        }
+    }
+    lens.into_iter()
+        .zip(x)
+        .zip(z)
+        .zip(coeff)
+        .map(|(((lens, x), z), coeff)| {
+            ByteParts(vec![
+                bytemuck::cast_slice(&lens).to_vec(),
+                bytemuck::cast_slice(x.as_flattened()).to_vec(),
+                bytemuck::cast_slice(z.as_flattened()).to_vec(),
+                bytemuck::cast_slice(&coeff).to_vec(),
+            ])
+        })
+        .collect()
 }
 
 /// What every rank must agree on before terms move by `rows`: the partition rows and the bucket hash's rows.

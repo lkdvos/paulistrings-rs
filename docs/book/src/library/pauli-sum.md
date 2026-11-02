@@ -28,7 +28,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 | `.num_qubits` | qubit count |
 | `.width` | active compile-time width tier (words per term) |
 | `len(sum)` | term count |
-| `.num_buckets` | current bucket count (grow-only, reflects the last `propagate`/`rebucket`) |
+| `.num_buckets` | current bucket count, as the last `propagate` left it |
 | `.hash_seed` | the seed the bucket hash's drawn rows came from |
 | `.hash_rows()` | the bucket hash's GF(2) rows, a `bool` array of shape `(min(2 * num_qubits, 31), 2 * num_qubits)`, x-bits first; see [`paulistrings.hashes`](propagate.md#paulistringshashes) |
 | `.bucket_lengths()` | terms per bucket, a `uint64` array in bucket order |

@@ -183,9 +183,12 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                 collectives += 1;
             }
             lap!(stamp, local.stats().collective_ns);
-            if wanted_bits > local.hash().bits() {
+            if wanted_bits != local.hash().bits() {
                 while local.hash().bits() < wanted_bits {
                     local.refine();
+                }
+                if wanted_bits < local.hash().bits() {
+                    local.coarsen_to(wanted_bits);
                 }
                 lap!(stamp, local.stats().rebucket_ns);
                 prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, circuit_index);
@@ -240,7 +243,7 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                 bytes_sent: counts.bytes_sent,
                 rows_received: counts.rows_received,
                 nanos: elapsed.unwrap_or_default().as_nanos() as u64,
-                refine_passes: u32::from(local.hash().bits() - bits_before),
+                refine_passes: u32::from(local.hash().bits().saturating_sub(bits_before)),
                 receive_chunks: counts.receive_chunks,
                 device: None,
             };

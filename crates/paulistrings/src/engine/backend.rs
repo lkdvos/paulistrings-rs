@@ -22,6 +22,8 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
     fn len(&self) -> usize;
     fn hash(&self) -> &Gf2Hash<W>;
     fn refine(&mut self);
+    /// Halve the bucket count until `bits` remain; called only after the group agreed fewer bits than it holds.
+    fn coarsen_to(&mut self, bits: u8);
     /// The bucket bits this partition proposes for the layer; a backend may raise the host formula but never lower it.
     fn proposed_bits(
         &self,
@@ -30,9 +32,13 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
         min_buckets: usize,
     ) -> u8 {
         let _ = prepared;
-        crate::pauli_sum::storage::desired_bits(self.len(), target_bucket_len, min_buckets)
-            .max(self.hash().bits())
-            .min(self.hash().max_bits())
+        crate::pauli_sum::storage::rebucketed_bits(
+            self.len(),
+            self.hash().bits(),
+            target_bucket_len,
+            min_buckets,
+        )
+        .min(self.hash().max_bits())
     }
     /// Refine to the host bucket policy without the prepared channel and return `true`, or return `false` for a backend whose proposal needs it.
     fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {
@@ -96,6 +102,10 @@ impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
 
     fn refine(&mut self) {
         self.sum.refine();
+    }
+
+    fn coarsen_to(&mut self, bits: u8) {
+        self.sum.coarsen_to(bits);
     }
 
     fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {

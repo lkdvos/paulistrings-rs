@@ -7,9 +7,21 @@ The templates share `common.sh`: the shared toolchain, a private checkout of `PS
 | script | what it runs | when |
 |---|---|---|
 | `ab-campaign.sbatch` | `scripts/ab-compare.sh` paired A/B cells: either a code A/B (`A_REV=<sha>` vs `PS_REV`) or a runtime-knob A/B on one binary, P=1 vs P=`<numa nodes>` unless `KNOB_B` names another knob; `MPI=1` runs either under `srun` at one rank per NUMA domain | in-process partitioning, MPI ranks |
+| `thread-scaling.sbatch` | one exclusive genoa node: `membench` read/copy ceilings and `phase_breakdown` per thread count, one `numactl`-pinned process per (cell, T, placement): compact on NUMA node 0, spread over node 0's L3 domains, interleaved past one node, and the partitioned engine at P = <numa nodes>; ends with `scripts/scaling-report.py` per placement | intra-node strong scaling and the distance to the memory ceiling |
 | `gpu-devices.sbatch` | one 4 × A100 node (`gpu` partition): the single-device CUDA net, `tests/propagate_gpu_partitioned.rs` at one partition per GPU, then `phase_breakdown --device 0` and `--device 0,1,2,3` on the device cells | the CUDA backend, one process (needs the `cuda` cargo feature) |
 | `mpi-gpu.sbatch` | one 4-GPU node by default (`--gpus-per-node=4 --ntasks-per-node=4`, every node GPU visible to every task), one GPU per MPI rank over NCCL: diagnostics preamble, `tests/mpi_ranks.rs` with `NCCL_DEBUG` on, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
+
+## The thread-scaling job
+
+`thread-scaling.sbatch` answers which phase stops scaling first inside one NUMA domain, and how far each thread count sits from the `membench` copy ceiling.
+Each `(cell, T, placement)` is its own process under `numactl --physcpubind=<T CPUs>`, memory bound to node 0 while `T` fits it; `CELLS`, `THREADS` and `SPREAD_THREADS` choose the sweep, and `SMOKE=1 bash scripts/slurm/thread-scaling.sbatch` runs it at toy size.
+It writes `membench-<job>.txt` and `scaling-<job>-{compact,spread,interleave,numa}.jsonl` into `benchmarks/results/<date>-<node>/`; the job log ends with the `scaling-report.py` table of each.
+
+```bash
+env -u SBATCH_RESERVATION sbatch scripts/slurm/thread-scaling.sbatch
+env -u SBATCH_RESERVATION sbatch --constraint='rome&rocky9' scripts/slurm/thread-scaling.sbatch    # another node type; THREADS is capped at its CPUs
+```
 
 ## Node choice
 

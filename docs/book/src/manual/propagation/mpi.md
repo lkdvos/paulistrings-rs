@@ -91,6 +91,8 @@ A gate that never changes the excluded bits never moves a string between ranks: 
 Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank [echo read-out](../measurements.md#echo) needs.
 It cannot be combined with `partition_row_blocks=`.
 
+A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only `partition_row_blocks=` cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.
+
 ## result="gather" versus result="local"
 
 | `result` | what each rank gets back |

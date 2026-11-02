@@ -30,7 +30,8 @@ pub use crate::engine::partitioned::in_process::InProcessTransport;
 pub const BITS_AGREE_EVERY: usize = crate::engine::driver::BITS_AGREE_EVERY;
 
 pub use crate::pauli_sum::storage::{
-    desired_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+    desired_bits, rebucketed_bits, DEFAULT_HASH_SEED, DEFAULT_MIN_BUCKETS,
+    DEFAULT_TARGET_BUCKET_LEN,
 };
 
 /// Rough estimate of the cost of one `Instant::now()` read, in nanoseconds, for this hardware class; used by the `phase_breakdown` probe's overhead line (`timer_reads() * TIMER_READ_OVERHEAD_NS`).

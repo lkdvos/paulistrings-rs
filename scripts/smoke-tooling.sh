@@ -20,6 +20,7 @@ cargo bench --offline -p paulistrings --bench pauli_ops -- --test
 step "probe: host and partitioned cells"
 build_probe phase-timing
 "$probe" "${cell[@]}" --json-out "$out/host.jsonl"
+python3 scripts/scaling-report.py "$out/host.jsonl"
 "$probe" "${cell[@]}" --partitions 2 --partition-cpus unpinned --json-out "$out/partitioned.jsonl"
 step "ab-compare: a one-pair runtime-knob A/B"
 scripts/ab-compare.sh smoke-tooling --a . --b . --probe "${cell[*]}" --probe-b "${cell[*]} --partitions 2" --pairs 1
@@ -35,7 +36,9 @@ else skip "profile.sh: no perf"; fi
 if [ -d "${SHARED_RUST:-$HOME/.local/rust-shared}/cargo" ]; then
     step "the Slurm A/B template under SMOKE=1"
     TMPDIR="$out" SMOKE=1 bash scripts/slurm/ab-campaign.sbatch
-else skip "ab-campaign.sbatch: no shared toolchain (scripts/slurm/setup-shared-toolchain.sh)"; fi
+    step "the Slurm thread-scaling template under SMOKE=1"
+    TMPDIR="$out" SMOKE=1 bash scripts/slurm/thread-scaling.sbatch
+else skip "ab-campaign.sbatch, thread-scaling.sbatch: no shared toolchain (scripts/slurm/setup-shared-toolchain.sh)"; fi
 if nvidia-smi -L >/dev/null 2>&1; then
     step "probe: device cells"
     build_probe phase-timing,cuda

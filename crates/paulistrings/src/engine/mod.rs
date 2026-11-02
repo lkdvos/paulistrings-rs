@@ -63,7 +63,7 @@ pub enum Direction {
 pub struct PropagateOptions {
     /// Terms per bucket the per-layer partition targets.
     ///
-    /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and rebucketing is grow-only, so lowering either mid-run never coarsens a partition.
+    /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and a partition refines once its buckets average above this and coarsens once they average below an eighth of it, so a change mid-run moves it only past that gap.
     /// At least 1 ([`validate`](Self::validate)).
     pub target_bucket_len: usize,
     /// Floor on the per-layer bucket count once the sum is worth splitting.

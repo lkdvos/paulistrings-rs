@@ -11,7 +11,7 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PhaseStats {
     // -- wall-clock, once per layer, on the calling thread --
-    /// The grow-only rebucket before each layer; on a device, the refine kernels' time.
+    /// The rebucket before each layer; on a device, the refine kernels' time.
     pub rebucket_ns: u64,
     /// Channel preparation.
     pub prepare_ns: u64,

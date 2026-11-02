@@ -169,7 +169,11 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
         self.hash.refine();
     }
 
-    /// The host formula raised to the device bucket policy's wish, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
+    fn coarsen_to(&mut self, bits: u8) {
+        unreachable!("a device partition proposes at least its own {} bucket bits, so its group never agrees {bits}", self.hash.bits());
+    }
+
+    /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
     fn proposed_bits(
         &self,
         prepared: &Prepared<W>,

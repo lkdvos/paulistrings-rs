@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-b56afff9.js";
+            window.path_to_searchindex_js = "../../searchindex-59c8883d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -275,7 +275,7 @@ A call split by other rows only filters each share and would drop the terms that
 <pre><code class="language-python">local = local.repartition(comm, partition_row_seed=7)
 local = local.propagate(circuit, policy, comm=comm, partition_row_seed=7, result="local")
 </code></pre>
-<p><code>repartition</code> takes the rows in the same three spellings as <code>propagate</code> and sends every term to the rank they name, in one exchange between all ranks, without gathering anything.</p>
+<p><code>repartition</code> takes the same row keywords as <code>propagate</code> and sends every term to the rank they name, in one exchange between all ranks, without gathering anything.</p>
 <h2 id="launching"><a class="header" href="#launching">Launching</a></h2>
 <p>One rank per NUMA domain, bound to it — that is the placement the in-process engine would have made with explicit CPU lists, done by the launcher instead:</p>
 <pre><code class="language-bash">mpirun -n 4 --map-by ppr:1:numa --bind-to numa python script.py

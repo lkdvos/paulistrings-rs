@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-b56afff9.js";
+            window.path_to_searchindex_js = "../../searchindex-59c8883d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -259,10 +259,12 @@ The measured roofline behind those numbers is on <a href="../../examples/benchma
 <p><code>target_bucket_len</code> and <code>min_buckets</code> size the bucketed engine’s storage per layer; <code>PauliSum.num_buckets</code> reads back what was realized, which only ever grows.
 They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
 <code>target_bucket_len</code> must be at least 1 and <code>min_buckets</code> at least 16; anything smaller is a <code>ValueError</code>.</p>
-<p>The buckets are the classes of a GF(2)-linear hash, whose rows a sum carries through <code>propagate</code>; <code>PauliSum.hash_family</code> and <code>PauliSum.hash_seed</code> read them back.
-<code>sum.with_hash(family, seed=None)</code> returns a copy partitioned by another hash: <code>"dense"</code> (the default), <code>"sparse:&lt;k&gt;"</code> with <code>k</code> coordinates per row, or <code>"projection"</code>, which reads one coordinate per row and piles low-weight strings into one bucket.
-Every family is full rank, so no bucket is unreachable; a sparse weight that cannot be is a <code>ValueError</code>.
-Every family gives the same results within tolerance; only the speed differs, which is what they exist to measure.</p>
+<p>The buckets are the classes of a GF(2)-linear hash: a matrix of <code>min(2 * num_qubits, 31)</code> rows over the <code>2 * num_qubits</code> key coordinates, of which the first <code>log2(num_buckets)</code> are active, that a sum carries through <code>propagate</code>.
+<code>PauliSum.hash_rows()</code> and <code>PauliSum.hash_seed</code> read it back, <code>PauliSum.bucket_lengths()</code> the occupancy it produces.
+<code>sum.with_hash(rows=None, seed=None)</code> returns a copy bucketed by another hash: the given rows lead and dense random rows drawn from the seed, each independent of the rows before it, fill the rest, so <code>with_hash(seed=s)</code> is a fresh full-rank draw.
+<a href="../../library/propagate.html#paulistringshashes"><code>paulistrings.hashes</code></a> builds dense, sparse and projection matrices; a projection reads one coordinate per row and piles low-weight strings into one bucket, which is the kind of effect the rows exist to measure.
+Rows that fall short of full rank leave some buckets unreachable and run with a <code>RuntimeWarning</code>, never an error.
+Every hash gives the same results within tolerance; only the speed differs.</p>
 <h2 id="determinism"><a class="header" href="#determinism">Determinism</a></h2>
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
 Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.

@@ -18,7 +18,7 @@
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span><span class="kw">crate</span>::engine::timing::timed;
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">crate</span>::engine::trace::PartitionTrace;
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">crate</span>::engine::{progress_scope, Direction, PropagateOptions};
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::hash::{HashFamily, PartitionRows};
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::hash::{Gf2Hash, PartitionRows};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::PauliSum;
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">use </span><span class="kw">crate</span>::readout::product_state::ProductBasis;
 <a href=#24 id=24 data-nosnippet>24</a><span class="kw">use </span><span class="kw">crate</span>::truncation::TruncationPolicy;
@@ -194,7 +194,7 @@
 <a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">let </span>ScatterOptions { runtime, rows } = options;
 <a href=#195 id=195 data-nosnippet>195</a>        <span class="kw">let </span>rows = rows.resolve(<span class="kw-2">&amp;</span>sum, runtime.partition_bits());
 <a href=#196 id=196 data-nosnippet>196</a>        <span class="kw">let </span>size = runtime.num_partitions();
-<a href=#197 id=197 data-nosnippet>197</a>        rows.assert_splits(sum.hash(), sum.num_qubits(), size);
+<a href=#197 id=197 data-nosnippet>197</a>        rows.assert_splits(sum.num_qubits(), size);
 <a href=#198 id=198 data-nosnippet>198</a>
 <a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>started = Instant::now();
 <a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>locals = {
@@ -247,19 +247,19 @@
 <a href=#247 id=247 data-nosnippet>247</a>        <span class="self">self</span>.rows = rows;
 <a href=#248 id=248 data-nosnippet>248</a>    }
 <a href=#249 id=249 data-nosnippet>249</a>
-<a href=#250 id=250 data-nosnippet>250</a>    <span class="doccomment">/// Rebucket every partition by the rows `family` draws from `seed`, each inside its own pool so its memory stays on its node; no term changes partition.
+<a href=#250 id=250 data-nosnippet>250</a>    <span class="doccomment">/// Rebucket every partition by `hash`, at its bucket count, each inside its own pool so its memory stays on its node; no term changes partition.
 <a href=#251 id=251 data-nosnippet>251</a>    ///
 <a href=#252 id=252 data-nosnippet>252</a>    /// # Panics
 <a href=#253 id=253 data-nosnippet>253</a>    ///
-<a href=#254 id=254 data-nosnippet>254</a>    /// As [`Gf2Hash::with_family`](crate::Gf2Hash::with_family).
-<a href=#255 id=255 data-nosnippet>255</a>    </span><span class="kw">pub fn </span>rehash_buckets(<span class="kw-2">&amp;mut </span><span class="self">self</span>, family: HashFamily, seed: u64) {
+<a href=#254 id=254 data-nosnippet>254</a>    /// As [`PauliSum::with_hash`].
+<a href=#255 id=255 data-nosnippet>255</a>    </span><span class="kw">pub fn </span>rehash_buckets(<span class="kw-2">&amp;mut </span><span class="self">self</span>, hash: Gf2Hash&lt;W&gt;) {
 <a href=#256 id=256 data-nosnippet>256</a>        <span class="kw">let </span>shares: Vec&lt;PauliSum&lt;W&gt;&gt; = <span class="self">self
 <a href=#257 id=257 data-nosnippet>257</a>            </span>.parts
 <a href=#258 id=258 data-nosnippet>258</a>            .iter_mut()
 <a href=#259 id=259 data-nosnippet>259</a>            .map(|part| std::mem::replace(<span class="kw-2">&amp;mut </span>part.sum, PauliSum::empty(<span class="self">self</span>.rows.num_qubits())))
 <a href=#260 id=260 data-nosnippet>260</a>            .collect();
 <a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>rehashed =
-<a href=#262 id=262 data-nosnippet>262</a>            <span class="self">self</span>.runtime.map_partitions(shares, |<span class="kw">_</span>, share, <span class="kw">_</span>| share.with_hash_family(family, seed));
+<a href=#262 id=262 data-nosnippet>262</a>            <span class="self">self</span>.runtime.map_partitions(shares, |<span class="kw">_</span>, share, <span class="kw">_</span>| share.with_hash(hash.clone()));
 <a href=#263 id=263 data-nosnippet>263</a>        <span class="kw">for </span>(part, sum) <span class="kw">in </span><span class="self">self</span>.parts.iter_mut().zip(rehashed) {
 <a href=#264 id=264 data-nosnippet>264</a>            part.sum = sum;
 <a href=#265 id=265 data-nosnippet>265</a>        }

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-b56afff9.js";
+            window.path_to_searchindex_js = "../../searchindex-59c8883d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -204,7 +204,7 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
     partitions="auto",            # one partition per NUMA node, rounded down to a power of two
 )
 </code></pre>
-<p><code>partitions</code> takes <code>"auto"</code>, an integer (a power of two, at most 64), or an explicit list of CPU lists — one per partition, in the <code>"0-7,16-23"</code> spelling — when the automatic split is not the one you want:</p>
+<p><code>partitions</code> takes <code>"auto"</code>, an integer (a power of two), or an explicit list of CPU lists — one per partition, in the <code>"0-7,16-23"</code> spelling — when the automatic split is not the one you want:</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">partitions=["0-7,16-23", "8-15,24-31"]
 </code></pre>
@@ -233,7 +233,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <h2 id="limits"><a class="header" href="#limits">Limits</a></h2>
 <ul>
 <li><strong>Pinning is Linux-only.</strong> Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.</li>
-<li><strong><code>P</code> is a power of two, at most 64.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, and the engine caps that at 6 (<code>P_MAX_BITS</code>).</li>
+<li><strong><code>P</code> is a power of two, at most <code>2^min(2 · num_qubits, 31)</code>.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, one per key coordinate and at most 31, since bucket and partition counts are <code>u32</code>.</li>
 <li><strong>Peak memory is above a single-pool run’s.</strong> A partitioned run holds <code>P</code> shares of the sum plus one layer’s exchange buffers, which are pooled and reused rather than freed between layers.</li>
 <li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.</li>
 </ul>

@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2480e55c.js";
+            window.path_to_searchindex_js = "searchindex-6ae8e832.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -1494,6 +1494,7 @@ evolved = observable.propagate(circuit, policy, comm=comm, result="local", parti
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
 Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
+<p>A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only <code>partition_row_blocks=</code> cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.</p>
 <h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
 <div class="table-wrapper">
 <table>
@@ -4408,7 +4409,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
-<tr><td><code>.num_buckets</code></td><td>current bucket count (grow-only, reflects the last <code>propagate</code>/<code>rebucket</code>)</td></tr>
+<tr><td><code>.num_buckets</code></td><td>current bucket count, as the last <code>propagate</code> left it</td></tr>
 <tr><td><code>.hash_seed</code></td><td>the seed the bucket hash’s drawn rows came from</td></tr>
 <tr><td><code>.hash_rows()</code></td><td>the bucket hash’s GF(2) rows, a <code>bool</code> array of shape <code>(min(2 * num_qubits, 31), 2 * num_qubits)</code>, x-bits first; see <a href="#paulistringshashes"><code>paulistrings.hashes</code></a></td></tr>
 <tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>

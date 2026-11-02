@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2480e55c.js";
+            window.path_to_searchindex_js = "../searchindex-6ae8e832.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -223,7 +223,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
-<tr><td><code>.num_buckets</code></td><td>current bucket count (grow-only, reflects the last <code>propagate</code>/<code>rebucket</code>)</td></tr>
+<tr><td><code>.num_buckets</code></td><td>current bucket count, as the last <code>propagate</code> left it</td></tr>
 <tr><td><code>.hash_seed</code></td><td>the seed the bucket hash’s drawn rows came from</td></tr>
 <tr><td><code>.hash_rows()</code></td><td>the bucket hash’s GF(2) rows, a <code>bool</code> array of shape <code>(min(2 * num_qubits, 31), 2 * num_qubits)</code>, x-bits first; see <a href="propagate.html#paulistringshashes"><code>paulistrings.hashes</code></a></td></tr>
 <tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>

@@ -325,6 +325,14 @@ A four-rank hang on workergpu047 is attributed to that node; every job step is b
 
 ## Open
 
+### Hash-table buckets updated in place
+
+Idea: keep the GF(2) buckets but store each as a hash table updated in place (`hash-kernel` feature), with three per-coset kernels: scatter (side buffer, then filter), orbit (each closed key group read, transformed and written back) and fused (rotations and Cliffords, one probe per cross-key row, exact truncation).
+On worker6037 (Ice Lake 8362, job 7393814, `hashbrown` tables, `W = 2`, 1e6 terms) against the sorted engine, 1 / 16 threads: `su4` orbit **3.8× / 3.4×** faster, kicked Ising grown to 4.4e5 terms fused **1.66× / 1.48×**, a weight-4 rotation fused −18% / −14%, `rotation_zz` and `cnot` within ±9%, mixed Cliffords +10% / +17% and depolarizing **3.8× / 4.8× slower**.
+Buckets of 256–4096 terms are flat; one table is 2× slower single-threaded, and streaming the coset in first helps only the orbit kernel (−15–20% on `su4`).
+The fused walk runs ~40% fewer instructions than the sorted engine at half its IPC; a custom table (forward slots, SSE2 tag groups, walk prefetch) took its L3-miss stalls down ~5× on ccqlin038 and is unmeasured on a quiet node.
+Open: the key-preserving rescale, which the sorted engine runs as a dense column pass, and the power-of-two table sizing (load ~0.5 on Clifford layers).
+
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
 
 Non-rotation channels on more than two qubits panic in `propagate`.

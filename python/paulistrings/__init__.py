@@ -27,6 +27,7 @@ from . import _paulistrings
 from ._paulistrings import (
     Circuit,
     PartitionStats,
+    PartitionedPauliSum,
     PauliString,
     PauliSum,
     PropagationStats,
@@ -46,6 +47,7 @@ __all__ = [
     "Circuit",
     "PauliString",
     "PauliSum",
+    "PartitionedPauliSum",
     "p",
     "PropagationStats",
     "PartitionStats",

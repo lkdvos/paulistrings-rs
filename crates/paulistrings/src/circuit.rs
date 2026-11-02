@@ -5,6 +5,9 @@ use crate::channel::Channel;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
 
+/// A key shift `(x-mask, z-mask)`: a channel maps a term's key `k` to `k ⊕ shift`.
+pub type KeyShift<const W: usize> = ([u64; W], [u64; W]);
+
 /// An ordered list of channels on `num_qubits` qubits, user-defined [`crate::Channel`] impls included.
 ///
 /// [`crate::Direction::Forward`] applies it in order, [`crate::Direction::Heisenberg`] in reverse with each channel's adjoint.
@@ -70,7 +73,7 @@ impl<const W: usize> Circuit<W> {
 
     /// Every nonzero key shift each channel applies to a term, as `(x-mask, z-mask)`, or `None` for a channel the partitioned engine declines.
     /// A channel moves terms between partitions exactly when the partition rows map one of its shifts to a nonzero label, the test `PartitionPlan` applies, so this is the static communication cost of a choice of rows.
-    pub fn deltas(&self) -> Vec<Option<Vec<([u64; W], [u64; W])>>> {
+    pub fn deltas(&self) -> Vec<Option<Vec<KeyShift<W>>>> {
         // The hash only sets the bucket deltas, which are not reported, so any hash gives the same shifts.
         let hash = Gf2Hash::<W>::new(self.num_qubits, 0, DEFAULT_HASH_SEED);
         let identity = ([0u64; W], [0u64; W]);

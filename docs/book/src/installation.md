@@ -73,8 +73,9 @@ observable = PauliSum.from_strings({"I" * q + "Z" + "I" * (n - q - 1): 1.0 for q
 circuit = Circuit(n)
 for q in range(n):
     circuit.h(q)
-local = observable.propagate(circuit, truncation.approx_topn(1000), direction="heisenberg", comm=comm, result="local")
-value = comm.allreduce(local.expectation("x+"))
+split = observable.partition(comm=comm)
+split.propagate(circuit, truncation.approx_topn(1000), direction="heisenberg")
+value = split.expectation("x+")
 if comm.Get_rank() == 0:
     print(f"paulistrings {paulistrings.__version__}: {comm.Get_size()} ranks, <+|sum X|+> = {value.real:g} (expect {n})")
 ```

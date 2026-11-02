@@ -492,6 +492,59 @@ pub(crate) fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
 }
 
 /// One character of a per-qubit product-state label, in qiskit's `Statevector.from_label` alphabet. `None` for anything else.
+/// A product state as `PauliSum.expectation` spells it: a uniform name or one per-qubit label.
+pub(crate) enum ProductState {
+    Uniform(PauliAxis),
+    Labels(Vec<(PauliAxis, bool)>),
+}
+
+impl ProductState {
+    pub(crate) fn basis<const W: usize>(&self) -> ProductBasis<W> {
+        match self {
+            ProductState::Uniform(axis) => ProductBasis::uniform(*axis),
+            ProductState::Labels(axes) => ProductBasis::from_axes(axes.iter().copied()),
+        }
+    }
+}
+
+/// `state` for a sum over `num_qubits` qubits, with `PauliSum.expectation`'s errors.
+pub(crate) fn parse_product_state(state: &str, num_qubits: usize) -> PyResult<ProductState> {
+    // The uniform names win first, case-insensitively, so `"x+"` keeps
+    // meaning |+...+> at any qubit count. They cannot collide with a label
+    // string: `x`, `y` and `z` are not in the per-qubit alphabet.
+    let uniform = match state.to_ascii_lowercase().as_str() {
+        "x+" => Some(PauliAxis::X),
+        "y+" => Some(PauliAxis::Y),
+        "z+" => Some(PauliAxis::Z),
+        _ => None,
+    };
+    if let Some(st) = uniform {
+        return Ok(ProductState::Uniform(st));
+    }
+    let mut axes: Vec<(PauliAxis, bool)> = Vec::with_capacity(num_qubits);
+    for (q, ch) in state.chars().enumerate() {
+        match parse_state_label(ch) {
+            Some(entry) => axes.push(entry),
+            None => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown product state {state:?}: {ch:?} at qubit {q} is not a per-qubit \
+                     label; expected a character from \"01+-rl\" (0/1 = Z±, +/- = X±, \
+                     r/l = Y±), or one of the uniform names \"x+\", \"y+\", \"z+\"",
+                )))
+            }
+        }
+    }
+    if axes.len() != num_qubits {
+        return Err(PyValueError::new_err(format!(
+            "unknown product state {state:?}: a per-qubit label string over \"01+-rl\" needs \
+             one character per qubit (got {}, num_qubits is {num_qubits}); the uniform names \
+             are \"x+\", \"y+\", \"z+\"",
+            axes.len(),
+        )));
+    }
+    Ok(ProductState::Labels(axes))
+}
+
 /// Returns `(axis, minus)`, exactly what `ProductBasis::from_axes` consumes.
 fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
     Some(match ch {
@@ -531,7 +584,7 @@ pub(crate) fn propagate_options(
 /// `partitions=` / `pin_memory=` → an optional core [`PartitionConfig`]; `None` means the classic unpartitioned path.
 /// Accepted: `None`/`1` (classic), `"auto"` (one partition per NUMA node, or classic on a single-node box), an `int` power of two `>= 2` (capped at that many partitions), or `list[list[int]]` (one partition per CPU list). Anything else is a `TypeError`; a malformed value of an accepted shape is a `ValueError`.
 /// Resolved against the machine here, before the GIL is released, so a bad CPU list is an exception rather than a failure inside the run; resolved again by [`PartitionRuntime::new`] (see [`runtime_for`]).
-fn parse_partitions(
+pub(crate) fn parse_partitions(
     partitions: Option<&Bound<'_, PyAny>>,
     pin_memory: bool,
 ) -> PyResult<Option<PartitionConfig>> {
@@ -763,7 +816,9 @@ type RuntimeCache = Mutex<Vec<(PartitionConfig, Arc<PartitionRuntime>)>>;
 
 static PARTITION_RUNTIMES: OnceLock<RuntimeCache> = OnceLock::new();
 
-fn runtime_for(config: &PartitionConfig) -> Result<Arc<PartitionRuntime>, TopologyError> {
+pub(crate) fn runtime_for(
+    config: &PartitionConfig,
+) -> Result<Arc<PartitionRuntime>, TopologyError> {
     let cache = PARTITION_RUNTIMES.get_or_init(|| Mutex::new(Vec::new()));
     // A poisoned lock means an earlier caller panicked; the cache is append-only and never half-updated, so recover rather than poison every later call.
     let mut cache = cache.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -782,6 +837,9 @@ pub(crate) enum PropagateFailure {
     WidthMismatch,
     /// The partitioned placement could not be realized on this machine.
     Topology(TopologyError),
+    /// Under `comm=`, the ranks hold different sums that are not already split by the call's rows.
+    #[cfg(feature = "mpi")]
+    MisplacedShares,
     /// A device run failed; see [`crate::gpu::gpu_error`] for the exception each variant becomes.
     #[cfg(feature = "cuda")]
     Gpu(paulistrings::gpu::GpuError),
@@ -807,6 +865,10 @@ impl From<PropagateFailure> for PyErr {
                 PyValueError::new_err("internal: PauliSum and Circuit width mismatch")
             }
             PropagateFailure::Topology(err) => topology_error(err),
+            #[cfg(feature = "mpi")]
+            PropagateFailure::MisplacedShares => PyValueError::new_err(
+                "comm= takes the same sum on every rank, but the ranks hold different terms that the call's partition rows would move between ranks, so the scatter would drop them; keep a split between calls with PauliSum.partition(comm=...) and change its rows with PartitionedPauliSum.repartition",
+            ),
             #[cfg(feature = "cuda")]
             PropagateFailure::Gpu(err) => crate::gpu::gpu_error(err),
             #[cfg(all(feature = "cuda", feature = "mpi"))]
@@ -844,6 +906,16 @@ fn parse_result(result: &str) -> PyResult<bool> {
     }
 }
 
+/// The `DeprecationWarning` `result="local"` raises, pointing at the split that replaces it.
+fn warn_local_result(py: Python<'_>) -> PyResult<()> {
+    PyErr::warn_bound(
+        py,
+        &py.get_type_bound::<pyo3::exceptions::PyDeprecationWarning>(),
+        "result=\"local\" is deprecated: keep the sum split between calls with PauliSum.partition(comm=...), which reads expectation values without gathering and changes its rows with PartitionedPauliSum.repartition",
+        1,
+    )
+}
+
 /// Whether `comm=` names an actual communicator (`None` and an omitted kwarg
 /// both mean "not distributed").
 fn comm_requested(comm: Option<&Bound<'_, PyAny>>) -> bool {
@@ -852,7 +924,7 @@ fn comm_requested(comm: Option<&Bound<'_, PyAny>>) -> bool {
 
 /// The `RuntimeError` a `comm=` raises in a build without the `mpi` feature.
 #[cfg(not(feature = "mpi"))]
-fn mpi_unavailable_error() -> PyErr {
+pub(crate) fn mpi_unavailable_error() -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(
         "paulistrings was built without MPI support, which no wheel includes; build it from source as in \
          https://lkdvos.github.io/paulistrings-rs/installation.html#mpi-and-multi-node-runs",
@@ -880,22 +952,22 @@ enum RunMode {
 }
 
 /// The per-layer records a run produced, and where its partitions ran.
-struct RunTrace {
-    trace: PartitionTrace,
-    placement: TracePlacement,
+pub(crate) struct RunTrace {
+    pub(crate) trace: PartitionTrace,
+    pub(crate) placement: TracePlacement,
 }
 
 /// Where a traced run's partitions ran, for `PropagationStats.partition`.
-struct TracePlacement {
-    partitions: usize,
+pub(crate) struct TracePlacement {
+    pub(crate) partitions: usize,
     /// `(rank, size)` of a `comm=` run, whose trace holds this rank's records only.
-    ranks: Option<(u32, u32)>,
+    pub(crate) ranks: Option<(u32, u32)>,
     /// Each partition's device ordinal, for a device run.
-    devices: Option<Vec<u32>>,
+    pub(crate) devices: Option<Vec<u32>>,
 }
 
 impl TracePlacement {
-    fn partitions(partitions: usize) -> Self {
+    pub(crate) fn partitions(partitions: usize) -> Self {
         Self { partitions, ranks: None, devices: None }
     }
 }
@@ -990,8 +1062,7 @@ impl RunMode {
             #[cfg(feature = "mpi")]
             RunMode::Distributed(run) => run
                 .propagate(circuit, sum, policy, direction, options, traced)
-                .map(RunOutput::from_mpi)
-                .map_err(PropagateFailure::Topology),
+                .map(RunOutput::from_mpi),
             #[cfg(feature = "cuda")]
             RunMode::Devices(config, devices, rows) => {
                 let (out, trace) =
@@ -1392,7 +1463,11 @@ impl PropagationStats {
     /// The layer-level term counts are the per-partition ones summed, so a partitioned run is comparable to an unpartitioned one field by field.
     /// `nanos` is the **maximum** over partitions per layer (a critical-rank proxy, documented on the getter); `circuit_index`/`application_index`/`gate_name` are identical across partitions by construction (lock-step application).
     /// A distributed run's records are this rank's only, so the term-count sum is a sum of one (documented on `PartitionStats.size`) and `nanos` is that one rank's own timing.
-    fn from_run_trace(run: RunTrace, final_terms: usize, collapses: Option<u64>) -> Self {
+    pub(crate) fn from_run_trace(
+        run: RunTrace,
+        final_terms: usize,
+        collapses: Option<u64>,
+    ) -> Self {
         let RunTrace { trace, placement } = run;
         let sum_of = |counts: &[usize]| counts.iter().sum::<usize>();
         let layers = &trace.layers;
@@ -1679,7 +1754,7 @@ pub(crate) fn coordinate_flags<const W: usize>(
 }
 
 /// A matrix of shape `(k, 2 · num_qubits)`, `k <= max_rows`, whose entries are booleans or `0`/`1`, as its rows of flags; `name` is the keyword in errors.
-fn parse_row_matrix(
+pub(crate) fn parse_row_matrix(
     py: Python<'_>,
     rows: &Bound<'_, PyAny>,
     num_qubits: usize,
@@ -1712,12 +1787,12 @@ fn parse_row_matrix(
 }
 
 /// A Python `RuntimeWarning`, attributed to the caller's line.
-fn warn_runtime(py: Python<'_>, message: &str) -> PyResult<()> {
+pub(crate) fn warn_runtime(py: Python<'_>, message: &str) -> PyResult<()> {
     PyErr::warn_bound(py, &py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(), message, 1)
 }
 
 /// The partition-row keywords of `propagate`, parsed and checked against each other with the GIL held.
-struct RowKwargs {
+pub(crate) struct RowKwargs {
     seed: Option<u64>,
     blocks: Option<Vec<Vec<usize>>>,
     exclude: Option<(Vec<usize>, Vec<usize>)>,
@@ -1725,7 +1800,7 @@ struct RowKwargs {
 }
 
 impl RowKwargs {
-    fn parse(
+    pub(crate) fn parse(
         py: Python<'_>,
         seed: Option<u64>,
         blocks: Option<&Bound<'_, PyAny>>,
@@ -1782,7 +1857,12 @@ impl RowKwargs {
     }
 
     /// Check what can be checked once the partition count is known: a cut's blocks or the explicit rows' count; `what` names where the count came from.
-    fn validate_count(&self, num_qubits: usize, partitions: usize, what: &str) -> PyResult<()> {
+    pub(crate) fn validate_count(
+        &self,
+        num_qubits: usize,
+        partitions: usize,
+        what: &str,
+    ) -> PyResult<()> {
         if let Some(blocks) = &self.blocks {
             validate_partition_row_blocks(blocks, num_qubits, partitions, what)?;
         }
@@ -1798,7 +1878,7 @@ impl RowKwargs {
         Ok(())
     }
 
-    fn policy(&self) -> PartitionRowPolicy {
+    pub(crate) fn policy(&self) -> PartitionRowPolicy {
         let (exclude_x, exclude_z) = self.exclude.clone().unwrap_or_default();
         match (&self.rows, &self.blocks, &self.exclude) {
             (Some(rows), ..) => PartitionRowPolicy::Matrix(rows.clone()),
@@ -1821,7 +1901,7 @@ fn partition_shortfall<const W: usize>(
 }
 
 /// A `RuntimeWarning` when the rows `policy` names for `partitions` partitions are dependent; overlap with the bucket rows is the engine's to log, at the layer it starts to matter.
-fn warn_partition_rows(
+pub(crate) fn warn_partition_rows(
     py: Python<'_>,
     sum: &PauliSumImpl,
     policy: &PartitionRowPolicy,
@@ -1988,59 +2068,6 @@ impl PauliSum {
         Ok(Self::plain(rehashed))
     }
 
-    /// This rank's share of a distributed sum, moved so that every rank holds exactly the terms the new partition rows assign it; collective over `comm`.
-    ///
-    /// Use it on `result="local"` shares before a `propagate(comm=...)` that splits by other rows: that call only filters each rank's share and would drop the terms that now belong elsewhere.
-    /// The rows take the keywords of `propagate` (`partition_row_seed`, `partition_row_blocks`, `partition_row_exclude`, `partition_rows`), defaulting to the seeded dense draw at the sum's own hash seed, and warn as they do there.
-    /// Every rank must pass the same rows and hold a share under the same bucket hash; a disagreement raises on every rank.
-    #[pyo3(signature = (comm, *, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None))]
-    fn repartition(
-        &self,
-        py: Python<'_>,
-        comm: &Bound<'_, PyAny>,
-        partition_row_seed: Option<u64>,
-        partition_row_blocks: Option<&Bound<'_, PyAny>>,
-        partition_row_exclude: Option<&Bound<'_, PyAny>>,
-        partition_rows: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Self> {
-        let num_qubits = self.inner.num_qubits();
-        let rows = RowKwargs::parse(
-            py,
-            partition_row_seed,
-            partition_row_blocks,
-            partition_row_exclude,
-            partition_rows,
-            num_qubits,
-        )?;
-        #[cfg(feature = "mpi")]
-        {
-            let ranks = crate::mpi::comm_size(comm)?;
-            if !ranks.is_power_of_two() {
-                return Err(PyValueError::new_err(format!(
-                    "repartition needs a power-of-two group, since a partition is named by log2(P) GF(2) rows; comm= has {ranks} ranks"
-                )));
-            }
-            rows.validate_count(num_qubits, ranks, &format!("comm= with {ranks} rank(s)"))?;
-            let policy = rows.policy();
-            warn_partition_rows(py, &self.inner, &policy, ranks)?;
-            let bits = ranks.trailing_zeros() as u8;
-            let transport = crate::mpi::transport_from_comm(py, comm)?;
-            let share = self.inner.clone();
-            let moved = py.allow_threads(move || {
-                for_each_width_convert!(PauliSumImpl => PauliSumImpl, share, |s| {
-                    let split = policy.rows(num_qubits, bits, s.hash().seed());
-                    paulistrings::repartition_share(s, &split, &transport)
-                })
-            });
-            Ok(Self::plain(moved))
-        }
-        #[cfg(not(feature = "mpi"))]
-        {
-            let _ = (py, comm, rows);
-            Err(mpi_unavailable_error())
-        }
-    }
-
     /// Snapshot of the coefficient column as a list of Python complex values.
     fn coefficients(&self) -> Vec<Complex64> {
         self.inner.coeffs()
@@ -2052,41 +2079,10 @@ impl PauliSum {
     /// Cost is one masked pass over the terms either way, never an expansion over basis states. Returns a Python complex; take `.real` when the operator is Hermitian.
     #[pyo3(signature = (state="x+"))]
     fn expectation(&self, state: &str) -> PyResult<Complex64> {
-        // The uniform names win first, case-insensitively, so `"x+"` keeps
-        // meaning |+...+> at any qubit count. They cannot collide with a label
-        // string: `x`, `y` and `z` are not in the per-qubit alphabet.
-        let uniform = match state.to_ascii_lowercase().as_str() {
-            "x+" => Some(PauliAxis::X),
-            "y+" => Some(PauliAxis::Y),
-            "z+" => Some(PauliAxis::Z),
-            _ => None,
-        };
-        if let Some(st) = uniform {
-            return Ok(self.inner.expectation_uniform(st));
-        }
-        let num_qubits = self.inner.num_qubits();
-        let mut axes: Vec<(PauliAxis, bool)> = Vec::with_capacity(num_qubits);
-        for (q, ch) in state.chars().enumerate() {
-            match parse_state_label(ch) {
-                Some(entry) => axes.push(entry),
-                None => {
-                    return Err(PyValueError::new_err(format!(
-                        "unknown product state {state:?}: {ch:?} at qubit {q} is not a per-qubit \
-                         label; expected a character from \"01+-rl\" (0/1 = Z±, +/- = X±, \
-                         r/l = Y±), or one of the uniform names \"x+\", \"y+\", \"z+\"",
-                    )))
-                }
-            }
-        }
-        if axes.len() != num_qubits {
-            return Err(PyValueError::new_err(format!(
-                "unknown product state {state:?}: a per-qubit label string over \"01+-rl\" needs \
-                 one character per qubit (got {}, num_qubits is {num_qubits}); the uniform names \
-                 are \"x+\", \"y+\", \"z+\"",
-                axes.len(),
-            )));
-        }
-        Ok(self.inner.expectation_labels(&axes))
+        Ok(match parse_product_state(state, self.inner.num_qubits())? {
+            ProductState::Uniform(axis) => self.inner.expectation_uniform(axis),
+            ProductState::Labels(axes) => self.inner.expectation_labels(&axes),
+        })
     }
 
     /// Expectation value in a stabilizer state given by its generators.
@@ -2259,6 +2255,9 @@ impl PauliSum {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
+        if !gather {
+            warn_local_result(py)?;
+        }
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
         let policy = PyTruncation::tree_of(policy);
         // Last, because adopting a communicator is collective: every check
@@ -2314,6 +2313,9 @@ impl PauliSum {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
+        if !gather {
+            warn_local_result(py)?;
+        }
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
         let policy = PyTruncation::tree_of(policy);
         // Last, because adopting a communicator is collective: every check
@@ -2343,6 +2345,34 @@ impl PauliSum {
             collapses,
         );
         Ok((sum, stats))
+    }
+
+    /// Split `self` into a `PartitionedPauliSum` that stays split between calls, so a run can change its partition or bucket rows mid-circuit without gathering; `self` is left untouched.
+    ///
+    /// `partitions` (default `"auto"`) and `pin_memory` place the partitions in this process as for `propagate`, where one partition is a one-pool split; `comm=` instead splits over the ranks of an MPI group, one partition per rank, and is then collective.
+    /// The row keywords are `propagate`'s and pick the initial partition rows.
+    #[pyo3(signature = (partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None, comm=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn partition(
+        &self,
+        py: Python<'_>,
+        partitions: Option<&Bound<'_, PyAny>>,
+        pin_memory: bool,
+        partition_row_seed: Option<u64>,
+        partition_row_blocks: Option<&Bound<'_, PyAny>>,
+        partition_row_exclude: Option<&Bound<'_, PyAny>>,
+        partition_rows: Option<&Bound<'_, PyAny>>,
+        comm: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<crate::partitioned::PartitionedPauliSum> {
+        let rows = RowKwargs::parse(
+            py,
+            partition_row_seed,
+            partition_row_blocks,
+            partition_row_exclude,
+            partition_rows,
+            self.inner.num_qubits(),
+        )?;
+        crate::partitioned::partition(py, &self.inner, partitions, pin_memory, rows, comm)
     }
 
     /// Upload `self` to CUDA device `device`, returning a resident `GpuPauliSum`; `self` is left untouched.

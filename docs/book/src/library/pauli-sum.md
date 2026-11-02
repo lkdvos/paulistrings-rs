@@ -33,11 +33,12 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 | `.hash_rows()` | the bucket hash's GF(2) rows, a `bool` array of shape `(min(2 * num_qubits, 31), 2 * num_qubits)`, x-bits first; see [`paulistrings.hashes`](propagate.md#paulistringshashes) |
 | `.bucket_lengths()` | terms per bucket, a `uint64` array in bucket order |
 | `.with_hash(rows=None, seed=None)` | a copy bucketed by another hash: the given rows lead, dense rows drawn from `seed` (default: this sum's) fill the rest; dependent rows are a `RuntimeWarning` |
+| `.partition(partitions=None, ..., comm=None)` | a [`PartitionedPauliSum`](propagate.md#partitionedpaulisum) that stays split between calls, over NUMA partitions or MPI ranks, so its partition and bucket rows can change mid-circuit |
 | `.coefficients()` | coefficient column as a list of Python `complex` |
 | `.coefficients_array()` | coefficient column as a 1-D `complex128` NumPy array |
 | `.x_array()` | X-part column, 2-D `uint64` array, shape `(len, width)` |
 | `.z_array()` | Z-part column, 2-D `uint64` array, shape `(len, width)` |
-| `.to_arrays()` | `(x_array(), z_array(), coefficients_array())` from one snapshot, the inverse of `from_arrays`; a `result="local"` share gives this rank's terms |
+| `.to_arrays()` | `(x_array(), z_array(), coefficients_array())` from one snapshot, the inverse of `from_arrays`; `PartitionedPauliSum.local()` gives a rank's own terms |
 | `str(sum)`, `repr(sum)` | `coefficient*label` for the first few terms, `+`-joined, `... (N more terms)` past that; `0` for the empty sum |
 
 All five array/list accessors return the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`), consistently across calls.

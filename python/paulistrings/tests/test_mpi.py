@@ -36,7 +36,7 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, hashes, truncation
 
 from ._runs_agree import (
     assert_runs_agree,
@@ -453,53 +453,70 @@ def test_a_locality_cut_holds_the_terms_it_names():
 
 
 # --------------------------------------------------------------------------
-# repartition
+# PartitionedPauliSum over ranks
 
 
-def test_repartition_moves_every_term_to_the_rank_its_new_rows_name():
-    """Shares split by the default random rows, repartitioned by a cut, hold
-    exactly their block's single-`Z` terms — the hand-computable split of
-    `test_a_locality_cut_holds_the_terms_it_names` — and lose none."""
+def test_a_split_over_ranks_matches_the_serial_run(observable, circuit, reference):
+    split = observable.partition(comm=COMM)
+    assert (split.num_partitions, split.rank) == (SIZE, RANK)
+    split.propagate(circuit, POLICY)
+    assert len(split) == len(reference)
+    assert split.expectation("z+") == pytest.approx(reference.expectation("z+"), abs=1e-9)
+    assert COMM.allreduce(_key_checksum(split.local()), op=MPI.BXOR) == _key_checksum(reference)
+    got = split.gather()
+    if RANK == 0:
+        _assert_terms_close(got, reference)
+    else:
+        assert len(got) == 0
+
+
+def test_a_repartition_moves_every_term_to_the_rank_its_new_rows_name():
+    """Split by the default random rows, repartitioned by a cut: every rank holds exactly its block's single-`Z` terms, and none is lost."""
     blocks = _cut_blocks(NUM_QUBITS, SIZE)
     terms = {"I" * q + "Z" + "I" * (NUM_QUBITS - q - 1): 1.0 + q for q in range(NUM_QUBITS)}
-    s = PauliSum.from_strings(terms, num_qubits=NUM_QUBITS)
-    local = s.propagate(Circuit(NUM_QUBITS), comm=COMM, result="local")
-    moved = local.repartition(COMM, partition_row_blocks=blocks)
-    assert COMM.allreduce(len(moved)) == NUM_QUBITS
-    zs = moved.z_array()
-    held = sorted(int(row[w]).bit_length() - 1 + 64 * w
-                  for row in zs for w in range(zs.shape[1]) if row[w])
+    split = PauliSum.from_strings(terms, num_qubits=NUM_QUBITS).partition(comm=COMM)
+    split.repartition(partition_row_blocks=blocks)
+    assert len(split) == NUM_QUBITS
+    zs = split.local().z_array()
+    held = sorted(int(row[w]).bit_length() - 1 + 64 * w for row in zs for w in range(zs.shape[1]) if row[w])
     assert held == blocks[RANK]
 
 
-def test_chaining_shares_through_a_repartition_matches_the_serial_run(observable, circuit, reference):
-    """`result="local"` shares carried into a call that splits by other rows:
-    repartitioned first, nothing is lost and the call gathers the serial
-    answer. The second circuit is empty, so the policy cuts nothing twice."""
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
-    moved = local.repartition(COMM, partition_row_seed=0xC0FFEE)
-    fold = COMM.allreduce(_key_checksum(moved), op=MPI.BXOR)
-    got = moved.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM, partition_row_seed=0xC0FFEE)
-    assert fold == _key_checksum(reference)
+def test_switching_partition_and_bucket_rows_mid_circuit_matches_the_serial_run(observable, circuit):
+    first, second = circuit[: len(circuit) // 2], circuit[len(circuit) // 2:]
+    want = observable.propagate(first, POLICY).propagate(second, POLICY)
+    split = observable.partition(comm=COMM)
+    split.propagate(first, POLICY)
+    split.repartition(partition_row_blocks=_cut_blocks())
+    split.rehash(rows=hashes.sparse(NUM_QUBITS, 3, 3, 1), seed=5)
+    split.propagate(second, POLICY)
+    got = split.gather()
+    if RANK == 0:
+        _assert_terms_close(got, want)
+
+
+def test_a_split_raises_on_every_rank_for_rows_of_the_wrong_count(observable):
+    split = observable.partition(comm=COMM)
+    with pytest.raises(ValueError, match="partition_rows has"):
+        split.repartition(partition_rows=np.zeros((SIZE.bit_length(), 2 * NUM_QUBITS), dtype=bool))
+
+
+def test_shares_passed_back_under_other_rows_raise_instead_of_dropping_terms(observable, circuit):
+    """A deprecated `result="local"` share fed into a call split by other rows would be thinned by the scatter; the call refuses it on every rank."""
+    with pytest.warns(DeprecationWarning, match="PauliSum.partition"):
+        local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    if SIZE == 1:
+        return
+    with pytest.raises(ValueError, match="PauliSum.partition"):
+        local.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM, partition_row_seed=0xC0FFEE)
+
+
+def test_shares_passed_back_under_the_same_rows_still_chain(observable, circuit, reference):
+    with pytest.warns(DeprecationWarning):
+        local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    got = local.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM)
     if RANK == 0:
         _assert_terms_close(got, reference)
-
-
-def test_without_a_repartition_a_call_split_by_other_rows_drops_terms(observable, circuit, reference):
-    """Why `repartition` exists: that call only filters each share, so on more
-    than one rank it keeps just the terms already on their new rank."""
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
-    kept = local.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM, partition_row_seed=0xC0FFEE, result="local")
-    total = COMM.allreduce(len(kept))
-    if SIZE > 1:
-        assert total < len(reference)
-    else:
-        assert total == len(reference)
-
-
-def test_repartition_takes_one_spelling_of_the_rows(observable):
-    with pytest.raises(ValueError, match="are alternatives"):
-        observable.repartition(COMM, partition_row_seed=1, partition_row_blocks=_cut_blocks())
 
 
 def test_distributed_seed_and_blocks_are_mutually_exclusive(observable, circuit):

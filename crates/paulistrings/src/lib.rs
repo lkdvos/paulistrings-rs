@@ -20,7 +20,7 @@ pub mod test_support;
 mod truncation;
 
 pub use channel::{support_mask, Channel, OutputBuffer, PauliRotation, PtmChannel};
-pub use circuit::Circuit;
+pub use circuit::{Circuit, KeyShift};
 pub use collectives::Collectives;
 pub use engine::bucketed::LayerScratch;
 #[cfg(feature = "cuda")]

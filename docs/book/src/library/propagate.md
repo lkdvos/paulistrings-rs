@@ -34,7 +34,7 @@ The GIL is released for the duration of both calls.
 | `partition_row_exclude` | `dict[str, list[int]] \| None` | `None` | `{"x": [...], "z": [...]}`: the seeded draw with these qubits' x-bits / z-bits read by no row |
 | `partition_rows` | `bool array \| None` | `None` | the rows outright, shape `(log2(P), 2 * num_qubits)`, x-bits first, as `PauliSum.hash_rows()` lays them out and [`paulistrings.hashes`](#paulistringshashes) builds them |
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
-| `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere, `"local"` returns each rank's own disjoint share, a plain `PauliSum` (`to_arrays()` reads it into numpy) |
+| `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere; `"local"`, each rank's own share as a plain `PauliSum`, is deprecated in favour of [`PauliSum.partition`](#partitionedpaulisum) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
 
 `PauliSum.num_buckets` reads back the realized bucket count, which can differ from `target_bucket_len`/`min_buckets` since bucketing only ever grows.
@@ -88,12 +88,37 @@ hashes.dense(num_qubits, rows, seed, exclude=None) -> bool array (rows, 2 * num_
 hashes.sparse(num_qubits, rows, weight, seed, exclude=None) -> bool array
 hashes.projection(num_qubits, rows, seed, exclude=None) -> bool array
 hashes.rank(matrix) -> int
+hashes.remote_layers(rows, deltas) -> bool array (channels,)
 ```
 
 Pure-NumPy builders of the GF(2) row matrices `PauliSum.with_hash(rows=)` and `propagate(partition_rows=)` take, laid out as `PauliSum.hash_rows()` returns them: column `c < num_qubits` is the x-bit of qubit `c`, column `num_qubits + c` its z-bit.
 `dense` sets each coordinate with probability 1/2; `sparse` reads exactly `weight` coordinates per row; `projection` reads one coordinate per row, distinct until they run out.
 Each draws from `numpy.random.default_rng(seed)` and keeps its rows linearly independent as far as the family reaches, redrawing a dependent candidate: `dense` and `projection` up to the readable coordinate count, `sparse` with an even `weight` one short of it (such rows span only the even-weight subspace), `rank` says what was reached.
 `exclude={"x": qubits, "z": qubits}` keeps those qubits' x- and z-bits out of every row, as `partition_row_exclude` does for the seeded draw.
+
+## `PartitionedPauliSum`
+
+```text
+sum.partition(partitions=None, pin_memory=True, partition_row_seed=None, partition_row_blocks=None,
+              partition_row_exclude=None, partition_rows=None, comm=None) -> PartitionedPauliSum
+```
+
+A sum kept split between calls, over this process's NUMA partitions (`partitions=`, default `"auto"`, where one partition is a one-pool split) or over the ranks of an MPI group (`comm=`); the row keywords pick the initial partition rows, as for `propagate`.
+
+| member | |
+|---|---|
+| `.propagate(circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128)` | in place; `.propagate_with_stats(...)` returns a `PropagationStats` |
+| `.repartition(*, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None)` | move every term to the partition the new rows name, in one exchange, without gathering |
+| `.rehash(rows=None, seed=None)` | rebucket every partition by another hash, as `PauliSum.with_hash`; nothing is exchanged |
+| `.expectation(state="x+")`, `len()` | of the whole sum, the same on every rank |
+| `.gather()` | the whole sum, on rank 0 under MPI (empty elsewhere) |
+| `.local()` | this process's terms: the whole sum in one process, this rank's share under MPI |
+| `.partition_rows()`, `.hash_rows()`, `.hash_seed`, `.num_buckets`, `.num_partitions`, `.rank`, `.num_qubits` | the current rows and placement; `rank` is `None` in one process |
+
+Under MPI every member that reads or changes the whole sum is collective; `local()`, `repr()` and the properties are not.
+Exact `truncation.topn` raises `NotImplementedError`, as for any partitioned run.
+
+`Circuit.deltas()` lists each channel's nonzero key shifts as `(k, 2 * num_qubits)` boolean arrays, and `paulistrings.hashes.remote_layers(rows, deltas)` marks the channels a choice of partition rows makes exchange: exactly the layers `PartitionStats.local` reports as not local.
 
 ## `GpuPauliSum`
 

@@ -84,7 +84,7 @@ A term's rank is then the XOR of the blocks it has odd Z-weight in, so a term su
 <!-- doctest: skip -->
 ```python
 everything = list(range(observable.num_qubits))
-evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
+evolved = observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
 ```
 
 A gate that never changes the excluded bits never moves a string between ranks: CZ and `rz` leave x-bits alone, so rows drawn on x-bits only keep a CZ/`rz` circuit's exchange to its `rx` gates.
@@ -93,34 +93,27 @@ It cannot be combined with `partition_row_blocks=`.
 
 A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only `partition_row_blocks=` cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.
 
-## result="gather" versus result="local"
+## Keeping the sum split
 
-| `result` | what each rank gets back |
-|---|---|
-| `"gather"` (default) | rank 0 the whole evolved sum; every other rank an **empty** `PauliSum` of the same `num_qubits`, so downstream code still type-checks |
-| `"local"` | this rank's own share |
-
-The shares are disjoint and cover the result, so reductions over `comm` are exact:
+`propagate(comm=...)` returns the whole evolved sum on rank 0 and an **empty** `PauliSum` of the same `num_qubits` on every other rank, which materializes everything on one rank.
+To keep the sum split between calls, read a scalar without gathering, or change the rows mid-circuit, split it once with `PauliSum.partition(comm=...)`:
 
 <!-- doctest: skip -->
 ```python
-local = observable.propagate(circuit, policy, comm=comm, result="local")
-terms = comm.allreduce(len(local))
-value = comm.allreduce(local.expectation("z+"))
+split = observable.partition(comm=comm, partition_row_seed=7)
+split.propagate(circuit[:40], policy, direction="heisenberg")
+split.repartition(partition_row_blocks=blocks)       # one exchange between all ranks
+split.rehash(rows=paulistrings.hashes.sparse(n, 4, 3, seed=1))   # bucket rows, no exchange
+split.propagate(circuit[40:], policy, direction="heisenberg")
+value = split.expectation("z+")                       # the same on every rank
+evolved = split.gather()                              # rank 0 only, if the whole sum is needed
 ```
 
-Prefer `"local"` when the answer is a scalar: gathering materializes the whole sum on rank 0, and that rank transiently holds one extra rank's copy on top of it.
+A `PartitionedPauliSum` takes the same row keywords as `propagate`; `len()`, `expectation`, `gather`, `propagate`, `repartition` and `rehash` are collective, so every rank makes the same calls with the same arguments, while `local()`, `repr()` and the properties read this rank alone.
+`paulistrings.hashes.remote_layers(rows, circuit.deltas())` says which gates a choice of rows makes exchange, so a run can pick the rows for each segment of a circuit before running it; see [NUMA partitions](partitions.md#switching-rows-mid-circuit).
 
-A share can be fed straight back into the next `propagate(comm=...)` split by the same rows: that call keeps each rank's share where it is.
-A call split by other rows only filters each share and would drop the terms that now belong to another rank, so move them first, collectively:
-
-<!-- doctest: skip -->
-```python
-local = local.repartition(comm, partition_row_seed=7)
-local = local.propagate(circuit, policy, comm=comm, partition_row_seed=7, result="local")
-```
-
-`repartition` takes the same row keywords as `propagate` and sends every term to the rank they name, in one exchange between all ranks, without gathering anything.
+`result="local"`, which returned each rank's share as a plain `PauliSum`, is deprecated in favour of `PauliSum.partition(comm=...)`.
+Such a share fed back into a `propagate(comm=...)` split by other rows would lose the terms that now belong to another rank, so that call raises a `ValueError` instead.
 
 ## Launching
 

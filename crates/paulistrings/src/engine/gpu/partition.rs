@@ -6,7 +6,7 @@ use super::layer::{
     apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuLayerOptions,
     LayerScratch,
 };
-use super::sum::GpuSum;
+use super::sum::{GpuSum, GPU_MAX_BITS};
 use super::truncation::{layer_pass_leaves, KeepProgram};
 use crate::channel::prepared::Prepared;
 use crate::collectives::Collectives;
@@ -18,7 +18,7 @@ use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;
 use crate::engine::trace::{DeviceLayerRecord, PartitionLayerRow};
 use crate::engine::transport::Transport;
-use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
 
@@ -191,7 +191,8 @@ impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
             records_per_block,
             self.hash.bits(),
         )
-        .min(scratch.options.max_bits.min(B_MAX_BITS));
+        .min(scratch.options.max_bits)
+        .min(self.hash.max_bits().min(GPU_MAX_BITS));
         host.max(device)
     }
 

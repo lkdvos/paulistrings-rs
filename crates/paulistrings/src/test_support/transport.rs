@@ -154,7 +154,7 @@ pub fn x0_terms_identity_on_q63(n: usize, seed: u64) -> PauliSum<1> {
 ///
 /// # Panics
 ///
-/// As the crate-private `PartitionRows::from_rows`: mismatched lengths, more than `P_MAX_BITS` rows, or a row that masks to zero.
+/// As [`PartitionRows::from_rows`](crate::PartitionRows::from_rows): mismatched lengths, or more rows than the qubit count allows.
 pub fn partition_rows<const W: usize>(
     num_qubits: usize,
     rows_x: Vec<[u64; W]>,

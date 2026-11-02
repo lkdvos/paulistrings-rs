@@ -119,7 +119,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     ) -> Result<Self, GpuError> {
         let (rank, size) = (transport.rank(), transport.size());
         layer.assert_valid();
-        rows.assert_splits(sum.hash(), sum.num_qubits(), size as usize);
+        rows.assert_splits(sum.num_qubits(), size as usize);
         let started = Instant::now();
         let placed = runtime.and_then(|runtime| Ok((lone_device(&runtime)?, runtime)));
         let (device, runtime) = agree(&transport, placed)?;

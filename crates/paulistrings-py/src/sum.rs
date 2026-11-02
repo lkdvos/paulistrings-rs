@@ -8,6 +8,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, P
 use paulistrings::BuildAccumulator;
 use paulistrings::BuiltinTruncation;
 use paulistrings::PauliString;
+use paulistrings::{max_hash_bits, Gf2Hash};
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, PartitionConfig,
@@ -15,7 +16,6 @@ use paulistrings::{
     PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
     ScatterRows, StabilizerState, TopologyError,
 };
-use paulistrings::{HashFamily, HashOrigin, P_MAX_BITS};
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyComplex, PyDict};
@@ -71,10 +71,6 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.identity_coefficient())
     }
 
-    pub fn hash_origin(&self) -> HashOrigin {
-        for_each_width!(self, |s| s.hash().origin())
-    }
-
     /// The bucket hash's rows as coordinate flags: row `i`, column `c` is set when row `i` reads coordinate `c` (x-bits first, then z-bits).
     pub fn hash_rows(&self) -> Vec<Vec<bool>> {
         for_each_width!(self, |s| {
@@ -87,11 +83,11 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.hash().rank_deficiency())
     }
 
-    /// The same terms bucketed by `rows` (coordinate lists) completed with dense rows from `seed`, at the current bucket count.
-    pub fn with_hash_rows(&self, rows: &[Vec<usize>], seed: u64) -> Self {
+    /// The same terms bucketed by the flag-matrix `rows` completed with dense rows from `seed`, at the current bucket count.
+    pub fn with_hash_rows(&self, rows: &[Vec<bool>], seed: u64) -> Self {
         for_each_width_convert!(PauliSumImpl => PauliSumImpl, self.clone(), |s| {
-            let hash = paulistrings::Gf2Hash::from_coordinates(s.num_qubits(), s.hash().bits(), seed, rows);
-            s.with_bucket_hash(hash)
+            let hash = Gf2Hash::from_matrix(s.num_qubits(), s.hash().bits(), seed, rows);
+            s.with_hash(hash)
         })
     }
 
@@ -108,11 +104,6 @@ impl PauliSumImpl {
 
     pub fn bucket_lengths(&self) -> Vec<usize> {
         for_each_width!(self, |s| s.bucket_lengths())
-    }
-
-    /// The same terms partitioned by `family`'s rows from `seed`; the caller validated a sparse weight against the qubit count.
-    pub fn with_hash_family(&self, family: HashFamily, seed: u64) -> Self {
-        for_each_width_convert!(PauliSumImpl => PauliSumImpl, self.clone(), |s| s.with_hash_family(family, seed))
     }
 
     /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
@@ -753,13 +744,6 @@ fn parse_partition_row_exclude(
             }
         }
     }
-    let covers = |qubits: &[usize]| qubits.iter().collect::<HashSet<_>>().len() == num_qubits;
-    if num_qubits > 0 && covers(&exclude_x) && covers(&exclude_z) {
-        return Err(PyValueError::new_err(
-            "partition_row_exclude excludes every coordinate of the register, leaving no row to \
-             name a partition by",
-        ));
-    }
     Ok(Some((exclude_x, exclude_z)))
 }
 
@@ -1199,7 +1183,7 @@ fn parse_device_mode(
     {
         let devices = match comm {
             Some(_) => None,
-            None => Some(crate::gpu::resolve_devices(&request, &shown)?),
+            None => Some(crate::gpu::resolve_devices(&request, &shown, num_qubits)?),
         };
         // Exact TopN runs at one partition only: one resolved device, never a comm= group (one partition per rank).
         if !policy.supports_partitioned() && devices.as_ref().is_none_or(|d| d.len() > 1) {
@@ -1681,56 +1665,22 @@ fn format_sum(inner: &PauliSumImpl) -> String {
     parts.join(" + ")
 }
 
-/// Rows a bucket hash holds, the most `with_hash(rows=...)` may give.
-const B_MAX_ROWS: usize = 22;
-
-/// `"dense"`, `"sparse:<weight>"` or `"projection"`; the weight is checked against the coordinates a row may read by the caller.
-fn parse_hash_family(family: &str) -> PyResult<HashFamily> {
-    let invalid = || {
-        PyValueError::new_err(format!(
-            "hash family must be 'dense', 'sparse:<weight>' or 'projection', got {family:?}"
-        ))
-    };
-    Ok(match family {
-        "dense" => HashFamily::Dense,
-        "projection" => HashFamily::Projection,
-        _ => HashFamily::Sparse {
-            weight: family
-                .strip_prefix("sparse:")
-                .ok_or_else(invalid)?
-                .parse()
-                .map_err(|_| invalid())?,
-        },
-    })
-}
-
-fn format_hash_origin(origin: HashOrigin) -> String {
-    match origin {
-        HashOrigin::Drawn(HashFamily::Dense) => "dense".to_string(),
-        HashOrigin::Drawn(HashFamily::Sparse { weight }) => format!("sparse:{weight}"),
-        HashOrigin::Drawn(HashFamily::Projection) => "projection".to_string(),
-        HashOrigin::Explicit { rows } => format!("explicit:{rows}"),
-    }
-}
-
 /// One row's `2 · num_qubits` coordinate flags, x-bits first.
 fn coordinate_flags<const W: usize>(x: &[u64; W], z: &[u64; W], num_qubits: usize) -> Vec<bool> {
     let bit = |half: &[u64; W], q: usize| (half[q / 64] >> (q % 64)) & 1 == 1;
     (0..num_qubits).map(|q| bit(x, q)).chain((0..num_qubits).map(|q| bit(z, q))).collect()
 }
 
-/// A boolean matrix of shape `(k, 2 · num_qubits)`, `k <= max_rows`, as the coordinate lists of its rows; `name` is the keyword in errors.
+/// A matrix of shape `(k, 2 · num_qubits)`, `k <= max_rows`, whose entries are booleans or `0`/`1`, as its rows of flags; `name` is the keyword in errors.
 fn parse_row_matrix(
     py: Python<'_>,
     rows: &Bound<'_, PyAny>,
     num_qubits: usize,
     max_rows: usize,
     name: &str,
-) -> PyResult<Vec<Vec<usize>>> {
+) -> PyResult<Vec<Vec<bool>>> {
     let numpy = py.import_bound("numpy")?;
-    let kwargs = PyDict::new_bound(py);
-    kwargs.set_item("dtype", "bool")?;
-    let array = numpy.call_method("asarray", (rows,), Some(&kwargs)).map_err(|err| {
+    let array = numpy.call_method1("asarray", (rows,)).map_err(|err| {
         PyValueError::new_err(format!(
             "{name} must be a boolean array of shape (k, 2 * num_qubits): {err}"
         ))
@@ -1742,8 +1692,16 @@ fn parse_row_matrix(
             "{name} must have shape (k, {width}) with k <= {max_rows} — one column per coordinate, the {num_qubits} x-bits then the {num_qubits} z-bits — got shape {shape:?}"
         )));
     }
-    let flags: Vec<Vec<bool>> = array.call_method0("tolist")?.extract()?;
-    Ok(flags.iter().map(|row| (0..width).filter(|&c| row[c]).collect()).collect())
+    let is_bool = array.getattr("dtype")?.eq(numpy.getattr("bool_")?)?;
+    if !is_bool {
+        let binary = numpy.call_method1("isin", (&array, (0, 1)))?.call_method0("all")?;
+        if !binary.is_truthy()? {
+            return Err(PyValueError::new_err(format!(
+                "{name} must hold booleans or 0/1 entries, one flag per coordinate"
+            )));
+        }
+    }
+    array.call_method1("astype", ("bool",))?.call_method0("tolist")?.extract()
 }
 
 /// A Python `RuntimeWarning`, attributed to the caller's line.
@@ -1751,23 +1709,20 @@ fn warn_runtime(py: Python<'_>, message: &str) -> PyResult<()> {
     PyErr::warn_bound(py, &py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(), message, 1)
 }
 
-/// The partition-row keywords of `propagate` and `repartition`, parsed and checked against each other with the GIL held.
+/// The partition-row keywords of `propagate`, parsed and checked against each other with the GIL held.
 struct RowKwargs {
     seed: Option<u64>,
     blocks: Option<Vec<Vec<usize>>>,
     exclude: Option<(Vec<usize>, Vec<usize>)>,
-    family: Option<HashFamily>,
-    rows: Option<Vec<Vec<usize>>>,
+    rows: Option<Vec<Vec<bool>>>,
 }
 
 impl RowKwargs {
-    #[allow(clippy::too_many_arguments)]
     fn parse(
         py: Python<'_>,
         seed: Option<u64>,
         blocks: Option<&Bound<'_, PyAny>>,
         exclude: Option<&Bound<'_, PyAny>>,
-        family: Option<&str>,
         rows: Option<&Bound<'_, PyAny>>,
         num_qubits: usize,
     ) -> PyResult<Self> {
@@ -1785,30 +1740,25 @@ impl RowKwargs {
                  locality cut vs. a seeded draw that skips some coordinates); pass at most one",
             ));
         }
-        let family = family.map(parse_hash_family).transpose()?;
-        if family.is_some() && blocks.is_some() {
-            return Err(PyValueError::new_err(
-                "partition_row_blocks= and partition_row_family= are alternatives (an explicit \
-                 locality cut vs. a drawn family); pass at most one",
-            ));
-        }
         let rows = rows
             .filter(|obj| !obj.is_none())
-            .map(|obj| parse_row_matrix(py, obj, num_qubits, P_MAX_BITS as usize, "partition_rows"))
+            .map(|obj| {
+                parse_row_matrix(
+                    py,
+                    obj,
+                    num_qubits,
+                    max_hash_bits(num_qubits) as usize,
+                    "partition_rows",
+                )
+            })
             .transpose()?;
-        if rows.is_some()
-            && (seed.is_some() || blocks.is_some() || exclude.is_some() || family.is_some())
-        {
+        if rows.is_some() && (seed.is_some() || blocks.is_some() || exclude.is_some()) {
             return Err(PyValueError::new_err(
                 "partition_rows= gives the rows outright, so it takes none of partition_row_seed=, \
-                 partition_row_blocks=, partition_row_exclude= or partition_row_family=",
+                 partition_row_blocks= or partition_row_exclude=",
             ));
         }
-        if let Some(family) = family {
-            let excluded = exclude.as_ref().map_or(0, |(x, z)| x.len() + z.len());
-            family.validate(2 * num_qubits - excluded).map_err(PyValueError::new_err)?;
-        }
-        Ok(Self { seed, blocks, exclude, family, rows })
+        Ok(Self { seed, blocks, exclude, rows })
     }
 
     /// The keyword that only means something when the sum is split, if one was given.
@@ -1817,8 +1767,6 @@ impl RowKwargs {
             Some("partition_row_blocks")
         } else if self.rows.is_some() {
             Some("partition_rows")
-        } else if self.family.is_some() {
-            Some("partition_row_family")
         } else if self.exclude.is_some() {
             Some("partition_row_exclude")
         } else {
@@ -1845,16 +1793,13 @@ impl RowKwargs {
 
     fn policy(&self) -> PartitionRowPolicy {
         let (exclude_x, exclude_z) = self.exclude.clone().unwrap_or_default();
-        match (&self.rows, &self.blocks, self.family, &self.exclude) {
-            (Some(rows), ..) => PartitionRowPolicy::Coordinates(rows.clone()),
-            (None, Some(blocks), ..) => PartitionRowPolicy::Cut(blocks.clone()),
-            (None, None, Some(family), _) => {
-                PartitionRowPolicy::Family { family, seed: self.seed, exclude_x, exclude_z }
-            }
-            (None, None, None, Some(_)) => {
+        match (&self.rows, &self.blocks, &self.exclude) {
+            (Some(rows), ..) => PartitionRowPolicy::Matrix(rows.clone()),
+            (None, Some(blocks), _) => PartitionRowPolicy::Cut(blocks.clone()),
+            (None, None, Some(_)) => {
                 PartitionRowPolicy::SeededExcluding { seed: self.seed, exclude_x, exclude_z }
             }
-            (None, None, None, None) => PartitionRowPolicy::Seeded(self.seed),
+            (None, None, None) => PartitionRowPolicy::Seeded(self.seed),
         }
     }
 }
@@ -1977,12 +1922,6 @@ impl PauliSum {
         self.inner.num_buckets()
     }
 
-    /// Where the bucket hash's rows came from: `"dense"`, `"sparse:<weight>"` or `"projection"` for a drawn family, `"explicit:<k>"` for `k` given rows completed by dense ones.
-    #[getter]
-    fn hash_family(&self) -> String {
-        format_hash_origin(self.inner.hash_origin())
-    }
-
     /// The seed the bucket hash's rows were drawn from.
     #[getter]
     fn hash_seed(&self) -> u64 {
@@ -1999,7 +1938,7 @@ impl PauliSum {
             .into_pyarray_bound(py)
     }
 
-    /// The bucket hash's 22 rows as a boolean NumPy array of shape `(22, 2 * num_qubits)`: entry `[i, c]` is set when row `i` reads coordinate `c`, the x-bit of qubit `c` for `c < num_qubits` and the z-bit of qubit `c - num_qubits` above. The first `log2(num_buckets)` rows are active.
+    /// The bucket hash's rows as a boolean NumPy array of shape `(min(2 * num_qubits, 31), 2 * num_qubits)`: entry `[i, c]` is set when row `i` reads coordinate `c`, the x-bit of qubit `c` for `c < num_qubits` and the z-bit of qubit `c - num_qubits` above. The first `log2(num_buckets)` rows are active.
     fn hash_rows<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
         let rows = self.inner.hash_rows();
         Ok(PyArray2::from_vec2_bound(py, &rows)?)
@@ -2007,37 +1946,26 @@ impl PauliSum {
 
     /// A copy with the same terms, partitioned into buckets by another GF(2)-linear hash; `propagate` keeps the hash a sum carries.
     ///
-    /// Pass a `family` or explicit `rows`, not both.
-    /// `family` is `"dense"` (the default, every coordinate of a row set with probability 1/2), `"sparse:<k>"` (exactly `k` coordinates per row, `1 <= k <= 2 * num_qubits`) or `"projection"` (one coordinate per row, so the bucket is a few bits of the string); `seed` (default: this sum's) draws the rows.
-    /// `rows` is a boolean array of shape `(k, 2 * num_qubits)`, `k <= 22`, laid out as `hash_rows()` returns it; they become the first `k` rows, and dense rows drawn from `seed` complete the 22.
+    /// `rows` is a boolean (or 0/1) array of shape `(k, 2 * num_qubits)` with `k` at most `hash_rows().shape[0]`, laid out as `hash_rows()` returns it; they become the first `k` rows, and dense random rows drawn from `seed` (default: this sum's) fill the rest, each independent of the rows before it.
+    /// `paulistrings.hashes` builds such matrices; `rows=None` draws every row from `seed`.
     /// Linearly dependent rows are accepted with a `RuntimeWarning`: past their rank, some buckets can never hold a term.
     /// Every hash gives the same results; they differ only in how evenly they spread the terms over buckets, and hence in speed.
-    #[pyo3(signature = (family=None, seed=None, rows=None))]
+    #[pyo3(signature = (rows=None, seed=None))]
     fn with_hash(
         &self,
         py: Python<'_>,
-        family: Option<&str>,
-        seed: Option<u64>,
         rows: Option<&Bound<'_, PyAny>>,
+        seed: Option<u64>,
     ) -> PyResult<Self> {
         let num_qubits = self.inner.num_qubits();
         let seed = seed.unwrap_or_else(|| self.inner.hash_seed());
-        let rehashed = match (family, rows) {
-            (Some(_), Some(_)) => {
-                return Err(PyValueError::new_err(
-                    "with_hash takes family= or rows=, not both: explicit rows replace the family's draw",
-                ))
+        let rows = match rows.filter(|obj| !obj.is_none()) {
+            Some(rows) => {
+                parse_row_matrix(py, rows, num_qubits, max_hash_bits(num_qubits) as usize, "rows")?
             }
-            (None, Some(rows)) => {
-                let rows = parse_row_matrix(py, rows, num_qubits, B_MAX_ROWS, "rows")?;
-                self.inner.with_hash_rows(&rows, seed)
-            }
-            (family, None) => {
-                let family = parse_hash_family(family.unwrap_or("dense"))?;
-                family.validate(2 * num_qubits).map_err(PyValueError::new_err)?;
-                self.inner.with_hash_family(family, seed)
-            }
+            None => Vec::new(),
         };
+        let rehashed = self.inner.with_hash_rows(&rows, seed);
         if let Some(reason) = rehashed.hash_rank_deficiency() {
             warn_runtime(py, &reason)?;
         }
@@ -2225,7 +2153,7 @@ impl PauliSum {
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
     /// `partition_row_exclude`, a dict `{"x": [qubits], "z": [qubits]}` and the other alternative to `partition_row_blocks`, keeps the seeded draw (`partition_row_seed` still applies) but clears the named x-bits and z-bits from every row, so strings differing only there share a partition.
-    /// `partition_row_family` (`"dense"`, `"sparse:<k>"` or `"projection"`, as for `with_hash`) draws the rows by that family instead, still honouring `partition_row_seed` and `partition_row_exclude`; `partition_rows`, a boolean array of shape `(log2(P), 2 * num_qubits)` laid out as `hash_rows()`, gives them outright and takes no other row keyword.
+    /// `partition_rows`, a boolean (or 0/1) array of shape `(log2(P), 2 * num_qubits)` laid out as `hash_rows()` (see `paulistrings.hashes`), gives the rows outright and takes no other row keyword; under `comm=` every rank must pass the same rows.
     /// Rows that leave partitions unreachable, or that overlap the span of the bucket hash's rows, run with a `RuntimeWarning`.
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
@@ -2239,7 +2167,7 @@ impl PauliSum {
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_row_family=None, partition_rows=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
         &self,
@@ -2254,7 +2182,6 @@ impl PauliSum {
         partition_row_seed: Option<u64>,
         partition_row_blocks: Option<&Bound<'_, PyAny>>,
         partition_row_exclude: Option<&Bound<'_, PyAny>>,
-        partition_row_family: Option<&str>,
         partition_rows: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
@@ -2276,7 +2203,6 @@ impl PauliSum {
                 partition_row_seed,
                 partition_row_blocks,
                 partition_row_exclude,
-                partition_row_family,
                 partition_rows,
                 self.inner.num_qubits(),
             )?,
@@ -2296,7 +2222,7 @@ impl PauliSum {
     /// `PropagationStats.partition` holds the per-partition detail, summed to the layer-level `terms_in`/`terms_out`; an unpartitioned call reports one partition.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
-    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_row_family=None, partition_rows=None, comm=None, result="gather", device=None))]
+    #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
         &self,
@@ -2311,7 +2237,6 @@ impl PauliSum {
         partition_row_seed: Option<u64>,
         partition_row_blocks: Option<&Bound<'_, PyAny>>,
         partition_row_exclude: Option<&Bound<'_, PyAny>>,
-        partition_row_family: Option<&str>,
         partition_rows: Option<&Bound<'_, PyAny>>,
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
@@ -2333,7 +2258,6 @@ impl PauliSum {
                 partition_row_seed,
                 partition_row_blocks,
                 partition_row_exclude,
-                partition_row_family,
                 partition_rows,
                 self.inner.num_qubits(),
             )?,

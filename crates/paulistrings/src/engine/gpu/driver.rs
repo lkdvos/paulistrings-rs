@@ -202,7 +202,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         options: (GpuLayerOptions, &[String]),
     ) -> Result<Self, GpuError> {
         let size = runtime.num_partitions();
-        rows.assert_splits(sum.hash(), sum.num_qubits(), size);
+        rows.assert_splits(sum.num_qubits(), size);
         let devices: Vec<u32> = runtime
             .slots()
             .iter()

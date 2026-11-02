@@ -5,24 +5,24 @@ use std::borrow::Cow;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use super::hash::{Gf2Hash, HashFamily};
+use super::hash::{Gf2Hash, INDEX_BITS};
 use crate::pauli_string::PauliString;
 
 /// Default seed for the partitioning hash.
 pub const DEFAULT_HASH_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// Bucket bits for `len` terms: the smallest `b` with `len <= target << b`, clamped below by the parallelism floor.
+/// Bucket bits for `len` terms: the smallest `b` with `len <= target << b`, clamped below by the parallelism floor and above by the index width; a sum's own hash caps it further at [`Gf2Hash::max_bits`].
 pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     debug_assert!(target > 0);
     let worth_splitting = len >= min_buckets.saturating_mul(MIN_TERMS_PER_TASK);
     let mut floor = 0u8;
     if worth_splitting {
-        while (1usize << floor) < min_buckets && floor < super::hash::B_MAX_BITS {
+        while (1usize << floor) < min_buckets && floor < INDEX_BITS {
             floor += 1;
         }
     }
     let mut b = floor;
-    while b < super::hash::B_MAX_BITS && len > target.saturating_mul(1usize << b) {
+    while b < INDEX_BITS && len > target.saturating_mul(1usize << b) {
         b += 1;
     }
     b
@@ -263,8 +263,12 @@ impl<const W: usize> PauliSum<W> {
         }
     }
 
-    /// Repartition under `hash`, keeping every term; panics if `hash` was built for a different qubit count.
-    pub(crate) fn with_hash(self, hash: Gf2Hash<W>) -> Self {
+    /// Repartition under `hash`, keeping every term, at `hash`'s bucket count; propagation keeps the hash a sum carries.
+    ///
+    /// # Panics
+    ///
+    /// If `hash` was built for a different qubit count.
+    pub fn with_hash(self, hash: Gf2Hash<W>) -> Self {
         assert_eq!(self.num_qubits, hash.num_qubits(), "PauliSum::with_hash: num_qubits mismatch",);
         let targets: Vec<Vec<u32>> = map_buckets(self.len, &self.buckets, |columns| {
             (0..columns.len()).map(|i| hash.bucket_of(&columns.x[i], &columns.z[i])).collect()
@@ -344,21 +348,6 @@ impl<const W: usize> PauliSum<W> {
         self.buckets.iter().map(BucketColumns::len).collect()
     }
 
-    /// Repartition under `hash`, keeping every term, at `hash`'s bucket count.
-    ///
-    /// # Panics
-    ///
-    /// If `hash` was built for a different qubit count.
-    pub fn with_bucket_hash(self, hash: Gf2Hash<W>) -> Self {
-        self.with_hash(hash)
-    }
-
-    /// Repartition under the rows `family` draws from `seed`, at the current bucket count; propagation keeps the hash a sum carries.
-    pub fn with_hash_family(self, family: HashFamily, seed: u64) -> Self {
-        let hash = Gf2Hash::with_family(self.num_qubits, self.hash.bits(), seed, family);
-        self.with_hash(hash)
-    }
-
     /// Borrow bucket `b`'s columns as `(x, z, coeff)`.
     pub(crate) fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
         let columns = &self.buckets[b];
@@ -396,7 +385,9 @@ impl<const W: usize> PauliSum<W> {
     /// Refine until the bucket count suits `len()` terms at `target` per bucket, with the `min_buckets` floor once the sum is large enough; never coarsens.
     pub(crate) fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
-        let want = desired_bits(self.len, target, min_buckets).max(self.hash.bits());
+        let want = desired_bits(self.len, target, min_buckets)
+            .max(self.hash.bits())
+            .min(self.hash.max_bits());
         while self.hash.bits() < want {
             self.refine();
         }

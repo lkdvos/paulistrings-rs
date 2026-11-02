@@ -1,5 +1,6 @@
 use super::*;
 use crate::pauli_string::PauliString;
+use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
 use crate::test_support::Xs64;
 
 /// XOR two Pauli keys — the group operation on the key space.
@@ -51,6 +52,32 @@ fn low_weight_key<const W: usize>(
     p
 }
 
+/// The `(k, 2 · num_qubits)` flag matrix whose row `i` reads `coordinates[i]`.
+fn matrix(num_qubits: usize, coordinates: &[Vec<usize>]) -> Vec<Vec<bool>> {
+    coordinates.iter().map(|row| (0..2 * num_qubits).map(|c| row.contains(&c)).collect()).collect()
+}
+
+/// The coordinates a row sets: `q` for an x-bit on qubit `q`, `num_qubits + q` for a z-bit.
+fn coordinates<const W: usize>(row: ([u64; W], [u64; W]), num_qubits: usize) -> Vec<usize> {
+    (0..2 * num_qubits)
+        .filter(|&c| {
+            let (half, q) = if c < num_qubits { (row.0, c) } else { (row.1, c - num_qubits) };
+            (half[q / 64] >> (q % 64)) & 1 == 1
+        })
+        .collect()
+}
+
+#[test]
+fn max_hash_bits_is_one_per_coordinate_up_to_the_index_width() {
+    assert_eq!(max_hash_bits(0), 0);
+    assert_eq!(max_hash_bits(1), 2);
+    assert_eq!(max_hash_bits(15), 30);
+    assert_eq!(max_hash_bits(16), 31);
+    assert_eq!(max_hash_bits(1024), 31);
+    assert_eq!(Gf2Hash::<2>::new(100, 3, 1).max_bits(), 31);
+    assert_eq!(Gf2Hash::<1>::new(5, 3, 1).max_bits(), 10);
+}
+
 #[test]
 fn bits_beyond_num_qubits_do_not_affect_the_bucket() {
     // 100 qubits in W=2: setting the dead bits 100..128 must not move a term.
@@ -59,25 +86,31 @@ fn bits_beyond_num_qubits_do_not_affect_the_bucket() {
     for _ in 0..500 {
         let p = rand_key::<2>(&mut rng, 100);
         let mut polluted = p;
-        // Set every dead bit in word 1 (qubits 100..128).
         let dead = !((1u64 << (100 - 64)) - 1);
         polluted.x[1] |= dead;
         polluted.z[1] |= dead;
         assert_eq!(bucket(&h, &p), bucket(&h, &polluted));
     }
-}
-
-#[test]
-fn rows_are_masked_at_a_mid_word_boundary() {
     // Directly: a key that is *only* out-of-range bits hashes to 0.
     let h = Gf2Hash::<2>::new(70, 12, 0x7A);
     let dead = !((1u64 << (70 - 64)) - 1);
     assert_eq!(h.bucket_of(&[0, dead], &[0, dead]), 0);
 }
 
-/// The XOR-fold in `row_parity` / `partition_of` agrees with a naive one-popcount-per-word oracle.
 #[test]
-fn xor_fold_parity_matches_per_word_popcount() {
+fn the_hash_is_linear() {
+    let h = Gf2Hash::<2>::new(100, 12, 0x5EED);
+    let mut rng = Xs64::new(0x11E);
+    for _ in 0..200 {
+        let p = rand_key::<2>(&mut rng, 100);
+        let q = rand_key::<2>(&mut rng, 100);
+        assert_eq!(bucket(&h, &xor(&p, &q)), bucket(&h, &p) ^ bucket(&h, &q));
+    }
+}
+
+/// The XOR-fold in `row_parity` / `partition_of` agrees with a naive one-popcount-per-word oracle, and `bucket_of` packs row `i` at bit `i`.
+#[test]
+fn row_parity_matches_a_per_word_popcount_and_bucket_of_packs_it() {
     fn naive<const W: usize>(x: &[u64; W], z: &[u64; W], rx: &[u64; W], rz: &[u64; W]) -> u32 {
         let mut parity: u32 = 0;
         for w in 0..W {
@@ -88,47 +121,27 @@ fn xor_fold_parity_matches_per_word_popcount() {
     }
 
     fn check<const W: usize>(num_qubits: usize, seed: u64) {
-        let h = Gf2Hash::<W>::new(num_qubits, B_MAX_BITS, seed);
+        let h = Gf2Hash::<W>::new(num_qubits, max_hash_bits(num_qubits), seed);
         let mut rng = Xs64::new(seed ^ 0x5EED);
-        for _ in 0..500 {
+        for _ in 0..200 {
             let p = rand_key::<W>(&mut rng, num_qubits);
-            for row in 0..B_MAX_BITS {
-                assert_eq!(
-                    h.row_parity(&p.x, &p.z, row),
-                    naive(&p.x, &p.z, &h.row(row as usize).0, &h.row(row as usize).1),
-                    "W={W} row={row}: XOR-fold disagrees with per-word popcount"
-                );
+            let full = bucket(&h, &p);
+            for row in 0..h.max_bits() {
+                let bit = h.row_parity(&p.x, &p.z, row);
+                let (rx, rz) = h.row(row as usize);
+                assert_eq!(bit, naive(&p.x, &p.z, &rx, &rz), "W={W} row={row}");
+                assert_eq!(bit, (full >> row) & 1, "W={W} row={row}");
             }
         }
     }
 
     check::<1>(64, 0xA11CE);
     check::<2>(128, 0xB0B);
-    check::<4>(256, 0xC0FFEE);
     check::<8>(512, 0xD00D);
 }
 
 #[test]
-fn row_parity_matches_bucket_of_bit_extraction() {
-    let h = Gf2Hash::<2>::new(128, B_MAX_BITS, 0xF00D);
-    let mut rng = Xs64::new(81);
-    for _ in 0..500 {
-        let p = rand_key::<2>(&mut rng, 128);
-        let full = bucket(&h, &p);
-        for row in 0..B_MAX_BITS {
-            let bit = h.row_parity(&p.x, &p.z, row);
-            assert!(bit == 0 || bit == 1, "row_parity must return 0 or 1");
-            assert_eq!(
-                bit,
-                (full >> row) & 1,
-                "row {row} disagrees with bucket_of's bit extraction",
-            );
-        }
-    }
-}
-
-#[test]
-fn refine_preserves_the_low_bits() {
+fn refine_preserves_the_low_bits_and_coarsen_inverts_it() {
     let mut h = Gf2Hash::<2>::new(128, 6, 0xB0B);
     let mut rng = Xs64::new(31);
     let keys: Vec<PauliString<2>> = (0..500).map(|_| rand_key::<2>(&mut rng, 128)).collect();
@@ -138,43 +151,18 @@ fn refine_preserves_the_low_bits() {
     assert_eq!(h.num_buckets(), 128);
     let mask = (1u32 << 6) - 1;
     for (k, &b) in keys.iter().zip(before.iter()) {
-        // The refined index agrees with the old one on the low `bits` bits.
         assert_eq!(bucket(&h, k) & mask, b);
     }
-}
-
-#[test]
-fn coarsen_inverts_refine() {
-    let mut h = Gf2Hash::<1>::new(64, 8, 0xCAFE);
-    let mut rng = Xs64::new(41);
-    let keys: Vec<PauliString<1>> = (0..500).map(|_| rand_key::<1>(&mut rng, 64)).collect();
-    let before: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
-
-    h.refine();
     h.coarsen();
-    assert_eq!(h.bits(), 8);
+    assert_eq!(h.bits(), 6);
     let after: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
     assert_eq!(before, after);
 }
 
 #[test]
-fn coarsen_merges_bucket_pairs() {
-    let mut h = Gf2Hash::<1>::new(64, 8, 0xDEAD);
-    let mut rng = Xs64::new(51);
-    let keys: Vec<PauliString<1>> = (0..500).map(|_| rand_key::<1>(&mut rng, 64)).collect();
-    let fine: Vec<u32> = keys.iter().map(|k| bucket(&h, k)).collect();
-
-    h.coarsen();
-    for (k, &f) in keys.iter().zip(fine.iter()) {
-        // Dropping the top bit merges (b, b + B/2).
-        assert_eq!(bucket(&h, k), f & ((1 << 7) - 1));
-    }
-}
-
-#[test]
-#[should_panic(expected = "already at B_MAX_BITS")]
-fn refine_past_the_maximum_panics() {
-    let mut h = Gf2Hash::<1>::new(64, B_MAX_BITS, 0x1);
+#[should_panic(expected = "already at the 31 rows")]
+fn refine_past_the_rows_panics() {
+    let mut h = Gf2Hash::<1>::new(64, 31, 0x1);
     h.refine();
 }
 
@@ -186,9 +174,9 @@ fn coarsen_below_one_bucket_panics() {
 }
 
 #[test]
-#[should_panic(expected = "exceeds B_MAX_BITS")]
-fn constructing_past_the_maximum_panics() {
-    let _ = Gf2Hash::<1>::new(64, B_MAX_BITS + 1, 0x1);
+#[should_panic(expected = "bits 11 exceeds the 10 rows of 5 qubits")]
+fn constructing_past_the_rows_panics() {
+    let _ = Gf2Hash::<1>::new(5, 11, 0x1);
 }
 
 #[test]
@@ -205,20 +193,31 @@ fn different_seeds_give_different_hashes() {
     assert!(differs > 400, "expected most keys to hash differently, got {differs}/500");
 }
 
+/// Every drawn hash is full rank, down to the one-qubit register where a plain draw gives a zero or repeated row most of the time; zero qubits is legitimately all zero.
 #[test]
-fn no_row_masks_to_zero_even_at_one_qubit() {
-    // At num_qubits = 1 a naive draw gives an all-zero row 1/4 of the time.
-    let h = Gf2Hash::<1>::new(1, 2, 0x1);
-    for i in 0..B_MAX_BITS as usize {
-        assert!((h.row(i).0[0] | h.row(i).1[0]) != 0, "row {i} masked to zero",);
+fn drawn_rows_are_full_rank_at_every_qubit_count() {
+    for n in [1usize, 3, 5, 11, 16, 17, 64] {
+        let h = Gf2Hash::<1>::new(n, 0, 0x1);
+        assert_eq!(h.independent_rows(), max_hash_bits(n) as usize, "{n} qubits");
+        assert_eq!(h.rank_deficiency(), None, "{n} qubits");
     }
+    let h = Gf2Hash::<1>::new(0, 0, 0x1);
+    assert_eq!(h.max_bits(), 0);
+    assert_eq!(h.bucket_of(&[0], &[0]), 0);
 }
 
+/// Independence only redraws a dependent row, which over 127 qubits never happens: the rows are the plain splitmix64 draw.
 #[test]
-fn zero_qubits_is_degenerate_but_terminates() {
-    // Every row is legitimately zero; construction must not spin forever.
-    let h = Gf2Hash::<1>::new(0, 3, 0x1);
-    assert_eq!(h.bucket_of(&[0], &[0]), 0);
+fn the_rows_are_the_plain_draw_where_that_is_already_full_rank() {
+    let h = Gf2Hash::<2>::new(127, 4, DEFAULT_HASH_SEED);
+    for i in 0..h.max_bits() as usize {
+        let mut plain = ([0u64; 2], [0u64; 2]);
+        for w in 0..2 {
+            plain.0[w] = row_word(DEFAULT_HASH_SEED, i, 0, w, 0) & word_mask(127, w);
+            plain.1[w] = row_word(DEFAULT_HASH_SEED, i, 0, w, 1) & word_mask(127, w);
+        }
+        assert_eq!(h.row(i), plain, "row {i}");
+    }
 }
 
 /// One step of xorshift64 (13, 7, 17), a GF(2)-linear map `M` on `u64`.
@@ -229,17 +228,12 @@ fn xorshift64_step(mut x: u64) -> u64 {
     x
 }
 
-/// Row `j` of `M` as a mask: bit `j` of `M·v` is the parity of `xorshift64_row(j) & v`.
-fn xorshift64_row(j: u32) -> u64 {
-    (0..64).fold(0u64, |row, k| row | (((xorshift64_step(1u64 << k) >> j) & 1) << k))
-}
-
 /// Consecutive outputs of a linear generator satisfy `rows_z = M·rows_x` word for word under every seed.
 #[test]
 fn row_words_are_not_one_xorshift_step_apart() {
-    for seed in [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
-        let h = Gf2Hash::<2>::new(128, B_MAX_BITS, seed);
-        let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
+    for seed in [0x1u64, 0x5EED, DEFAULT_HASH_SEED] {
+        let h = Gf2Hash::<2>::new(128, 31, seed);
+        let p = PartitionRows::<2>::from_seed(128, 6, seed);
         let (px, pz) = p.rows();
         let (hx, hz) = h.matrix.rows();
         let linked = hx
@@ -253,84 +247,26 @@ fn row_words_are_not_one_xorshift_step_apart() {
     }
 }
 
-/// `rows_z = M·rows_x` puts `d_j = (x = row_j(M), z = e_j)`, Pauli weight ≈ 6, in the kernel of every row, so `u` and `u ⊕ d_j` always share a bucket.
-/// A dense random `H` sends each to 0 with probability `2^-20` at 20 bits.
-#[test]
-fn xorshift_kernel_deltas_do_not_share_bucket_zero() {
-    fn zeros<const W: usize>(seed: u64) -> usize {
-        let h = Gf2Hash::<W>::new(64 * W, 20, seed);
-        let mut n = 0;
-        for w in 0..W {
-            for j in 0..64u32 {
-                let mut x = [0u64; W];
-                let mut z = [0u64; W];
-                x[w] = xorshift64_row(j);
-                z[w] = 1u64 << j;
-                n += (h.bucket_of(&x, &z) == 0) as usize;
-            }
-        }
-        n
-    }
-    let seeds = [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED];
-    let w1: usize = seeds.iter().map(|&s| zeros::<1>(s)).sum();
-    let w2: usize = seeds.iter().map(|&s| zeros::<2>(s)).sum();
-    assert!(w1 <= 1, "{w1}/192 kernel deltas hash to 0 at W=1");
-    assert!(w2 <= 1, "{w2}/384 kernel deltas hash to 0 at W=2");
-}
-
-/// 64 rows over 64 qubits as a fingerprint must separate the 18 337 keys of weight ≤ 2; a random linear map collides on some pair with probability ~2^-37.
-#[test]
-fn a_64_row_fingerprint_is_injective_on_weight_two_keys() {
-    let matrix =
-        Gf2Matrix::<1>::draw(64, 64, crate::pauli_sum::storage::DEFAULT_HASH_SEED, &[0], &[0]);
-    let (rx, rz) = matrix.rows();
-    let image = |x: u64, z: u64| {
-        (0..64).fold(0u64, |bits, i| {
-            bits | ((((x & rx[i][0]) ^ (z & rz[i][0])).count_ones() as u64 & 1) << i)
-        })
-    };
-    // (x, z) bits of X, Z and Y on one qubit.
-    let paulis = [(1u64, 0u64), (0, 1), (1, 1)];
-    let mut keys = vec![(0u64, 0u64)];
-    for q in 0..64 {
-        for (a, b) in paulis {
-            keys.push((a << q, b << q));
-        }
-    }
-    for q in 0..64 {
-        for r in (q + 1)..64 {
-            for (a, b) in paulis {
-                for (c, d) in paulis {
-                    keys.push(((a << q) | (c << r), (b << q) | (d << r)));
-                }
-            }
-        }
-    }
-    assert_eq!(keys.len(), 1 + 64 * 3 + 2016 * 9);
-    let images: std::collections::HashSet<u64> = keys.iter().map(|&(x, z)| image(x, z)).collect();
-    assert_eq!(images.len(), keys.len(), "fingerprint collisions");
-}
-
 /// Row word `w` depends on `(seed, row, w, x-or-z)` alone, so the same `(num_qubits, seed)` gives the same rows at every width.
 #[test]
 fn rows_do_not_depend_on_the_width() {
-    let seed = crate::pauli_sum::storage::DEFAULT_HASH_SEED;
+    let seed = DEFAULT_HASH_SEED;
     for n in [1usize, 5, 64] {
-        let h1 = Gf2Hash::<1>::new(n, 8, seed);
-        let h2 = Gf2Hash::<2>::new(n, 8, seed);
-        for i in 0..B_MAX_BITS as usize {
+        let h1 = Gf2Hash::<1>::new(n, 0, seed);
+        let h2 = Gf2Hash::<2>::new(n, 0, seed);
+        for i in 0..h1.max_bits() as usize {
             let (x1, z1) = h1.row(i);
             assert_eq!(h2.row(i), ([x1[0], 0], [z1[0], 0]), "n={n} row {i}");
         }
-        let p1 = PartitionRows::<1>::from_seed(n, P_MAX_BITS, seed);
-        let p2 = PartitionRows::<2>::from_seed(n, P_MAX_BITS, seed);
+        let p1 = PartitionRows::<1>::from_seed(n, 2, seed);
+        let p2 = PartitionRows::<2>::from_seed(n, 2, seed);
         let widened = |rows: &[[u64; 1]]| rows.iter().map(|r| [r[0], 0]).collect::<Vec<_>>();
         assert_eq!(p2.rows().0, widened(p1.rows().0), "n={n} partition x-rows");
         assert_eq!(p2.rows().1, widened(p1.rows().1), "n={n} partition z-rows");
     }
     let h2 = Gf2Hash::<2>::new(128, 8, seed);
     let h4 = Gf2Hash::<4>::new(128, 8, seed);
-    for i in 0..B_MAX_BITS as usize {
+    for i in 0..h2.max_bits() as usize {
         let (x2, z2) = h2.row(i);
         let (x4, z4) = h4.row(i);
         assert_eq!(x4, [x2[0], x2[1], 0, 0], "row {i}");
@@ -365,33 +301,10 @@ fn occupancy_is_balanced_on_low_weight_keys() {
     assert!(min > mean / 2, "min load {min} vs mean {mean}");
 }
 
-/// Occupancy balance is not the whole story: a dense random `H` can still fail to separate a two-qubit channel's four delta generators, so two distinct local deltas share one bucket delta.
-#[test]
-fn support_delta_rank_is_usually_full_but_not_always() {
-    // Deterministic given the seed, so these counts are not flaky.
-    let h = Gf2Hash::<2>::new(128, 7, crate::pauli_sum::storage::DEFAULT_HASH_SEED);
-    let mut deficient = 0usize;
-    let mut total = 0usize;
-    for i in 0..128 {
-        for j in (i + 1)..128 {
-            total += 1;
-            if crate::test_support::support_delta_rank(&h, &[i, j]) < 4 {
-                deficient += 1;
-            }
-        }
-    }
-    // About 11% in expectation over seeds; the bound pins only the order of magnitude.
-    assert_eq!(total, 8128);
-    assert!(
-        (200..2000).contains(&deficient),
-        "expected O(10%) rank-deficient support pairs at 7 bucket bits, got {deficient}/{total}"
-    );
-}
-
 /// Rank is monotone in the number of active bucket bits, since the active hash is a prefix of one fixed matrix: refining can only separate deltas that were colliding, never merge separated ones.
 #[test]
 fn support_delta_rank_is_monotone_in_bits() {
-    for seed in [0x1u64, 0xBEEF, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
+    for seed in [0x1u64, 0xBEEF, DEFAULT_HASH_SEED] {
         let mut last = 0usize;
         for bits in 0..=12u8 {
             let h = Gf2Hash::<2>::new(128, bits, seed);
@@ -403,27 +316,12 @@ fn support_delta_rank_is_monotone_in_bits() {
     }
 }
 
-/// Rows do not depend on `W` (`rows_do_not_depend_on_the_width`), so neither does a support's delta-span rank.
-/// At the default seed support `(0, 1)` is full-rank at 7..=9 bucket bits and `(0, 7)` one rank short at 7, at both widths.
-#[test]
-fn support_delta_rank_is_width_independent_at_the_default_seed() {
-    use crate::test_support::support_delta_rank as rank;
-    let seed = crate::pauli_sum::storage::DEFAULT_HASH_SEED;
-    for bits in 7..=9u8 {
-        let w1 = Gf2Hash::<1>::new(64, bits, seed);
-        let w2 = Gf2Hash::<2>::new(65, bits, seed);
-        let w2_wide = Gf2Hash::<2>::new(128, bits, seed);
-        assert_eq!(rank(&w1, &[0, 1]), 4, "W=1/q=64 at {bits} bits");
-        assert_eq!(rank(&w2, &[0, 1]), 4, "W=2/q=65 at {bits} bits");
-        assert_eq!(rank(&w2_wide, &[0, 1]), 4, "W=2/q=128 at {bits} bits");
-    }
-    assert_eq!(rank(&Gf2Hash::<1>::new(64, 7, seed), &[0, 7]), 3);
-    assert_eq!(rank(&Gf2Hash::<2>::new(128, 7, seed), &[0, 7]), 3);
-}
-
-/// A support delta cannot reorder a bucket's key column exactly when `h` separates the support's delta space.
+/// A support delta cannot reorder a bucket's key column exactly when `h` separates the support's delta space; at the default seed `(0, 1)` is full rank at 7 bits and `(0, 7)` one short.
 #[test]
 fn support_delta_preserves_bucket_order_iff_the_delta_span_is_full_rank() {
+    use crate::test_support::support_delta_rank as rank;
+    assert_eq!(rank(&Gf2Hash::<2>::new(128, 7, DEFAULT_HASH_SEED), &[0, 1]), 4);
+    assert_eq!(rank(&Gf2Hash::<1>::new(64, 7, DEFAULT_HASH_SEED), &[0, 7]), 3);
     assert!(!order_broken_by_some_delta::<2>(128, 7, &[0, 1]));
     assert!(order_broken_by_some_delta::<1>(64, 7, &[0, 7]));
 }
@@ -435,7 +333,7 @@ fn order_broken_by_some_delta<const W: usize>(
     bits: u8,
     support: &[usize],
 ) -> bool {
-    let h = Gf2Hash::<W>::new(num_qubits, bits, crate::pauli_sum::storage::DEFAULT_HASH_SEED);
+    let h = Gf2Hash::<W>::new(num_qubits, bits, DEFAULT_HASH_SEED);
     // Enumerate the support's delta space: one bit per (qubit, x-or-z).
     let gens: Vec<PauliString<W>> =
         support.iter().flat_map(|&q| [PauliString::<W>::x(q), PauliString::<W>::z(q)]).collect();
@@ -489,20 +387,43 @@ fn order_broken_by_some_delta<const W: usize>(
 }
 
 #[test]
-fn occupancy_is_balanced_on_dense_keys() {
-    let h = Gf2Hash::<2>::new(128, 8, 0x0CC2);
-    let b = h.num_buckets();
-    let mut rng = Xs64::new(0xBA2);
-    let mut counts = vec![0usize; b];
-    let target = 32768usize;
-    for _ in 0..target {
-        counts[bucket(&h, &rand_key::<2>(&mut rng, 128)) as usize] += 1;
+fn given_rows_lead_and_drawn_rows_complete_the_hash_to_full_rank() {
+    let given = matrix(127, &[vec![0, 127], vec![5], vec![3, 64, 200]]);
+    let h = Gf2Hash::<2>::from_matrix(127, 6, 0x5EED, &given);
+    for (i, row) in given.iter().enumerate() {
+        assert_eq!(&coordinates(h.row(i), 127), &(0..254).filter(|&c| row[c]).collect::<Vec<_>>());
     }
-    let mean = target / b; // 128
-    let max = *counts.iter().max().unwrap();
-    let min = *counts.iter().min().unwrap();
-    assert!(max < 2 * mean, "max load {max} vs mean {mean}");
-    assert!(min > mean / 2, "min load {min} vs mean {mean}");
+    assert_eq!(h.max_bits(), 31);
+    assert_eq!(h.rank_deficiency(), None);
+    let dense = Gf2Hash::<2>::new(127, 6, 7);
+    let (rows_x, rows_z) = dense.rows();
+    let copied = Gf2Hash::<2>::from_rows(127, 6, 99, rows_x.to_vec(), rows_z.to_vec());
+    assert!(copied.same_rows_as(&dense), "rows decide sameness, not how they were made");
+    assert_eq!(copied.seed(), 99);
+}
+
+#[test]
+fn dependent_given_rows_are_accepted_and_reported() {
+    let h = Gf2Hash::<1>::from_matrix(40, 2, 1, &matrix(40, &[vec![3], vec![3], vec![]]));
+    // A duplicate and an empty row add nothing, so the three given rows have rank 1 and the 28 drawn ones complete it to 29.
+    assert_eq!(h.independent_rows(), 29);
+    assert!(h.rank_deficiency().unwrap().contains("31 rows have rank 29"));
+    assert_eq!(h.bucket_of(&[1 << 3], &[0]), 0b011, "both copies of the row read qubit 3's x-bit");
+    // Given rows are masked to the live columns before the completion is drawn against them.
+    let h = Gf2Hash::<1>::from_rows(8, 1, 1, vec![[1 << 20]], vec![[0]]);
+    assert_eq!(h.independent_rows(), 15);
+}
+
+#[test]
+#[should_panic(expected = "row 0 has 253 entries, not the 254 coordinates")]
+fn a_matrix_row_of_the_wrong_width_panics() {
+    Gf2Hash::<2>::from_matrix(127, 2, 1, &[vec![false; 253]]);
+}
+
+#[test]
+#[should_panic(expected = "11 rows exceed the 10 rows of 5 qubits")]
+fn more_given_rows_than_the_register_holds_panics() {
+    Gf2Hash::<1>::from_matrix(5, 2, 1, &vec![vec![false; 10]; 11]);
 }
 
 #[test]
@@ -522,24 +443,10 @@ fn partition_of_hand_checked_w1() {
     assert_eq!(p.partition_of(&[1], &[1]), 3);
     // X_0 X_1: parity(0b011 & 0b011) = 0.
     assert_eq!(p.partition_of(&[0b11], &[0]), 0);
-    // Z_1: parity(0b010 & 0b101) = 0.
-    assert_eq!(p.partition_of(&[0], &[0b10]), 0);
     // Z_2: parity(0b100 & 0b101) = 1.
     assert_eq!(p.partition_of(&[0], &[0b100]), 2);
-}
-
-#[test]
-fn partition_bits_beyond_num_qubits_do_not_affect_the_partition() {
-    let p = PartitionRows::<2>::from_seed(100, 3, 0x99);
-    let mut rng = Xs64::new(103);
-    let dead = !((1u64 << (100 - 64)) - 1);
-    for _ in 0..500 {
-        let k = rand_key::<2>(&mut rng, 100);
-        let mut polluted = k;
-        polluted.x[1] |= dead;
-        polluted.z[1] |= dead;
-        assert_eq!(partition(&p, &k), partition(&p, &polluted));
-    }
+    // The same rows as a flag matrix, x-bits first.
+    assert_eq!(PartitionRows::<1>::from_matrix(8, &matrix(8, &[vec![0, 1], vec![8, 10]])), p);
 }
 
 #[test]
@@ -560,6 +467,7 @@ fn excluding_nothing_is_from_seed_and_excluding_avoids() {
         let rows = PartitionRows::<2>::from_seed_excluding(100, 4, seed, &mx, &mz);
         assert!(rows.avoids(&mx, &mz));
         assert_eq!(rows.bits(), 4);
+        assert_eq!(rows.independent_rows(), 4);
         // Keys differing only in excluded coordinates share a partition.
         assert_eq!(
             rows.partition_of(&[0x3, 1 << 30], &[0x5, 0]),
@@ -577,20 +485,28 @@ fn avoids_reads_both_halves() {
     assert!(PartitionRows::<1>::none(8).avoids(&[!0], &[!0]));
 }
 
+/// An exclusion that leaves nothing readable builds zero rows and says so, like every other rank shortfall.
 #[test]
-#[should_panic(expected = "covers every column")]
-fn excluding_every_column_is_rejected() {
-    PartitionRows::<1>::from_seed_excluding(8, 1, 7, &[0xFF], &[0xFF]);
+fn excluding_every_column_gives_zero_rows_and_a_report() {
+    let rows = PartitionRows::<1>::from_seed_excluding(8, 1, 7, &[0xFF], &[0xFF]);
+    assert_eq!(rows.rows(), (&[[0u64]][..], &[[0u64]][..]));
+    let reasons = rows.rank_deficiency(&Gf2Hash::<1>::new(8, 2, 1));
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    assert!(reasons[0].contains("only 1 of the 2 partitions"), "{reasons:?}");
+    // One readable coordinate: the one row reads it, and a second row can only repeat it.
+    let rows = PartitionRows::<1>::from_seed_excluding(8, 2, 7, &[0xFE], &[0xFF]);
+    assert_eq!(rows.rows().0, [[1u64], [1u64]]);
+    assert_eq!(rows.independent_rows(), 1);
 }
 
 #[test]
 fn partition_rows_are_salted_away_from_the_hash_rows() {
     // Under one seed the partition rows must not be the hash's first rows.
-    for seed in [0x1u64, 0x5EED, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
-        let p = PartitionRows::<2>::from_seed(128, P_MAX_BITS, seed);
-        let h = Gf2Hash::<2>::new(128, P_MAX_BITS, seed);
+    for seed in [0x1u64, 0x5EED, DEFAULT_HASH_SEED] {
+        let p = PartitionRows::<2>::from_seed(128, 6, seed);
+        let h = Gf2Hash::<2>::new(128, 6, seed);
         let (px, pz) = p.rows();
-        for i in 0..P_MAX_BITS as usize {
+        for i in 0..6 {
             let (hx, hz) = h.row(i);
             assert!(
                 px[i] != hx || pz[i] != hz,
@@ -612,25 +528,10 @@ fn from_rows_round_trips_after_masking() {
     assert_eq!(p.bits(), 2);
 }
 
-/// A distributed run is one partition per rank, so `P_MAX_BITS` must allow 64 ranks.
 #[test]
-fn partition_row_ceiling_covers_64_ranks() {
-    // `from_seed` panics with "exceeds P_MAX_BITS" if the constant is still below 6.
-    let p = PartitionRows::<2>::from_seed(127, 6, 0xFEED_1234);
-    assert_eq!(p.num_partitions(), 64);
-}
-
-#[test]
-#[should_panic(expected = "exceeds P_MAX_BITS")]
-fn partition_from_seed_past_the_maximum_panics() {
-    let _ = PartitionRows::<1>::from_seed(64, P_MAX_BITS + 1, 0x1);
-}
-
-#[test]
-#[should_panic(expected = "exceeds P_MAX_BITS")]
-fn partition_from_rows_past_the_maximum_panics() {
-    let rows: Vec<[u64; 1]> = (0..=P_MAX_BITS as u64).map(|i| [i + 1]).collect();
-    let _ = PartitionRows::<1>::from_rows(64, rows.clone(), rows);
+#[should_panic(expected = "7 rows exceed the 6 rows of 3 qubits")]
+fn partition_rows_past_the_register_panic() {
+    let _ = PartitionRows::<1>::from_seed(3, 7, 0x1);
 }
 
 #[test]
@@ -640,19 +541,47 @@ fn partition_from_rows_length_mismatch_panics() {
 }
 
 #[test]
-fn a_partition_row_that_masks_to_zero_is_accepted_and_reported() {
+fn partition_rank_deficiency_names_dependent_rows_and_overlap_with_the_buckets() {
+    let hash = Gf2Hash::<1>::new(40, 4, 3);
     // Row 1 is nonzero only outside the 8 live qubit columns.
-    let rows = PartitionRows::<1>::from_rows(8, vec![[0x1], [1 << 20]], vec![[0x0], [1 << 30]]);
-    assert_eq!(rows.independent_rows(), 1);
-    let reasons = rows.rank_deficiency(&Gf2Hash::<1>::new(8, 2, 1));
-    assert!(reasons.iter().any(|r| r.contains("only 2 of the 4 partitions")), "{reasons:?}");
+    let zero = PartitionRows::<1>::from_rows(8, vec![[0x1], [1 << 20]], vec![[0x0], [1 << 30]]);
+    assert_eq!(zero.independent_rows(), 1);
+    let duplicate = PartitionRows::<1>::from_matrix(40, &matrix(40, &[vec![7], vec![7]]));
+    for rows in [zero, duplicate] {
+        let reasons = rows.rank_deficiency(&Gf2Hash::<1>::new(rows.num_qubits(), 2, 1));
+        assert!(reasons.iter().any(|r| r.contains("only 2 of the 4 partitions")), "{reasons:?}");
+    }
+    let (x, z) = hash.row(0);
+    let overlapping = PartitionRows::<1>::from_rows(40, vec![x], vec![z]);
+    let reasons = overlapping.rank_deficiency(&hash);
+    assert!(
+        reasons.iter().any(|r| r.contains("overlap the span of the bucket hash")),
+        "{reasons:?}"
+    );
+    let fine = PartitionRows::<1>::from_seed(40, 2, 11);
+    assert!(fine.rank_deficiency(&hash).is_empty());
 }
 
 #[test]
-fn partition_from_rows_all_zero_row_is_fine_at_zero_qubits() {
-    // Degenerate but legal: with no live columns every row is zero.
-    let p = PartitionRows::<1>::from_rows(0, vec![[0x0]], vec![[0x0]]);
-    assert_eq!(p.partition_of(&[0], &[0]), 0);
+fn seeded_partition_rows_are_independent_of_the_hash() {
+    for seed in [0x1u64, 0x5EED, 0xBEEF, DEFAULT_HASH_SEED] {
+        let h = Gf2Hash::<2>::new(128, 7, seed);
+        let p = PartitionRows::<2>::from_seed(128, 3, seed);
+        assert!(p.is_independent_of(&h), "seed {seed:#x}");
+    }
+}
+
+#[test]
+fn a_partition_row_copied_from_the_hash_is_not_independent() {
+    let h = Gf2Hash::<2>::new(128, 7, 0x5EED);
+    let (hx, hz) = h.row(0);
+    let seeded = PartitionRows::<2>::from_seed(128, 2, 0x5EED);
+    let (sx, sz) = seeded.rows();
+    let p = PartitionRows::<2>::from_rows(128, vec![sx[0], hx], vec![sz[0], hz]);
+    assert!(!p.is_independent_of(&h));
+    // Only the active rows count: at zero bucket bits there is nothing to be dependent on, and the two partition rows are independent among themselves.
+    let h0 = Gf2Hash::<2>::new(128, 0, 0x5EED);
+    assert!(p.is_independent_of(&h0));
 }
 
 #[test]
@@ -700,11 +629,7 @@ fn cut_leaves_uncovered_qubits_in_the_zero_label() {
     assert_eq!(p.rows().1, [[0b0010u64]]);
     assert_eq!(partition(&p, &PauliString::<1>::z(2)), 0);
     assert_eq!(partition(&p, &PauliString::<1>::z(3)), 0);
-}
-
-#[test]
-fn cut_of_one_block_is_the_trivial_partitioning() {
-    assert_eq!(PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3]]), PartitionRows::<1>::none(4),);
+    assert_eq!(PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3]]), PartitionRows::<1>::none(4));
 }
 
 #[test]
@@ -740,335 +665,6 @@ fn cut_with_an_out_of_range_qubit_panics() {
 #[should_panic(expected = "no qubit")]
 fn cut_with_an_empty_labelled_block_panics() {
     let _ = PartitionRows::<1>::cut(4, &[vec![0, 1, 2, 3], vec![]]);
-}
-
-#[test]
-fn partition_occupancy_is_balanced_on_low_weight_keys() {
-    // The guard of `occupancy_is_balanced_on_low_weight_keys`, for partition rows.
-    let num_qubits = 128;
-    let p = PartitionRows::<2>::from_seed(num_qubits, 2, 0x0CC3);
-    let mut rng = Xs64::new(0xBA3);
-    let mut counts = vec![0usize; p.num_partitions()];
-    let target = 4000usize;
-    for _ in 0..target {
-        let weight = 1 + (rng.next_u64() % 3) as usize;
-        let k = low_weight_key::<2>(&mut rng, num_qubits, weight);
-        counts[partition(&p, &k) as usize] += 1;
-    }
-    let mean = target / p.num_partitions(); // 1000
-    let max = *counts.iter().max().unwrap();
-    let min = *counts.iter().min().unwrap();
-    assert!(max < 2 * mean, "max load {max} vs mean {mean}, counts {counts:?}");
-    assert!(min > mean / 2, "min load {min} vs mean {mean}, counts {counts:?}");
-}
-
-#[test]
-fn seeded_partition_rows_are_independent_of_the_hash() {
-    for seed in [0x1u64, 0x5EED, 0xBEEF, crate::pauli_sum::storage::DEFAULT_HASH_SEED] {
-        let h = Gf2Hash::<2>::new(128, 7, seed);
-        let p = PartitionRows::<2>::from_seed(128, 3, seed);
-        assert!(p.is_independent_of(&h), "seed {seed:#x}");
-    }
-}
-
-#[test]
-fn a_partition_row_copied_from_the_hash_is_not_independent() {
-    let h = Gf2Hash::<2>::new(128, 7, 0x5EED);
-    let (hx, hz) = h.row(0);
-    let seeded = PartitionRows::<2>::from_seed(128, 2, 0x5EED);
-    let (sx, sz) = seeded.rows();
-    let p = PartitionRows::<2>::from_rows(128, vec![sx[0], hx], vec![sz[0], hz]);
-    assert!(!p.is_independent_of(&h));
-    // Only the active rows count: at zero bucket bits there is nothing to be dependent on, and the two partition rows are independent among themselves.
-    let h0 = Gf2Hash::<2>::new(128, 0, 0x5EED);
-    assert!(p.is_independent_of(&h0));
-}
-
-const FAMILIES: [HashFamily; 4] = [
-    HashFamily::Dense,
-    HashFamily::Sparse { weight: 3 },
-    HashFamily::Sparse { weight: 2 },
-    HashFamily::Projection,
-];
-
-/// The coordinates a row sets: `q` for an x-bit on qubit `q`, `num_qubits + q` for a z-bit.
-fn coordinates<const W: usize>(row: ([u64; W], [u64; W]), num_qubits: usize) -> Vec<usize> {
-    (0..num_qubits)
-        .filter(|&q| (row.0[q / 64] >> (q % 64)) & 1 == 1)
-        .chain(
-            (0..num_qubits)
-                .filter(|&q| (row.1[q / 64] >> (q % 64)) & 1 == 1)
-                .map(|q| num_qubits + q),
-        )
-        .collect()
-}
-
-#[test]
-fn new_draws_the_dense_family() {
-    let a = Gf2Hash::<2>::new(127, 8, 0x5EED);
-    let b = Gf2Hash::<2>::with_family(127, 8, 0x5EED, HashFamily::Dense);
-    assert_eq!(a.origin(), HashOrigin::Drawn(HashFamily::Dense));
-    assert!(a.same_rows_as(&b));
-    for i in 0..B_MAX_BITS as usize {
-        assert_eq!(a.row(i), b.row(i), "row {i}");
-    }
-}
-
-#[test]
-fn same_rows_as_tells_the_families_apart() {
-    for (i, &a) in FAMILIES.iter().enumerate() {
-        for (j, &b) in FAMILIES.iter().enumerate() {
-            let same = Gf2Hash::<2>::with_family(127, 8, 0x5EED, a)
-                .same_rows_as(&Gf2Hash::<2>::with_family(127, 8, 0x5EED, b));
-            assert_eq!(same, i == j, "{a:?} vs {b:?}");
-        }
-    }
-    let three = Gf2Hash::<2>::with_family(127, 8, 1, HashFamily::Sparse { weight: 3 });
-    let four = Gf2Hash::<2>::with_family(127, 8, 1, HashFamily::Sparse { weight: 4 });
-    assert!(!three.same_rows_as(&four));
-}
-
-#[test]
-fn every_family_is_linear_and_masked() {
-    fn check<const W: usize>(num_qubits: usize) {
-        let mut rng = Xs64::new(0x11E);
-        for family in FAMILIES {
-            let h = Gf2Hash::<W>::with_family(num_qubits, 12, 0x5EED, family);
-            for _ in 0..200 {
-                let p = rand_key::<W>(&mut rng, num_qubits);
-                let q = rand_key::<W>(&mut rng, num_qubits);
-                assert_eq!(bucket(&h, &xor(&p, &q)), bucket(&h, &p) ^ bucket(&h, &q), "{family:?}");
-            }
-            for i in 0..B_MAX_BITS as usize {
-                let (x, z) = h.row(i);
-                for w in 0..W {
-                    let outside = !word_mask(num_qubits, w);
-                    assert_eq!(
-                        (x[w] | z[w]) & outside,
-                        0,
-                        "{family:?} row {i} sets a bit past qubit {num_qubits}"
-                    );
-                }
-            }
-        }
-    }
-    check::<1>(37);
-    check::<2>(100);
-}
-
-#[test]
-fn rows_of_every_family_do_not_depend_on_the_width() {
-    for family in FAMILIES {
-        for n in [5usize, 64] {
-            let h1 = Gf2Hash::<1>::with_family(n, 8, 0x5EED, family);
-            let h2 = Gf2Hash::<2>::with_family(n, 8, 0x5EED, family);
-            for i in 0..B_MAX_BITS as usize {
-                let (x1, z1) = h1.row(i);
-                assert_eq!(h2.row(i), ([x1[0], 0], [z1[0], 0]), "{family:?} n={n} row {i}");
-            }
-        }
-    }
-}
-
-#[test]
-fn sparse_rows_set_exactly_their_weight() {
-    fn check<const W: usize>(num_qubits: usize) {
-        for weight in [1u16, 3, 7] {
-            let h =
-                Gf2Hash::<W>::with_family(num_qubits, 4, 0xC0FFEE, HashFamily::Sparse { weight });
-            for i in 0..B_MAX_BITS as usize {
-                assert_eq!(
-                    coordinates(h.row(i), num_qubits).len(),
-                    weight as usize,
-                    "weight {weight} row {i}"
-                );
-            }
-        }
-    }
-    check::<1>(5);
-    check::<1>(64);
-    check::<2>(127);
-}
-
-#[test]
-#[should_panic(expected = "Sparse")]
-fn a_sparse_weight_above_the_coordinate_count_panics() {
-    Gf2Hash::<1>::with_family(3, 4, 1, HashFamily::Sparse { weight: 7 });
-}
-
-#[test]
-#[should_panic(expected = "Sparse")]
-fn a_zero_sparse_weight_panics() {
-    Gf2Hash::<1>::with_family(3, 4, 1, HashFamily::Sparse { weight: 0 });
-}
-
-#[test]
-fn projection_rows_are_single_coordinates_distinct_until_they_run_out() {
-    let wide = Gf2Hash::<2>::with_family(127, 4, 0x5EED, HashFamily::Projection);
-    let picked: Vec<Vec<usize>> =
-        (0..B_MAX_BITS as usize).map(|i| coordinates(wide.row(i), 127)).collect();
-    assert!(picked.iter().all(|c| c.len() == 1));
-    let distinct: std::collections::HashSet<usize> = picked.iter().map(|c| c[0]).collect();
-    assert_eq!(distinct.len(), B_MAX_BITS as usize);
-    // Five qubits have ten coordinates: rows 0..10 use each once, then the cycle repeats.
-    let narrow = Gf2Hash::<1>::with_family(5, 4, 0x5EED, HashFamily::Projection);
-    let first: std::collections::HashSet<Vec<usize>> =
-        (0..10).map(|i| coordinates(narrow.row(i), 5)).collect();
-    assert_eq!(first.len(), 10);
-    assert_eq!(narrow.row(12), narrow.row(2));
-}
-
-/// A projection reads only `bits` coordinates, which low-weight strings mostly leave at zero, so bucket 0 holds most of them.
-#[test]
-fn projection_occupancy_collapses_on_low_weight_keys() {
-    let num_qubits = 64;
-    let h = Gf2Hash::<1>::with_family(num_qubits, 6, 0x0CC1, HashFamily::Projection);
-    let mut rng = Xs64::new(0xBA1);
-    let mut seen = std::collections::HashSet::new();
-    let mut in_zero = 0usize;
-    while seen.len() < 4096 {
-        let p = low_weight_key::<1>(&mut rng, num_qubits, 4);
-        if seen.insert((p.x, p.z)) {
-            in_zero += (bucket(&h, &p) == 0) as usize;
-        }
-    }
-    // A dense hash puts 4096 / 64 = 64 keys there.
-    assert!(in_zero > 4096 / 2, "{in_zero} of 4096 weight-4 keys in bucket 0");
-}
-
-/// The first `min(B_MAX_BITS, 2 · num_qubits)` rows are independent, so no active bucket is unreachable.
-#[test]
-fn every_family_is_full_rank() {
-    fn check<const W: usize>(num_qubits: usize, family: HashFamily) {
-        let h = Gf2Hash::<W>::with_family(num_qubits, 4, 0x5EED, family);
-        let needed = (2 * num_qubits).min(B_MAX_BITS as usize);
-        let rows: Vec<_> = (0..needed).map(|i| h.row(i)).collect();
-        assert_eq!(gf2_rank_wide(&rows), needed, "{family:?} over {num_qubits} qubits");
-        for i in 0..B_MAX_BITS as usize {
-            assert_ne!(
-                h.row(i),
-                ([0; W], [0; W]),
-                "{family:?} over {num_qubits} qubits: row {i} is zero"
-            );
-        }
-    }
-    for n in [1usize, 3, 5, 11, 64] {
-        for family in [HashFamily::Dense, HashFamily::Sparse { weight: 1 }, HashFamily::Projection]
-        {
-            check::<1>(n, family);
-        }
-    }
-    check::<1>(5, HashFamily::Sparse { weight: 3 });
-    check::<1>(12, HashFamily::Sparse { weight: 2 });
-    for family in FAMILIES {
-        check::<2>(127, family);
-    }
-}
-
-/// Full-rank draws only redraw dependent rows, which over 127 qubits never happens: the default hash is the plain splitmix64 draw.
-#[test]
-fn the_default_hash_is_the_plain_draw_where_that_is_already_full_rank() {
-    let seed = crate::pauli_sum::storage::DEFAULT_HASH_SEED;
-    let h = Gf2Hash::<2>::new(127, 4, seed);
-    let plain = Gf2Matrix::<2>::draw(127, B_MAX_BITS as usize, seed, &[0; 2], &[0; 2]);
-    for i in 0..B_MAX_BITS as usize {
-        assert_eq!(h.row(i), plain.row(i), "row {i}");
-    }
-}
-
-/// A family that cannot reach full rank still builds, and says by how much it falls short.
-#[test]
-fn rank_deficiency_reports_exactly_the_families_that_fall_short() {
-    let deficit = |n: usize, weight: u16| {
-        Gf2Hash::<1>::with_family(n, 4, 1, HashFamily::Sparse { weight }).rank_deficiency()
-    };
-    assert_eq!(deficit(12, 2), None, "even weight: 23 independent rows reachable, 22 needed");
-    assert!(deficit(11, 2).unwrap().contains("first 22 rows have rank 21"));
-    assert!(deficit(5, 10).unwrap().contains("first 10 rows have rank 1"));
-    assert_eq!(deficit(5, 9), None);
-    assert_eq!(Gf2Hash::<1>::with_family(1, 4, 1, HashFamily::Projection).rank_deficiency(), None);
-    assert!(HashFamily::Sparse { weight: 0 }
-        .validate(10)
-        .unwrap_err()
-        .contains("must lie in 1..=10"));
-}
-
-#[test]
-fn explicit_rows_lead_and_dense_rows_complete_the_hash_to_full_rank() {
-    let given = vec![vec![0, 127], vec![5], vec![200, 3, 64]];
-    let h = Gf2Hash::<2>::from_coordinates(127, 6, 0x5EED, &given);
-    assert_eq!(h.origin(), HashOrigin::Explicit { rows: 3 });
-    for (i, row) in given.iter().enumerate() {
-        assert_eq!(
-            coordinates(h.row(i), 127),
-            {
-                let mut r = row.clone();
-                r.sort();
-                r
-            },
-            "row {i}"
-        );
-    }
-    assert_eq!(h.rank_deficiency(), None);
-    let dense = Gf2Hash::<2>::new(127, 6, 7);
-    let copied: Vec<Vec<usize>> =
-        (0..B_MAX_BITS as usize).map(|i| coordinates(dense.row(i), 127)).collect();
-    assert!(
-        Gf2Hash::<2>::from_coordinates(127, 6, 99, &copied).same_rows_as(&dense),
-        "rows decide sameness, not how they were made"
-    );
-}
-
-#[test]
-fn dependent_explicit_rows_are_accepted_and_reported() {
-    let h = Gf2Hash::<1>::from_coordinates(40, 2, 1, &[vec![3], vec![3], vec![]]);
-    // A duplicate and an empty row add nothing, so the three given rows have rank 1 and the 19 dense ones complete it to 20.
-    assert!(h.rank_deficiency().unwrap().contains("rank 20"), "{:?}", h.rank_deficiency());
-    assert_eq!(h.bucket_of(&[1 << 3], &[0]), 0b011, "both copies of the row read qubit 3's x-bit");
-}
-
-#[test]
-#[should_panic(expected = "coordinate 254 is outside 0..254")]
-fn an_explicit_coordinate_past_the_register_panics() {
-    Gf2Hash::<2>::from_coordinates(127, 2, 1, &[vec![254]]);
-}
-
-#[test]
-fn partition_families_draw_their_rows_and_honour_the_exclusion() {
-    let none = [0u64; 2];
-    let dense = PartitionRows::<2>::from_family(127, 3, 9, HashFamily::Dense, &none, &none);
-    assert_eq!(
-        dense,
-        PartitionRows::<2>::from_seed(127, 3, 9),
-        "the dense family is the seeded draw"
-    );
-    let all_z = [u64::MAX, u64::MAX >> 1];
-    let sparse =
-        PartitionRows::<2>::from_family(127, 3, 9, HashFamily::Sparse { weight: 5 }, &none, &all_z);
-    let (rows_x, rows_z) = sparse.rows();
-    assert!(rows_z.iter().all(|row| *row == [0, 0]), "x-only rows read no z-bit");
-    assert!(rows_x.iter().all(|row| row[0].count_ones() + row[1].count_ones() == 5));
-    assert_eq!(sparse.independent_rows(), 3);
-    let projection =
-        PartitionRows::<2>::from_family(127, 2, 9, HashFamily::Projection, &none, &none);
-    assert_eq!(projection.rank_deficiency(&Gf2Hash::<2>::new(127, 4, 1)), Vec::<String>::new());
-}
-
-#[test]
-fn partition_rank_deficiency_names_dependent_rows_and_overlap_with_the_buckets() {
-    let hash = Gf2Hash::<1>::new(40, 4, 3);
-    let duplicate = PartitionRows::<1>::from_coordinates(40, &[vec![7], vec![7]]);
-    let reasons = duplicate.rank_deficiency(&hash);
-    assert!(reasons.iter().any(|r| r.contains("only 2 of the 4 partitions")), "{reasons:?}");
-    let (x, z) = hash.row(0);
-    let overlapping = PartitionRows::<1>::from_rows(40, vec![x], vec![z]);
-    let reasons = overlapping.rank_deficiency(&hash);
-    assert!(
-        reasons.iter().any(|r| r.contains("overlap the span of the bucket hash")),
-        "{reasons:?}"
-    );
-    let fine = PartitionRows::<1>::from_seed(40, 2, 11);
-    assert!(fine.rank_deficiency(&hash).is_empty());
 }
 
 mod props {

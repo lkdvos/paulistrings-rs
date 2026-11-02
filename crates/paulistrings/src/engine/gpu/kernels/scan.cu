@@ -1,5 +1,5 @@
 // Device-wide exclusive scan and max of a u32 column: per-block scan, scan of the block sums, add-back.
-// SCAN_BLOCK elements per block and at most SCAN_BLOCK blocks, so n <= 2^24, beyond 2^B_MAX_BITS + 1.
+// SCAN_BLOCK elements per block and at most SCAN_BLOCK blocks, so n <= 2^24, beyond 2^GPU_MAX_BITS + 1 (engine/gpu/sum.rs).
 
 #define SCAN_THREADS 1024
 #define SCAN_WARPS (SCAN_THREADS / WARP)

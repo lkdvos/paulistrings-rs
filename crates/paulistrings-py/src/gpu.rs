@@ -86,8 +86,8 @@ mod cuda {
     use crate::sum::{PauliSumImpl, PropagateFailure};
     use crate::truncation_spec::PyTruncation;
     use paulistrings::gpu::{device_count, GpuError, GpuPartitionedSum};
+    use paulistrings::max_hash_bits;
     use paulistrings::BuiltinTruncation;
-    use paulistrings::P_MAX_BITS;
     use paulistrings::{Direction, PartitionTrace, PropagateOptions};
     use pyo3::exceptions::{PyMemoryError, PyNotImplementedError, PyRuntimeError, PyValueError};
     use pyo3::prelude::*;
@@ -135,10 +135,14 @@ mod cuda {
     }
 
     /// The devices `request` places one partition on each, in partition order; `shown` is the kwarg as the caller spelled it.
-    /// `"auto"` takes devices `0..k` for the largest power of two `k` visible, as `partitions="auto"` rounds its node count.
-    pub(crate) fn resolve_devices(request: &DeviceRequest, shown: &str) -> Result<Vec<u32>, PyErr> {
+    /// `"auto"` takes devices `0..k` for the largest power of two `k` visible, as `partitions="auto"` rounds its node count; a sum over `num_qubits` qubits splits into at most `2^max_hash_bits(num_qubits)` partitions.
+    pub(crate) fn resolve_devices(
+        request: &DeviceRequest,
+        shown: &str,
+        num_qubits: usize,
+    ) -> Result<Vec<u32>, PyErr> {
         let count = visible_devices(shown)?;
-        let max = 1usize << P_MAX_BITS;
+        let max = 1usize << max_hash_bits(num_qubits);
         let devices: Vec<u32> = match request {
             DeviceRequest::Auto => {
                 let k = 1usize << count.min(max).ilog2();
@@ -159,7 +163,8 @@ mod cuda {
         }
         if n > max {
             return Err(PyValueError::new_err(format!(
-                "{shown} names {n} devices, but a run has at most {max} partitions"
+                "{shown} names {n} devices, but a sum over {num_qubits} qubits splits into at \
+                 most {max} partitions"
             )));
         }
         Ok(devices)

@@ -5,7 +5,7 @@
 //! The span rather than `h(D)` itself, since a custom channel's delta set need not be XOR-closed.
 //! Where several deltas share a bucket delta the gather walks them all, so correctness never depends on the draw of the hash rows.
 
-use crate::pauli_sum::hash::B_MAX_BITS;
+use crate::pauli_sum::hash::INDEX_BITS;
 
 /// Highest set bit of a nonzero word.
 fn highest_bit(v: u32) -> u32 {
@@ -44,9 +44,9 @@ pub(crate) struct Gf2Span {
 }
 
 impl Gf2Span {
-    /// The span of `deltas` in a `bits`-wide index space; panics if `bits > B_MAX_BITS` or a delta lies outside it.
+    /// The span of `deltas` in a `bits`-wide index space; panics if `bits` exceeds the index width or a delta lies outside it.
     pub(crate) fn new(deltas: &[u32], bits: u8) -> Self {
-        assert!(bits <= B_MAX_BITS, "Gf2Span: bits {bits} exceeds B_MAX_BITS {B_MAX_BITS}");
+        assert!(bits <= INDEX_BITS, "Gf2Span: bits {bits} exceeds the {INDEX_BITS}-bit index");
         let space_mask = if bits == 0 { 0 } else { (1u32 << bits) - 1 };
 
         let mut basis: Vec<u32> = Vec::new();
@@ -153,21 +153,21 @@ pub(crate) struct CosetOrder {
     permutation: Vec<u32>,
     /// `inverse[p]` is the bucket at position `p`; built only on request.
     inverse: Vec<u32>,
-    positions: u32,
+    positions: usize,
     dimension: u32,
 }
 
 impl CosetOrder {
     /// Re-aim the order at `span`, keeping the allocations; the inverse is built only when `with_inverse`.
     pub(crate) fn rebuild(&mut self, span: &Gf2Span, with_inverse: bool) {
-        self.positions = 1u32 << span.bits;
+        self.positions = 1usize << span.bits;
         self.dimension = span.dimension() as u32;
         self.permutation.clear();
         self.inverse.clear();
         if self.dimension == 0 {
             return;
         }
-        self.permutation.extend((0..self.positions).map(|beta| span.permuted_index(beta)));
+        self.permutation.extend((0..self.positions).map(|beta| span.permuted_index(beta as u32)));
         if with_inverse {
             self.inverse.resize(self.permutation.len(), 0);
             for (beta, &position) in self.permutation.iter().enumerate() {
@@ -205,7 +205,7 @@ impl CosetOrder {
 
     /// Positions, i.e. buckets.
     pub(crate) fn positions(&self) -> usize {
-        self.positions as usize
+        self.positions
     }
 
     /// `r`, the `log2` of the coset size.

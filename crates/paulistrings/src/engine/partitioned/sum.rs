@@ -194,7 +194,7 @@ impl<const W: usize> PartitionedSum<W> {
         let ScatterOptions { runtime, rows } = options;
         let rows = rows.resolve(&sum, runtime.partition_bits());
         let size = runtime.num_partitions();
-        rows.assert_splits(sum.hash(), sum.num_qubits(), size);
+        rows.assert_splits(sum.num_qubits(), size);
 
         let started = Instant::now();
         let locals = {

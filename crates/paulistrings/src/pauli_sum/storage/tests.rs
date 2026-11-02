@@ -1,7 +1,7 @@
 use super::*;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
-use crate::pauli_sum::{HashOrigin, PartitionRows};
+use crate::pauli_sum::{Gf2Hash, PartitionRows};
 use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
 
 /// Low-weight keys, where a badly chosen hash would collapse into one bucket.
@@ -53,18 +53,23 @@ fn assert_same_sum<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) {
 }
 
 #[test]
-fn with_hash_family_keeps_every_term_under_every_family() {
+fn with_hash_keeps_every_term_under_drawn_and_given_rows() {
     fn check<const W: usize>(num_qubits: usize) {
         let sum = rand_low_weight_sum::<W>(3000, num_qubits, 3, 0xFA);
-        for family in [HashFamily::Dense, HashFamily::Sparse { weight: 2 }, HashFamily::Projection]
-        {
-            let rehashed = sum.clone().with_hash_family(family, 0x5EED);
+        let bits = sum.hash().bits();
+        // One coordinate per row, the x-bits of the first qubits, then drawn rows.
+        let projection: Vec<Vec<bool>> =
+            (0..3).map(|i| (0..2 * num_qubits).map(|c| c == i).collect()).collect();
+        for hash in [
+            Gf2Hash::<W>::new(num_qubits, bits, 0x5EED),
+            Gf2Hash::<W>::new(num_qubits, bits + 2, 0x5EED),
+            Gf2Hash::<W>::from_matrix(num_qubits, bits, 0x5EED, &projection),
+        ] {
+            let rehashed = sum.clone().with_hash(hash.clone());
             rehashed.assert_invariants();
-            assert_eq!(
-                (rehashed.hash().origin(), rehashed.hash().seed()),
-                (HashOrigin::Drawn(family), 0x5EED)
-            );
-            assert_eq!(rehashed.hash().bits(), sum.hash().bits());
+            assert_eq!(rehashed.hash().seed(), 0x5EED);
+            assert_eq!(rehashed.hash().bits(), hash.bits());
+            assert_eq!(rehashed.hash().rows(), hash.rows());
             assert_same_sum(&sum, &rehashed);
         }
     }
@@ -74,7 +79,8 @@ fn with_hash_family_keeps_every_term_under_every_family() {
 
 #[test]
 fn bucket_lengths_count_every_term_in_its_bucket() {
-    let sum = rand_sum::<2>(2000, 127, 0xC0).with_hash_family(HashFamily::Sparse { weight: 3 }, 1);
+    let sum = rand_sum::<2>(2000, 127, 0xC0);
+    let sum = sum.clone().with_hash(Gf2Hash::new(127, 3, 1));
     let lengths = sum.bucket_lengths();
     assert_eq!(lengths.len(), sum.num_buckets());
     assert_eq!(lengths.iter().sum::<usize>(), sum.len());
@@ -86,11 +92,11 @@ fn bucket_lengths_count_every_term_in_its_bucket() {
 }
 
 #[test]
-fn sums_under_different_families_still_add() {
+fn sums_under_different_hashes_still_add() {
     let a = rand_sum::<2>(500, 127, 0xA);
     let b = rand_sum::<2>(500, 127, 0xB);
-    let sum = a.add(&b.clone().with_hash_family(HashFamily::Projection, 1));
-    assert_eq!(sum.hash().origin(), HashOrigin::Drawn(HashFamily::Dense));
+    let sum = a.add(&b.clone().with_hash(Gf2Hash::new(127, 4, 1)));
+    assert!(sum.hash().same_rows_as(a.hash()));
     assert_same_sum(&sum, &a.add(&b));
 }
 

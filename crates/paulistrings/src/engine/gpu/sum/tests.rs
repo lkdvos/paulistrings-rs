@@ -170,7 +170,7 @@ fn refine_to_beyond_b_max_bits_is_unsupported() {
     let sum = rand_sum::<1>(1000, 64, 0x9);
     let mut dev = GpuSum::from_host(&sum, 0).expect("upload");
     let bits = dev.bits();
-    assert!(matches!(dev.refine_to(B_MAX_BITS + 1), Err(GpuError::Unsupported(_))));
+    assert!(matches!(dev.refine_to(dev.max_bits() + 1), Err(GpuError::Unsupported(_))));
     assert_eq!(dev.bits(), bits);
     dev.refine_to(bits).expect("a no-op");
     assert_same_buckets(&dev.to_host().unwrap(), &sum, "unchanged");

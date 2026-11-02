@@ -2,8 +2,8 @@
 
 use crate::channel::prepared::Prepared;
 use crate::engine::gpu::GPU_LOG_TARGET;
+use crate::engine::gpu::GPU_MAX_BITS;
 use crate::engine::knob::Knob;
-use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::pauli_sum::storage::desired_bits;
 
 /// Records per fused block the default bucket count aims for.
@@ -19,7 +19,7 @@ pub struct GpuLayerOptions {
     pub records_per_block: usize,
     /// Bytes the loose output arena may hold; positions are batched so no batch's pre-dedup rows exceed it; at least 1.
     pub arena_bytes: usize,
-    /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`](crate::gpu::GpuError::Unsupported); `B_MAX_BITS` by default.
+    /// Bucket bits a layer may refine to before an oversize block is [`GpuError::Unsupported`](crate::gpu::GpuError::Unsupported); [`GPU_MAX_BITS`] by default.
     pub max_bits: u8,
     /// Merge one partner's exported rows by key on the sender before the exchange; on by default.
     pub premerge: bool,
@@ -53,7 +53,7 @@ impl Default for GpuLayerOptions {
         Self {
             records_per_block: DEFAULT_RECORDS_PER_BLOCK,
             arena_bytes: DEFAULT_ARENA_BYTES,
-            max_bits: B_MAX_BITS,
+            max_bits: GPU_MAX_BITS,
             premerge: true,
             exchange_bytes: *EXCHANGE_BYTES.get(),
             clifford: true,
@@ -62,7 +62,7 @@ impl Default for GpuLayerOptions {
 }
 
 impl GpuLayerOptions {
-    /// `Err` with the message `set_layer_options` and a device scatter panic with unless `records_per_block >= 1`, `arena_bytes >= 1` and `max_bits <= B_MAX_BITS`.
+    /// `Err` with the message `set_layer_options` and a device scatter panic with unless `records_per_block >= 1`, `arena_bytes >= 1` and `max_bits <= GPU_MAX_BITS`.
     pub fn validate(&self) -> Result<(), String> {
         if self.records_per_block == 0 {
             return Err("records_per_block must be at least 1, got 0".to_string());
@@ -70,8 +70,8 @@ impl GpuLayerOptions {
         if self.arena_bytes == 0 {
             return Err("arena_bytes must be at least 1, got 0".to_string());
         }
-        if self.max_bits > B_MAX_BITS {
-            return Err(format!("max_bits must be at most {B_MAX_BITS}, got {}", self.max_bits));
+        if self.max_bits > GPU_MAX_BITS {
+            return Err(format!("max_bits must be at most {GPU_MAX_BITS}, got {}", self.max_bits));
         }
         Ok(())
     }
@@ -93,7 +93,7 @@ pub(crate) fn gpu_desired_bits(
 ) -> u8 {
     desired_bits(len.saturating_mul(fanout.max(1)), records_per_block.max(1), 1)
         .max(current)
-        .min(B_MAX_BITS)
+        .min(GPU_MAX_BITS)
 }
 
 /// The entries `prepared` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.

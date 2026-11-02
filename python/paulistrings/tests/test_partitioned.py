@@ -651,7 +651,6 @@ def test_partition_row_exclude_takes_the_seed():
     [
         ({"y": [0]}, ValueError, "keys are"),
         ({"x": [99]}, ValueError, "out of range"),
-        ({"x": list(range(8)), "z": list(range(8))}, ValueError, "every coordinate"),
         ([0, 1], TypeError, "must be None or a dict"),
         ({"x": "01"}, TypeError, "must be None or a dict"),
         ({"x": [0]}, ValueError, "needs partitions"),

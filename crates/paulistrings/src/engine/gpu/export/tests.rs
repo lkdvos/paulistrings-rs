@@ -9,7 +9,7 @@ use crate::engine::gpu::payload::DeviceBlock;
 use crate::engine::gpu::DEFAULT_ARENA_BYTES;
 use crate::engine::partitioned::exchange_block::{ExchangeBlock, PartnerPayload};
 use crate::engine::partitioned::export::{export_layer, ExportScratch};
-use crate::pauli_sum::hash::{Gf2Hash, PartitionRows, B_MAX_BITS};
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::test_support::{haar_su4_matrix, rand_sum, zz_rotation};
 use num_complex::Complex64;
@@ -514,12 +514,12 @@ fn oversize_merge_position_falls_back_to_unmerged_export() {
     assert_unmerged_fallback(&input, &rows, &["-DTEST_SHARED_LIMIT=17000".to_string()]);
 }
 
-/// A partner group whose `entries × buckets` exceeds [`SCAN_LIMIT`] is cleared before the fused layer: `B_MAX_BITS` buckets times the SU(4)'s eight-entry group already does.
+/// A partner group whose `entries × buckets` exceeds [`SCAN_LIMIT`] is cleared before the fused layer: `2^22` buckets times the SU(4)'s eight-entry group already does.
 #[test]
 fn oversize_partner_group_falls_back_to_unmerged_export() {
     crate::require_cuda!();
     let base = rand_sum::<1>(400, 32, 0xB5CA);
-    let input = dense_on_01(&base).with_hash(Gf2Hash::<1>::new(32, B_MAX_BITS, 0xB5CA));
+    let input = dense_on_01(&base).with_hash(Gf2Hash::<1>::new(32, 22, 0xB5CA));
     assert!(input.num_buckets() * 8 > SCAN_LIMIT);
     assert_unmerged_fallback(&input, &PartitionRows::<1>::from_seed(32, 1, 0xB5CA ^ 0x77), &[]);
 }

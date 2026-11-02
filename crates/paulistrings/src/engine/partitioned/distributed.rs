@@ -17,7 +17,7 @@ use crate::engine::trace::PartitionTrace;
 use crate::engine::transport::Transport;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_string::qubit_mask;
-use crate::pauli_sum::hash::{Gf2Hash, HashFamily, PartitionRows};
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
 
@@ -27,7 +27,7 @@ use crate::engine::stats::PartitionPhaseStats;
 /// Parts the gather ships per rank: bucket lengths, then the three columns.
 const GATHER_PARTS: usize = 4;
 
-/// Which partition rows a scatter splits by: a seeded draw of some family, a qubit cut that keeps a channel local when its qubits share a block, or explicit rows.
+/// Which partition rows a scatter splits by: a seeded GF(2)-random draw, a qubit cut that keeps a channel local when its qubits share a block, or explicit rows.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PartitionRowPolicy {
     /// [`PartitionRows::from_seed`] with this seed, or the sum's own hash seed at `None`; the default.
@@ -43,19 +43,8 @@ pub enum PartitionRowPolicy {
         /// Qubits whose z-bit no row reads.
         exclude_z: Vec<usize>,
     },
-    /// [`PartitionRows::from_family`]: [`SeededExcluding`](Self::SeededExcluding) with the rows drawn by `family`.
-    Family {
-        /// How the rows are drawn.
-        family: HashFamily,
-        /// As in [`Seeded`](Self::Seeded).
-        seed: Option<u64>,
-        /// Qubits whose x-bit no row reads.
-        exclude_x: Vec<usize>,
-        /// Qubits whose z-bit no row reads.
-        exclude_z: Vec<usize>,
-    },
-    /// [`PartitionRows::from_coordinates`]: one row per partition bit, each the coordinates it reads.
-    Coordinates(Vec<Vec<usize>>),
+    /// [`PartitionRows::from_matrix`]: one row per partition bit as a flag matrix over the `2 · num_qubits` coordinates, x-bits first.
+    Matrix(Vec<Vec<bool>>),
 }
 
 impl PartitionRowPolicy {
@@ -85,15 +74,7 @@ impl PartitionRowPolicy {
                     &mask(exclude_z),
                 )
             }
-            Self::Family { family, seed, exclude_x, exclude_z } => PartitionRows::from_family(
-                num_qubits,
-                bits,
-                seed.unwrap_or(default_seed),
-                *family,
-                &mask(exclude_x),
-                &mask(exclude_z),
-            ),
-            Self::Coordinates(rows) => PartitionRows::from_coordinates(num_qubits, rows),
+            Self::Matrix(rows) => PartitionRows::from_matrix(num_qubits, rows),
         }
     }
 }
@@ -253,6 +234,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
             self.rows.num_qubits(),
             W,
             self.local.hash(),
+            &self.rows,
         );
         let frame = DriverFrame {
             parts: std::slice::from_mut(&mut self.local),
@@ -343,7 +325,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
              domains-per-rank hybrids are not implemented",
             runtime.num_partitions(),
         );
-        rows.assert_splits(sum.hash(), sum.num_qubits(), 1usize << group_bits(transport.size()));
+        rows.assert_splits(sum.num_qubits(), 1usize << group_bits(transport.size()));
 
         let started = Instant::now();
         let local = {
@@ -471,18 +453,17 @@ pub(crate) fn gather_share<const W: usize, X: Transport>(
     })
 }
 
-/// The bucket hash's rows as one word, folded word by word: equal rows give equal words whatever family or caller produced them.
-fn hash_identity<const W: usize>(bucket_hash: &Gf2Hash<W>) -> [u64; 1] {
-    let (rows_x, rows_z) = bucket_hash.rows();
+/// GF(2) rows as one word, folded word by word, so equal rows give equal words whoever produced them.
+fn rows_identity<const W: usize>((rows_x, rows_z): (&[[u64; W]], &[[u64; W]])) -> u64 {
     let mut folded: u64 = 0xcbf2_9ce4_8422_2325;
     for word in rows_x.iter().chain(rows_z).flatten() {
         folded = (folded ^ word).wrapping_mul(0x0000_0100_0000_01b3);
     }
-    [folded]
+    folded
 }
 
 /// A shape-only fingerprint of the run, since a `Circuit` of trait objects has no canonical encoding.
-/// It covers the bucket hash's rows, which each rank's share carries on its own (`PauliSum::with_hash_family`), since ranks bucketing by different rows misroute the gather.
+/// It covers the bucket hash's rows and the partition rows, which every rank holds on its own, since ranks bucketing or splitting by different rows misroute the exchange and the gather.
 fn run_fingerprint<const W: usize>(
     channels: usize,
     direction: Direction,
@@ -490,6 +471,7 @@ fn run_fingerprint<const W: usize>(
     num_qubits: usize,
     w: usize,
     bucket_hash: &Gf2Hash<W>,
+    partition_rows: &PartitionRows<W>,
 ) -> u64 {
     // FNV-1a over the fields, in a fixed order.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -503,7 +485,8 @@ fn run_fingerprint<const W: usize>(
     mix(options.min_buckets as u64);
     mix(num_qubits as u64);
     mix(w as u64);
-    hash_identity(bucket_hash).into_iter().for_each(mix);
+    mix(rows_identity(bucket_hash.rows()));
+    mix(rows_identity(partition_rows.rows()));
     hash
 }
 

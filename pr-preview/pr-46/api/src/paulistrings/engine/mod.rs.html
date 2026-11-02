@@ -63,7 +63,7 @@
 <a href=#63 id=63 data-nosnippet>63</a></span><span class="kw">pub struct </span>PropagateOptions {
 <a href=#64 id=64 data-nosnippet>64</a>    <span class="doccomment">/// Terms per bucket the per-layer partition targets.
 <a href=#65 id=65 data-nosnippet>65</a>    ///
-<a href=#66 id=66 data-nosnippet>66</a>    /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and rebucketing is grow-only, so lowering either mid-run never coarsens a partition.
+<a href=#66 id=66 data-nosnippet>66</a>    /// Above the `min_buckets` floor raising this alone does nothing; both fields must move together to get fewer buckets, and a partition refines once its buckets average above this and coarsens once they average below an eighth of it, so a change mid-run moves it only past that gap.
 <a href=#67 id=67 data-nosnippet>67</a>    /// At least 1 ([`validate`](Self::validate)).
 <a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">pub </span>target_bucket_len: usize,
 <a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// Floor on the per-layer bucket count once the sum is worth splitting.

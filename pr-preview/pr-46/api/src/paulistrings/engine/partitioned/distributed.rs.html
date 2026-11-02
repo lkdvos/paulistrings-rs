@@ -504,134 +504,159 @@
 <a href=#504 id=504 data-nosnippet>504</a>    <span class="kw">let </span>rank = transport.rank() <span class="kw">as </span>usize;
 <a href=#505 id=505 data-nosnippet>505</a>    <span class="kw">let </span>hash = share.hash().clone();
 <a href=#506 id=506 data-nosnippet>506</a>    <span class="kw">let </span>num_qubits = share.num_qubits();
-<a href=#507 id=507 data-nosnippet>507</a>    <span class="kw">let </span><span class="kw-2">mut </span>pieces: Vec&lt;<span class="prelude-ty">Option</span>&lt;PauliSum&lt;W&gt;&gt;&gt; =
-<a href=#508 id=508 data-nosnippet>508</a>        share.split_partitions(rows).into_iter().map(<span class="prelude-val">Some</span>).collect();
+<a href=#507 id=507 data-nosnippet>507</a>    <span class="kw">let </span><span class="kw-2">mut </span>send: Vec&lt;<span class="prelude-ty">Option</span>&lt;ByteParts&gt;&gt; =
+<a href=#508 id=508 data-nosnippet>508</a>        encode_split(<span class="kw-2">&amp;</span>share, rows).into_iter().map(<span class="prelude-val">Some</span>).collect();
 <a href=#509 id=509 data-nosnippet>509</a>    drop(share);
-<a href=#510 id=510 data-nosnippet>510</a>    <span class="kw">let </span>mine = pieces[rank].take().expect(<span class="string">"this rank's own piece"</span>);
-<a href=#511 id=511 data-nosnippet>511</a>    <span class="comment">// Every rank sends to every other, an empty piece included, so a transport inferring its partners from the `Some` slots sees a symmetric exchange.
-<a href=#512 id=512 data-nosnippet>512</a>    </span><span class="kw">let </span>send: Vec&lt;<span class="prelude-ty">Option</span>&lt;ByteParts&gt;&gt; =
-<a href=#513 id=513 data-nosnippet>513</a>        pieces.iter().map(|piece| piece.as_ref().map(encode_share)).collect();
-<a href=#514 id=514 data-nosnippet>514</a>    drop(pieces);
-<a href=#515 id=515 data-nosnippet>515</a>    <span class="kw">let </span><span class="kw-2">mut </span>received = transport.exchange(send, <span class="kw-2">&amp;mut </span>Vec::new());
-<a href=#516 id=516 data-nosnippet>516</a>    <span class="kw">let </span><span class="kw-2">mut </span>parts = Vec::with_capacity(size);
-<a href=#517 id=517 data-nosnippet>517</a>    parts.push(mine);
-<a href=#518 id=518 data-nosnippet>518</a>    <span class="kw">for </span>(from, payload) <span class="kw">in </span>received.iter_mut().enumerate() {
-<a href=#519 id=519 data-nosnippet>519</a>        <span class="kw">if </span>from == rank {
-<a href=#520 id=520 data-nosnippet>520</a>            <span class="kw">continue</span>;
-<a href=#521 id=521 data-nosnippet>521</a>        }
-<a href=#522 id=522 data-nosnippet>522</a>        <span class="kw">let </span>payload =
-<a href=#523 id=523 data-nosnippet>523</a>            payload.take().unwrap_or_else(|| <span class="macro">panic!</span>(<span class="string">"repartition: rank {from} sent nothing"</span>));
-<a href=#524 id=524 data-nosnippet>524</a>        parts.push(decode_rank(<span class="kw-2">&amp;</span>payload.<span class="number">0</span>, hash.clone(), num_qubits, from));
-<a href=#525 id=525 data-nosnippet>525</a>    }
+<a href=#510 id=510 data-nosnippet>510</a>    <span class="kw">let </span><span class="kw-2">mut </span>own = send[rank].take();
+<a href=#511 id=511 data-nosnippet>511</a>    <span class="comment">// Every rank sends to every other, an empty payload included, so a transport inferring its partners from the `Some` slots sees a symmetric exchange.
+<a href=#512 id=512 data-nosnippet>512</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>received = transport.exchange(send, <span class="kw-2">&amp;mut </span>Vec::new());
+<a href=#513 id=513 data-nosnippet>513</a>    <span class="kw">let </span>parts: Vec&lt;PauliSum&lt;W&gt;&gt; = (<span class="number">0</span>..size)
+<a href=#514 id=514 data-nosnippet>514</a>        .map(|from| {
+<a href=#515 id=515 data-nosnippet>515</a>            <span class="kw">let </span>payload = <span class="kw">if </span>from == rank {
+<a href=#516 id=516 data-nosnippet>516</a>                own.take().expect(<span class="string">"this rank's own payload"</span>).<span class="number">0
+<a href=#517 id=517 data-nosnippet>517</a>            </span>} <span class="kw">else </span>{
+<a href=#518 id=518 data-nosnippet>518</a>                received[from]
+<a href=#519 id=519 data-nosnippet>519</a>                    .take()
+<a href=#520 id=520 data-nosnippet>520</a>                    .unwrap_or_else(|| <span class="macro">panic!</span>(<span class="string">"repartition: rank {from} sent nothing"</span>))
+<a href=#521 id=521 data-nosnippet>521</a>                    .<span class="number">0
+<a href=#522 id=522 data-nosnippet>522</a>            </span>};
+<a href=#523 id=523 data-nosnippet>523</a>            decode_rank(<span class="kw-2">&amp;</span>payload, hash.clone(), num_qubits, from)
+<a href=#524 id=524 data-nosnippet>524</a>        })
+<a href=#525 id=525 data-nosnippet>525</a>        .collect();
 <a href=#526 id=526 data-nosnippet>526</a>    PauliSum::merge_partitions(parts)
 <a href=#527 id=527 data-nosnippet>527</a>}
 <a href=#528 id=528 data-nosnippet>528</a>
-<a href=#529 id=529 data-nosnippet>529</a><span class="doccomment">/// A share in the gather's wire form: bucket lengths, then the x, z and coefficient columns.
-<a href=#530 id=530 data-nosnippet>530</a></span><span class="kw">fn </span>encode_share&lt;<span class="kw">const </span>W: usize&gt;(share: <span class="kw-2">&amp;</span>PauliSum&lt;W&gt;) -&gt; ByteParts {
-<a href=#531 id=531 data-nosnippet>531</a>    <span class="kw">let </span>lens: Vec&lt;u64&gt; = (<span class="number">0</span>..share.num_buckets()).map(|b| share.bucket_len(b) <span class="kw">as </span>u64).collect();
-<a href=#532 id=532 data-nosnippet>532</a>    <span class="kw">let </span>(x, z, coeff) = share.to_arrays();
-<a href=#533 id=533 data-nosnippet>533</a>    ByteParts(<span class="macro">vec!</span>[
-<a href=#534 id=534 data-nosnippet>534</a>        bytemuck::cast_slice(<span class="kw-2">&amp;</span>lens).to_vec(),
-<a href=#535 id=535 data-nosnippet>535</a>        bytemuck::cast_slice(x.as_flattened()).to_vec(),
-<a href=#536 id=536 data-nosnippet>536</a>        bytemuck::cast_slice(z.as_flattened()).to_vec(),
-<a href=#537 id=537 data-nosnippet>537</a>        bytemuck::cast_slice(<span class="kw-2">&amp;</span>coeff).to_vec(),
-<a href=#538 id=538 data-nosnippet>538</a>    ])
-<a href=#539 id=539 data-nosnippet>539</a>}
-<a href=#540 id=540 data-nosnippet>540</a>
-<a href=#541 id=541 data-nosnippet>541</a><span class="doccomment">/// What every rank must agree on before terms move by `rows`: the partition rows and the bucket hash's rows.
-<a href=#542 id=542 data-nosnippet>542</a></span><span class="kw">fn </span>identity_fingerprint&lt;<span class="kw">const </span>W: usize&gt;(rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;, bucket_hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;) -&gt; u64 {
-<a href=#543 id=543 data-nosnippet>543</a>    rows_identity(rows.rows()) ^ rows_identity(bucket_hash.rows()).rotate_left(<span class="number">1</span>)
-<a href=#544 id=544 data-nosnippet>544</a>}
-<a href=#545 id=545 data-nosnippet>545</a>
-<a href=#546 id=546 data-nosnippet>546</a><span class="doccomment">/// GF(2) rows as one word, folded word by word, so equal rows give equal words whoever produced them.
-<a href=#547 id=547 data-nosnippet>547</a></span><span class="kw">fn </span>rows_identity&lt;<span class="kw">const </span>W: usize&gt;((rows_x, rows_z): (<span class="kw-2">&amp;</span>[[u64; W]], <span class="kw-2">&amp;</span>[[u64; W]])) -&gt; u64 {
-<a href=#548 id=548 data-nosnippet>548</a>    <span class="kw">let </span><span class="kw-2">mut </span>folded: u64 = <span class="number">0xcbf2_9ce4_8422_2325</span>;
-<a href=#549 id=549 data-nosnippet>549</a>    <span class="kw">for </span>word <span class="kw">in </span>rows_x.iter().chain(rows_z).flatten() {
-<a href=#550 id=550 data-nosnippet>550</a>        folded = (folded ^ word).wrapping_mul(<span class="number">0x0000_0100_0000_01b3</span>);
-<a href=#551 id=551 data-nosnippet>551</a>    }
-<a href=#552 id=552 data-nosnippet>552</a>    folded
-<a href=#553 id=553 data-nosnippet>553</a>}
-<a href=#554 id=554 data-nosnippet>554</a>
-<a href=#555 id=555 data-nosnippet>555</a><span class="doccomment">/// A shape-only fingerprint of the run, since a `Circuit` of trait objects has no canonical encoding.
-<a href=#556 id=556 data-nosnippet>556</a>/// It covers the bucket hash's rows and the partition rows, which every rank holds on its own, since ranks bucketing or splitting by different rows misroute the exchange and the gather.
-<a href=#557 id=557 data-nosnippet>557</a></span><span class="kw">fn </span>run_fingerprint&lt;<span class="kw">const </span>W: usize&gt;(
-<a href=#558 id=558 data-nosnippet>558</a>    channels: usize,
-<a href=#559 id=559 data-nosnippet>559</a>    direction: Direction,
-<a href=#560 id=560 data-nosnippet>560</a>    options: PropagateOptions,
-<a href=#561 id=561 data-nosnippet>561</a>    num_qubits: usize,
-<a href=#562 id=562 data-nosnippet>562</a>    w: usize,
-<a href=#563 id=563 data-nosnippet>563</a>    bucket_hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;,
-<a href=#564 id=564 data-nosnippet>564</a>    partition_rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;,
-<a href=#565 id=565 data-nosnippet>565</a>) -&gt; u64 {
-<a href=#566 id=566 data-nosnippet>566</a>    <span class="comment">// FNV-1a over the fields, in a fixed order.
-<a href=#567 id=567 data-nosnippet>567</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>hash: u64 = <span class="number">0xcbf2_9ce4_8422_2325</span>;
-<a href=#568 id=568 data-nosnippet>568</a>    <span class="kw">let </span><span class="kw-2">mut </span>mix = |v: u64| {
-<a href=#569 id=569 data-nosnippet>569</a>        hash ^= v;
-<a href=#570 id=570 data-nosnippet>570</a>        hash = hash.wrapping_mul(<span class="number">0x0000_0100_0000_01b3</span>);
-<a href=#571 id=571 data-nosnippet>571</a>    };
-<a href=#572 id=572 data-nosnippet>572</a>    mix(channels <span class="kw">as </span>u64);
-<a href=#573 id=573 data-nosnippet>573</a>    mix(<span class="macro">matches!</span>(direction, Direction::Heisenberg) <span class="kw">as </span>u64);
-<a href=#574 id=574 data-nosnippet>574</a>    mix(options.target_bucket_len <span class="kw">as </span>u64);
-<a href=#575 id=575 data-nosnippet>575</a>    mix(options.min_buckets <span class="kw">as </span>u64);
-<a href=#576 id=576 data-nosnippet>576</a>    mix(num_qubits <span class="kw">as </span>u64);
-<a href=#577 id=577 data-nosnippet>577</a>    mix(w <span class="kw">as </span>u64);
-<a href=#578 id=578 data-nosnippet>578</a>    mix(rows_identity(bucket_hash.rows()));
-<a href=#579 id=579 data-nosnippet>579</a>    mix(rows_identity(partition_rows.rows()));
-<a href=#580 id=580 data-nosnippet>580</a>    hash
-<a href=#581 id=581 data-nosnippet>581</a>}
-<a href=#582 id=582 data-nosnippet>582</a>
-<a href=#583 id=583 data-nosnippet>583</a><span class="doccomment">/// Copy `len` values of `T` out of a possibly unaligned byte view.
-<a href=#584 id=584 data-nosnippet>584</a></span><span class="kw">fn </span>decode_column&lt;T: bytemuck::Pod&gt;(bytes: <span class="kw-2">&amp;</span>[u8], len: usize, what: <span class="kw-2">&amp;</span>str) -&gt; Vec&lt;T&gt; {
-<a href=#585 id=585 data-nosnippet>585</a>    <span class="kw">let </span>stride = std::mem::size_of::&lt;T&gt;();
-<a href=#586 id=586 data-nosnippet>586</a>    <span class="macro">assert_eq!</span>(
-<a href=#587 id=587 data-nosnippet>587</a>        bytes.len(),
-<a href=#588 id=588 data-nosnippet>588</a>        len * stride,
-<a href=#589 id=589 data-nosnippet>589</a>        <span class="string">"gather {what}: expected {} bytes for {len} entries, got {}"</span>,
-<a href=#590 id=590 data-nosnippet>590</a>        len * stride,
-<a href=#591 id=591 data-nosnippet>591</a>        bytes.len(),
-<a href=#592 id=592 data-nosnippet>592</a>    );
-<a href=#593 id=593 data-nosnippet>593</a>    bytes.chunks_exact(stride).map(bytemuck::pod_read_unaligned).collect()
-<a href=#594 id=594 data-nosnippet>594</a>}
-<a href=#595 id=595 data-nosnippet>595</a>
-<a href=#596 id=596 data-nosnippet>596</a><span class="doccomment">/// [`decode_column`] for `[u64; W]` rows, which are not `Pod` at a generic `W`.
-<a href=#597 id=597 data-nosnippet>597</a></span><span class="kw">fn </span>decode_rows&lt;<span class="kw">const </span>W: usize&gt;(bytes: <span class="kw-2">&amp;</span>[u8], rows: usize, what: <span class="kw-2">&amp;</span>str) -&gt; Vec&lt;[u64; W]&gt; {
-<a href=#598 id=598 data-nosnippet>598</a>    <span class="kw">let </span>stride = W * std::mem::size_of::&lt;u64&gt;();
-<a href=#599 id=599 data-nosnippet>599</a>    <span class="macro">assert_eq!</span>(
-<a href=#600 id=600 data-nosnippet>600</a>        bytes.len(),
-<a href=#601 id=601 data-nosnippet>601</a>        rows * stride,
-<a href=#602 id=602 data-nosnippet>602</a>        <span class="string">"gather {what}: expected {} bytes for {rows} rows, got {}"</span>,
-<a href=#603 id=603 data-nosnippet>603</a>        rows * stride,
-<a href=#604 id=604 data-nosnippet>604</a>        bytes.len(),
-<a href=#605 id=605 data-nosnippet>605</a>    );
-<a href=#606 id=606 data-nosnippet>606</a>    bytes
-<a href=#607 id=607 data-nosnippet>607</a>        .chunks_exact(stride)
-<a href=#608 id=608 data-nosnippet>608</a>        .map(|row| std::array::from_fn(|i| bytemuck::pod_read_unaligned(<span class="kw-2">&amp;</span>row[i * <span class="number">8</span>..i * <span class="number">8 </span>+ <span class="number">8</span>])))
-<a href=#609 id=609 data-nosnippet>609</a>        .collect()
-<a href=#610 id=610 data-nosnippet>610</a>}
-<a href=#611 id=611 data-nosnippet>611</a>
-<a href=#612 id=612 data-nosnippet>612</a><span class="doccomment">/// Rebuild one rank's share from the [`GATHER_PARTS`] parts it shipped; panics on contradictory lengths.
-<a href=#613 id=613 data-nosnippet>613</a></span><span class="kw">fn </span>decode_rank&lt;<span class="kw">const </span>W: usize&gt;(
-<a href=#614 id=614 data-nosnippet>614</a>    parts: <span class="kw-2">&amp;</span>[Vec&lt;u8&gt;],
-<a href=#615 id=615 data-nosnippet>615</a>    hash: <span class="kw">crate</span>::pauli_sum::hash::Gf2Hash&lt;W&gt;,
-<a href=#616 id=616 data-nosnippet>616</a>    num_qubits: usize,
-<a href=#617 id=617 data-nosnippet>617</a>    rank: usize,
-<a href=#618 id=618 data-nosnippet>618</a>) -&gt; PauliSum&lt;W&gt; {
-<a href=#619 id=619 data-nosnippet>619</a>    <span class="macro">assert_eq!</span>(
-<a href=#620 id=620 data-nosnippet>620</a>        parts.len(),
-<a href=#621 id=621 data-nosnippet>621</a>        GATHER_PARTS,
-<a href=#622 id=622 data-nosnippet>622</a>        <span class="string">"gather: rank {rank} sent {} parts, expected {GATHER_PARTS}"</span>,
-<a href=#623 id=623 data-nosnippet>623</a>        parts.len(),
-<a href=#624 id=624 data-nosnippet>624</a>    );
-<a href=#625 id=625 data-nosnippet>625</a>    <span class="kw">let </span>num_buckets = hash.num_buckets();
-<a href=#626 id=626 data-nosnippet>626</a>    <span class="kw">let </span>lens: Vec&lt;u64&gt; = decode_column(<span class="kw-2">&amp;</span>parts[<span class="number">0</span>], num_buckets, <span class="string">"bucket lengths"</span>);
-<a href=#627 id=627 data-nosnippet>627</a>    <span class="kw">let </span>lens: Vec&lt;usize&gt; = lens.iter().map(|<span class="kw-2">&amp;</span>l| l <span class="kw">as </span>usize).collect();
-<a href=#628 id=628 data-nosnippet>628</a>    <span class="kw">let </span>terms: usize = lens.iter().sum();
-<a href=#629 id=629 data-nosnippet>629</a>    <span class="kw">let </span>x = decode_rows::&lt;W&gt;(<span class="kw-2">&amp;</span>parts[<span class="number">1</span>], terms, <span class="string">"x column"</span>);
-<a href=#630 id=630 data-nosnippet>630</a>    <span class="kw">let </span>z = decode_rows::&lt;W&gt;(<span class="kw-2">&amp;</span>parts[<span class="number">2</span>], terms, <span class="string">"z column"</span>);
-<a href=#631 id=631 data-nosnippet>631</a>    <span class="kw">let </span>coeff = decode_column::&lt;Complex64&gt;(<span class="kw-2">&amp;</span>parts[<span class="number">3</span>], terms, <span class="string">"coeff column"</span>);
-<a href=#632 id=632 data-nosnippet>632</a>    PauliSum::from_bucket_columns(<span class="kw-2">&amp;</span>lens, x, z, coeff, hash, num_qubits)
-<a href=#633 id=633 data-nosnippet>633</a>}
-<a href=#634 id=634 data-nosnippet>634</a>
-<a href=#635 id=635 data-nosnippet>635</a><span class="attr">#[cfg(test)]
-<a href=#636 id=636 data-nosnippet>636</a></span><span class="kw">mod </span>tests;
+<a href=#529 id=529 data-nosnippet>529</a><span class="doccomment">/// `share` cut by the partition `rows` assigns each term, one payload per partition in the gather's wire form (bucket lengths, then the x, z and coefficient columns), keeping every bucket's order.
+<a href=#530 id=530 data-nosnippet>530</a>/// One sequential pass straight into the wire columns, so the split never holds a bucket structure per partition and bucket.
+<a href=#531 id=531 data-nosnippet>531</a></span><span class="kw">fn </span>encode_split&lt;<span class="kw">const </span>W: usize&gt;(share: <span class="kw-2">&amp;</span>PauliSum&lt;W&gt;, rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;) -&gt; Vec&lt;ByteParts&gt; {
+<a href=#532 id=532 data-nosnippet>532</a>    <span class="kw">let </span>partitions = rows.num_partitions();
+<a href=#533 id=533 data-nosnippet>533</a>    <span class="kw">let </span>buckets = share.num_buckets();
+<a href=#534 id=534 data-nosnippet>534</a>    <span class="kw">let </span><span class="kw-2">mut </span>lens: Vec&lt;Vec&lt;u64&gt;&gt; = <span class="macro">vec!</span>[Vec::with_capacity(buckets); partitions];
+<a href=#535 id=535 data-nosnippet>535</a>    <span class="kw">let </span><span class="kw-2">mut </span>x: Vec&lt;Vec&lt;[u64; W]&gt;&gt; = <span class="macro">vec!</span>[Vec::new(); partitions];
+<a href=#536 id=536 data-nosnippet>536</a>    <span class="kw">let </span><span class="kw-2">mut </span>z: Vec&lt;Vec&lt;[u64; W]&gt;&gt; = <span class="macro">vec!</span>[Vec::new(); partitions];
+<a href=#537 id=537 data-nosnippet>537</a>    <span class="kw">let </span><span class="kw-2">mut </span>coeff: Vec&lt;Vec&lt;Complex64&gt;&gt; = <span class="macro">vec!</span>[Vec::new(); partitions];
+<a href=#538 id=538 data-nosnippet>538</a>    <span class="kw">for </span>b <span class="kw">in </span><span class="number">0</span>..buckets {
+<a href=#539 id=539 data-nosnippet>539</a>        <span class="kw">let </span>(bucket_x, bucket_z, bucket_coeff) = share.bucket(b);
+<a href=#540 id=540 data-nosnippet>540</a>        <span class="kw">let </span>before: Vec&lt;usize&gt; = coeff.iter().map(Vec::len).collect();
+<a href=#541 id=541 data-nosnippet>541</a>        <span class="kw">for </span>((key_x, key_z), <span class="kw-2">&amp;</span>c) <span class="kw">in </span>bucket_x.iter().zip(bucket_z).zip(bucket_coeff) {
+<a href=#542 id=542 data-nosnippet>542</a>            <span class="kw">let </span>to = rows.partition_of(key_x, key_z) <span class="kw">as </span>usize;
+<a href=#543 id=543 data-nosnippet>543</a>            x[to].push(<span class="kw-2">*</span>key_x);
+<a href=#544 id=544 data-nosnippet>544</a>            z[to].push(<span class="kw-2">*</span>key_z);
+<a href=#545 id=545 data-nosnippet>545</a>            coeff[to].push(c);
+<a href=#546 id=546 data-nosnippet>546</a>        }
+<a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">for </span>(to, lens) <span class="kw">in </span>lens.iter_mut().enumerate() {
+<a href=#548 id=548 data-nosnippet>548</a>            lens.push((coeff[to].len() - before[to]) <span class="kw">as </span>u64);
+<a href=#549 id=549 data-nosnippet>549</a>        }
+<a href=#550 id=550 data-nosnippet>550</a>    }
+<a href=#551 id=551 data-nosnippet>551</a>    lens.into_iter()
+<a href=#552 id=552 data-nosnippet>552</a>        .zip(x)
+<a href=#553 id=553 data-nosnippet>553</a>        .zip(z)
+<a href=#554 id=554 data-nosnippet>554</a>        .zip(coeff)
+<a href=#555 id=555 data-nosnippet>555</a>        .map(|(((lens, x), z), coeff)| {
+<a href=#556 id=556 data-nosnippet>556</a>            ByteParts(<span class="macro">vec!</span>[
+<a href=#557 id=557 data-nosnippet>557</a>                bytemuck::cast_slice(<span class="kw-2">&amp;</span>lens).to_vec(),
+<a href=#558 id=558 data-nosnippet>558</a>                bytemuck::cast_slice(x.as_flattened()).to_vec(),
+<a href=#559 id=559 data-nosnippet>559</a>                bytemuck::cast_slice(z.as_flattened()).to_vec(),
+<a href=#560 id=560 data-nosnippet>560</a>                bytemuck::cast_slice(<span class="kw-2">&amp;</span>coeff).to_vec(),
+<a href=#561 id=561 data-nosnippet>561</a>            ])
+<a href=#562 id=562 data-nosnippet>562</a>        })
+<a href=#563 id=563 data-nosnippet>563</a>        .collect()
+<a href=#564 id=564 data-nosnippet>564</a>}
+<a href=#565 id=565 data-nosnippet>565</a>
+<a href=#566 id=566 data-nosnippet>566</a><span class="doccomment">/// What every rank must agree on before terms move by `rows`: the partition rows and the bucket hash's rows.
+<a href=#567 id=567 data-nosnippet>567</a></span><span class="kw">fn </span>identity_fingerprint&lt;<span class="kw">const </span>W: usize&gt;(rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;, bucket_hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;) -&gt; u64 {
+<a href=#568 id=568 data-nosnippet>568</a>    rows_identity(rows.rows()) ^ rows_identity(bucket_hash.rows()).rotate_left(<span class="number">1</span>)
+<a href=#569 id=569 data-nosnippet>569</a>}
+<a href=#570 id=570 data-nosnippet>570</a>
+<a href=#571 id=571 data-nosnippet>571</a><span class="doccomment">/// GF(2) rows as one word, folded word by word, so equal rows give equal words whoever produced them.
+<a href=#572 id=572 data-nosnippet>572</a></span><span class="kw">fn </span>rows_identity&lt;<span class="kw">const </span>W: usize&gt;((rows_x, rows_z): (<span class="kw-2">&amp;</span>[[u64; W]], <span class="kw-2">&amp;</span>[[u64; W]])) -&gt; u64 {
+<a href=#573 id=573 data-nosnippet>573</a>    <span class="kw">let </span><span class="kw-2">mut </span>folded: u64 = <span class="number">0xcbf2_9ce4_8422_2325</span>;
+<a href=#574 id=574 data-nosnippet>574</a>    <span class="kw">for </span>word <span class="kw">in </span>rows_x.iter().chain(rows_z).flatten() {
+<a href=#575 id=575 data-nosnippet>575</a>        folded = (folded ^ word).wrapping_mul(<span class="number">0x0000_0100_0000_01b3</span>);
+<a href=#576 id=576 data-nosnippet>576</a>    }
+<a href=#577 id=577 data-nosnippet>577</a>    folded
+<a href=#578 id=578 data-nosnippet>578</a>}
+<a href=#579 id=579 data-nosnippet>579</a>
+<a href=#580 id=580 data-nosnippet>580</a><span class="doccomment">/// A shape-only fingerprint of the run, since a `Circuit` of trait objects has no canonical encoding.
+<a href=#581 id=581 data-nosnippet>581</a>/// It covers the bucket hash's rows and the partition rows, which every rank holds on its own, since ranks bucketing or splitting by different rows misroute the exchange and the gather.
+<a href=#582 id=582 data-nosnippet>582</a></span><span class="kw">fn </span>run_fingerprint&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#583 id=583 data-nosnippet>583</a>    channels: usize,
+<a href=#584 id=584 data-nosnippet>584</a>    direction: Direction,
+<a href=#585 id=585 data-nosnippet>585</a>    options: PropagateOptions,
+<a href=#586 id=586 data-nosnippet>586</a>    num_qubits: usize,
+<a href=#587 id=587 data-nosnippet>587</a>    w: usize,
+<a href=#588 id=588 data-nosnippet>588</a>    bucket_hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;,
+<a href=#589 id=589 data-nosnippet>589</a>    partition_rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;,
+<a href=#590 id=590 data-nosnippet>590</a>) -&gt; u64 {
+<a href=#591 id=591 data-nosnippet>591</a>    <span class="comment">// FNV-1a over the fields, in a fixed order.
+<a href=#592 id=592 data-nosnippet>592</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>hash: u64 = <span class="number">0xcbf2_9ce4_8422_2325</span>;
+<a href=#593 id=593 data-nosnippet>593</a>    <span class="kw">let </span><span class="kw-2">mut </span>mix = |v: u64| {
+<a href=#594 id=594 data-nosnippet>594</a>        hash ^= v;
+<a href=#595 id=595 data-nosnippet>595</a>        hash = hash.wrapping_mul(<span class="number">0x0000_0100_0000_01b3</span>);
+<a href=#596 id=596 data-nosnippet>596</a>    };
+<a href=#597 id=597 data-nosnippet>597</a>    mix(channels <span class="kw">as </span>u64);
+<a href=#598 id=598 data-nosnippet>598</a>    mix(<span class="macro">matches!</span>(direction, Direction::Heisenberg) <span class="kw">as </span>u64);
+<a href=#599 id=599 data-nosnippet>599</a>    mix(options.target_bucket_len <span class="kw">as </span>u64);
+<a href=#600 id=600 data-nosnippet>600</a>    mix(options.min_buckets <span class="kw">as </span>u64);
+<a href=#601 id=601 data-nosnippet>601</a>    mix(num_qubits <span class="kw">as </span>u64);
+<a href=#602 id=602 data-nosnippet>602</a>    mix(w <span class="kw">as </span>u64);
+<a href=#603 id=603 data-nosnippet>603</a>    mix(rows_identity(bucket_hash.rows()));
+<a href=#604 id=604 data-nosnippet>604</a>    mix(rows_identity(partition_rows.rows()));
+<a href=#605 id=605 data-nosnippet>605</a>    hash
+<a href=#606 id=606 data-nosnippet>606</a>}
+<a href=#607 id=607 data-nosnippet>607</a>
+<a href=#608 id=608 data-nosnippet>608</a><span class="doccomment">/// Copy `len` values of `T` out of a possibly unaligned byte view.
+<a href=#609 id=609 data-nosnippet>609</a></span><span class="kw">fn </span>decode_column&lt;T: bytemuck::Pod&gt;(bytes: <span class="kw-2">&amp;</span>[u8], len: usize, what: <span class="kw-2">&amp;</span>str) -&gt; Vec&lt;T&gt; {
+<a href=#610 id=610 data-nosnippet>610</a>    <span class="kw">let </span>stride = std::mem::size_of::&lt;T&gt;();
+<a href=#611 id=611 data-nosnippet>611</a>    <span class="macro">assert_eq!</span>(
+<a href=#612 id=612 data-nosnippet>612</a>        bytes.len(),
+<a href=#613 id=613 data-nosnippet>613</a>        len * stride,
+<a href=#614 id=614 data-nosnippet>614</a>        <span class="string">"gather {what}: expected {} bytes for {len} entries, got {}"</span>,
+<a href=#615 id=615 data-nosnippet>615</a>        len * stride,
+<a href=#616 id=616 data-nosnippet>616</a>        bytes.len(),
+<a href=#617 id=617 data-nosnippet>617</a>    );
+<a href=#618 id=618 data-nosnippet>618</a>    bytes.chunks_exact(stride).map(bytemuck::pod_read_unaligned).collect()
+<a href=#619 id=619 data-nosnippet>619</a>}
+<a href=#620 id=620 data-nosnippet>620</a>
+<a href=#621 id=621 data-nosnippet>621</a><span class="doccomment">/// [`decode_column`] for `[u64; W]` rows, which are not `Pod` at a generic `W`.
+<a href=#622 id=622 data-nosnippet>622</a></span><span class="kw">fn </span>decode_rows&lt;<span class="kw">const </span>W: usize&gt;(bytes: <span class="kw-2">&amp;</span>[u8], rows: usize, what: <span class="kw-2">&amp;</span>str) -&gt; Vec&lt;[u64; W]&gt; {
+<a href=#623 id=623 data-nosnippet>623</a>    <span class="kw">let </span>stride = W * std::mem::size_of::&lt;u64&gt;();
+<a href=#624 id=624 data-nosnippet>624</a>    <span class="macro">assert_eq!</span>(
+<a href=#625 id=625 data-nosnippet>625</a>        bytes.len(),
+<a href=#626 id=626 data-nosnippet>626</a>        rows * stride,
+<a href=#627 id=627 data-nosnippet>627</a>        <span class="string">"gather {what}: expected {} bytes for {rows} rows, got {}"</span>,
+<a href=#628 id=628 data-nosnippet>628</a>        rows * stride,
+<a href=#629 id=629 data-nosnippet>629</a>        bytes.len(),
+<a href=#630 id=630 data-nosnippet>630</a>    );
+<a href=#631 id=631 data-nosnippet>631</a>    bytes
+<a href=#632 id=632 data-nosnippet>632</a>        .chunks_exact(stride)
+<a href=#633 id=633 data-nosnippet>633</a>        .map(|row| std::array::from_fn(|i| bytemuck::pod_read_unaligned(<span class="kw-2">&amp;</span>row[i * <span class="number">8</span>..i * <span class="number">8 </span>+ <span class="number">8</span>])))
+<a href=#634 id=634 data-nosnippet>634</a>        .collect()
+<a href=#635 id=635 data-nosnippet>635</a>}
+<a href=#636 id=636 data-nosnippet>636</a>
+<a href=#637 id=637 data-nosnippet>637</a><span class="doccomment">/// Rebuild one rank's share from the [`GATHER_PARTS`] parts it shipped; panics on contradictory lengths.
+<a href=#638 id=638 data-nosnippet>638</a></span><span class="kw">fn </span>decode_rank&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#639 id=639 data-nosnippet>639</a>    parts: <span class="kw-2">&amp;</span>[Vec&lt;u8&gt;],
+<a href=#640 id=640 data-nosnippet>640</a>    hash: <span class="kw">crate</span>::pauli_sum::hash::Gf2Hash&lt;W&gt;,
+<a href=#641 id=641 data-nosnippet>641</a>    num_qubits: usize,
+<a href=#642 id=642 data-nosnippet>642</a>    rank: usize,
+<a href=#643 id=643 data-nosnippet>643</a>) -&gt; PauliSum&lt;W&gt; {
+<a href=#644 id=644 data-nosnippet>644</a>    <span class="macro">assert_eq!</span>(
+<a href=#645 id=645 data-nosnippet>645</a>        parts.len(),
+<a href=#646 id=646 data-nosnippet>646</a>        GATHER_PARTS,
+<a href=#647 id=647 data-nosnippet>647</a>        <span class="string">"gather: rank {rank} sent {} parts, expected {GATHER_PARTS}"</span>,
+<a href=#648 id=648 data-nosnippet>648</a>        parts.len(),
+<a href=#649 id=649 data-nosnippet>649</a>    );
+<a href=#650 id=650 data-nosnippet>650</a>    <span class="kw">let </span>num_buckets = hash.num_buckets();
+<a href=#651 id=651 data-nosnippet>651</a>    <span class="kw">let </span>lens: Vec&lt;u64&gt; = decode_column(<span class="kw-2">&amp;</span>parts[<span class="number">0</span>], num_buckets, <span class="string">"bucket lengths"</span>);
+<a href=#652 id=652 data-nosnippet>652</a>    <span class="kw">let </span>lens: Vec&lt;usize&gt; = lens.iter().map(|<span class="kw-2">&amp;</span>l| l <span class="kw">as </span>usize).collect();
+<a href=#653 id=653 data-nosnippet>653</a>    <span class="kw">let </span>terms: usize = lens.iter().sum();
+<a href=#654 id=654 data-nosnippet>654</a>    <span class="kw">let </span>x = decode_rows::&lt;W&gt;(<span class="kw-2">&amp;</span>parts[<span class="number">1</span>], terms, <span class="string">"x column"</span>);
+<a href=#655 id=655 data-nosnippet>655</a>    <span class="kw">let </span>z = decode_rows::&lt;W&gt;(<span class="kw-2">&amp;</span>parts[<span class="number">2</span>], terms, <span class="string">"z column"</span>);
+<a href=#656 id=656 data-nosnippet>656</a>    <span class="kw">let </span>coeff = decode_column::&lt;Complex64&gt;(<span class="kw-2">&amp;</span>parts[<span class="number">3</span>], terms, <span class="string">"coeff column"</span>);
+<a href=#657 id=657 data-nosnippet>657</a>    PauliSum::from_bucket_columns(<span class="kw-2">&amp;</span>lens, x, z, coeff, hash, num_qubits)
+<a href=#658 id=658 data-nosnippet>658</a>}
+<a href=#659 id=659 data-nosnippet>659</a>
+<a href=#660 id=660 data-nosnippet>660</a><span class="attr">#[cfg(test)]
+<a href=#661 id=661 data-nosnippet>661</a></span><span class="kw">mod </span>tests;
 </code></pre></div></section></main></body></html>

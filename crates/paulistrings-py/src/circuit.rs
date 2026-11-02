@@ -27,6 +27,21 @@ impl CircuitImpl {
         for_each_width!(self, |c| c.len())
     }
 
+    /// Each channel's nonzero key shifts as coordinate flags (x-bits then z-bits), `None` for a channel the partitioned engine declines.
+    pub fn deltas(&self) -> Vec<Option<Vec<Vec<bool>>>> {
+        for_each_width!(self, |c| {
+            let n = c.num_qubits();
+            c.deltas()
+                .into_iter()
+                .map(|shifts| {
+                    shifts.map(|shifts| {
+                        shifts.iter().map(|(x, z)| crate::sum::coordinate_flags(x, z, n)).collect()
+                    })
+                })
+                .collect()
+        })
+    }
+
     /// Push a width-erased channel spec onto the underlying circuit, rejecting any qubit index the circuit cannot address.
     /// This is the only place a qubit index meets a concrete width, since the `gates`/`noise` factories build width-agnostic specs.
     pub fn push_spec(&mut self, spec: &ChannelSpec) -> PyResult<()> {
@@ -92,6 +107,28 @@ impl Circuit {
 
     fn __len__(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Every nonzero key shift each channel applies to a term: a list with one boolean array of shape `(k, 2 * num_qubits)` per channel, laid out as `PauliSum.hash_rows()` (x-bits first), or `None` for a channel the partitioned engine declines.
+    /// A channel exchanges terms between partitions exactly when the partition rows map one of its shifts to a nonzero label, so `paulistrings.hashes.remote_layers(rows, circuit.deltas())` is the communication a choice of rows costs, without a run.
+    fn deltas(&self, py: Python<'_>) -> PyResult<Vec<Option<Py<numpy::PyArray2<bool>>>>> {
+        let width = 2 * self.inner.num_qubits();
+        self.inner
+            .deltas()
+            .into_iter()
+            .map(|shifts| {
+                shifts
+                    .map(|shifts| {
+                        let array = if shifts.is_empty() {
+                            numpy::PyArray2::<bool>::zeros_bound(py, [0, width], false)
+                        } else {
+                            numpy::PyArray2::from_vec2_bound(py, &shifts)?
+                        };
+                        Ok(array.unbind())
+                    })
+                    .transpose()
+            })
+            .collect()
     }
 
     /// The channel list as task-JSON schema v1 gate objects.

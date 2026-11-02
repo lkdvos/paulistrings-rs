@@ -1477,7 +1477,8 @@ impl PartitionStats {
         self.devices.clone()
     }
 
-    /// Whether each layer was purely local: moved no row across a partition boundary. `local[k]` is exactly `rows_exported[k] == 0`.
+    /// Whether each layer was planned local: the partition rows map none of its key shifts to another partition, as `paulistrings.hashes.remote_layers` predicts.
+    /// A layer planned remote can still move no row (`rows_exported[k] == 0`) when none of the terms it touches takes a crossing shift.
     #[getter]
     fn local(&self) -> Vec<bool> {
         self.local.clone()
@@ -1668,7 +1669,11 @@ fn format_sum(inner: &PauliSumImpl) -> String {
 }
 
 /// One row's `2 · num_qubits` coordinate flags, x-bits first.
-fn coordinate_flags<const W: usize>(x: &[u64; W], z: &[u64; W], num_qubits: usize) -> Vec<bool> {
+pub(crate) fn coordinate_flags<const W: usize>(
+    x: &[u64; W],
+    z: &[u64; W],
+    num_qubits: usize,
+) -> Vec<bool> {
     let bit = |half: &[u64; W], q: usize| (half[q / 64] >> (q % 64)) & 1 == 1;
     (0..num_qubits).map(|q| bit(x, q)).chain((0..num_qubits).map(|q| bit(z, q))).collect()
 }

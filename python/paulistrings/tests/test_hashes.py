@@ -137,3 +137,15 @@ def test_bad_partition_row_keywords_are_value_errors(kwargs, message):
         pytest.skip("needs two NUMA domains")
     with pytest.raises(ValueError, match=message):
         _start().propagate(_fanout_circuit(N), **kwargs)
+
+
+@needs_two_domains
+def test_remote_layers_predict_the_engines_plan():
+    circuit = _fanout_circuit(N)
+    deltas = circuit.deltas()
+    assert len(deltas) == len(circuit) and all(d.shape[1] == 2 * N for d in deltas)
+    for rows in [hashes.dense(N, 1, 3), hashes.projection(N, 1, 5), hashes.dense(N, 1, 4, exclude={"x": list(range(N))})]:
+        predicted = hashes.remote_layers(rows, deltas)
+        _, stats = _start().propagate_with_stats(circuit, partitions=2, partition_rows=rows)
+        planned = [predicted[i] for i in stats.circuit_index]
+        assert [not local for local in stats.partition.local] == planned

@@ -1,6 +1,9 @@
 //! [`Circuit<W>`], an ordered list of channels.
 
+use crate::channel::prepared::{Prepare, Prepared};
 use crate::channel::Channel;
+use crate::pauli_sum::hash::Gf2Hash;
+use crate::pauli_sum::storage::DEFAULT_HASH_SEED;
 
 /// An ordered list of channels on `num_qubits` qubits, user-defined [`crate::Channel`] impls included.
 ///
@@ -63,6 +66,28 @@ impl<const W: usize> Circuit<W> {
     /// `true` iff no channels have been pushed.
     pub fn is_empty(&self) -> bool {
         self.channels.is_empty()
+    }
+
+    /// Every nonzero key shift each channel applies to a term, as `(x-mask, z-mask)`, or `None` for a channel the partitioned engine declines.
+    /// A channel moves terms between partitions exactly when the partition rows map one of its shifts to a nonzero label, the test `PartitionPlan` applies, so this is the static communication cost of a choice of rows.
+    pub fn deltas(&self) -> Vec<Option<Vec<([u64; W], [u64; W])>>> {
+        // The hash only sets the bucket deltas, which are not reported, so any hash gives the same shifts.
+        let hash = Gf2Hash::<W>::new(self.num_qubits, 0, DEFAULT_HASH_SEED);
+        let identity = ([0u64; W], [0u64; W]);
+        self.channels
+            .iter()
+            .map(|channel| {
+                channel.prepare(&hash, false).map(|prepared| match prepared {
+                    Prepared::Local(ptm) => ptm
+                        .deltas()
+                        .iter()
+                        .map(|delta| delta.mask())
+                        .filter(|mask| *mask != identity)
+                        .collect(),
+                    Prepared::Rotation(rotation) => vec![rotation.generator_mask()],
+                })
+            })
+            .collect()
     }
 }
 

@@ -6,7 +6,7 @@ use crate::rng::{mix64, SPLITMIX_GAMMA};
 /// The ceiling on the rows either matrix can use: bucket and partition counts are `u32` (`ChunkMap`), so `2^31` is the largest.
 pub(crate) const INDEX_BITS: u8 = u32::BITS as u8 - 1;
 
-/// Rows a GF(2) hash over `num_qubits` qubits can hold: one per key coordinate, at most [`INDEX_BITS`]; the bound on bucket bits and on partition bits alike.
+/// Rows a GF(2) hash over `num_qubits` qubits can hold: one per key coordinate, at most 31 since bucket and partition counts are `u32`; the bound on bucket bits and on partition bits alike.
 pub fn max_hash_bits(num_qubits: usize) -> u8 {
     (2 * num_qubits).min(INDEX_BITS as usize) as u8
 }

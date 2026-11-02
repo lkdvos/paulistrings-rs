@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d035e5e7.js";
+            window.path_to_searchindex_js = "../../searchindex-2295b1e0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -205,7 +205,7 @@ S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 <li>The last block is kept whole.</li>
 <li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
 <li><code>ole.rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
-<li>Both estimators are numpy over <code>A.to_arrays()</code>; under <code>comm=</code> each rank reads its <code>result="local"</code> share and <code>comm.allreduce</code> sums the values.</li>
+<li>Both estimators are numpy over <code>A.to_arrays()</code>; under MPI each rank reads its share of a <code>PauliSum.partition(comm=...)</code> split (<code>.local()</code>) and <code>comm.allreduce</code> sums the values.</li>
 <li><code>collapse_sample</code> draws the same string whatever the thread count.</li>
 </ul>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>

@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d035e5e7.js";
+            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -252,6 +252,7 @@ See <a href="../manual/circuits.html#noise-channels">Noise channels</a> for a wo
 <tr><td><code>a + b</code></td><td>new circuit: <code>a</code>’s channels then <code>b</code>’s; neither operand is modified</td></tr>
 <tr><td><code>circuit.adjoint()</code></td><td>new circuit: reversed channel order, each gate replaced by its dagger</td></tr>
 <tr><td><code>circuit.gates</code></td><td>the channel list as a list of task-JSON schema-v1 gate dicts</td></tr>
+<tr><td><code>circuit.deltas()</code></td><td>each channel’s nonzero key shifts, one <code>bool</code> array of shape <code>(k, 2 * num_qubits)</code> per channel (x-bits first, <code>None</code> for a channel the partitioned engine declines); <a href="propagate.html#paulistringshashes"><code>hashes.remote_layers</code></a> turns them into the layers a choice of partition rows makes exchange</td></tr>
 </tbody>
 </table>
 </div>

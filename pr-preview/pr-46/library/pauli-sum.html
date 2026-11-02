@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-d035e5e7.js";
+            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -228,11 +228,12 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.hash_rows()</code></td><td>the bucket hash’s GF(2) rows, a <code>bool</code> array of shape <code>(min(2 * num_qubits, 31), 2 * num_qubits)</code>, x-bits first; see <a href="propagate.html#paulistringshashes"><code>paulistrings.hashes</code></a></td></tr>
 <tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>
 <tr><td><code>.with_hash(rows=None, seed=None)</code></td><td>a copy bucketed by another hash: the given rows lead, dense rows drawn from <code>seed</code> (default: this sum’s) fill the rest; dependent rows are a <code>RuntimeWarning</code></td></tr>
+<tr><td><code>.partition(partitions=None, ..., comm=None)</code></td><td>a <a href="propagate.html#partitionedpaulisum"><code>PartitionedPauliSum</code></a> that stays split between calls, over NUMA partitions or MPI ranks, so its partition and bucket rows can change mid-circuit</td></tr>
 <tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
 <tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.z_array()</code></td><td>Z-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
-<tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; a <code>result="local"</code> share gives this rank’s terms</td></tr>
+<tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; <code>PartitionedPauliSum.local()</code> gives a rank’s own terms</td></tr>
 <tr><td><code>str(sum)</code>, <code>repr(sum)</code></td><td><code>coefficient*label</code> for the first few terms, <code>+</code>-joined, <code>... (N more terms)</code> past that; <code>0</code> for the empty sum</td></tr>
 </tbody>
 </table>

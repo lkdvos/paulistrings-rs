@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-d035e5e7.js";
+            window.path_to_searchindex_js = "../../searchindex-2295b1e0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -245,38 +245,28 @@ A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term 
 <p><code>partition_row_exclude=</code> keeps the random draw but forbids chosen coordinates, as a dict of <code>"x"</code> and <code>"z"</code> qubit lists:</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">everything = list(range(observable.num_qubits))
-evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
+evolved = observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
 </code></pre>
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
 Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="../measurements.html#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <p>A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only <code>partition_row_blocks=</code> cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.</p>
-<h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th><code>result</code></th><th>what each rank gets back</th></tr>
-</thead>
-<tbody>
-<tr><td><code>"gather"</code> (default)</td><td>rank 0 the whole evolved sum; every other rank an <strong>empty</strong> <code>PauliSum</code> of the same <code>num_qubits</code>, so downstream code still type-checks</td></tr>
-<tr><td><code>"local"</code></td><td>this rank’s own share</td></tr>
-</tbody>
-</table>
-</div>
-<p>The shares are disjoint and cover the result, so reductions over <code>comm</code> are exact:</p>
+<h2 id="keeping-the-sum-split"><a class="header" href="#keeping-the-sum-split">Keeping the sum split</a></h2>
+<p><code>propagate(comm=...)</code> returns the whole evolved sum on rank 0 and an <strong>empty</strong> <code>PauliSum</code> of the same <code>num_qubits</code> on every other rank, which materializes everything on one rank.
+To keep the sum split between calls, read a scalar without gathering, or change the rows mid-circuit, split it once with <code>PauliSum.partition(comm=...)</code>:</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">local = observable.propagate(circuit, policy, comm=comm, result="local")
-terms = comm.allreduce(len(local))
-value = comm.allreduce(local.expectation("z+"))
+<pre><code class="language-python">split = observable.partition(comm=comm, partition_row_seed=7)
+split.propagate(circuit[:40], policy, direction="heisenberg")
+split.repartition(partition_row_blocks=blocks)       # one exchange between all ranks
+split.rehash(rows=paulistrings.hashes.sparse(n, 4, 3, seed=1))   # bucket rows, no exchange
+split.propagate(circuit[40:], policy, direction="heisenberg")
+value = split.expectation("z+")                       # the same on every rank
+evolved = split.gather()                              # rank 0 only, if the whole sum is needed
 </code></pre>
-<p>Prefer <code>"local"</code> when the answer is a scalar: gathering materializes the whole sum on rank 0, and that rank transiently holds one extra rank’s copy on top of it.</p>
-<p>A share can be fed straight back into the next <code>propagate(comm=...)</code> split by the same rows: that call keeps each rank’s share where it is.
-A call split by other rows only filters each share and would drop the terms that now belong to another rank, so move them first, collectively:</p>
-<!-- doctest: skip -->
-<pre><code class="language-python">local = local.repartition(comm, partition_row_seed=7)
-local = local.propagate(circuit, policy, comm=comm, partition_row_seed=7, result="local")
-</code></pre>
-<p><code>repartition</code> takes the same row keywords as <code>propagate</code> and sends every term to the rank they name, in one exchange between all ranks, without gathering anything.</p>
+<p>A <code>PartitionedPauliSum</code> takes the same row keywords as <code>propagate</code>; <code>len()</code>, <code>expectation</code>, <code>gather</code>, <code>propagate</code>, <code>repartition</code> and <code>rehash</code> are collective, so every rank makes the same calls with the same arguments, while <code>local()</code>, <code>repr()</code> and the properties read this rank alone.
+<code>paulistrings.hashes.remote_layers(rows, circuit.deltas())</code> says which gates a choice of rows makes exchange, so a run can pick the rows for each segment of a circuit before running it; see <a href="partitions.html#switching-rows-mid-circuit">NUMA partitions</a>.</p>
+<p><code>result="local"</code>, which returned each rank’s share as a plain <code>PauliSum</code>, is deprecated in favour of <code>PauliSum.partition(comm=...)</code>.
+Such a share fed back into a <code>propagate(comm=...)</code> split by other rows would lose the terms that now belong to another rank, so that call raises a <code>ValueError</code> instead.</p>
 <h2 id="launching"><a class="header" href="#launching">Launching</a></h2>
 <p>One rank per NUMA domain, bound to it — that is the placement the in-process engine would have made with explicit CPU lists, done by the launcher instead:</p>
 <pre><code class="language-bash">mpirun -n 4 --map-by ppr:1:numa --bind-to numa python script.py

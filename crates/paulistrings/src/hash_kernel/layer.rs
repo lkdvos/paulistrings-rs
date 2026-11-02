@@ -373,10 +373,10 @@ fn emit_rotation<const W: usize>(
     generator_coordinate: u32,
 ) {
     for (i, table) in tables.iter_mut().enumerate() {
-        for e in table.iter_mut() {
+        table.for_each_mut(|e| {
             let key = PauliString::<W> { x: e.x, z: e.z };
             if key.commutes_with(&rotation.generator) {
-                continue;
+                return;
             }
             let c = e.c;
             e.c = c * rotation.cos;
@@ -387,7 +387,7 @@ fn emit_rotation<const W: usize>(
                 z: product.z,
                 c: (Phase::I + phase).apply(c) * rotation.sin,
             });
-        }
+        });
     }
 }
 

@@ -6,7 +6,7 @@
 
 use num_complex::Complex64;
 
-use super::table::{entry_hash, key_hash, Entry, Table};
+use super::table::{key_hash, Entry, Table};
 use crate::channel::prepared::{LocalPtm, PreparedRotation, LOCAL_DIM};
 use crate::engine::coset::Gf2Span;
 use crate::pauli_string::PauliString;
@@ -202,24 +202,23 @@ pub(super) fn pass2<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     for row in rows.drain(..) {
         let target = row.entry;
         let h = key_hash(&target.x, &target.z);
-        match tables[j].find_entry(h, |e| e.same_key(&target)) {
-            Ok(mut found) => {
-                let value = found.get().c + target.c;
-                found.get_mut().c = value;
-                if !kept(found.get(), policy) {
-                    found.remove();
+        tables[j].reserve(1);
+        match tables[j].find_or_slot(h, &target) {
+            Ok(slot) => {
+                tables[j].get_mut(slot).c += target.c;
+                if !kept(tables[j].get(slot), policy) {
+                    tables[j].erase(slot);
                 }
             }
-            Err(_) => {
+            Err(slot) => {
                 if kept(&target, policy) {
-                    tables[j].insert_unique(h, target, entry_hash);
+                    tables[j].insert_at(slot, h, target);
                 }
                 if row.check_source {
                     let (i, source) = source_of(j, &target, row.delta);
-                    let hs = key_hash(&source.x, &source.z);
-                    if let Ok(found) = tables[i].find_entry(hs, |e| e.same_key(&source)) {
-                        if !kept(found.get(), policy) {
-                            found.remove();
+                    if let Some(slot) = tables[i].find(key_hash(&source.x, &source.z), &source) {
+                        if !kept(tables[i].get(slot), policy) {
+                            tables[i].erase(slot);
                         }
                     }
                 }

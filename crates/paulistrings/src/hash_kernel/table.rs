@@ -1,6 +1,5 @@
 //! [`HashSum`], a bucketed sum whose buckets are open-addressing hash tables, and its rebucketing.
 
-use hashbrown::HashTable;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
@@ -21,8 +20,7 @@ impl<const W: usize> Entry<W> {
     }
 }
 
-/// One bucket.
-pub(crate) type Table<const W: usize> = HashTable<Entry<W>>;
+pub(crate) use super::open_table::Table;
 
 /// The 64×64→128 multiply folded to 64 bits.
 #[inline(always)]
@@ -53,13 +51,7 @@ pub(crate) fn entry_hash<const W: usize>(e: &Entry<W>) -> u64 {
 /// `c` into `table` under `e`'s key, accumulating onto an existing entry.
 #[inline(always)]
 pub(crate) fn accumulate<const W: usize>(table: &mut Table<W>, e: Entry<W>) {
-    let h = entry_hash(&e);
-    match table.find_mut(h, |other| other.same_key(&e)) {
-        Some(found) => found.c += e.c,
-        None => {
-            table.insert_unique(h, e, entry_hash);
-        }
-    }
+    table.accumulate(e);
 }
 
 /// A weighted sum of Pauli strings partitioned by a GF(2)-linear hash into hash-table buckets, updated in place by each layer.
@@ -81,7 +73,7 @@ impl<const W: usize> HashSum<W> {
                 let mut table = Table::with_capacity(columns.len());
                 for i in 0..columns.len() {
                     let e = Entry { x: columns.x[i], z: columns.z[i], c: columns.coeff[i] };
-                    table.insert_unique(entry_hash(&e), e, entry_hash);
+                    table.insert_unique(entry_hash(&e), e);
                 }
                 table
             })
@@ -144,11 +136,12 @@ impl<const W: usize> HashSum<W> {
             .buckets
             .par_iter_mut()
             .map(|table| {
-                let mut upper = Table::new();
-                for e in table.extract_if(|e| (hash.bucket_of(&e.x, &e.z) >> new_bit) & 1 == 1) {
-                    upper.insert_unique(entry_hash(&e), e, entry_hash);
+                let moving = table.extract(|e| (hash.bucket_of(&e.x, &e.z) >> new_bit) & 1 == 1);
+                let mut upper = Table::with_capacity(moving.len());
+                for e in moving {
+                    upper.insert_unique(entry_hash(&e), e);
                 }
-                table.shrink_to(table.len(), entry_hash);
+                table.shrink_to_fit();
                 upper
             })
             .collect();
@@ -161,9 +154,9 @@ impl<const W: usize> HashSum<W> {
         let half = self.buckets.len() / 2;
         let upper = self.buckets.split_off(half);
         self.buckets.par_iter_mut().zip(upper).for_each(|(lower, upper)| {
-            lower.reserve(upper.len(), entry_hash);
-            for e in upper {
-                lower.insert_unique(entry_hash(&e), e, entry_hash);
+            lower.reserve(upper.len());
+            for e in upper.iter() {
+                lower.insert_unique(entry_hash(e), *e);
             }
         });
     }

@@ -7,6 +7,7 @@
 use num_complex::Complex64;
 
 use super::table::{key_hash, Entry, Table};
+
 use crate::channel::prepared::{LocalPtm, PreparedRotation, LOCAL_DIM};
 use crate::engine::coset::Gf2Span;
 use crate::pauli_string::PauliString;
@@ -156,34 +157,26 @@ pub(super) struct Leader<const W: usize> {
     z: [u64; W],
 }
 
-fn find<const W: usize>(table: &Table<W>, key: &Entry<W>) -> Option<Complex64> {
-    table.find(key_hash(&key.x, &key.z), |e| e.same_key(key)).map(|e| e.c)
+/// The live slot of `key`'s key and its coefficient.
+fn find<const W: usize>(table: &Table<W>, key: &Entry<W>) -> Option<(usize, Complex64)> {
+    table.find(key_hash(&key.x, &key.z), key).map(|slot| (slot, table.get(slot).c))
 }
 
-/// Write `key`'s new coefficient `c`, given whether it was present: update, insert or erase.
+/// Write `key`'s new coefficient `c` at its live `slot`, or insert it when it had none; a present key is written by index, so every present member of a component is written before any insert can rebuild.
 #[inline(always)]
 fn write_back<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     table: &mut Table<W>,
     key: Entry<W>,
-    present: bool,
+    slot: Option<usize>,
     c: Complex64,
     policy: &T,
 ) {
     let keep = ((c.re != 0.0) | (c.im != 0.0)) && policy.keep_term(&key.x, &key.z, c);
-    let h = key_hash(&key.x, &key.z);
-    match (present, keep) {
-        (true, true) => {
-            table.find_mut(h, |e| e.same_key(&key)).expect("present").c = c;
-        }
-        (true, false) => {
-            if let Ok(entry) = table.find_entry(h, |e| e.same_key(&key)) {
-                entry.remove();
-            }
-        }
-        (false, true) => {
-            table.insert_unique(h, Entry { c, ..key }, super::table::entry_hash);
-        }
-        (false, false) => {}
+    match (slot, keep) {
+        (Some(slot), true) => table.get_mut(slot).c = c,
+        (Some(slot), false) => table.erase(slot),
+        (None, true) => table.insert_unique(key_hash(&key.x, &key.z), Entry { c, ..key }),
+        (None, false) => {}
     }
 }
 
@@ -258,7 +251,7 @@ pub(super) fn process_local<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     policy: &T,
 ) {
     let mut slots = [(0usize, Entry { x: [0; W], z: [0; W], c: ZERO }); LOCAL_DIM];
-    let mut old = [None::<Complex64>; LOCAL_DIM];
+    let mut old = [None::<(usize, Complex64)>; LOCAL_DIM];
     for leader in leaders {
         let p = leader.pattern as usize;
         let c = plan.component[p] as usize;
@@ -272,7 +265,7 @@ pub(super) fn process_local<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         for a in 0..n {
             let mut sum = ZERO;
             for b in 0..n {
-                if let Some(value) = old[b] {
+                if let Some((_, value)) = old[b] {
                     sum += block[a * n + b] * value;
                 }
             }
@@ -282,7 +275,7 @@ pub(super) fn process_local<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         for present in [true, false] {
             for a in (0..n).filter(|&a| old[a].is_some() == present) {
                 let (j, key) = slots[a];
-                write_back(&mut tables[j], key, present, key.c, policy);
+                write_back(&mut tables[j], key, old[a].map(|(slot, _)| slot), key.c, policy);
             }
         }
     }
@@ -335,16 +328,18 @@ pub(super) fn process_rotation<const W: usize, T: TruncationPolicy<W> + ?Sized>(
         let key_w = Entry { x: w.x, z: w.z, c: ZERO };
         let old_v = find(&tables[i], &key_v);
         let old_w = find(&tables[j], &key_w);
-        let (cv, cw) = (old_v.unwrap_or(ZERO), old_w.unwrap_or(ZERO));
+        let cv = old_v.map_or(ZERO, |(_, c)| c);
+        let cw = old_w.map_or(ZERO, |(_, c)| c);
+        let (slot_v, slot_w) = (old_v.map(|(slot, _)| slot), old_w.map(|(slot, _)| slot));
         let new_v = cv * rotation.cos + phase_w_to_v.apply(cw) * rotation.sin;
         let new_w = cw * rotation.cos + phase_v_to_w.apply(cv) * rotation.sin;
         // Erasures before insertions, as in `process_local`.
         if old_v.is_some() {
-            write_back(&mut tables[i], key_v, true, new_v, policy);
-            write_back(&mut tables[j], key_w, old_w.is_some(), new_w, policy);
+            write_back(&mut tables[i], key_v, slot_v, new_v, policy);
+            write_back(&mut tables[j], key_w, slot_w, new_w, policy);
         } else {
-            write_back(&mut tables[j], key_w, old_w.is_some(), new_w, policy);
-            write_back(&mut tables[i], key_v, false, new_v, policy);
+            write_back(&mut tables[j], key_w, slot_w, new_w, policy);
+            write_back(&mut tables[i], key_v, slot_v, new_v, policy);
         }
     }
 }

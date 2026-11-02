@@ -61,6 +61,7 @@ fn parse() -> Config {
             "--targets" => cfg.targets = sizes(value),
             "--engines" => cfg.engines = list(value),
             "--threshold" => cfg.threshold = Some(value.parse().unwrap()),
+            "--prefetch" => paulistrings::hash_kernel::set_prefetch_slots(value.parse().unwrap()),
             "--warm" => {
                 paulistrings::hash_kernel::WARM.store(true, std::sync::atomic::Ordering::Relaxed);
                 i += 1;

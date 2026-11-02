@@ -7,11 +7,17 @@
 
 mod fused;
 mod layer;
+mod open_table;
 mod orbit;
 mod table;
 
 pub use layer::{apply_layer_hashed, HashScratch, Kernel, PassTimes, WARM};
 pub use table::HashSum;
+
+/// Set the walk prefetch distance in slots, 0 disabling it; a prototype knob.
+pub fn set_prefetch_slots(slots: usize) {
+    open_table::PREFETCH_SLOTS.store(slots, std::sync::atomic::Ordering::Relaxed);
+}
 
 use crate::channel::Prepare;
 use crate::circuit::Circuit;

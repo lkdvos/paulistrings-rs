@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-4bc1fc57.js";
+            window.path_to_searchindex_js = "../searchindex-14128e56.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -223,7 +223,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
-<tr><td><code>.num_buckets</code></td><td>current bucket count (grow-only, reflects the last <code>propagate</code>/<code>rebucket</code>)</td></tr>
+<tr><td><code>.num_buckets</code></td><td>current bucket count, as the last <code>propagate</code> left it</td></tr>
 <tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
 <tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>

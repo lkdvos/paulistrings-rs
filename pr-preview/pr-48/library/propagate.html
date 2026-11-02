@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-52663198.js";
+            window.path_to_searchindex_js = "../searchindex-4bc1fc57.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -186,14 +186,14 @@
 <pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
                min_buckets=128, partitions=None, pin_memory=True,
                partition_row_seed=None, partition_row_blocks=None,
-               partition_row_exclude=None, partition_rows=None, comm=None,
-               result="gather", device=None) -&gt; PauliSum
+               partition_row_exclude=None, comm=None, result="gather",
+               device=None) -&gt; PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
                           min_buckets=128, partitions=None, pin_memory=True,
                           partition_row_seed=None, partition_row_blocks=None,
-                          partition_row_exclude=None, partition_rows=None, comm=None,
-                          result="gather", device=None)
+                          partition_row_exclude=None, comm=None, result="gather",
+                          device=None)
     -&gt; (PauliSum, PropagationStats)
 </code></pre>
 <p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
@@ -215,7 +215,6 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>partition_row_seed</code></td><td><code>int | None</code></td><td><code>None</code> = the sum’s own hash seed</td><td>which GF(2) rows decide a term’s partition</td></tr>
 <tr><td><code>partition_row_blocks</code></td><td><code>list[list[int]] | None</code></td><td><code>None</code></td><td>explicit disjoint qubit blocks, one per partition, instead of a seeded draw</td></tr>
 <tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
-<tr><td><code>partition_rows</code></td><td><code>list[dict[str, list[int]]] | None</code></td><td><code>None</code></td><td>the rows themselves, one <code>{"x": [...], "z": [...]}</code> per partition bit: row <code>i</code> reads those qubits’ x-bits and z-bits</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
 <tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, a plain <code>PauliSum</code> (<code>to_arrays()</code> reads it into numpy)</td></tr>
 <tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
@@ -240,8 +239,7 @@ The GIL is released for the duration of both calls.</p>
 <p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
 <p><code>partition_row_blocks</code> excludes both <code>partition_row_seed</code> and <code>partition_row_exclude</code>; each of the three needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
 <code>partition_row_exclude={"x": sites}</code> keeps strings that differ only in the x-bits of <code>sites</code> on one rank; <code>{"z": sites}</code> does the same for z-bits.
-Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.
-<code>partition_rows</code> excludes the other three row kwargs and needs <code>partitions=</code> or <code>comm=</code>; it takes <code>log2(P)</code> linearly independent rows, identical on every rank, and is not a <code>device=</code> option.</p>
+Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
 <p>See <a href="../manual/propagation/partitions.html">NUMA partitions</a> and <a href="../manual/propagation/mpi.html">MPI ranks</a> for recipes.</p>

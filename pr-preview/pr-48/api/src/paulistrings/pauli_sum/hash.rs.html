@@ -1,6 +1,6 @@
 <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `crates/paulistrings/src/pauli_sum/hash.rs`."><title>hash.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="paulistrings" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0 (4a4ef493e 2026-03-02)" data-channel="1.94.0" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">paulistrings/pauli_sum/</div>hash.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`].
 <a href=#2 id=2 data-nosnippet>2</a>
-<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span><span class="kw">crate</span>::pauli_string::{qubit_mask, word_mask};
+<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span><span class="kw">crate</span>::pauli_string::word_mask;
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span><span class="kw">crate</span>::rng::{mix64, SPLITMIX_GAMMA};
 <a href=#5 id=5 data-nosnippet>5</a>
 <a href=#6 id=6 data-nosnippet>6</a><span class="doccomment">/// Maximum number of bucket bits; all rows are drawn up front so the active hash is a prefix of one fixed matrix.
@@ -378,140 +378,93 @@
 <a href=#378 id=378 data-nosnippet>378</a>        <span class="self">Self</span>::from_rows(num_qubits, <span class="macro">vec!</span>[[<span class="number">0u64</span>; W]; bits <span class="kw">as </span>usize], rows_z)
 <a href=#379 id=379 data-nosnippet>379</a>    }
 <a href=#380 id=380 data-nosnippet>380</a>
-<a href=#381 id=381 data-nosnippet>381</a>    <span class="doccomment">/// Rows given qubit by qubit: row `i` reads the x-bits of `x[i]` and the z-bits of `z[i]`.
-<a href=#382 id=382 data-nosnippet>382</a>    ///
-<a href=#383 id=383 data-nosnippet>383</a>    /// A generator is remote exactly when it has odd overlap with some row, so rows over the x-bits of a few qubits leave every `Z`-type gate local and only the rotations that flip those x-bits remote.
-<a href=#384 id=384 data-nosnippet>384</a>    ///
-<a href=#385 id=385 data-nosnippet>385</a>    /// # Panics
-<a href=#386 id=386 data-nosnippet>386</a>    ///
-<a href=#387 id=387 data-nosnippet>387</a>    /// Where [`Self::try_from_qubit_rows`] returns `Err`.
-<a href=#388 id=388 data-nosnippet>388</a>    </span><span class="kw">pub fn </span>from_qubit_rows(num_qubits: usize, x: <span class="kw-2">&amp;</span>[Vec&lt;usize&gt;], z: <span class="kw-2">&amp;</span>[Vec&lt;usize&gt;]) -&gt; <span class="self">Self </span>{
-<a href=#389 id=389 data-nosnippet>389</a>        <span class="self">Self</span>::try_from_qubit_rows(num_qubits, x, z)
-<a href=#390 id=390 data-nosnippet>390</a>            .unwrap_or_else(|message| <span class="macro">panic!</span>(<span class="string">"PartitionRows::from_qubit_rows: {message}"</span>))
-<a href=#391 id=391 data-nosnippet>391</a>    }
-<a href=#392 id=392 data-nosnippet>392</a>
-<a href=#393 id=393 data-nosnippet>393</a>    <span class="doccomment">/// [`Self::from_qubit_rows`], reporting a malformed row set instead of panicking.
-<a href=#394 id=394 data-nosnippet>394</a>    ///
-<a href=#395 id=395 data-nosnippet>395</a>    /// # Errors
-<a href=#396 id=396 data-nosnippet>396</a>    ///
-<a href=#397 id=397 data-nosnippet>397</a>    /// If `x` and `z` differ in length, if there are more than [`P_MAX_BITS`] rows, if a qubit is `&gt;= num_qubits`, if a row reads no qubit, or if the rows are linearly dependent, which would leave partitions empty.
-<a href=#398 id=398 data-nosnippet>398</a>    </span><span class="kw">pub fn </span>try_from_qubit_rows(
-<a href=#399 id=399 data-nosnippet>399</a>        num_qubits: usize,
-<a href=#400 id=400 data-nosnippet>400</a>        x: <span class="kw-2">&amp;</span>[Vec&lt;usize&gt;],
-<a href=#401 id=401 data-nosnippet>401</a>        z: <span class="kw-2">&amp;</span>[Vec&lt;usize&gt;],
-<a href=#402 id=402 data-nosnippet>402</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, String&gt; {
-<a href=#403 id=403 data-nosnippet>403</a>        <span class="kw">if </span>x.len() != z.len() {
-<a href=#404 id=404 data-nosnippet>404</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">format!</span>(<span class="string">"one z list per x list, got {} x and {} z"</span>, x.len(), z.len()));
-<a href=#405 id=405 data-nosnippet>405</a>        }
-<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">if </span>x.len() &gt; P_MAX_BITS <span class="kw">as </span>usize {
-<a href=#407 id=407 data-nosnippet>407</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">format!</span>(<span class="string">"{} rows exceed P_MAX_BITS {P_MAX_BITS}"</span>, x.len()));
-<a href=#408 id=408 data-nosnippet>408</a>        }
-<a href=#409 id=409 data-nosnippet>409</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(q) = x.iter().chain(z).flatten().find(|&amp;&amp;q| q &gt;= num_qubits) {
-<a href=#410 id=410 data-nosnippet>410</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">format!</span>(<span class="string">"qubit {q} is outside the {num_qubits}-qubit register"</span>));
-<a href=#411 id=411 data-nosnippet>411</a>        }
-<a href=#412 id=412 data-nosnippet>412</a>        <span class="kw">let </span>mask = |qubits: <span class="kw-2">&amp;</span>[usize]| qubit_mask::&lt;W&gt;(qubits.iter().copied(), num_qubits);
-<a href=#413 id=413 data-nosnippet>413</a>        <span class="kw">let </span>rows: Vec&lt;KeyRow&lt;W&gt;&gt; = x.iter().zip(z).map(|(x, z)| (mask(x), mask(z))).collect();
-<a href=#414 id=414 data-nosnippet>414</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(i) =
-<a href=#415 id=415 data-nosnippet>415</a>            rows.iter().position(|(row_x, row_z)| row_x.iter().chain(row_z).all(|<span class="kw-2">&amp;</span>w| w == <span class="number">0</span>))
-<a href=#416 id=416 data-nosnippet>416</a>        {
-<a href=#417 id=417 data-nosnippet>417</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">format!</span>(<span class="string">"row {i} reads no qubit"</span>));
-<a href=#418 id=418 data-nosnippet>418</a>        }
-<a href=#419 id=419 data-nosnippet>419</a>        <span class="kw">if </span>gf2_rank_wide(<span class="kw-2">&amp;</span>rows) &lt; rows.len() {
-<a href=#420 id=420 data-nosnippet>420</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(
-<a href=#421 id=421 data-nosnippet>421</a>                <span class="string">"the rows are linearly dependent, so some partitions would stay empty"</span>.to_string()
-<a href=#422 id=422 data-nosnippet>422</a>            );
-<a href=#423 id=423 data-nosnippet>423</a>        }
-<a href=#424 id=424 data-nosnippet>424</a>        <span class="kw">let </span>(rows_x, rows_z) = rows.into_iter().unzip();
-<a href=#425 id=425 data-nosnippet>425</a>        <span class="prelude-val">Ok</span>(<span class="self">Self</span>::from_rows(num_qubits, rows_x, rows_z))
-<a href=#426 id=426 data-nosnippet>426</a>    }
+<a href=#381 id=381 data-nosnippet>381</a>    <span class="doccomment">/// The trivial partitioning: one partition, no rows.
+<a href=#382 id=382 data-nosnippet>382</a>    </span><span class="kw">pub fn </span>none(num_qubits: usize) -&gt; <span class="self">Self </span>{
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="self">Self </span>{ matrix: Gf2Matrix::from_rows(num_qubits, Vec::new(), Vec::new()) }
+<a href=#384 id=384 data-nosnippet>384</a>    }
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a>    <span class="doccomment">/// Number of partition bits.
+<a href=#387 id=387 data-nosnippet>387</a>    </span><span class="kw">pub fn </span>bits(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u8 {
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="self">self</span>.matrix.num_rows() <span class="kw">as </span>u8
+<a href=#389 id=389 data-nosnippet>389</a>    }
+<a href=#390 id=390 data-nosnippet>390</a>
+<a href=#391 id=391 data-nosnippet>391</a>    <span class="doccomment">/// Number of partitions, `1 &lt;&lt; bits()`.
+<a href=#392 id=392 data-nosnippet>392</a>    </span><span class="kw">pub fn </span>num_partitions(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="number">1usize </span>&lt;&lt; <span class="self">self</span>.bits()
+<a href=#394 id=394 data-nosnippet>394</a>    }
+<a href=#395 id=395 data-nosnippet>395</a>
+<a href=#396 id=396 data-nosnippet>396</a>    <span class="doccomment">/// The qubit count the rows were masked against.
+<a href=#397 id=397 data-nosnippet>397</a>    </span><span class="kw">pub fn </span>num_qubits(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
+<a href=#398 id=398 data-nosnippet>398</a>        <span class="self">self</span>.matrix.num_qubits()
+<a href=#399 id=399 data-nosnippet>399</a>    }
+<a href=#400 id=400 data-nosnippet>400</a>
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="doccomment">/// `part(v)` for a key given as separate `x` and `z` words.
+<a href=#402 id=402 data-nosnippet>402</a>    </span><span class="kw">pub fn </span>partition_of(<span class="kw-2">&amp;</span><span class="self">self</span>, x: <span class="kw-2">&amp;</span>[u64; W], z: <span class="kw-2">&amp;</span>[u64; W]) -&gt; u32 {
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="self">self</span>.matrix.apply(x, z, <span class="self">self</span>.matrix.num_rows())
+<a href=#404 id=404 data-nosnippet>404</a>    }
+<a href=#405 id=405 data-nosnippet>405</a>
+<a href=#406 id=406 data-nosnippet>406</a>    <span class="doccomment">/// The rows as `(x-masks, z-masks)`, already masked to the live columns.
+<a href=#407 id=407 data-nosnippet>407</a>    </span><span class="kw">pub fn </span>rows(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (<span class="kw-2">&amp;</span>[[u64; W]], <span class="kw-2">&amp;</span>[[u64; W]]) {
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="self">self</span>.matrix.rows()
+<a href=#409 id=409 data-nosnippet>409</a>    }
+<a href=#410 id=410 data-nosnippet>410</a>
+<a href=#411 id=411 data-nosnippet>411</a>    <span class="doccomment">/// `true` if no row reads a coordinate in `(mask_x, mask_z)`, i.e. keys differing only there always share a partition.
+<a href=#412 id=412 data-nosnippet>412</a>    </span><span class="kw">pub fn </span>avoids(<span class="kw-2">&amp;</span><span class="self">self</span>, mask_x: <span class="kw-2">&amp;</span>[u64; W], mask_z: <span class="kw-2">&amp;</span>[u64; W]) -&gt; bool {
+<a href=#413 id=413 data-nosnippet>413</a>        <span class="kw">let </span>(rows_x, rows_z) = <span class="self">self</span>.matrix.rows();
+<a href=#414 id=414 data-nosnippet>414</a>        rows_x.iter().zip(rows_z).all(|(row_x, row_z)| {
+<a href=#415 id=415 data-nosnippet>415</a>            (<span class="number">0</span>..W).all(|w| row_x[w] &amp; mask_x[w] == <span class="number">0 </span>&amp;&amp; row_z[w] &amp; mask_z[w] == <span class="number">0</span>)
+<a href=#416 id=416 data-nosnippet>416</a>        })
+<a href=#417 id=417 data-nosnippet>417</a>    }
+<a href=#418 id=418 data-nosnippet>418</a>
+<a href=#419 id=419 data-nosnippet>419</a>    <span class="doccomment">/// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent.
+<a href=#420 id=420 data-nosnippet>420</a>    </span><span class="kw">pub fn </span>is_independent_of(<span class="kw-2">&amp;</span><span class="self">self</span>, hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;) -&gt; bool {
+<a href=#421 id=421 data-nosnippet>421</a>        <span class="self">self</span>.matrix.independent_with(<span class="self">self</span>.matrix.num_rows(), <span class="kw-2">&amp;</span>hash.matrix, hash.bits() <span class="kw">as </span>usize)
+<a href=#422 id=422 data-nosnippet>422</a>    }
+<a href=#423 id=423 data-nosnippet>423</a>}
+<a href=#424 id=424 data-nosnippet>424</a>
+<a href=#425 id=425 data-nosnippet>425</a><span class="doccomment">/// One row of the key space as `(x-masks, z-masks)`.
+<a href=#426 id=426 data-nosnippet>426</a></span><span class="kw">type </span>KeyRow&lt;<span class="kw">const </span>W: usize&gt; = ([u64; W], [u64; W]);
 <a href=#427 id=427 data-nosnippet>427</a>
-<a href=#428 id=428 data-nosnippet>428</a>    <span class="doccomment">/// The trivial partitioning: one partition, no rows.
-<a href=#429 id=429 data-nosnippet>429</a>    </span><span class="kw">pub fn </span>none(num_qubits: usize) -&gt; <span class="self">Self </span>{
-<a href=#430 id=430 data-nosnippet>430</a>        <span class="self">Self </span>{ matrix: Gf2Matrix::from_rows(num_qubits, Vec::new(), Vec::new()) }
-<a href=#431 id=431 data-nosnippet>431</a>    }
-<a href=#432 id=432 data-nosnippet>432</a>
-<a href=#433 id=433 data-nosnippet>433</a>    <span class="doccomment">/// Number of partition bits.
-<a href=#434 id=434 data-nosnippet>434</a>    </span><span class="kw">pub fn </span>bits(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u8 {
-<a href=#435 id=435 data-nosnippet>435</a>        <span class="self">self</span>.matrix.num_rows() <span class="kw">as </span>u8
-<a href=#436 id=436 data-nosnippet>436</a>    }
-<a href=#437 id=437 data-nosnippet>437</a>
-<a href=#438 id=438 data-nosnippet>438</a>    <span class="doccomment">/// Number of partitions, `1 &lt;&lt; bits()`.
-<a href=#439 id=439 data-nosnippet>439</a>    </span><span class="kw">pub fn </span>num_partitions(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
-<a href=#440 id=440 data-nosnippet>440</a>        <span class="number">1usize </span>&lt;&lt; <span class="self">self</span>.bits()
-<a href=#441 id=441 data-nosnippet>441</a>    }
-<a href=#442 id=442 data-nosnippet>442</a>
-<a href=#443 id=443 data-nosnippet>443</a>    <span class="doccomment">/// The qubit count the rows were masked against.
-<a href=#444 id=444 data-nosnippet>444</a>    </span><span class="kw">pub fn </span>num_qubits(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
-<a href=#445 id=445 data-nosnippet>445</a>        <span class="self">self</span>.matrix.num_qubits()
-<a href=#446 id=446 data-nosnippet>446</a>    }
-<a href=#447 id=447 data-nosnippet>447</a>
-<a href=#448 id=448 data-nosnippet>448</a>    <span class="doccomment">/// `part(v)` for a key given as separate `x` and `z` words.
-<a href=#449 id=449 data-nosnippet>449</a>    </span><span class="kw">pub fn </span>partition_of(<span class="kw-2">&amp;</span><span class="self">self</span>, x: <span class="kw-2">&amp;</span>[u64; W], z: <span class="kw-2">&amp;</span>[u64; W]) -&gt; u32 {
-<a href=#450 id=450 data-nosnippet>450</a>        <span class="self">self</span>.matrix.apply(x, z, <span class="self">self</span>.matrix.num_rows())
-<a href=#451 id=451 data-nosnippet>451</a>    }
+<a href=#428 id=428 data-nosnippet>428</a><span class="doccomment">/// GF(2) rank of rows over the key space, by Gaussian elimination.
+<a href=#429 id=429 data-nosnippet>429</a></span><span class="kw">fn </span>gf2_rank_wide&lt;<span class="kw">const </span>W: usize&gt;(rows: <span class="kw-2">&amp;</span>[KeyRow&lt;W&gt;]) -&gt; usize {
+<a href=#430 id=430 data-nosnippet>430</a>    <span class="kw">let </span><span class="kw-2">mut </span>pivots: Vec&lt;(usize, KeyRow&lt;W&gt;)&gt; = Vec::with_capacity(rows.len());
+<a href=#431 id=431 data-nosnippet>431</a>    <span class="kw">for </span>row <span class="kw">in </span>rows {
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="kw">let </span><span class="kw-2">mut </span>reduced = <span class="kw-2">*</span>row;
+<a href=#433 id=433 data-nosnippet>433</a>        <span class="lifetime">'reduce</span>: <span class="kw">loop </span>{
+<a href=#434 id=434 data-nosnippet>434</a>            <span class="kw">let </span><span class="prelude-val">Some</span>(lead) = leading_column(<span class="kw-2">&amp;</span>reduced) <span class="kw">else </span>{
+<a href=#435 id=435 data-nosnippet>435</a>                <span class="kw">break</span>;
+<a href=#436 id=436 data-nosnippet>436</a>            };
+<a href=#437 id=437 data-nosnippet>437</a>            <span class="kw">for </span>(pivot_column, pivot_row) <span class="kw">in </span>pivots.iter() {
+<a href=#438 id=438 data-nosnippet>438</a>                <span class="kw">if </span><span class="kw-2">*</span>pivot_column == lead {
+<a href=#439 id=439 data-nosnippet>439</a>                    <span class="kw">for </span>w <span class="kw">in </span><span class="number">0</span>..W {
+<a href=#440 id=440 data-nosnippet>440</a>                        reduced.<span class="number">0</span>[w] ^= pivot_row.<span class="number">0</span>[w];
+<a href=#441 id=441 data-nosnippet>441</a>                        reduced.<span class="number">1</span>[w] ^= pivot_row.<span class="number">1</span>[w];
+<a href=#442 id=442 data-nosnippet>442</a>                    }
+<a href=#443 id=443 data-nosnippet>443</a>                    <span class="kw">continue </span><span class="lifetime">'reduce</span>;
+<a href=#444 id=444 data-nosnippet>444</a>                }
+<a href=#445 id=445 data-nosnippet>445</a>            }
+<a href=#446 id=446 data-nosnippet>446</a>            pivots.push((lead, reduced));
+<a href=#447 id=447 data-nosnippet>447</a>            <span class="kw">break</span>;
+<a href=#448 id=448 data-nosnippet>448</a>        }
+<a href=#449 id=449 data-nosnippet>449</a>    }
+<a href=#450 id=450 data-nosnippet>450</a>    pivots.len()
+<a href=#451 id=451 data-nosnippet>451</a>}
 <a href=#452 id=452 data-nosnippet>452</a>
-<a href=#453 id=453 data-nosnippet>453</a>    <span class="doccomment">/// The rows as `(x-masks, z-masks)`, already masked to the live columns.
-<a href=#454 id=454 data-nosnippet>454</a>    </span><span class="kw">pub fn </span>rows(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (<span class="kw-2">&amp;</span>[[u64; W]], <span class="kw-2">&amp;</span>[[u64; W]]) {
-<a href=#455 id=455 data-nosnippet>455</a>        <span class="self">self</span>.matrix.rows()
-<a href=#456 id=456 data-nosnippet>456</a>    }
-<a href=#457 id=457 data-nosnippet>457</a>
-<a href=#458 id=458 data-nosnippet>458</a>    <span class="doccomment">/// `true` if no row reads a coordinate in `(mask_x, mask_z)`, i.e. keys differing only there always share a partition.
-<a href=#459 id=459 data-nosnippet>459</a>    </span><span class="kw">pub fn </span>avoids(<span class="kw-2">&amp;</span><span class="self">self</span>, mask_x: <span class="kw-2">&amp;</span>[u64; W], mask_z: <span class="kw-2">&amp;</span>[u64; W]) -&gt; bool {
-<a href=#460 id=460 data-nosnippet>460</a>        <span class="kw">let </span>(rows_x, rows_z) = <span class="self">self</span>.matrix.rows();
-<a href=#461 id=461 data-nosnippet>461</a>        rows_x.iter().zip(rows_z).all(|(row_x, row_z)| {
-<a href=#462 id=462 data-nosnippet>462</a>            (<span class="number">0</span>..W).all(|w| row_x[w] &amp; mask_x[w] == <span class="number">0 </span>&amp;&amp; row_z[w] &amp; mask_z[w] == <span class="number">0</span>)
-<a href=#463 id=463 data-nosnippet>463</a>        })
+<a href=#453 id=453 data-nosnippet>453</a><span class="doccomment">/// Index of the highest set column of a key-space row, or `None` if it is zero.
+<a href=#454 id=454 data-nosnippet>454</a></span><span class="kw">fn </span>leading_column&lt;<span class="kw">const </span>W: usize&gt;(row: <span class="kw-2">&amp;</span>KeyRow&lt;W&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;usize&gt; {
+<a href=#455 id=455 data-nosnippet>455</a>    <span class="kw">for </span>w <span class="kw">in </span>(<span class="number">0</span>..W).rev() {
+<a href=#456 id=456 data-nosnippet>456</a>        <span class="kw">if </span>row.<span class="number">1</span>[w] != <span class="number">0 </span>{
+<a href=#457 id=457 data-nosnippet>457</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(W * <span class="number">64 </span>+ w * <span class="number">64 </span>+ (<span class="number">63 </span>- row.<span class="number">1</span>[w].leading_zeros() <span class="kw">as </span>usize));
+<a href=#458 id=458 data-nosnippet>458</a>        }
+<a href=#459 id=459 data-nosnippet>459</a>    }
+<a href=#460 id=460 data-nosnippet>460</a>    <span class="kw">for </span>w <span class="kw">in </span>(<span class="number">0</span>..W).rev() {
+<a href=#461 id=461 data-nosnippet>461</a>        <span class="kw">if </span>row.<span class="number">0</span>[w] != <span class="number">0 </span>{
+<a href=#462 id=462 data-nosnippet>462</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(w * <span class="number">64 </span>+ (<span class="number">63 </span>- row.<span class="number">0</span>[w].leading_zeros() <span class="kw">as </span>usize));
+<a href=#463 id=463 data-nosnippet>463</a>        }
 <a href=#464 id=464 data-nosnippet>464</a>    }
-<a href=#465 id=465 data-nosnippet>465</a>
-<a href=#466 id=466 data-nosnippet>466</a>    <span class="doccomment">/// `true` if the partition rows and `hash`'s active rows are jointly GF(2)-independent.
-<a href=#467 id=467 data-nosnippet>467</a>    </span><span class="kw">pub fn </span>is_independent_of(<span class="kw-2">&amp;</span><span class="self">self</span>, hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;) -&gt; bool {
-<a href=#468 id=468 data-nosnippet>468</a>        <span class="self">self</span>.matrix.independent_with(<span class="self">self</span>.matrix.num_rows(), <span class="kw-2">&amp;</span>hash.matrix, hash.bits() <span class="kw">as </span>usize)
-<a href=#469 id=469 data-nosnippet>469</a>    }
-<a href=#470 id=470 data-nosnippet>470</a>}
-<a href=#471 id=471 data-nosnippet>471</a>
-<a href=#472 id=472 data-nosnippet>472</a><span class="doccomment">/// One row of the key space as `(x-masks, z-masks)`.
-<a href=#473 id=473 data-nosnippet>473</a></span><span class="kw">type </span>KeyRow&lt;<span class="kw">const </span>W: usize&gt; = ([u64; W], [u64; W]);
-<a href=#474 id=474 data-nosnippet>474</a>
-<a href=#475 id=475 data-nosnippet>475</a><span class="doccomment">/// GF(2) rank of rows over the key space, by Gaussian elimination.
-<a href=#476 id=476 data-nosnippet>476</a></span><span class="kw">fn </span>gf2_rank_wide&lt;<span class="kw">const </span>W: usize&gt;(rows: <span class="kw-2">&amp;</span>[KeyRow&lt;W&gt;]) -&gt; usize {
-<a href=#477 id=477 data-nosnippet>477</a>    <span class="kw">let </span><span class="kw-2">mut </span>pivots: Vec&lt;(usize, KeyRow&lt;W&gt;)&gt; = Vec::with_capacity(rows.len());
-<a href=#478 id=478 data-nosnippet>478</a>    <span class="kw">for </span>row <span class="kw">in </span>rows {
-<a href=#479 id=479 data-nosnippet>479</a>        <span class="kw">let </span><span class="kw-2">mut </span>reduced = <span class="kw-2">*</span>row;
-<a href=#480 id=480 data-nosnippet>480</a>        <span class="lifetime">'reduce</span>: <span class="kw">loop </span>{
-<a href=#481 id=481 data-nosnippet>481</a>            <span class="kw">let </span><span class="prelude-val">Some</span>(lead) = leading_column(<span class="kw-2">&amp;</span>reduced) <span class="kw">else </span>{
-<a href=#482 id=482 data-nosnippet>482</a>                <span class="kw">break</span>;
-<a href=#483 id=483 data-nosnippet>483</a>            };
-<a href=#484 id=484 data-nosnippet>484</a>            <span class="kw">for </span>(pivot_column, pivot_row) <span class="kw">in </span>pivots.iter() {
-<a href=#485 id=485 data-nosnippet>485</a>                <span class="kw">if </span><span class="kw-2">*</span>pivot_column == lead {
-<a href=#486 id=486 data-nosnippet>486</a>                    <span class="kw">for </span>w <span class="kw">in </span><span class="number">0</span>..W {
-<a href=#487 id=487 data-nosnippet>487</a>                        reduced.<span class="number">0</span>[w] ^= pivot_row.<span class="number">0</span>[w];
-<a href=#488 id=488 data-nosnippet>488</a>                        reduced.<span class="number">1</span>[w] ^= pivot_row.<span class="number">1</span>[w];
-<a href=#489 id=489 data-nosnippet>489</a>                    }
-<a href=#490 id=490 data-nosnippet>490</a>                    <span class="kw">continue </span><span class="lifetime">'reduce</span>;
-<a href=#491 id=491 data-nosnippet>491</a>                }
-<a href=#492 id=492 data-nosnippet>492</a>            }
-<a href=#493 id=493 data-nosnippet>493</a>            pivots.push((lead, reduced));
-<a href=#494 id=494 data-nosnippet>494</a>            <span class="kw">break</span>;
-<a href=#495 id=495 data-nosnippet>495</a>        }
-<a href=#496 id=496 data-nosnippet>496</a>    }
-<a href=#497 id=497 data-nosnippet>497</a>    pivots.len()
-<a href=#498 id=498 data-nosnippet>498</a>}
-<a href=#499 id=499 data-nosnippet>499</a>
-<a href=#500 id=500 data-nosnippet>500</a><span class="doccomment">/// Index of the highest set column of a key-space row, or `None` if it is zero.
-<a href=#501 id=501 data-nosnippet>501</a></span><span class="kw">fn </span>leading_column&lt;<span class="kw">const </span>W: usize&gt;(row: <span class="kw-2">&amp;</span>KeyRow&lt;W&gt;) -&gt; <span class="prelude-ty">Option</span>&lt;usize&gt; {
-<a href=#502 id=502 data-nosnippet>502</a>    <span class="kw">for </span>w <span class="kw">in </span>(<span class="number">0</span>..W).rev() {
-<a href=#503 id=503 data-nosnippet>503</a>        <span class="kw">if </span>row.<span class="number">1</span>[w] != <span class="number">0 </span>{
-<a href=#504 id=504 data-nosnippet>504</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(W * <span class="number">64 </span>+ w * <span class="number">64 </span>+ (<span class="number">63 </span>- row.<span class="number">1</span>[w].leading_zeros() <span class="kw">as </span>usize));
-<a href=#505 id=505 data-nosnippet>505</a>        }
-<a href=#506 id=506 data-nosnippet>506</a>    }
-<a href=#507 id=507 data-nosnippet>507</a>    <span class="kw">for </span>w <span class="kw">in </span>(<span class="number">0</span>..W).rev() {
-<a href=#508 id=508 data-nosnippet>508</a>        <span class="kw">if </span>row.<span class="number">0</span>[w] != <span class="number">0 </span>{
-<a href=#509 id=509 data-nosnippet>509</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(w * <span class="number">64 </span>+ (<span class="number">63 </span>- row.<span class="number">0</span>[w].leading_zeros() <span class="kw">as </span>usize));
-<a href=#510 id=510 data-nosnippet>510</a>        }
-<a href=#511 id=511 data-nosnippet>511</a>    }
-<a href=#512 id=512 data-nosnippet>512</a>    <span class="prelude-val">None
-<a href=#513 id=513 data-nosnippet>513</a></span>}
-<a href=#514 id=514 data-nosnippet>514</a>
-<a href=#515 id=515 data-nosnippet>515</a><span class="attr">#[cfg(test)]
-<a href=#516 id=516 data-nosnippet>516</a></span><span class="kw">mod </span>tests;
+<a href=#465 id=465 data-nosnippet>465</a>    <span class="prelude-val">None
+<a href=#466 id=466 data-nosnippet>466</a></span>}
+<a href=#467 id=467 data-nosnippet>467</a>
+<a href=#468 id=468 data-nosnippet>468</a><span class="attr">#[cfg(test)]
+<a href=#469 id=469 data-nosnippet>469</a></span><span class="kw">mod </span>tests;
 </code></pre></div></section></main></body></html>

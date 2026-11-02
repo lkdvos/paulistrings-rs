@@ -29,6 +29,10 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 | `.width` | active compile-time width tier (words per term) |
 | `len(sum)` | term count |
 | `.num_buckets` | current bucket count (grow-only, reflects the last `propagate`/`rebucket`) |
+| `.hash_seed` | the seed the bucket hash's drawn rows came from |
+| `.hash_rows()` | the bucket hash's GF(2) rows, a `bool` array of shape `(min(2 * num_qubits, 31), 2 * num_qubits)`, x-bits first; see [`paulistrings.hashes`](propagate.md#paulistringshashes) |
+| `.bucket_lengths()` | terms per bucket, a `uint64` array in bucket order |
+| `.with_hash(rows=None, seed=None)` | a copy bucketed by another hash: the given rows lead, dense rows drawn from `seed` (default: this sum's) fill the rest; dependent rows are a `RuntimeWarning` |
 | `.coefficients()` | coefficient column as a list of Python `complex` |
 | `.coefficients_array()` | coefficient column as a 1-D `complex128` NumPy array |
 | `.x_array()` | X-part column, 2-D `uint64` array, shape `(len, width)` |

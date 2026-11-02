@@ -110,6 +110,13 @@ Every benchmark on this site is run single-threaded, `RAYON_NUM_THREADS=1` expor
 They are tuning knobs for the engine's own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
 `target_bucket_len` must be at least 1 and `min_buckets` at least 16; anything smaller is a `ValueError`.
 
+The buckets are the classes of a GF(2)-linear hash: a matrix of `min(2 * num_qubits, 31)` rows over the `2 * num_qubits` key coordinates, of which the first `log2(num_buckets)` are active, that a sum carries through `propagate`.
+`PauliSum.hash_rows()` and `PauliSum.hash_seed` read it back, `PauliSum.bucket_lengths()` the occupancy it produces.
+`sum.with_hash(rows=None, seed=None)` returns a copy bucketed by another hash: the given rows lead and dense random rows drawn from the seed, each independent of the rows before it, fill the rest, so `with_hash(seed=s)` is a fresh full-rank draw.
+[`paulistrings.hashes`](../../library/propagate.md#paulistringshashes) builds dense, sparse and projection matrices; a projection reads one coordinate per row and piles low-weight strings into one bucket, which is the kind of effect the rows exist to measure.
+Rows that fall short of full rank leave some buckets unreachable and run with a `RuntimeWarning`, never an error.
+Every hash gives the same results within tolerance; only the speed differs.
+
 ## Determinism
 
 The correctness bar is agreement to floating-point tolerance, not bit-identical output.

@@ -32,6 +32,7 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
         let _ = prepared;
         crate::pauli_sum::storage::desired_bits(self.len(), target_bucket_len, min_buckets)
             .max(self.hash().bits())
+            .min(self.hash().max_bits())
     }
     /// Refine to the host bucket policy without the prepared channel and return `true`, or return `false` for a backend whose proposal needs it.
     fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {

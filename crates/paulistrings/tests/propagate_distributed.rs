@@ -358,6 +358,38 @@ fn ranks_driven_through_different_circuits_are_caught() {
     });
 }
 
+/// Ranks splitting by different explicit partition rows are named too: the run fingerprint folds the rows in.
+#[test]
+#[should_panic(expected = "disagree about the run")]
+fn ranks_splitting_by_different_partition_rows_are_caught() {
+    let sum = rand_sum::<1>(50, 4, 0x0D1D);
+    let circuit = Circuit::<1>::new(4);
+    let scatter = |rows: &[&[usize]]| ScatterOptions {
+        runtime: PartitionRuntime::new(&unpinned_partitions(1, 2)).expect("unpinned"),
+        rows: ScatterRows::Policy(PartitionRowPolicy::Matrix(
+            rows.iter().map(|row| (0..8).map(|c| row.contains(&c)).collect()).collect(),
+        )),
+    };
+
+    let mut group = InProcessTransport::group(2);
+    let one = group.pop().expect("rank 1");
+    let zero = group.pop().expect("rank 0");
+
+    std::thread::scope(|scope| {
+        let sum = &sum;
+        let circuit = &circuit;
+        scope.spawn(move || {
+            // Rank 1 sees the mismatch too; swallow it so only rank 0's panic reaches the harness.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut split = DistributedSum::scatter_with(sum.clone(), one, scatter(&[&[0, 1]]));
+                split.propagate(circuit, &KeepAll, Direction::Forward);
+            }));
+        });
+        let mut split = DistributedSum::scatter_with(sum.clone(), zero, scatter(&[&[4, 5]]));
+        split.propagate(circuit, &KeepAll, Direction::Forward);
+    });
+}
+
 /// A group size that is not a power of two cannot name a partition.
 #[test]
 #[should_panic(expected = "power of two")]

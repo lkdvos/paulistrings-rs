@@ -94,8 +94,7 @@ macro_rules! for_each_width_propagate {
     };
 }
 
-/// Single dispatch from one width enum into the same variant of another (`PauliSumImpl` <-> `GpuPauliSumImpl`); a `?` in `$body` returns from the enclosing function.
-#[cfg(feature = "cuda")]
+/// Single dispatch from one width enum into the same variant of another (`PauliSumImpl` <-> `GpuPauliSumImpl`, or onto itself); a `?` in `$body` returns from the enclosing function.
 macro_rules! for_each_width_convert {
     ($from:ident => $to:ident, $value:expr, |$s:ident| $body:expr) => {
         match $value {

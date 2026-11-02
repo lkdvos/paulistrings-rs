@@ -3,6 +3,7 @@ use super::options::parse_bytes;
 use super::*;
 use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
+use crate::engine::gpu::GPU_MAX_BITS;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::{
@@ -157,7 +158,7 @@ fn records_per_block_scales_with_fanout_and_is_grow_only() {
     assert_eq!(gpu_desired_bits(0, 16, p, 0), 0);
     assert_eq!(gpu_desired_bits(4096, 1, p, 0), 0);
     assert_eq!(gpu_desired_bits(4097, 1, p, 0), 1);
-    assert_eq!(gpu_desired_bits(usize::MAX / 2, 16, p, 0), B_MAX_BITS);
+    assert_eq!(gpu_desired_bits(usize::MAX / 2, 16, p, 0), GPU_MAX_BITS);
 }
 
 #[test]
@@ -173,7 +174,7 @@ fn layer_options_validate_their_bounds() {
         "arena_bytes must be at least 1, got 0"
     );
     assert_eq!(
-        bad(GpuLayerOptions { max_bits: B_MAX_BITS + 1, ..GpuLayerOptions::default() }),
-        format!("max_bits must be at most {B_MAX_BITS}, got {}", B_MAX_BITS + 1)
+        bad(GpuLayerOptions { max_bits: GPU_MAX_BITS + 1, ..GpuLayerOptions::default() }),
+        format!("max_bits must be at most {GPU_MAX_BITS}, got {}", GPU_MAX_BITS + 1)
     );
 }

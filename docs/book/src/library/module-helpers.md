@@ -8,6 +8,7 @@
 | `paulistrings.cuda_available()` | `bool`, whether this build can run `PauliSum.propagate(device=...)`: compiled with the `cuda` feature, `libcuda` and `libnvrtc` loadable, and a device visible |
 | `paulistrings.GpuPauliSum` | the device-resident sum `PauliSum.to_device` returns, present only in a build with the `cuda` feature; see [`GpuPauliSum`](propagate.md#gpupaulisum) |
 | `paulistrings.reset_log_cache()` | drops pyo3-log's cached per-logger effective level |
+| `paulistrings.hashes` | NumPy builders of the GF(2) row matrices `PauliSum.with_hash` and `propagate(partition_rows=)` take; see [`paulistrings.hashes`](propagate.md#paulistringshashes) |
 
 ## Logging gotcha
 

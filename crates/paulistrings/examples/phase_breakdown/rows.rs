@@ -1,9 +1,9 @@
 //! Partition-row choice: the generator scan, the `cut` rows, and the hash re-seed.
 
 use paulistrings::test_support::{
-    circuit_generators, count_remote_deltas, with_hash, zz_rotation, GeneratorWeight, B_MAX_BITS,
+    circuit_generators, count_remote_deltas, with_hash, zz_rotation, GeneratorWeight,
 };
-use paulistrings::{Circuit, Gf2Hash, PartitionRows, PauliSum};
+use paulistrings::{max_hash_bits, Circuit, Gf2Hash, PartitionRows, PauliSum};
 
 use crate::cli::{Config, PartitionRowSpec};
 use crate::workloads::{build_circuit, haar_su4_block, LayerKind};
@@ -241,8 +241,9 @@ pub(crate) fn reseed_hash_until_independent<const W: usize>(
     let num_qubits = base.num_qubits();
     // Rows can only be independent while they fit in the `2n` key columns.
     let headroom = (2 * num_qubits).saturating_sub(rows.bits() as usize);
-    let probe_bits =
-        INDEPENDENCE_PROBE_BITS.min(B_MAX_BITS).min(headroom.min(u8::MAX as usize) as u8);
+    let probe_bits = INDEPENDENCE_PROBE_BITS
+        .min(max_hash_bits(num_qubits))
+        .min(headroom.min(u8::MAX as usize) as u8);
     let independent_at =
         |seed: u64| rows.is_independent_of(&Gf2Hash::<W>::new(num_qubits, probe_bits, seed));
     let seed = base.hash().seed();

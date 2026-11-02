@@ -46,7 +46,8 @@ impl<const W: usize> BuildAccumulator<W> {
             z.push(p.z);
             coeff.push(c);
         }
-        let bits = desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+        let bits = desired_bits(n, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
+            .min(crate::pauli_sum::hash::max_hash_bits(self.num_qubits));
         let hash = Gf2Hash::new(self.num_qubits, bits, DEFAULT_HASH_SEED);
         PauliSum::from_key_sorted(&x, &z, &coeff, hash, self.num_qubits)
     }

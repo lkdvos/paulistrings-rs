@@ -13,12 +13,15 @@ use super::fingerprint::FingerprintRows;
 use super::module::{self, thread_per, warp_per_bucket, KernelSet};
 use super::scan::{exclusive_scan, ScanScratch};
 use super::staging::HostStaging;
-use crate::pauli_sum::hash::{Gf2Hash, B_MAX_BITS};
+use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
 
 /// Hash bits one refine pass adds at most; must match `REFINE_MAX_DELTA` in `kernels/refine.cu`.
 pub(super) const REFINE_MAX_DELTA: u8 = 4;
+
+/// The most bucket bits a device sum refines to: the scan kernel (`kernels/scan.cu`) takes at most `2^24` elements, and a layer scans one entry per bucket plus a sentinel.
+pub const GPU_MAX_BITS: u8 = 23;
 
 /// GF(2) rows in the device layout of `kernels/prelude.cuh`, padded so an empty matrix still allocates.
 fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -> Vec<u64> {
@@ -48,7 +51,7 @@ pub struct GpuSum<const W: usize> {
     pub(super) columns: DeviceColumns<W>,
     /// The previous columns, kept as the next refine's or layer's target.
     pub(super) spare: Option<DeviceColumns<W>>,
-    /// All `B_MAX_BITS` rows of `hash`, so a refine uploads nothing.
+    /// The rows of `hash` up to [`Self::max_bits`], so a refine uploads nothing.
     pub(super) hash_rows: CudaSlice<u64>,
     /// `FingerprintRows::new(hash.seed())`, and its rows in device layout.
     pub(super) fingerprints: FingerprintRows<W>,
@@ -133,8 +136,8 @@ impl<const W: usize> GpuSum<W> {
         columns.len = n;
         columns.buckets = b;
 
-        let hash_rows =
-            stream.clone_htod(&flat_rows::<W>((0..B_MAX_BITS as usize).map(|i| hash.row(i))))?;
+        let usable = hash.max_bits().min(GPU_MAX_BITS) as usize;
+        let hash_rows = stream.clone_htod(&flat_rows::<W>((0..usable).map(|i| hash.row(i))))?;
         let fingerprints = FingerprintRows::<W>::new(hash.seed());
         let fingerprint_rows = stream.clone_htod(&fingerprints.flat())?;
         launch_fingerprint(
@@ -238,18 +241,23 @@ impl<const W: usize> GpuSum<W> {
     }
 
     /// Double the bucket count as the host sum does: bucket `β` splits into `β` and `β + B`, each inheriting `β`'s order.
-    /// Returns [`GpuError::Unsupported`] at `B_MAX_BITS`.
+    /// Returns [`GpuError::Unsupported`] at [`Self::max_bits`].
     pub fn refine(&mut self) -> Result<(), GpuError> {
-        if self.hash.bits() >= B_MAX_BITS {
-            return Err(GpuError::Unsupported("refine beyond B_MAX_BITS"));
+        if self.hash.bits() >= self.max_bits() {
+            return Err(GpuError::Unsupported("refine beyond the device's bucket bits"));
         }
         self.refine_pass(1)
     }
 
-    /// Refine until the bucket count is `1 << bits`, up to four bits per counting pass, as repeated [`Self::refine`] would; a no-op at or above it, [`GpuError::Unsupported`] past `B_MAX_BITS` with the sum unchanged.
+    /// The most bucket bits this sum refines to: its hash's rows, capped at [`GPU_MAX_BITS`].
+    pub fn max_bits(&self) -> u8 {
+        self.hash.max_bits().min(GPU_MAX_BITS)
+    }
+
+    /// Refine until the bucket count is `1 << bits`, up to four bits per counting pass, as repeated [`Self::refine`] would; a no-op at or above it, [`GpuError::Unsupported`] past [`Self::max_bits`] with the sum unchanged.
     pub(crate) fn refine_to(&mut self, bits: u8) -> Result<(), GpuError> {
-        if bits > B_MAX_BITS {
-            return Err(GpuError::Unsupported("refine_to beyond B_MAX_BITS"));
+        if bits > self.max_bits() {
+            return Err(GpuError::Unsupported("refine_to beyond the device's bucket bits"));
         }
         while self.hash.bits() < bits {
             self.refine_pass((bits - self.hash.bits()).min(REFINE_MAX_DELTA))?;

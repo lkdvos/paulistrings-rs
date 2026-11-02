@@ -36,7 +36,7 @@ from ._paulistrings import (
     p,
     reset_log_cache,
 )
-from . import gates, noise, truncation
+from . import gates, hashes, noise, truncation
 from . import interop
 from . import io
 
@@ -52,6 +52,7 @@ __all__ = [
     "gates",
     "noise",
     "truncation",
+    "hashes",
     "interop",
     "io",
     "mpi_available",

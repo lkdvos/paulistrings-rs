@@ -1,16 +1,21 @@
-//! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`].
+//! The GF(2)-linear bucket hash [`Gf2Hash`] and the partition rows [`PartitionRows`], two matrices over the `2 · num_qubits` key coordinates.
 
 use crate::pauli_string::word_mask;
 use crate::rng::{mix64, SPLITMIX_GAMMA};
 
-/// Maximum number of bucket bits; all rows are drawn up front so the active hash is a prefix of one fixed matrix.
-pub const B_MAX_BITS: u8 = 22;
+/// The ceiling on the rows either matrix can use: bucket and partition counts are `u32` (`ChunkMap`), so `2^31` is the largest.
+pub(crate) const INDEX_BITS: u8 = u32::BITS as u8 - 1;
 
-/// Maximum number of partition bits, i.e. `P ≤ 64` partitions.
-pub const P_MAX_BITS: u8 = 6;
+/// Rows a GF(2) hash over `num_qubits` qubits can hold: one per key coordinate, at most 31 since bucket and partition counts are `u32`; the bound on bucket bits and on partition bits alike.
+pub fn max_hash_bits(num_qubits: usize) -> u8 {
+    (2 * num_qubits).min(INDEX_BITS as usize) as u8
+}
 
 /// Salt keeping [`PartitionRows::from_seed`]'s rows independent of [`Gf2Hash::new`]'s under the same seed.
 const PARTITION_ROW_SALT: u64 = 0xD1B5_4A32_D192_ED03;
+
+/// Candidates tried for one row before the last is taken as drawn, so a draw with nothing acceptable to find still terminates.
+const REDRAW_ATTEMPTS: u32 = 1 << 12;
 
 /// Word `word` of the `half` (0 = x, 1 = z) of row `row`, draw `attempt`.
 // Not a GF(2)-linear generator such as xorshift: research/FINDINGS.md §`Gf2Hash` rows are splitmix64, not xorshift successors.
@@ -29,7 +34,8 @@ pub(crate) struct Gf2Matrix<const W: usize> {
 }
 
 impl<const W: usize> Gf2Matrix<W> {
-    /// `num_rows` rows drawn from `seed` with the `exclude` coordinates cleared, an all-zero row redrawn unless `num_qubits == 0`.
+    /// `num_rows` dense rows drawn from `seed` reading no coordinate in `(exclude_x, exclude_z)`: linearly independent until the readable coordinates are spanned and nonzero after, or all zero when nothing is readable.
+    /// The rows depend on `(num_qubits, seed, exclusion)` alone, not on `W`.
     pub(crate) fn draw(
         num_qubits: usize,
         num_rows: usize,
@@ -37,30 +43,90 @@ impl<const W: usize> Gf2Matrix<W> {
         exclude_x: &[u64; W],
         exclude_z: &[u64; W],
     ) -> Self {
-        let mut rows_x: Vec<[u64; W]> = Vec::with_capacity(num_rows);
-        let mut rows_z: Vec<[u64; W]> = Vec::with_capacity(num_rows);
-        let has_live_columns = num_qubits > 0;
-        for row in 0..num_rows {
-            let mut attempt = 0u32;
-            let (row_x, row_z) = loop {
-                let mut row_x = [0u64; W];
-                let mut row_z = [0u64; W];
-                let mut any = false;
+        let readable: usize = (0..W)
+            .map(|w| {
+                let mask = word_mask(num_qubits, w);
+                ((mask & !exclude_x[w]).count_ones() + (mask & !exclude_z[w]).count_ones()) as usize
+            })
+            .sum();
+        if readable == 0 {
+            return Self::from_rows(num_qubits, vec![[0; W]; num_rows], vec![[0; W]; num_rows]);
+        }
+        let candidate = |row: usize, attempt: u32| -> KeyRow<W> {
+            let mut key = ([0u64; W], [0u64; W]);
+            for w in 0..W {
+                let mask = word_mask(num_qubits, w);
+                key.0[w] = row_word(seed, row, attempt, w, 0) & mask & !exclude_x[w];
+                key.1[w] = row_word(seed, row, attempt, w, 1) & mask & !exclude_z[w];
+            }
+            key
+        };
+        let mut basis = Gf2Basis::<W>::default();
+        Self::accept_rows(num_qubits, num_rows, num_rows.min(readable), &mut basis, 0, candidate)
+    }
+
+    /// `given` rows followed by dense rows from `seed` up to `num_rows`, each independent of everything before it until the `2 · num_qubits` coordinates are spanned and nonzero after.
+    pub(crate) fn complete(
+        num_qubits: usize,
+        num_rows: usize,
+        seed: u64,
+        given: Vec<KeyRow<W>>,
+    ) -> Self {
+        let first = given.len();
+        let (rows_x, rows_z): (Vec<_>, Vec<_>) = given.into_iter().unzip();
+        let Self { mut rows_x, mut rows_z, .. } = Self::from_rows(num_qubits, rows_x, rows_z);
+        if first < num_rows {
+            let mut basis = Gf2Basis::<W>::default();
+            for i in 0..first {
+                basis.insert(&(rows_x[i], rows_z[i]));
+            }
+            let candidate = |row: usize, attempt: u32| -> KeyRow<W> {
+                let mut key = ([0u64; W], [0u64; W]);
                 for w in 0..W {
                     let mask = word_mask(num_qubits, w);
-                    row_x[w] = row_word(seed, row, attempt, w, 0) & mask & !exclude_x[w];
-                    row_z[w] = row_word(seed, row, attempt, w, 1) & mask & !exclude_z[w];
-                    any |= (row_x[w] | row_z[w]) != 0;
+                    key.0[w] = row_word(seed, row, attempt, w, 0) & mask;
+                    key.1[w] = row_word(seed, row, attempt, w, 1) & mask;
                 }
-                if any || !has_live_columns {
-                    break (row_x, row_z);
+                key
+            };
+            let independent = num_rows.min(2 * num_qubits);
+            let tail =
+                Self::accept_rows(num_qubits, num_rows, independent, &mut basis, first, candidate);
+            rows_x.extend_from_slice(&tail.rows_x[first..]);
+            rows_z.extend_from_slice(&tail.rows_z[first..]);
+        }
+        Self::from_rows(num_qubits, rows_x, rows_z)
+    }
+
+    /// Rows `first..num_rows` from `candidate(row, attempt)`: while `basis` holds fewer than `independent` rows a candidate is accepted only if it extends it, after that only if it is nonzero, and after [`REDRAW_ATTEMPTS`] as it is; rows before `first` are zero placeholders.
+    fn accept_rows(
+        num_qubits: usize,
+        num_rows: usize,
+        independent: usize,
+        basis: &mut Gf2Basis<W>,
+        first: usize,
+        candidate: impl Fn(usize, u32) -> KeyRow<W>,
+    ) -> Self {
+        let mut rows_x = vec![[0u64; W]; first];
+        let mut rows_z = vec![[0u64; W]; first];
+        for row in first..num_rows {
+            let mut attempt = 0u32;
+            let key = loop {
+                let key = candidate(row, attempt);
+                let accepted = if basis.len() < independent {
+                    basis.insert(&key)
+                } else {
+                    key != ([0; W], [0; W])
+                };
+                if accepted || attempt == REDRAW_ATTEMPTS {
+                    break key;
                 }
                 attempt += 1;
             };
-            rows_x.push(row_x);
-            rows_z.push(row_z);
+            rows_x.push(key.0);
+            rows_z.push(key.1);
         }
-        Self { rows_x, rows_z, num_qubits }
+        Self::from_rows(num_qubits, rows_x, rows_z)
     }
 
     /// Explicit rows, masked to the live columns.
@@ -96,6 +162,11 @@ impl<const W: usize> Gf2Matrix<W> {
         (&self.rows_x, &self.rows_z)
     }
 
+    /// GF(2) rank of the first `rows` rows.
+    pub(crate) fn rank(&self, rows: usize) -> usize {
+        gf2_rank_wide(&(0..rows).map(|i| self.row(i)).collect::<Vec<_>>())
+    }
+
     /// Bit `row` of `M·v`, as `0` or `1`.
     pub(crate) fn row_parity(&self, x: &[u64; W], z: &[u64; W], row: usize) -> u32 {
         let row_x = &self.rows_x[row];
@@ -124,37 +195,76 @@ impl<const W: usize> Gf2Matrix<W> {
     }
 }
 
-/// The GF(2)-linear hash `h(v) = H·v` from a Pauli key `v = (x, z)` to a bucket index, for a dense random `H` drawn from a seed.
+/// The GF(2)-linear hash `h(v) = H·v` from a Pauli key `v = (x, z)` to a bucket index, for an `H` of [`max_hash_bits`] rows drawn from a seed or given by the caller.
 ///
 /// Linearity gives `h(v ⊕ d) = h(v) ⊕ h(d)`, so a channel's output buckets are predictable from its input buckets.
 /// The active rows are a prefix of one fixed matrix, so a refine splits every bucket in two by one row parity with the within-bucket order inherited, and a coarsen merges bucket pairs; neither needs a sort to keep the [`PauliSum`](crate::PauliSum) invariant.
 #[derive(Clone, Debug)]
 pub struct Gf2Hash<const W: usize> {
-    /// All [`B_MAX_BITS`] rows of `H`.
+    /// All [`max_hash_bits`] rows of `H`.
     matrix: Gf2Matrix<W>,
     /// Active prefix length: `B = 1 << bits` buckets.
     bits: u8,
-    /// Seed the rows were generated from.
+    /// Seed the drawn rows came from.
     seed: u64,
 }
 
 impl<const W: usize> Gf2Hash<W> {
-    /// Build a hash over `num_qubits` qubits with `bits` active bucket bits.
+    /// Build a hash over `num_qubits` qubits with `bits` active bucket bits, every row drawn from `seed` and the rows linearly independent.
     ///
     /// The rows are a function of `(num_qubits, seed)` alone, independent of `W`.
     ///
     /// # Panics
     ///
-    /// Panics if `bits > B_MAX_BITS`, or in debug builds if `num_qubits > 64 · W`.
+    /// Panics if `bits > max_hash_bits(num_qubits)`, or in debug builds if `num_qubits > 64 · W`.
     pub fn new(num_qubits: usize, bits: u8, seed: u64) -> Self {
-        assert!(bits <= B_MAX_BITS, "Gf2Hash: bits {bits} exceeds B_MAX_BITS {B_MAX_BITS}",);
-        debug_assert!(num_qubits <= 64 * W);
+        Self::from_rows(num_qubits, bits, seed, Vec::new(), Vec::new())
+    }
 
-        Self {
-            matrix: Gf2Matrix::draw(num_qubits, B_MAX_BITS as usize, seed, &[0; W], &[0; W]),
-            bits,
-            seed,
-        }
+    /// A hash whose first rows are the caller's, masked to the live columns, completed to [`max_hash_bits`] rows by dense rows drawn from `seed` that are independent of everything before them.
+    ///
+    /// Dependent or zero rows are accepted, and [`Gf2Hash::rank_deficiency`] reports them.
+    ///
+    /// # Panics
+    ///
+    /// As [`Gf2Hash::new`], if `rows_x` and `rows_z` differ in length, or if more than `max_hash_bits(num_qubits)` rows are given.
+    pub fn from_rows(
+        num_qubits: usize,
+        bits: u8,
+        seed: u64,
+        rows_x: Vec<[u64; W]>,
+        rows_z: Vec<[u64; W]>,
+    ) -> Self {
+        let max_bits = max_hash_bits(num_qubits);
+        assert!(
+            bits <= max_bits,
+            "Gf2Hash: bits {bits} exceeds the {max_bits} rows of {num_qubits} qubits"
+        );
+        assert_eq!(
+            rows_x.len(),
+            rows_z.len(),
+            "Gf2Hash::from_rows: row count mismatch, {} x-rows vs {} z-rows",
+            rows_x.len(),
+            rows_z.len(),
+        );
+        assert!(
+            rows_x.len() <= max_bits as usize,
+            "Gf2Hash::from_rows: {} rows exceed the {max_bits} rows of {num_qubits} qubits",
+            rows_x.len()
+        );
+        debug_assert!(num_qubits <= 64 * W);
+        let given = rows_x.into_iter().zip(rows_z).collect();
+        Self { matrix: Gf2Matrix::complete(num_qubits, max_bits as usize, seed, given), bits, seed }
+    }
+
+    /// [`Gf2Hash::from_rows`] from a flag matrix of `2 · num_qubits` columns, the x-bits of the qubits first and then their z-bits.
+    ///
+    /// # Panics
+    ///
+    /// As [`Gf2Hash::from_rows`], and if a row has not `2 · num_qubits` entries.
+    pub fn from_matrix(num_qubits: usize, bits: u8, seed: u64, rows: &[Vec<bool>]) -> Self {
+        let (rows_x, rows_z) = key_rows_from_matrix(num_qubits, rows);
+        Self::from_rows(num_qubits, bits, seed, rows_x, rows_z)
     }
 
     /// Number of active bucket bits.
@@ -162,14 +272,40 @@ impl<const W: usize> Gf2Hash<W> {
         self.bits
     }
 
+    /// The most bucket bits this hash can refine to: its row count, [`max_hash_bits`] of its qubit count.
+    pub fn max_bits(&self) -> u8 {
+        self.matrix.num_rows() as u8
+    }
+
     /// Number of buckets, `1 << bits()`.
     pub fn num_buckets(&self) -> usize {
         1usize << self.bits
     }
 
-    /// The seed the rows were generated from.
+    /// The seed the drawn rows came from.
     pub fn seed(&self) -> u64 {
         self.seed
+    }
+
+    /// All rows as `(x-masks, z-masks)`, the active ones first.
+    pub fn rows(&self) -> (&[[u64; W]], &[[u64; W]]) {
+        self.matrix.rows()
+    }
+
+    /// The rank of the rows: how many bucket bits can be used before some bucket can never hold a term.
+    pub fn independent_rows(&self) -> usize {
+        self.matrix.rank(self.matrix.num_rows())
+    }
+
+    /// `Some(reason)` when the rows are not full rank.
+    pub fn rank_deficiency(&self) -> Option<String> {
+        let rows = self.matrix.num_rows();
+        let rank = self.independent_rows();
+        (rank < rows).then(|| {
+            format!(
+                "the bucket hash's {rows} rows have rank {rank}: beyond {rank} bucket bits, some buckets can never hold a term"
+            )
+        })
     }
 
     /// The qubit count the rows were masked against.
@@ -191,9 +327,14 @@ impl<const W: usize> Gf2Hash<W> {
     ///
     /// # Panics
     ///
-    /// Panics if already at `B_MAX_BITS`.
+    /// Panics if already at [`Gf2Hash::max_bits`].
     pub fn refine(&mut self) {
-        assert!(self.bits < B_MAX_BITS, "Gf2Hash::refine: already at B_MAX_BITS {B_MAX_BITS}",);
+        assert!(
+            self.bits < self.max_bits(),
+            "Gf2Hash::refine: already at the {} rows of {} qubits",
+            self.max_bits(),
+            self.num_qubits()
+        );
         self.bits += 1;
     }
 
@@ -207,12 +348,12 @@ impl<const W: usize> Gf2Hash<W> {
         self.bits -= 1;
     }
 
-    /// `true` if `other` was generated with the same rows, so sums partitioned by the two can be combined (after matching `bits`).
+    /// `true` if `other` has the same rows over the same qubits, so sums partitioned by the two can be combined (after matching `bits`).
     pub(crate) fn same_rows_as(&self, other: &Self) -> bool {
-        self.seed == other.seed && self.num_qubits() == other.num_qubits()
+        self.matrix == other.matrix
     }
 
-    /// Row `i < B_MAX_BITS` of `H`, which may lie beyond the active prefix.
+    /// Row `i < max_bits()` of `H`, which may lie beyond the active prefix.
     #[cfg(any(test, feature = "cuda"))]
     pub(crate) fn row(&self, i: usize) -> ([u64; W], [u64; W]) {
         self.matrix.row(i)
@@ -221,7 +362,7 @@ impl<const W: usize> Gf2Hash<W> {
 
 /// The `p` GF(2) rows `part(v) = P·v` that split a sum across `2^p` partitions: a partition holds exactly the terms with `part(v)` equal to its rank.
 ///
-/// A matrix separate from [`Gf2Hash`]'s and fixed for a run, since a row that moved as the bucket hash refines would change a term's owner mid-run.
+/// A matrix separate from [`Gf2Hash`]'s and fixed for a run, since a row that moved as the bucket hash refines would change a term's owner mid-run; it holds exactly the rows the partition count needs.
 /// Dependence on the bucket hash's rows costs load balance, never correctness.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionRows<const W: usize> {
@@ -230,8 +371,8 @@ pub struct PartitionRows<const W: usize> {
 }
 
 impl<const W: usize> PartitionRows<W> {
-    /// Panics unless the rows split a sum over `num_qubits` qubits into `partitions` partitions; debug builds also check them independent of `hash`.
-    pub(crate) fn assert_splits(&self, hash: &Gf2Hash<W>, num_qubits: usize, partitions: usize) {
+    /// Panics unless the rows split a sum over `num_qubits` qubits into `partitions` partitions; rank shortfalls are [`PartitionRows::rank_deficiency`]'s, never a panic.
+    pub(crate) fn assert_splits(&self, num_qubits: usize, partitions: usize) {
         assert_eq!(
             self.num_partitions(),
             partitions,
@@ -244,27 +385,24 @@ impl<const W: usize> PartitionRows<W> {
             "partition rows are for {} qubits, the sum for {num_qubits}",
             self.num_qubits(),
         );
-        debug_assert!(
-            self.is_independent_of(hash),
-            "partition rows are dependent on the bucket hash rows — the split will correlate \
-             with the bucket partition and load-balance badly",
-        );
     }
 
-    /// Draw `bits` partition rows from `seed`, unrelated to [`Gf2Hash::new`]'s rows under the same seed.
+    /// Draw `bits` linearly independent partition rows from `seed`, unrelated to [`Gf2Hash::new`]'s rows under the same seed.
     ///
     /// # Panics
     ///
-    /// Panics if `bits > P_MAX_BITS`, or in debug builds if `num_qubits > 64 · W`.
+    /// Panics if `bits > max_hash_bits(num_qubits)`, or in debug builds if `num_qubits > 64 · W`.
     pub fn from_seed(num_qubits: usize, bits: u8, seed: u64) -> Self {
         Self::from_seed_excluding(num_qubits, bits, seed, &[0; W], &[0; W])
     }
 
     /// [`Self::from_seed`] with the coordinates in `(exclude_x, exclude_z)` cleared from every row, so keys differing only there share a partition.
     ///
+    /// The rows are independent as far as the readable coordinates allow; an exclusion that leaves none gives zero rows, which [`Self::rank_deficiency`] reports.
+    ///
     /// # Panics
     ///
-    /// As [`Self::from_seed`], and if `bits > 0` while the exclusion covers every live column.
+    /// As [`Self::from_seed`].
     pub fn from_seed_excluding(
         num_qubits: usize,
         bits: u8,
@@ -272,38 +410,18 @@ impl<const W: usize> PartitionRows<W> {
         exclude_x: &[u64; W],
         exclude_z: &[u64; W],
     ) -> Self {
-        assert!(bits <= P_MAX_BITS, "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",);
+        assert_bits(num_qubits, bits as usize);
         debug_assert!(num_qubits <= 64 * W);
-
-        let keeps_a_column = (0..W).any(|w| {
-            let mask = word_mask(num_qubits, w);
-            (mask & !exclude_x[w]) | (mask & !exclude_z[w]) != 0
-        });
-        assert!(
-            bits == 0 || num_qubits == 0 || keeps_a_column,
-            "PartitionRows::from_seed_excluding: the exclusion covers every column",
-        );
-        Self {
-            matrix: Gf2Matrix::draw(
-                num_qubits,
-                bits as usize,
-                mix64(seed) ^ PARTITION_ROW_SALT,
-                exclude_x,
-                exclude_z,
-            ),
-        }
+        let seed = mix64(seed) ^ PARTITION_ROW_SALT;
+        Self { matrix: Gf2Matrix::draw(num_qubits, bits as usize, seed, exclude_x, exclude_z) }
     }
 
-    /// Build from explicit rows, masked to the live qubit columns.
+    /// Explicit rows, masked to the live qubit columns; dependent or zero rows are accepted and reported by [`Self::rank_deficiency`].
     ///
     /// # Panics
     ///
-    /// Panics if `rows_x` and `rows_z` differ in length, if there are more than [`P_MAX_BITS`] rows, or if any row masks to all-zero while `num_qubits > 0`.
-    pub(crate) fn from_rows(
-        num_qubits: usize,
-        rows_x: Vec<[u64; W]>,
-        rows_z: Vec<[u64; W]>,
-    ) -> Self {
+    /// Panics if `rows_x` and `rows_z` differ in length, or if there are more than `max_hash_bits(num_qubits)` rows.
+    pub fn from_rows(num_qubits: usize, rows_x: Vec<[u64; W]>, rows_z: Vec<[u64; W]>) -> Self {
         assert_eq!(
             rows_x.len(),
             rows_z.len(),
@@ -311,22 +429,19 @@ impl<const W: usize> PartitionRows<W> {
             rows_x.len(),
             rows_z.len(),
         );
-        assert!(
-            rows_x.len() <= P_MAX_BITS as usize,
-            "PartitionRows: bits {} exceeds P_MAX_BITS {P_MAX_BITS}",
-            rows_x.len(),
-        );
+        assert_bits(num_qubits, rows_x.len());
         debug_assert!(num_qubits <= 64 * W);
+        Self { matrix: Gf2Matrix::from_rows(num_qubits, rows_x, rows_z) }
+    }
 
-        let matrix = Gf2Matrix::from_rows(num_qubits, rows_x, rows_z);
-        for i in 0..matrix.num_rows() {
-            let (row_x, row_z) = matrix.row(i);
-            assert!(
-                num_qubits == 0 || row_x.iter().chain(&row_z).any(|&w| w != 0),
-                "PartitionRows::from_rows: row {i} masks to zero",
-            );
-        }
-        Self { matrix }
+    /// [`Self::from_rows`] from a flag matrix laid out as [`Gf2Hash::from_matrix`] takes it.
+    ///
+    /// # Panics
+    ///
+    /// As [`Self::from_rows`], and if a row has not `2 · num_qubits` entries.
+    pub fn from_matrix(num_qubits: usize, rows: &[Vec<bool>]) -> Self {
+        let (rows_x, rows_z) = key_rows_from_matrix(num_qubits, rows);
+        Self::from_rows(num_qubits, rows_x, rows_z)
     }
 
     /// Rows that label a qubit cut: `log2(blocks.len())` z-only rows giving block `b` the label `b`.
@@ -336,19 +451,19 @@ impl<const W: usize> PartitionRows<W> {
     ///
     /// # Panics
     ///
-    /// Panics if `blocks.len()` is not a power of two or exceeds `2^P_MAX_BITS`, if a qubit is `>= num_qubits` or appears in two blocks, or if some row would be all-zero.
+    /// Panics if `blocks.len()` is not a power of two or exceeds `2^max_hash_bits(num_qubits)`, if a qubit is `>= num_qubits` or appears in two blocks, or if some row would be all-zero.
     pub fn cut(num_qubits: usize, blocks: &[Vec<usize>]) -> Self {
         assert!(
             blocks.len().is_power_of_two(),
             "PartitionRows::cut: block count {} is not a power of two",
             blocks.len(),
         );
-        let bits = blocks.len().trailing_zeros() as u8;
-        assert!(bits <= P_MAX_BITS, "PartitionRows: bits {bits} exceeds P_MAX_BITS {P_MAX_BITS}",);
+        let bits = blocks.len().trailing_zeros() as usize;
+        assert_bits(num_qubits, bits);
         debug_assert!(num_qubits <= 64 * W);
 
         let mut seen = vec![false; num_qubits];
-        let mut rows_z = vec![[0u64; W]; bits as usize];
+        let mut rows_z = vec![[0u64; W]; bits];
         for (b, qubits) in blocks.iter().enumerate() {
             for &q in qubits {
                 assert!(
@@ -375,7 +490,7 @@ impl<const W: usize> PartitionRows<W> {
             );
         }
 
-        Self::from_rows(num_qubits, vec![[0u64; W]; bits as usize], rows_z)
+        Self::from_rows(num_qubits, vec![[0u64; W]; bits], rows_z)
     }
 
     /// The trivial partitioning: one partition, no rows.
@@ -408,6 +523,45 @@ impl<const W: usize> PartitionRows<W> {
         self.matrix.rows()
     }
 
+    /// The rank of the rows: `2^independent_rows()` of the partitions can hold terms.
+    pub fn independent_rows(&self) -> usize {
+        self.matrix.rank(self.matrix.num_rows())
+    }
+
+    /// `Some(reason)` when the rows are linearly dependent, which leaves partitions that can never hold a term.
+    pub fn rank_deficiency(&self) -> Option<String> {
+        let bits = self.matrix.num_rows();
+        let rank = self.independent_rows();
+        (rank < bits).then(|| {
+            format!(
+                "the {bits} partition rows have rank {rank}: only {} of the {} partitions can hold a term",
+                1usize << rank,
+                1usize << bits
+            )
+        })
+    }
+
+    /// The fewest active bits of `hash` at which its rows stop being independent of these rows, correlating partitions with buckets so that some of their pairs stay empty.
+    /// `None` when that never happens before the two together span every coordinate, where overlap is forced and a partition holds fewer strings than it has buckets.
+    pub fn overlap_onset(&self, hash: &Gf2Hash<W>) -> Option<u8> {
+        let mut joint = Gf2Basis::<W>::default();
+        for i in 0..self.matrix.num_rows() {
+            joint.insert(&self.matrix.row(i));
+        }
+        let mut alone = Gf2Basis::<W>::default();
+        let coordinates = 2 * self.num_qubits();
+        for i in 0..hash.matrix.num_rows() {
+            if joint.len() == coordinates {
+                return None;
+            }
+            let row = hash.matrix.row(i);
+            if alone.insert(&row) && !joint.insert(&row) {
+                return Some(i as u8 + 1);
+            }
+        }
+        None
+    }
+
     /// `true` if no row reads a coordinate in `(mask_x, mask_z)`, i.e. keys differing only there always share a partition.
     pub fn avoids(&self, mask_x: &[u64; W], mask_z: &[u64; W]) -> bool {
         let (rows_x, rows_z) = self.matrix.rows();
@@ -422,32 +576,51 @@ impl<const W: usize> PartitionRows<W> {
     }
 }
 
+/// Panics unless `bits` partition rows fit `num_qubits` qubits.
+fn assert_bits(num_qubits: usize, bits: usize) {
+    let max_bits = max_hash_bits(num_qubits);
+    assert!(
+        bits <= max_bits as usize,
+        "PartitionRows: {bits} rows exceed the {max_bits} rows of {num_qubits} qubits"
+    );
+}
+
 /// One row of the key space as `(x-masks, z-masks)`.
 type KeyRow<const W: usize> = ([u64; W], [u64; W]);
 
+/// A flag matrix of `2 · num_qubits` columns as `(x-rows, z-rows)`: column `c < num_qubits` is the x-bit of qubit `c`, column `num_qubits + c` its z-bit.
+fn key_rows_from_matrix<const W: usize>(
+    num_qubits: usize,
+    rows: &[Vec<bool>],
+) -> (Vec<[u64; W]>, Vec<[u64; W]>) {
+    rows.iter()
+        .enumerate()
+        .map(|(i, flags)| {
+            assert_eq!(
+                flags.len(),
+                2 * num_qubits,
+                "row {i} has {} entries, not the {} coordinates of {num_qubits} qubits",
+                flags.len(),
+                2 * num_qubits
+            );
+            let mut key = ([0u64; W], [0u64; W]);
+            for c in flags.iter().enumerate().filter(|(_, &set)| set).map(|(c, _)| c) {
+                let (half, q) =
+                    if c < num_qubits { (&mut key.0, c) } else { (&mut key.1, c - num_qubits) };
+                half[q / 64] |= 1u64 << (q % 64);
+            }
+            key
+        })
+        .unzip()
+}
+
 /// GF(2) rank of rows over the key space, by Gaussian elimination.
 fn gf2_rank_wide<const W: usize>(rows: &[KeyRow<W>]) -> usize {
-    let mut pivots: Vec<(usize, KeyRow<W>)> = Vec::with_capacity(rows.len());
+    let mut basis = Gf2Basis::<W>::default();
     for row in rows {
-        let mut reduced = *row;
-        'reduce: loop {
-            let Some(lead) = leading_column(&reduced) else {
-                break;
-            };
-            for (pivot_column, pivot_row) in pivots.iter() {
-                if *pivot_column == lead {
-                    for w in 0..W {
-                        reduced.0[w] ^= pivot_row.0[w];
-                        reduced.1[w] ^= pivot_row.1[w];
-                    }
-                    continue 'reduce;
-                }
-            }
-            pivots.push((lead, reduced));
-            break;
-        }
+        basis.insert(row);
     }
-    pivots.len()
+    basis.len()
 }
 
 /// Index of the highest set column of a key-space row, or `None` if it is zero.
@@ -463,6 +636,43 @@ fn leading_column<const W: usize>(row: &KeyRow<W>) -> Option<usize> {
         }
     }
     None
+}
+
+/// An incrementally grown row-echelon basis of key-space rows.
+struct Gf2Basis<const W: usize> {
+    pivots: Vec<(usize, KeyRow<W>)>,
+}
+
+impl<const W: usize> Default for Gf2Basis<W> {
+    fn default() -> Self {
+        Self { pivots: Vec::new() }
+    }
+}
+
+impl<const W: usize> Gf2Basis<W> {
+    fn len(&self) -> usize {
+        self.pivots.len()
+    }
+
+    /// Add `row` and return `true` if it is independent of the rows so far; leave the basis unchanged and return `false` otherwise.
+    fn insert(&mut self, row: &KeyRow<W>) -> bool {
+        let mut reduced = *row;
+        while let Some(lead) = leading_column(&reduced) {
+            match self.pivots.iter().find(|(column, _)| *column == lead) {
+                Some((_, pivot)) => {
+                    for w in 0..W {
+                        reduced.0[w] ^= pivot.0[w];
+                        reduced.1[w] ^= pivot.1[w];
+                    }
+                }
+                None => {
+                    self.pivots.push((lead, reduced));
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]

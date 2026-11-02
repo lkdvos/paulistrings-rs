@@ -29,7 +29,6 @@ use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::timed;
 use crate::engine::trace::DeviceLayerRecord;
 use crate::engine::transport::Transport;
-use crate::pauli_sum::hash::B_MAX_BITS;
 use crate::truncation::builtin::APPROX_BINS;
 
 mod fast_paths;
@@ -513,7 +512,7 @@ fn apply_layer_body<const W: usize, X: Transport>(
     }
     // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (engine/driver.rs).
     let max_bits = if solo {
-        scratch.options.max_bits.min(B_MAX_BITS)
+        scratch.options.max_bits.min(sum.max_bits())
     } else {
         target_bits.max(sum.hash.bits())
     };

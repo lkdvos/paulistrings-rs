@@ -38,7 +38,7 @@ pub use partition::FaultPlan;
 pub use rank::GpuDistributedSum;
 #[cfg(feature = "mpi")]
 pub use rank::{local_device_for_comm, propagate_mpi_gpu, MpiGpuSum};
-pub use sum::GpuSum;
+pub use sum::{GpuSum, GPU_MAX_BITS};
 pub(crate) use wire::wire_timeout;
 #[cfg(any(test, feature = "test-utils"))]
 pub use wire::WireFault;

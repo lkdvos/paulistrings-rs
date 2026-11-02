@@ -29,7 +29,7 @@ evolved = observable.propagate(
 )
 ```
 
-`partitions` takes `"auto"`, an integer (a power of two, at most 64), or an explicit list of CPU lists — one per partition, in the `"0-7,16-23"` spelling — when the automatic split is not the one you want:
+`partitions` takes `"auto"`, an integer (a power of two), or an explicit list of CPU lists — one per partition, in the `"0-7,16-23"` spelling — when the automatic split is not the one you want:
 
 <!-- doctest: skip -->
 ```python
@@ -70,7 +70,7 @@ Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is al
 ## Limits
 
 - **Pinning is Linux-only.** Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.
-- **`P` is a power of two, at most 64.** A partition is named by `log2(P)` GF(2) hash rows, and the engine caps that at 6 (`P_MAX_BITS`).
+- **`P` is a power of two, at most `2^min(2 · num_qubits, 31)`.** A partition is named by `log2(P)` GF(2) hash rows, one per key coordinate and at most 31, since bucket and partition counts are `u32`.
 - **Peak memory is above a single-pool run's.** A partitioned run holds `P` shares of the sum plus one layer's exchange buffers, which are pooled and reused rather than freed between layers.
 - **Results agree to floating-point tolerance, not bit for bit** — as they do across bucket counts.
 

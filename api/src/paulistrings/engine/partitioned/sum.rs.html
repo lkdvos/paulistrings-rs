@@ -194,7 +194,7 @@
 <a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">let </span>ScatterOptions { runtime, rows } = options;
 <a href=#195 id=195 data-nosnippet>195</a>        <span class="kw">let </span>rows = rows.resolve(<span class="kw-2">&amp;</span>sum, runtime.partition_bits());
 <a href=#196 id=196 data-nosnippet>196</a>        <span class="kw">let </span>size = runtime.num_partitions();
-<a href=#197 id=197 data-nosnippet>197</a>        rows.assert_splits(sum.hash(), sum.num_qubits(), size);
+<a href=#197 id=197 data-nosnippet>197</a>        rows.assert_splits(sum.num_qubits(), size);
 <a href=#198 id=198 data-nosnippet>198</a>
 <a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>started = Instant::now();
 <a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>locals = {

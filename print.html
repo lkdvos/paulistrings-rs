@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-8a905066.js";
+            window.path_to_searchindex_js = "searchindex-2480e55c.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -1279,6 +1279,12 @@ The measured roofline behind those numbers is on <a href="#multi-thread-roofline
 <p><code>target_bucket_len</code> and <code>min_buckets</code> size the bucketed engine’s storage per layer; <code>PauliSum.num_buckets</code> reads back what was realized, which only ever grows.
 They are tuning knobs for the engine’s own benchmarks rather than for users, and the defaults are what every number on this site was measured with.
 <code>target_bucket_len</code> must be at least 1 and <code>min_buckets</code> at least 16; anything smaller is a <code>ValueError</code>.</p>
+<p>The buckets are the classes of a GF(2)-linear hash: a matrix of <code>min(2 * num_qubits, 31)</code> rows over the <code>2 * num_qubits</code> key coordinates, of which the first <code>log2(num_buckets)</code> are active, that a sum carries through <code>propagate</code>.
+<code>PauliSum.hash_rows()</code> and <code>PauliSum.hash_seed</code> read it back, <code>PauliSum.bucket_lengths()</code> the occupancy it produces.
+<code>sum.with_hash(rows=None, seed=None)</code> returns a copy bucketed by another hash: the given rows lead and dense random rows drawn from the seed, each independent of the rows before it, fill the rest, so <code>with_hash(seed=s)</code> is a fresh full-rank draw.
+<a href="#paulistringshashes"><code>paulistrings.hashes</code></a> builds dense, sparse and projection matrices; a projection reads one coordinate per row and piles low-weight strings into one bucket, which is the kind of effect the rows exist to measure.
+Rows that fall short of full rank leave some buckets unreachable and run with a <code>RuntimeWarning</code>, never an error.
+Every hash gives the same results within tolerance; only the speed differs.</p>
 <h2 id="determinism"><a class="header" href="#determinism">Determinism</a></h2>
 <p>The correctness bar is agreement to floating-point tolerance, not bit-identical output.
 Equal-key summation order is unspecified: two runs of the same propagation can differ in the last bits of a coefficient, and a partitioned run can differ from an unpartitioned one, all within tolerance and all equally correct.
@@ -1384,7 +1390,7 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
     partitions="auto",            # one partition per NUMA node, rounded down to a power of two
 )
 </code></pre>
-<p><code>partitions</code> takes <code>"auto"</code>, an integer (a power of two, at most 64), or an explicit list of CPU lists — one per partition, in the <code>"0-7,16-23"</code> spelling — when the automatic split is not the one you want:</p>
+<p><code>partitions</code> takes <code>"auto"</code>, an integer (a power of two), or an explicit list of CPU lists — one per partition, in the <code>"0-7,16-23"</code> spelling — when the automatic split is not the one you want:</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">partitions=["0-7,16-23", "8-15,24-31"]
 </code></pre>
@@ -1413,7 +1419,7 @@ Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: i
 <h2 id="limits"><a class="header" href="#limits">Limits</a></h2>
 <ul>
 <li><strong>Pinning is Linux-only.</strong> Elsewhere the topology module reports one node and pins nothing, so the run is correct but unplaced.</li>
-<li><strong><code>P</code> is a power of two, at most 64.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, and the engine caps that at 6 (<code>P_MAX_BITS</code>).</li>
+<li><strong><code>P</code> is a power of two, at most <code>2^min(2 · num_qubits, 31)</code>.</strong> A partition is named by <code>log2(P)</code> GF(2) hash rows, one per key coordinate and at most 31, since bucket and partition counts are <code>u32</code>.</li>
 <li><strong>Peak memory is above a single-pool run’s.</strong> A partitioned run holds <code>P</code> shares of the sum plus one layer’s exchange buffers, which are pooled and reused rather than freed between layers.</li>
 <li><strong>Results agree to floating-point tolerance, not bit for bit</strong> — as they do across bucket counts.</li>
 </ul>
@@ -4403,6 +4409,10 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
 <tr><td><code>.num_buckets</code></td><td>current bucket count (grow-only, reflects the last <code>propagate</code>/<code>rebucket</code>)</td></tr>
+<tr><td><code>.hash_seed</code></td><td>the seed the bucket hash’s drawn rows came from</td></tr>
+<tr><td><code>.hash_rows()</code></td><td>the bucket hash’s GF(2) rows, a <code>bool</code> array of shape <code>(min(2 * num_qubits, 31), 2 * num_qubits)</code>, x-bits first; see <a href="#paulistringshashes"><code>paulistrings.hashes</code></a></td></tr>
+<tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>
+<tr><td><code>.with_hash(rows=None, seed=None)</code></td><td>a copy bucketed by another hash: the given rows lead, dense rows drawn from <code>seed</code> (default: this sum’s) fill the rest; dependent rows are a <code>RuntimeWarning</code></td></tr>
 <tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
 <tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
@@ -4541,14 +4551,14 @@ A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it
 <pre><code class="language-text">sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
                min_buckets=128, partitions=None, pin_memory=True,
                partition_row_seed=None, partition_row_blocks=None,
-               partition_row_exclude=None, comm=None, result="gather",
-               device=None) -&gt; PauliSum
+               partition_row_exclude=None, partition_rows=None,
+               comm=None, result="gather", device=None) -&gt; PauliSum
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
                           min_buckets=128, partitions=None, pin_memory=True,
                           partition_row_seed=None, partition_row_blocks=None,
-                          partition_row_exclude=None, comm=None, result="gather",
-                          device=None)
+                          partition_row_exclude=None, partition_rows=None,
+                          comm=None, result="gather", device=None)
     -&gt; (PauliSum, PropagationStats)
 </code></pre>
 <p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
@@ -4570,6 +4580,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>partition_row_seed</code></td><td><code>int | None</code></td><td><code>None</code> = the sum’s own hash seed</td><td>which GF(2) rows decide a term’s partition</td></tr>
 <tr><td><code>partition_row_blocks</code></td><td><code>list[list[int]] | None</code></td><td><code>None</code></td><td>explicit disjoint qubit blocks, one per partition, instead of a seeded draw</td></tr>
 <tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
+<tr><td><code>partition_rows</code></td><td><code>bool array | None</code></td><td><code>None</code></td><td>the rows outright, shape <code>(log2(P), 2 * num_qubits)</code>, x-bits first, as <code>PauliSum.hash_rows()</code> lays them out and <a href="#paulistringshashes"><code>paulistrings.hashes</code></a> builds them</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
 <tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, a plain <code>PauliSum</code> (<code>to_arrays()</code> reads it into numpy)</td></tr>
 <tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
@@ -4586,15 +4597,18 @@ The GIL is released for the duration of both calls.</p>
 <tbody>
 <tr><td><code>None</code> or <code>1</code></td><td>unpartitioned</td></tr>
 <tr><td><code>"auto"</code></td><td>one partition per NUMA node (falls back to unpartitioned on a single-node box)</td></tr>
-<tr><td>an <code>int</code> power of two <code>&gt;= 2</code>, at most 64</td><td>caps placement at that many nodes</td></tr>
+<tr><td>an <code>int</code> power of two <code>&gt;= 2</code></td><td>caps placement at that many nodes</td></tr>
 <tr><td><code>list[list[int]]</code></td><td>explicit disjoint CPU lists, one partition per list</td></tr>
 </tbody>
 </table>
 </div>
 <p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
-<p><code>partition_row_blocks</code> excludes both <code>partition_row_seed</code> and <code>partition_row_exclude</code>; each of the three needs <code>partitions=</code>, <code>comm=</code> or a list of several devices.
+<p><code>partition_row_blocks</code> excludes <code>partition_row_seed</code> and <code>partition_row_exclude</code>, and <code>partition_rows</code> excludes every other row keyword; all but the seed need <code>partitions=</code>, <code>comm=</code> or a list of several devices.
+A partition is named by <code>log2(P)</code> rows over the <code>2 * num_qubits</code> key coordinates, so <code>P</code> is at most <code>2^min(2 * num_qubits, 31)</code>.
+Rows that leave some partitions unreachable (linearly dependent rows, or an exclusion that leaves no coordinate readable) run with a <code>RuntimeWarning</code> naming the shortfall; only a malformed keyword is a <code>ValueError</code>.
+Rows that overlap the span of the bucket hash’s active rows correlate partitions with buckets, so some of their pairs stay empty; that costs balance only once the run refines to the overlapping bucket row, so it is logged as a warning on the <code>paulistrings</code> logger at that layer, once per run.
 <code>partition_row_exclude={"x": sites}</code> keeps strings that differ only in the x-bits of <code>sites</code> on one rank; <code>{"z": sites}</code> does the same for z-bits.
-Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> must equal the MPI group size, and the blocks must be identical on every rank.</p>
+Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> or the row count in <code>partition_rows</code> must equal the MPI group size, and the blocks or rows must be identical on every rank; a group whose ranks disagree fails on every rank rather than misrouting the exchange.</p>
 <p><code>comm=</code> requires <code>MPI_THREAD_SERIALIZED</code> set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
 <code>comm=</code> and <code>partitions=</code> are alternatives — place via the launcher (e.g. <code>mpirun --map-by ppr:1:numa --bind-to numa</code>) rather than both. Without the <code>mpi</code> feature, <code>comm=</code> raises <code>RuntimeError</code>.</p>
 <p>See <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a> for recipes.</p>
@@ -4612,14 +4626,24 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> m
 </tbody>
 </table>
 </div>
-<p>A list’s length must be a power of two, at most 64, or it is a <code>ValueError</code>; an ordinal may repeat, putting several partitions on one device.
-Several devices split the sum like <code>partitions=</code>: <code>partition_row_seed</code> and <code>partition_row_blocks</code> pick the rows, the block count equal to the list length.
+<p>A list’s length must be a power of two, at most <code>2^min(2 * num_qubits, 31)</code>, or it is a <code>ValueError</code>; an ordinal may repeat, putting several partitions on one device.
+Several devices split the sum like <code>partitions=</code>: the <code>partition_row_*</code> keywords and <code>partition_rows</code> pick the rows, the block or row count matching the list length.
 <code>device=</code> is an alternative to <code>partitions=</code>; passing both, or <code>result="local"</code> without <code>comm=</code>, or <code>partition_row_blocks=</code> with a single device, is a <code>ValueError</code>.
 <code>engine</code> is ignored, <code>truncation.topn</code> runs on one device and raises <code>NotImplementedError</code> on several or under <code>comm=</code> (use <code>approx_topn</code>), an exhausted device raises <code>MemoryError</code>, and without the <code>cuda</code> feature or a visible device <code>device=</code> raises <code>RuntimeError</code>.</p>
 <p>With <code>comm=</code>, <code>device=</code> is this rank’s one device: an <code>int</code> or <code>"auto"</code> (a device near the rank’s CPUs, <code>gpu::local_device_for_comm</code>), and a list of several ordinals is a <code>ValueError</code>.
 <code>result=</code> and the row kwargs mean what they mean on the host <code>comm=</code> path, and a rank that cannot use its device fails the call on every rank.
 The pair needs the extension built with both the <code>cuda</code> and <code>mpi</code> features, and raises <code>RuntimeError</code> naming the missing one otherwise.
 See <a href="#cuda-devices">CUDA devices</a>.</p>
+<h2 id="paulistringshashes"><a class="header" href="#paulistringshashes"><code>paulistrings.hashes</code></a></h2>
+<pre><code class="language-text">hashes.dense(num_qubits, rows, seed, exclude=None) -&gt; bool array (rows, 2 * num_qubits)
+hashes.sparse(num_qubits, rows, weight, seed, exclude=None) -&gt; bool array
+hashes.projection(num_qubits, rows, seed, exclude=None) -&gt; bool array
+hashes.rank(matrix) -&gt; int
+</code></pre>
+<p>Pure-NumPy builders of the GF(2) row matrices <code>PauliSum.with_hash(rows=)</code> and <code>propagate(partition_rows=)</code> take, laid out as <code>PauliSum.hash_rows()</code> returns them: column <code>c &lt; num_qubits</code> is the x-bit of qubit <code>c</code>, column <code>num_qubits + c</code> its z-bit.
+<code>dense</code> sets each coordinate with probability 1/2; <code>sparse</code> reads exactly <code>weight</code> coordinates per row; <code>projection</code> reads one coordinate per row, distinct until they run out.
+Each draws from <code>numpy.random.default_rng(seed)</code> and keeps its rows linearly independent as far as the family reaches, redrawing a dependent candidate: <code>dense</code> and <code>projection</code> up to the readable coordinate count, <code>sparse</code> with an even <code>weight</code> one short of it (such rows span only the even-weight subspace), <code>rank</code> says what was reached.
+<code>exclude={"x": qubits, "z": qubits}</code> keeps those qubits’ x- and z-bits out of every row, as <code>partition_row_exclude</code> does for the seeded draw.</p>
 <h2 id="gpupaulisum"><a class="header" href="#gpupaulisum"><code>GpuPauliSum</code></a></h2>
 <pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum
 
@@ -4809,6 +4833,7 @@ Cost is <code>O(terms · num_qubits² / 64)</code> after a one-off <code>O(num_q
 <tr><td><code>paulistrings.cuda_available()</code></td><td><code>bool</code>, whether this build can run <code>PauliSum.propagate(device=...)</code>: compiled with the <code>cuda</code> feature, <code>libcuda</code> and <code>libnvrtc</code> loadable, and a device visible</td></tr>
 <tr><td><code>paulistrings.GpuPauliSum</code></td><td>the device-resident sum <code>PauliSum.to_device</code> returns, present only in a build with the <code>cuda</code> feature; see <a href="#gpupaulisum"><code>GpuPauliSum</code></a></td></tr>
 <tr><td><code>paulistrings.reset_log_cache()</code></td><td>drops pyo3-log’s cached per-logger effective level</td></tr>
+<tr><td><code>paulistrings.hashes</code></td><td>NumPy builders of the GF(2) row matrices <code>PauliSum.with_hash</code> and <code>propagate(partition_rows=)</code> take; see <a href="#paulistringshashes"><code>paulistrings.hashes</code></a></td></tr>
 </tbody>
 </table>
 </div>

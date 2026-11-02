@@ -52,7 +52,8 @@ In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncatio
 
 `partition_row_blocks` excludes `partition_row_seed` and `partition_row_exclude`, and `partition_rows` excludes every other row keyword; all but the seed need `partitions=`, `comm=` or a list of several devices.
 A partition is named by `log2(P)` rows over the `2 * num_qubits` key coordinates, so `P` is at most `2^min(2 * num_qubits, 31)`.
-Rows that leave some partitions unreachable (linearly dependent rows, or an exclusion that leaves no coordinate readable), or that overlap the span of the bucket hash's rows, run with a `RuntimeWarning` naming the shortfall; only a malformed keyword is a `ValueError`.
+Rows that leave some partitions unreachable (linearly dependent rows, or an exclusion that leaves no coordinate readable) run with a `RuntimeWarning` naming the shortfall; only a malformed keyword is a `ValueError`.
+Rows that overlap the span of the bucket hash's active rows correlate partitions with buckets, so some of their pairs stay empty; that costs balance only once the run refines to the overlapping bucket row, so it is logged as a warning on the `paulistrings` logger at that layer, once per run.
 `partition_row_exclude={"x": sites}` keeps strings that differ only in the x-bits of `sites` on one rank; `{"z": sites}` does the same for z-bits.
 Under `comm=`, the block count in `partition_row_blocks` or the row count in `partition_rows` must equal the MPI group size, and the blocks or rows must be identical on every rank; a group whose ranks disagree fails on every rank rather than misrouting the exchange.
 

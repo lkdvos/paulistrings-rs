@@ -490,9 +490,7 @@ fn avoids_reads_both_halves() {
 fn excluding_every_column_gives_zero_rows_and_a_report() {
     let rows = PartitionRows::<1>::from_seed_excluding(8, 1, 7, &[0xFF], &[0xFF]);
     assert_eq!(rows.rows(), (&[[0u64]][..], &[[0u64]][..]));
-    let reasons = rows.rank_deficiency(&Gf2Hash::<1>::new(8, 2, 1));
-    assert_eq!(reasons.len(), 1, "{reasons:?}");
-    assert!(reasons[0].contains("only 1 of the 2 partitions"), "{reasons:?}");
+    assert!(rows.rank_deficiency().unwrap().contains("only 1 of the 2 partitions"));
     // One readable coordinate: the one row reads it, and a second row can only repeat it.
     let rows = PartitionRows::<1>::from_seed_excluding(8, 2, 7, &[0xFE], &[0xFF]);
     assert_eq!(rows.rows().0, [[1u64], [1u64]]);
@@ -541,25 +539,30 @@ fn partition_from_rows_length_mismatch_panics() {
 }
 
 #[test]
-fn partition_rank_deficiency_names_dependent_rows_and_overlap_with_the_buckets() {
-    let hash = Gf2Hash::<1>::new(40, 4, 3);
+fn partition_rank_deficiency_names_dependent_rows() {
     // Row 1 is nonzero only outside the 8 live qubit columns.
     let zero = PartitionRows::<1>::from_rows(8, vec![[0x1], [1 << 20]], vec![[0x0], [1 << 30]]);
     assert_eq!(zero.independent_rows(), 1);
     let duplicate = PartitionRows::<1>::from_matrix(40, &matrix(40, &[vec![7], vec![7]]));
     for rows in [zero, duplicate] {
-        let reasons = rows.rank_deficiency(&Gf2Hash::<1>::new(rows.num_qubits(), 2, 1));
-        assert!(reasons.iter().any(|r| r.contains("only 2 of the 4 partitions")), "{reasons:?}");
+        assert!(rows.rank_deficiency().unwrap().contains("only 2 of the 4 partitions"));
     }
-    let (x, z) = hash.row(0);
-    let overlapping = PartitionRows::<1>::from_rows(40, vec![x], vec![z]);
-    let reasons = overlapping.rank_deficiency(&hash);
-    assert!(
-        reasons.iter().any(|r| r.contains("overlap the span of the bucket hash")),
-        "{reasons:?}"
-    );
-    let fine = PartitionRows::<1>::from_seed(40, 2, 11);
-    assert!(fine.rank_deficiency(&hash).is_empty());
+    assert_eq!(PartitionRows::<1>::from_seed(40, 2, 11).rank_deficiency(), None);
+}
+
+#[test]
+fn overlap_onset_is_the_bucket_bit_count_where_the_rows_meet() {
+    let hash = Gf2Hash::<1>::new(40, 4, 3);
+    let (x, z) = hash.row(2);
+    assert_eq!(PartitionRows::<1>::from_rows(40, vec![x], vec![z]).overlap_onset(&hash), Some(3));
+    let (x0, z0) = hash.row(0);
+    let (x1, z1) = hash.row(1);
+    let sum = PartitionRows::<1>::from_rows(40, vec![[x0[0] ^ x1[0]]], vec![[z0[0] ^ z1[0]]]);
+    assert_eq!(sum.overlap_onset(&hash), Some(2), "a combination of rows meets at the later one");
+    assert_eq!(PartitionRows::<1>::from_seed(40, 2, 11).overlap_onset(&hash), None);
+    // Four qubits: eight coordinates, so once the joint span is full any further overlap is forced and not reported.
+    let small = Gf2Hash::<1>::new(4, 2, 5);
+    assert_eq!(PartitionRows::<1>::from_seed(4, 1, 6).overlap_onset(&small), None);
 }
 
 #[test]

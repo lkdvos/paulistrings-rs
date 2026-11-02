@@ -91,11 +91,13 @@ impl PauliSumImpl {
         })
     }
 
-    /// Why the rows `policy` names for `2^bits` partitions fall short against this sum's bucket hash; empty when they do not.
-    pub fn partition_rank_deficiency(&self, policy: &PartitionRowPolicy, bits: u8) -> Vec<String> {
-        for_each_width!(self, |s| policy
-            .rows(s.num_qubits(), bits, s.hash().seed())
-            .rank_deficiency(s.hash()))
+    /// Why the rows `policy` names for `2^bits` partitions leave some partitions unreachable, if they do.
+    pub fn partition_rank_deficiency(
+        &self,
+        policy: &PartitionRowPolicy,
+        bits: u8,
+    ) -> Option<String> {
+        for_each_width!(self, |s| partition_shortfall(s, policy, bits))
     }
 
     pub fn hash_seed(&self) -> u64 {
@@ -1804,7 +1806,16 @@ impl RowKwargs {
     }
 }
 
-/// A `RuntimeWarning` for every way the rows `policy` names for `partitions` partitions fall short against `sum`'s bucket hash.
+/// The rows `policy` names for `2^bits` partitions of `sum`, at its width, and why they leave partitions unreachable, if they do.
+fn partition_shortfall<const W: usize>(
+    sum: &paulistrings::PauliSum<W>,
+    policy: &PartitionRowPolicy,
+    bits: u8,
+) -> Option<String> {
+    policy.rows::<W>(sum.num_qubits(), bits, sum.hash().seed()).rank_deficiency()
+}
+
+/// A `RuntimeWarning` when the rows `policy` names for `partitions` partitions are dependent; overlap with the bucket rows is the engine's to log, at the layer it starts to matter.
 fn warn_partition_rows(
     py: Python<'_>,
     sum: &PauliSumImpl,
@@ -1814,10 +1825,10 @@ fn warn_partition_rows(
     if partitions <= 1 {
         return Ok(());
     }
-    for reason in sum.partition_rank_deficiency(policy, partitions.trailing_zeros() as u8) {
-        warn_runtime(py, &reason)?;
+    match sum.partition_rank_deficiency(policy, partitions.trailing_zeros() as u8) {
+        Some(reason) => warn_runtime(py, &reason),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// The scalar `*` accepts. Naming the two-sum case explicitly, since `a * b` on two sums is the one multiplication a reader is most likely to expect and the least likely to get.
@@ -2154,7 +2165,7 @@ impl PauliSum {
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
     /// `partition_row_exclude`, a dict `{"x": [qubits], "z": [qubits]}` and the other alternative to `partition_row_blocks`, keeps the seeded draw (`partition_row_seed` still applies) but clears the named x-bits and z-bits from every row, so strings differing only there share a partition.
     /// `partition_rows`, a boolean (or 0/1) array of shape `(log2(P), 2 * num_qubits)` laid out as `hash_rows()` (see `paulistrings.hashes`), gives the rows outright and takes no other row keyword; under `comm=` every rank must pass the same rows.
-    /// Rows that leave partitions unreachable, or that overlap the span of the bucket hash's rows, run with a `RuntimeWarning`.
+    /// Rows that leave partitions unreachable run with a `RuntimeWarning`; rows that overlap the span of the bucket hash's active rows are logged as a warning (`paulistrings` logger) at the layer whose bucket count reaches the overlap.
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
     /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.

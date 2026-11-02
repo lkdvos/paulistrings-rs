@@ -528,32 +528,38 @@ impl<const W: usize> PartitionRows<W> {
         self.matrix.rank(self.matrix.num_rows())
     }
 
-    /// Every way these rows fall short, as reasons: dependent rows, which leave partitions that can never hold a term, and overlap with the span of `hash`'s rows, which correlates partitions with buckets so that some pairs of the two stay empty.
-    pub fn rank_deficiency(&self, hash: &Gf2Hash<W>) -> Vec<String> {
-        let mut reasons = Vec::new();
+    /// `Some(reason)` when the rows are linearly dependent, which leaves partitions that can never hold a term.
+    pub fn rank_deficiency(&self) -> Option<String> {
         let bits = self.matrix.num_rows();
         let rank = self.independent_rows();
-        if rank < bits {
-            reasons.push(format!(
+        (rank < bits).then(|| {
+            format!(
                 "the {bits} partition rows have rank {rank}: only {} of the {} partitions can hold a term",
                 1usize << rank,
                 1usize << bits
-            ));
+            )
+        })
+    }
+
+    /// The fewest active bits of `hash` at which its rows stop being independent of these rows, correlating partitions with buckets so that some of their pairs stay empty.
+    /// `None` when that never happens before the two together span every coordinate, where overlap is forced and a partition holds fewer strings than it has buckets.
+    pub fn overlap_onset(&self, hash: &Gf2Hash<W>) -> Option<u8> {
+        let mut joint = Gf2Basis::<W>::default();
+        for i in 0..self.matrix.num_rows() {
+            joint.insert(&self.matrix.row(i));
         }
-        let bucket_rows = hash.matrix.num_rows();
-        let stacked: Vec<KeyRow<W>> = (0..bits)
-            .map(|i| self.matrix.row(i))
-            .chain((0..bucket_rows).map(|i| hash.matrix.row(i)))
-            .collect();
-        let joint = gf2_rank_wide(&stacked);
-        let attainable = (rank + hash.independent_rows()).min(2 * self.num_qubits());
-        if joint < attainable {
-            reasons.push(format!(
-                "the partition rows overlap the span of the bucket hash's rows ({} of {attainable} dimensions lost): partitions and buckets are correlated, so some of their pairs stay empty",
-                attainable - joint
-            ));
+        let mut alone = Gf2Basis::<W>::default();
+        let coordinates = 2 * self.num_qubits();
+        for i in 0..hash.matrix.num_rows() {
+            if joint.len() == coordinates {
+                return None;
+            }
+            let row = hash.matrix.row(i);
+            if alone.insert(&row) && !joint.insert(&row) {
+                return Some(i as u8 + 1);
+            }
         }
-        reasons
+        None
     }
 
     /// `true` if no row reads a coordinate in `(mask_x, mask_z)`, i.e. keys differing only there always share a partition.

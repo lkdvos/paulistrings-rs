@@ -142,6 +142,8 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
     let solo = group_size == 1;
     let local = &mut work.local;
     let mut plan = PartitionPlan::default();
+    // Overlap with the bucket rows only costs balance once the bucket count reaches it, so it is reported there, once, by partition 0.
+    let mut overlap_onset = if rank == 0 { rows.overlap_onset(local.hash()) } else { None };
 
     for application_index in 0..num_layers {
         let circuit_index = match direction {
@@ -190,6 +192,16 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
                 plan.rebuild(&prepared, rows, rank as u32);
                 lap!(stamp, local.stats().prepare_ns);
             }
+        }
+
+        if overlap_onset.is_some_and(|onset| local.hash().bits() >= onset) {
+            overlap_onset = None;
+            log::warn!(
+                target: LOG_TARGET,
+                "layer {}/{num_layers}: at {} buckets the partition rows overlap the span of the bucket hash's active rows, so partitions and buckets are correlated and some of their pairs stay empty",
+                application_index + 1,
+                local.hash().num_buckets(),
+            );
         }
 
         // Gated on the build alone, never on data, so every partition issues these collectives alike.

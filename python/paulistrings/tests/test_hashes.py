@@ -1,9 +1,12 @@
 """``paulistrings.hashes`` and the rows it feeds to ``PauliSum.with_hash`` and ``propagate(partition_rows=)``: the rows change speed, never results."""
 
+import logging
 import warnings
 
 import numpy as np
 import pytest
+
+import paulistrings
 
 from paulistrings import PauliSum, hashes, numa_nodes
 
@@ -105,10 +108,22 @@ def test_partition_rows_that_fall_short_warn():
     start = _start()
     with pytest.warns(RuntimeWarning, match="only 1 of the 2 partitions"):
         start.propagate(_fanout_circuit(N), partitions=2, partition_rows=np.zeros((1, 2 * N), dtype=bool))
-    with pytest.warns(RuntimeWarning, match="overlap the span of the bucket hash"):
-        start.propagate(_fanout_circuit(N), partitions=2, partition_rows=start.hash_rows()[:1])
     with pytest.warns(RuntimeWarning, match="only 1 of the 2 partitions"):
         start.propagate(_fanout_circuit(N), partitions=2, partition_row_exclude={"x": list(range(N)), "z": list(range(N))})
+
+
+@needs_two_domains
+def test_partition_rows_in_the_bucket_span_are_logged_once_the_run_reaches_them(caplog):
+    start = _start()
+    circuit = _fanout_circuit(N)
+    with caplog.at_level(logging.WARNING, logger="paulistrings"):
+        paulistrings.reset_log_cache()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            got = start.propagate(circuit, partitions=2, partition_rows=start.hash_rows()[:1])
+    paulistrings.reset_log_cache()
+    assert [r for r in caplog.records if "overlap the span of the bucket hash" in r.getMessage()]
+    _assert_terms_close(got, start.propagate(circuit), tol=1e-10)
 
 
 @pytest.mark.parametrize("kwargs, message", [

@@ -46,7 +46,7 @@ impl PauliSumImpl {
         for_each_width!(self, |s| s.len())
     }
 
-    /// Current bucket count, `1 << hash().bits()`. Reflects whatever a prior `propagate` call left resident (`rebucket` is grow-only), not a request.
+    /// Current bucket count, `1 << hash().bits()`. Reflects whatever a prior `propagate` call left resident, not a request.
     pub fn num_buckets(&self) -> usize {
         for_each_width!(self, |s| s.num_buckets())
     }
@@ -1927,7 +1927,7 @@ impl PauliSum {
     }
 
     /// Current bucket count the sum's storage is partitioned into.
-    /// Realized, not requested: reflects the running max of `desired_bits` over every `propagate`/`rebucket` call so far (grow-only), so it can differ from a `min_buckets`/`target_bucket_len` request passed to `propagate`.
+    /// Realized, not requested: reflects where the last `propagate` left it, which refines past `target_bucket_len` terms per bucket and coarsens only below an eighth of it, so it can differ from a `min_buckets`/`target_bucket_len` request passed to `propagate`.
     #[getter]
     fn num_buckets(&self) -> usize {
         self.inner.num_buckets()
@@ -2155,7 +2155,7 @@ impl PauliSum {
     /// Propagate `self` through `circuit`.
     ///
     /// `direction` is `"forward"` (default) or `"heisenberg"`. `policy` is an optional `Truncation`; `None` applies no per-term filtering beyond the engine's own exact-zero drop.
-    /// `target_bucket_len` (at least 1) and `min_buckets` (at least 16) are the engine's per-layer bucket-sizing knobs, raising `ValueError` below those bounds. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since `rebucket` only ever grows a sum's partition.
+    /// `target_bucket_len` (at least 1) and `min_buckets` (at least 16) are the engine's per-layer bucket-sizing knobs, raising `ValueError` below those bounds. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since the count moves only outside a gap of 8× around the target.
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.

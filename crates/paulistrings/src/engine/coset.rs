@@ -5,7 +5,12 @@
 //! The span rather than `h(D)` itself, since a custom channel's delta set need not be XOR-closed.
 //! Where several deltas share a bucket delta the gather walks them all, so correctness never depends on the draw of the hash rows.
 
+use rayon::prelude::*;
+
 use crate::pauli_sum::hash::INDEX_BITS;
+
+/// Positions from which [`CosetOrder::rebuild`] tabulates on the Rayon pool: the serial table costs tens of ns per position, a fork-join tens of µs.
+pub(crate) const PARALLEL_REBUILD_MIN_POSITIONS: usize = 4096;
 
 /// Highest set bit of a nonzero word.
 fn highest_bit(v: u32) -> u32 {
@@ -13,8 +18,27 @@ fn highest_bit(v: u32) -> u32 {
     31 - v.leading_zeros()
 }
 
-/// Software `pext`, since BMI2 is not assumed and this runs off any inner loop.
+/// `pext`: the bits of `value` under `mask`, packed into the low bits.
 fn pext(value: u32, mask: u32) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if bmi2::is_available() {
+        // SAFETY: the CPU reports BMI2.
+        return unsafe { bmi2::pext(value, mask) };
+    }
+    pext_software(value, mask)
+}
+
+/// `pdep`, the inverse of [`pext`] on `mask`: the low bits of `value` scattered into the set bits of `mask`.
+fn pdep(value: u32, mask: u32) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if bmi2::is_available() {
+        // SAFETY: the CPU reports BMI2.
+        return unsafe { bmi2::pdep(value, mask) };
+    }
+    pdep_software(value, mask)
+}
+
+fn pext_software(value: u32, mask: u32) -> u32 {
     let mut out = 0u32;
     let mut out_bit = 0u32;
     let mut remaining = mask;
@@ -27,6 +51,42 @@ fn pext(value: u32, mask: u32) -> u32 {
         remaining ^= bit;
     }
     out
+}
+
+fn pdep_software(value: u32, mask: u32) -> u32 {
+    let mut out = 0u32;
+    let mut in_bit = 0u32;
+    let mut remaining = mask;
+    while remaining != 0 {
+        let bit = remaining & remaining.wrapping_neg();
+        if value & (1 << in_bit) != 0 {
+            out |= bit;
+        }
+        in_bit += 1;
+        remaining ^= bit;
+    }
+    out
+}
+
+/// Hardware `pext`/`pdep`, chosen at run time since the build does not assume BMI2.
+#[cfg(target_arch = "x86_64")]
+mod bmi2 {
+    use std::arch::x86_64::{_pdep_u32, _pext_u32};
+
+    /// Whether the CPU reports BMI2; Zen 1 and Zen 2 microcode it slower than the software loop, which this accepts since the callers are per bucket, not per term.
+    pub(super) fn is_available() -> bool {
+        std::is_x86_feature_detected!("bmi2")
+    }
+
+    #[target_feature(enable = "bmi2")]
+    pub(super) fn pext(value: u32, mask: u32) -> u32 {
+        _pext_u32(value, mask)
+    }
+
+    #[target_feature(enable = "bmi2")]
+    pub(super) fn pdep(value: u32, mask: u32) -> u32 {
+        _pdep_u32(value, mask)
+    }
 }
 
 /// The span of a channel's bucket deltas, which need not be XOR-closed, and the map between a bucket index and its `(coset, member)` coordinates.
@@ -136,6 +196,30 @@ impl Gf2Span {
         pext(representative, self.nonpivot_mask)
     }
 
+    /// The representative of coset `coset`, the `coset`-th smallest, so its members are positions `coset << r ..` of [`Self::permuted_index`].
+    pub(crate) fn representative_at(&self, coset: u32) -> u32 {
+        debug_assert!(
+            (coset as usize) < self.num_cosets(),
+            "Gf2Span::representative_at: coset {coset} out of range"
+        );
+        pdep(coset, self.nonpivot_mask)
+    }
+
+    /// Member `i` of the coset with representative `rep`; bit `j` of `i` selects `basis[j]`.
+    pub(crate) fn member(&self, rep: u32, i: u32) -> u32 {
+        debug_assert!(
+            (i as usize) < self.coset_size(),
+            "Gf2Span::member: index {i} beyond coset size"
+        );
+        let mut v = rep;
+        for (j, &b) in self.basis.iter().enumerate() {
+            if (i >> j) & 1 == 1 {
+                v ^= b;
+            }
+        }
+        v
+    }
+
     /// `beta` renumbered so coset `c` owns `c << r .. (c + 1) << r`, with the member coordinate in the low `r` bits.
     pub(crate) fn permuted_index(&self, beta: u32) -> u32 {
         let representative = self.representative_of(beta);
@@ -157,6 +241,25 @@ pub(crate) struct CosetOrder {
     dimension: u32,
 }
 
+/// Refill `table` with `f(0..len)`, on the Rayon pool when `parallel`.
+fn tabulate(
+    table: &mut Vec<u32>,
+    len: usize,
+    parallel: bool,
+    f: impl Fn(u32) -> u32 + Sync + Send,
+) {
+    if parallel {
+        (0..len)
+            .into_par_iter()
+            .with_min_len(PARALLEL_REBUILD_MIN_POSITIONS / 8)
+            .map(|index| f(index as u32))
+            .collect_into_vec(table);
+    } else {
+        table.clear();
+        table.extend((0..len).map(|index| f(index as u32)));
+    }
+}
+
 impl CosetOrder {
     /// Re-aim the order at `span`, keeping the allocations; the inverse is built only when `with_inverse`.
     pub(crate) fn rebuild(&mut self, span: &Gf2Span, with_inverse: bool) {
@@ -167,18 +270,16 @@ impl CosetOrder {
         if self.dimension == 0 {
             return;
         }
-        self.permutation.extend((0..self.positions).map(|beta| span.permuted_index(beta as u32)));
+        let parallel = self.positions >= PARALLEL_REBUILD_MIN_POSITIONS;
+        tabulate(&mut self.permutation, self.positions, parallel, |beta| span.permuted_index(beta));
         if with_inverse {
-            self.inverse.resize(self.permutation.len(), 0);
-            for (beta, &position) in self.permutation.iter().enumerate() {
-                self.inverse[position as usize] = beta as u32;
-            }
+            // Read off the span rather than scattered from `permutation`, so the table fills in parallel.
+            let r = self.dimension;
+            let member_mask = (1u32 << r) - 1;
+            tabulate(&mut self.inverse, self.positions, parallel, |position| {
+                span.member(span.representative_at(position >> r), position & member_mask)
+            });
         }
-    }
-
-    /// Whether every bucket is its own position (`r = 0`).
-    pub(crate) fn is_identity(&self) -> bool {
-        self.dimension == 0
     }
 
     /// Bucket `beta`'s position.

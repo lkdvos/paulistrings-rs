@@ -116,19 +116,59 @@ fn coset_dimension_is_the_delta_span_rank_capped_by_the_bucket_bits() {
     assert_eq!((s1.coset_size(), s1.num_cosets()), (8, 16));
 }
 
-impl Gf2Span {
-    /// Member `i` of the coset with representative `rep`; bit `j` of `i` selects `basis[j]`.
-    pub(crate) fn member(&self, rep: u32, i: u32) -> u32 {
-        debug_assert!(
-            (i as usize) < self.coset_size(),
-            "Gf2Span::member: index {i} beyond coset size"
-        );
-        let mut v = rep;
-        for (j, &b) in self.basis.iter().enumerate() {
-            if (i >> j) & 1 == 1 {
-                v ^= b;
+#[test]
+fn rebuild_tabulates_permuted_index_and_its_inverse_on_both_paths() {
+    let parallel_bits = PARALLEL_REBUILD_MIN_POSITIONS.trailing_zeros() as u8 + 1;
+    for bits in [4u8, parallel_bits] {
+        let span = Gf2Span::new(&[0b1001, 0b0110, 0b0011], bits);
+        let mut order = CosetOrder::default();
+        order.rebuild(&span, true);
+        assert_eq!(order.positions(), 1usize << bits);
+        for beta in 0..1u32 << bits {
+            assert_eq!(order.position_of(beta), span.permuted_index(beta), "bits {bits}");
+            assert_eq!(order.bucket_at(order.position_of(beta)), beta, "bits {bits}");
+        }
+    }
+}
+
+#[test]
+fn representative_at_and_member_invert_permuted_index() {
+    for bits in [0u8, 1, 5, 9] {
+        let deltas: Vec<u32> =
+            [0b1001u32, 0b0110, 0b0011].iter().map(|d| d & ((1u32 << bits) - 1)).collect();
+        let span = Gf2Span::new(&deltas, bits);
+        let r = span.dimension();
+        for coset in 0..span.num_cosets() as u32 {
+            let rep = span.representative_at(coset);
+            assert_eq!(span.representative_of(rep), rep, "bits {bits}: coset {coset}");
+            for i in 0..span.coset_size() as u32 {
+                assert_eq!(span.permuted_index(span.member(rep, i)), coset << r | i, "bits {bits}");
             }
         }
-        v
+    }
+}
+
+#[test]
+fn pext_packs_and_pdep_scatters_the_mask_bits() {
+    assert_eq!(pext(0b1011_0110, 0b1111_0000), 0b1011);
+    assert_eq!(pdep(0b101, 0b1101_0000), 0b1001_0000);
+    assert_eq!(pext(u32::MAX, 0), 0);
+    assert_eq!(pdep(u32::MAX, 0), 0);
+}
+
+proptest! {
+    #[test]
+    fn pext_and_pdep_agree_with_the_software_loops_and_invert_each_other(value: u32, mask: u32) {
+        prop_assert_eq!(pext(value, mask), pext_software(value, mask));
+        prop_assert_eq!(pdep(value, mask), pdep_software(value, mask));
+        prop_assert_eq!(pdep(pext(value, mask), mask), value & mask);
+        #[cfg(target_arch = "x86_64")]
+        if std::is_x86_feature_detected!("bmi2") {
+            // SAFETY: the CPU reports BMI2.
+            let (hardware_pext, hardware_pdep) =
+                unsafe { (bmi2::pext(value, mask), bmi2::pdep(value, mask)) };
+            prop_assert_eq!(hardware_pext, pext_software(value, mask));
+            prop_assert_eq!(hardware_pdep, pdep_software(value, mask));
+        }
     }
 }

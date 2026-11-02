@@ -181,6 +181,51 @@ Every parser uses the core's Hermitian convention, `Y ↔ (x=1, z=1)` with no ph
 Consecutive xorshift64 rows satisfy `rows_z = M·rows_x`, so 64 weight-~6 deltas hashed to 0 under every seed.
 Rows are splitmix64 of `(seed, row, word, x-or-z)` for `Gf2Hash` and `PartitionRows`: on a sum closed under those deltas, **371 empty buckets and max 6144 → none empty, max 1084**; probe layers unchanged.
 
+### Intra-node strong scaling is the socket's copy bandwidth
+
+Genoa (job 7392301, `HARDWARE.md § genoa — thread scaling`): one NUMA domain scales at 0.84–0.93 efficiency to 32 threads and saturates at 40–48, where a layer moves 180–207 GB/s against a 233–243 GB/s copy ceiling (84–89%).
+Through 32 threads the coset loop stays 0.96–0.98 busy, the serial share is at most 2.2%, and busy ns/term rises only 8.2 → 9.4 (gather); the rise to 15.9 at 48 (one run) is queueing at that ceiling.
+Spreading threads over the CCDs triples membench's read ceiling at 8–16 threads but leaves the layer time unchanged (27.1 vs 27.5 ms at 16), so neither the shared L3 nor the per-CCD link is the limit.
+Past one socket a single pool gains to 64 threads and loses at 96, as membench does; interleaving pages changes nothing, and two partitions with cut rows are the answer there.
+A lever must cut bytes per term per layer, e.g. fusing commuting layers into one pass or real coefficients for Hermitian observables.
+
+### Coset loop enumerates each coset's buckets from the span
+
+The serial handle passes into coset order and back cost 45–70 ns per bucket on the calling thread.
+Each task now swaps its `2^r` members in place (`Gf2Span::representative_at`, `member`): `heavyhex_step` at 1.8e6 terms/layer **−21.9% at 48 threads, −37.8% at 96 (5/5)**, coset loop −13% / −26% (5/5); `rotation_zz` at 3e7 terms no consistent change at 16, 48 or 96 threads (job 7392302).
+
+### Rebucketing coarsens below an eighth of the target
+
+A coefficient-truncated sum that peaks about 10× above its late size kept its peak bucket count, down to ~11 terms per bucket; `rebucketed_bits` now coarsens once buckets average below `target / 8`.
+`heavyhex_step`, 12 steps at `coeff:1e-5` (peak 3.57e7 terms), genoa: **one pool at 48 threads −65.6%, two partitions at 96 threads −58.4% (5/5 each)**; sort −87% / −83%, gather −60% / −55%, merge −38% / −27%, and at P=2 export −55% (jobs 7393225–6).
+Peak RSS rises 33.2 → 35.8 GB at 48 threads and 49.9 → 52.3 GB at P=2, unattributed.
+
+### Clifford frame of the kicked-Ising step
+
+With `J·dt = π/4` every `ZZ` gate is Clifford, so `C` (the `ZZ` layer) moves onto the `Z`-basis initial state and step `k` keeps only `rx` about `C^k X_q C^-k`: 127 instead of 271 channels per heavy-hex step, the series and term counts identical.
+Wall **1.9–2.1×** at every rank count under x-parity rows (genoa, 2 to 32 ranks, jobs 7392303–5), and 2.0× at P=1 on ccqlin038.
+A `ZZ` gate costs as much as an `rx` (busy time: gather 67%, merge 28%, sort 3%), because every gate streams the whole sum however few rows it changes (6.6% anticommute on average); only removing passes moves the step, so a CPU permutation path for Clifford tables, which can drop the sort and the duplicate check, was not built.
+Not adopted in paulistrings-sim; issue #47 tracks it and the hash-function variant.
+Under z-only cut rows the frame's generators `X_q Z_N(q)` leave 45.5 of 127 rotations remote per step at 32 ranks, against 67 of 271 gates in the lab frame.
+
+### Row choice on heavy-hex: x-parity rows beat the z-only cut
+
+`phase_breakdown --mpi`, `heavyhex_step`, 12 steps at `coeff:1e-5`, genoa, one rank per socket, 48 threads per rank; x-parity rows are `log2(P)` x-only rows, each the parity of `k` qubits nearest the observable's site in breadth-first order; imbalance is the time-weighted max/mean of terms per rank, from every rank's `terms_by_layer`:
+
+| rows | 2 ranks | 8 ranks | 32 ranks | 2 → 32 |
+|---|---|---|---|---|
+| z-only `cut` | 46.5 s, 4 remote/step, 1.00 | 34.9 s, 25, 2.00 | 16.1 s, 67, 1.77 | **2.9×** |
+| x-parity, `k = 2` | 46.0 s, 2, 1.11 | 27.5 s, 6, 1.29 | **4.8 s**, 10, 1.14 | **9.6×** |
+| x-parity, `k = 4` | 47.6 s, 4, 1.05 | 17.2 s, 12, 1.02 | 5.3 s, 20, 1.06 | 9.0× |
+
+At 32 ranks x-parity rows are **3.4× faster** than the cut, against the 1.3–1.5× a serial cost model predicted, which priced an export at 0.2 of a layer where it measures 1.3 and left out the per-remote-layer synchronization.
+Per layer at 32 ranks, cut against `k = 2`: compute 2.19 against 0.99 ms, export 0.72 against 0.03, transfer and chunk waits 0.32 against 0.03, waiting in the bucket-count collective 1.73 against 0.42 (the slowest rank's compute is 0.94 and 0.39 ms above the mean).
+Bandwidth is not the limit: the cut moves 0.72 GB per rank in 16 s.
+The z-only cut's imbalance is a conserved quantity: kicked Ising keeps the register's total z-parity, so once the strings occupy few blocks one row combination is nearly constant and half the partitions starve.
+Which `k` balances best depends on `P` (`k = 4` at 8 ranks, `k = 2` at 32); rows reading x-bits only suit circuits whose entanglers are `Z`-type, so they are a recommendation for such circuits, not a default.
+Measured with phase timers on, which cost 1.6–4.4% of wall here.
+The explicit-row API lands with PR #45.
+
 ## GPU spike
 
 Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.
@@ -278,6 +323,9 @@ At ~1e5 terms per rank remote layers are latency-bound and export runs 10× slow
 ### A post-hoc memory trim
 
 `shrink_to_fit` once `m` stabilizes is untried; a returned sum keeps its peak bucket capacity (holding one PP-MC result doubled the next run's peak, 34 → 67 GB).
+The bucket count was grow-only too: a sum that peaks 10× above its late size kept 262,144 buckets for 3e6 terms per rank, ~11 terms per bucket, where per-coset fixed costs (~0.12 ns/term at 1024 terms per bucket) approach the per-term work.
+In the 2-rank cells of §Row choice on heavy-hex: x-parity rows beat the z-only cut (jobs 7392303–5, before §Coset loop enumerates each coset's buckets from the span) the serial permute and unpermute at that count took 9 ms of a 14 ms layer.
+`rebucketed_bits` now coarsens once buckets average below an eighth of the target, agreed by the same all-reduce as refining (§Rebucketing coarsens below an eighth of the target).
 
 ### Partitioned memory overhead
 

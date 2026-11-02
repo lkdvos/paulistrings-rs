@@ -195,15 +195,15 @@ fn rebucket_grows_toward_the_target() {
 }
 
 #[test]
-fn rebucket_never_shrinks() {
-    // rebucket only ever grows: 200 terms at target 256 wants far fewer than 1024 buckets, but starting at 1024 must stay at 1024.
+fn rebucket_coarsens_once_buckets_average_below_an_eighth_of_the_target() {
+    // 200 terms in 1024 buckets average 0.2, far below 256 / 8, so the count falls to the single bucket 200 terms want.
     let sum = rand_sum::<1>(200, 64, 0xD2);
     let h = Gf2Hash::<1>::new(64, 10, 0xC0DE);
     let mut b = sum.clone().with_hash(h);
     assert_eq!(b.num_buckets(), 1024);
     b.rebucket(256, 1);
     b.assert_invariants();
-    assert_eq!(b.num_buckets(), 1024, "rebucket shrank from 1024 to {} buckets", b.num_buckets(),);
+    assert_eq!(b.num_buckets(), 1);
     assert_same_sum(&sum, &b);
 }
 
@@ -218,47 +218,56 @@ fn rebucket_is_a_no_op_when_already_at_the_target() {
     assert_eq!(b.num_buckets(), before, "rebucket moved when already on target");
 }
 
-#[test]
-fn rebucket_lands_on_desired_bits_or_stays_at_the_high_water_mark() {
-    // Grow-only: the result is `desired_bits.max(start)`.
-    for &n in &[500usize, 6400, 20_000] {
-        let sum = rand_sum::<2>(n, 128, 0xD9 + n as u64);
-        let want = desired_bits(sum.len(), 256, 8);
-        for start in [0u8, 3, 12] {
-            let h = Gf2Hash::<2>::new(128, start, 0xC0DE);
-            let mut b = sum.clone().with_hash(h);
-            b.rebucket(256, 8);
-            assert_eq!(
-                b.hash().bits(),
-                want.max(start),
-                "n={n} start={start}: expected max(want={want}, start={start})",
-            );
-            b.assert_invariants();
-        }
+fn rebucket_refines_above_the_target_coarsens_below_an_eighth_and_holds_between<const W: usize>() {
+    // 20000 terms at target 256 want 7 bits (256 << 6 < 20000 <= 256 << 7); 9 bits average 39 >= 32 and hold, 10 bits average 19.5 < 32 and coarsen.
+    let sum = rand_sum::<W>(20_000, 64 * W, 0xD9);
+    assert_eq!(sum.len(), 20_000);
+    for (start, expected) in [(0u8, 7u8), (7, 7), (9, 9), (10, 7)] {
+        let h = Gf2Hash::<W>::new(64 * W, start, 0xC0DE);
+        let mut b = sum.clone().with_hash(h);
+        b.rebucket(256, 8);
+        assert_eq!(b.hash().bits(), expected, "start {start}");
+        b.assert_invariants();
+        assert_same_sum(&sum, &b);
     }
 }
 
 #[test]
-fn rebucket_keeps_the_high_water_mark_after_len_shrinks() {
-    // The bucket count is a high-water mark and must not follow the length back down.
+fn rebucket_refines_above_the_target_coarsens_below_an_eighth_and_holds_between_w1() {
+    rebucket_refines_above_the_target_coarsens_below_an_eighth_and_holds_between::<1>();
+}
+
+#[test]
+fn rebucket_refines_above_the_target_coarsens_below_an_eighth_and_holds_between_w2() {
+    rebucket_refines_above_the_target_coarsens_below_an_eighth_and_holds_between::<2>();
+}
+
+#[test]
+fn rebucketed_bits_moves_only_outside_the_gap() {
+    // At target 1024 and 128 buckets, 3e6 terms want 12 bits (1024 << 11 < 3e6 <= 1024 << 12).
+    assert_eq!(rebucketed_bits(3_000_000, 18, 1024, 128), 12, "average 11.4 coarsens");
+    assert_eq!(rebucketed_bits(3_000_000, 15, 1024, 128), 12, "average 91.6 < 128 coarsens");
+    assert_eq!(rebucketed_bits(3_000_000, 14, 1024, 128), 14, "average 183 >= 128 holds");
+    assert_eq!(rebucketed_bits(3_000_000, 12, 1024, 128), 12, "on target");
+    assert_eq!(rebucketed_bits(5_000_000, 12, 1024, 128), 13, "average 1221 > 1024 refines");
+    assert_eq!(rebucketed_bits(0, 5, 1024, 128), 0, "an empty sum coarsens to one bucket");
+}
+
+#[test]
+fn rebucket_follows_the_length_back_down_after_it_shrinks() {
     let sum = rand_sum::<2>(20_000, 128, 0xDA1);
     let h = Gf2Hash::<2>::new(128, 0, 0xC0DE);
     let mut b = sum.with_hash(h);
     b.rebucket(256, 8);
-    let grown_bits = b.hash().bits();
-    assert!(grown_bits > 0, "sanity: rebucket should have grown from 0 bits");
+    assert_eq!(b.hash().bits(), 7, "20000 terms at target 256 want 7 bits");
 
     b.retain(|_, _, c| c.re > 0.995);
     b.assert_invariants();
-    assert!(b.len() < 512, "sanity: shrink did not reduce len enough ({})", b.len(),);
+    assert!(b.len() < 512, "sanity: shrink did not reduce len enough ({})", b.len());
 
+    // Below 512 = 8 · 64 terms the floor does not apply, and at most 512 terms fit 2 buckets of 256.
     b.rebucket(256, 8);
-    assert_eq!(
-        b.hash().bits(),
-        grown_bits,
-        "rebucket shrank the high-water mark from {grown_bits} to {}",
-        b.hash().bits(),
-    );
+    assert!(b.hash().bits() <= 1, "{} terms kept {} bits", b.len(), b.hash().bits());
     b.assert_invariants();
 }
 
@@ -1135,4 +1144,26 @@ impl<const W: usize> PauliSum<W> {
         let hash = Gf2Hash::new(num_qubits, 0, DEFAULT_HASH_SEED);
         Self { buckets: vec![BucketColumns { x, z, coeff }], hash, num_qubits, len: n }
     }
+}
+
+fn clone_keeps_every_bucket_and_the_hash<const W: usize>(n: usize) {
+    let sum = rand_sum::<W>(n, 64 * W, 0xC10E);
+    let copy = sum.clone();
+    copy.assert_invariants();
+    assert_eq!(copy.num_buckets(), sum.num_buckets());
+    assert_eq!(copy.hash().bits(), sum.hash().bits());
+    assert_eq!(copy.hash().seed(), sum.hash().seed());
+    assert_eq!(canonical_triples(&copy), canonical_triples(&sum));
+}
+
+#[test]
+fn clone_keeps_every_bucket_and_the_hash_serial_and_parallel_w1() {
+    clone_keeps_every_bucket_and_the_hash::<1>(100);
+    clone_keeps_every_bucket_and_the_hash::<1>(PARALLEL_MIN_TERMS + 1);
+}
+
+#[test]
+fn clone_keeps_every_bucket_and_the_hash_serial_and_parallel_w2() {
+    clone_keeps_every_bucket_and_the_hash::<2>(100);
+    clone_keeps_every_bucket_and_the_hash::<2>(PARALLEL_MIN_TERMS + 1);
 }

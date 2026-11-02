@@ -28,6 +28,21 @@ pub fn desired_bits(len: usize, target: usize, min_buckets: usize) -> u8 {
     b
 }
 
+/// Bucket bits a sum at `bits` moves to before a layer: [`desired_bits`] once buckets average above `target` or below `target / COARSEN_BELOW`, otherwise `bits`.
+// After a move buckets average `(target / 2, target]`, so a refine and a coarsen are at least a 4× change in length apart.
+pub fn rebucketed_bits(len: usize, bits: u8, target: usize, min_buckets: usize) -> u8 {
+    let want = desired_bits(len, target, min_buckets);
+    let sparse = len.saturating_mul(COARSEN_BELOW) < target.saturating_mul(1usize << bits);
+    if want > bits || sparse {
+        want
+    } else {
+        bits
+    }
+}
+
+/// How far below `target` the mean bucket length falls before [`rebucketed_bits`] coarsens.
+pub const COARSEN_BELOW: usize = 8;
+
 /// Minimum terms per bucket for the parallelism floor to apply.
 // Not lower without checking a dense and a sparse PTM layer: the bucket count also caps the coset dimension a dense layer's sort needs (research/FINDINGS.md §The dense-PTM bucket cliff is a delta-span rank effect).
 pub(crate) const MIN_TERMS_PER_TASK: usize = 64;
@@ -205,12 +220,24 @@ pub(super) fn keys_are_disjoint(_: Complex64, _: Complex64) -> Option<Complex64>
 ///
 /// Terms come in canonical order: bucket index ascending, then lexicographic `(x, z)` within a bucket, with no repeated key.
 /// A sum of at most 1024 terms built by [`crate::BuildAccumulator`] has one bucket and so is plain lex-sorted; a larger one interleaves buckets, so compare sums by key ([`Self::get`]), not by position.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct PauliSum<const W: usize> {
     pub(super) buckets: Vec<BucketColumns<W>>,
     pub(super) hash: Gf2Hash<W>,
     pub(super) num_qubits: usize,
     pub(super) len: usize,
+}
+
+/// Bucket by bucket on the Rayon pool, so the copy's pages are first-touched by the workers that will stream them rather than all on the caller's NUMA node.
+impl<const W: usize> Clone for PauliSum<W> {
+    fn clone(&self) -> Self {
+        Self {
+            buckets: map_buckets(self.len, &self.buckets, BucketColumns::clone),
+            hash: self.hash.clone(),
+            num_qubits: self.num_qubits,
+            len: self.len,
+        }
+    }
 }
 
 impl<const W: usize> PauliSum<W> {
@@ -382,15 +409,15 @@ impl<const W: usize> PauliSum<W> {
         });
     }
 
-    /// Refine until the bucket count suits `len()` terms at `target` per bucket, with the `min_buckets` floor once the sum is large enough; never coarsens.
+    /// Move to [`rebucketed_bits`]: refine or coarsen until the count suits `len()` terms at `target` per bucket, with the `min_buckets` floor once the sum is large enough.
     pub(crate) fn rebucket(&mut self, target: usize, min_buckets: usize) {
         debug_assert!(target > 0);
-        let want = desired_bits(self.len, target, min_buckets)
-            .max(self.hash.bits())
+        let want = rebucketed_bits(self.len, self.hash.bits(), target, min_buckets)
             .min(self.hash.max_bits());
         while self.hash.bits() < want {
             self.refine();
         }
+        self.coarsen_to(want.min(self.hash.bits()));
     }
 
     /// The buckets' columns, for read-outs that scan them.
@@ -405,7 +432,13 @@ impl<const W: usize> PauliSum<W> {
 
     /// Recompute the cached total after an in-place layer.
     pub(crate) fn recount(&mut self) {
-        self.len = self.buckets.iter().map(|c| c.len()).sum();
+        self.len = self.buckets.iter().map(BucketColumns::len).sum();
+    }
+
+    /// Set the cached total to `len`, which an in-place layer counted while it wrote the buckets.
+    pub(crate) fn set_len_after_layer(&mut self, len: usize) {
+        debug_assert_eq!(len, self.buckets.iter().map(BucketColumns::len).sum::<usize>());
+        self.len = len;
     }
 
     /// Iterate every term in canonical order, which is not globally key-sorted.

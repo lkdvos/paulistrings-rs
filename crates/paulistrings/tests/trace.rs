@@ -294,7 +294,7 @@ mod one_partition {
 
 /// The record of a partitioned run.
 mod partitioned {
-    use paulistrings::test_support::desired_bits;
+    use paulistrings::test_support::rebucketed_bits;
     use paulistrings::test_support::{
         low_weight_sum, partition_rows, rand_sum, unpinned_partitions, unpinned_scatter, KeepAll,
     };
@@ -463,10 +463,10 @@ mod partitioned {
     }
 
     /// The bucket count is collective: equal on every partition (asserted by the
-    /// trace's own assembly), never falling, and always the maximum over
-    /// partitions of what each share wants.
+    /// trace's own assembly), and always the maximum over partitions of what
+    /// each share proposes from the current count.
     #[test]
-    fn bits_are_uniform_and_grow_only() {
+    fn bits_are_uniform_and_follow_the_largest_proposal() {
         let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
         // Lopsided on purpose: weight-2 keys over 16 qubits rarely carry `X` on
         // qubit 0, so partition 0 holds the bulk and the `max` is what decides.
@@ -495,19 +495,22 @@ mod partitioned {
             let want = layer
                 .terms_in
                 .iter()
-                .map(|&len| desired_bits(len, options.target_bucket_len, options.min_buckets))
+                .map(|&len| {
+                    rebucketed_bits(len, prev, options.target_bucket_len, options.min_buckets)
+                })
                 .max()
-                .expect("at least one partition")
-                .max(prev);
+                .expect("at least one partition");
             assert_eq!(
                 layer.bits, want,
                 "layer {k}: bits {} but the group wanted {want} from {:?}",
                 layer.bits, layer.terms_in,
             );
-            assert!(layer.bits >= prev, "layer {k}: bits fell from {prev}");
             // A host partition refines one doubling per pass.
             assert!(
-                layer.refine_passes.iter().all(|&passes| passes == u32::from(layer.bits - prev)),
+                layer
+                    .refine_passes
+                    .iter()
+                    .all(|&passes| passes == u32::from(layer.bits.saturating_sub(prev))),
                 "layer {k}: {:?} refine passes from {prev} to {} bits",
                 layer.refine_passes,
                 layer.bits

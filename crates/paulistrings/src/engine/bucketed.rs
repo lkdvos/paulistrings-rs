@@ -32,10 +32,8 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 pub struct LayerScratch<const W: usize> {
     /// The serial path's coset working set.
     pub(super) task: CosetScratch<W>,
-    /// The layer's coset order, with its inverse only under [`ExtraRows::NEEDS_BETA`]; a partitioned layer builds it before the export and passes it back in [`LayerKnobs::order`].
+    /// The partitioned layer's coset order, kept here for its allocations; the coset loop itself enumerates cosets from the span.
     pub(super) order: CosetOrder,
-    /// Bucket handles in coset-contiguous order while a layer runs.
-    pub(super) staging: Vec<BucketColumns<W>>,
     /// One coset working set per Rayon worker, indexed by `rayon::current_thread_index()`, so each mutex is uncontended.
     pub(super) workers: Vec<Mutex<CosetScratch<W>>>,
     /// Layer-level wall-clock counters; per-coset busy time lives in each `CosetScratch`.
@@ -120,7 +118,7 @@ pub(crate) struct LayerKnobs<'k> {
     pub rows_per_key: Option<f64>,
     /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
     pub generator_local: bool,
-    /// The layer's coset order, already built `with_inverse` over the span of `bucket_deltas`; built here when `None`.
+    /// The coset order a partitioned layer exported and chunks by, whose coset `c` must be the loop's coset `c` ([`Gf2Span::representative_at`]); checked in debug builds.
     pub order: Option<&'k CosetOrder>,
 }
 
@@ -234,80 +232,105 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     };
     let span = Gf2Span::new(deltas, sum.hash().bits());
     let plan = DeltaPlan::new(prepared, &span, knobs);
-    let coset_size = span.coset_size();
     let num_cosets = span.num_cosets();
     lap!(stamp, scratch.stats.span_plan_ns);
 
-    // Coset `c` owns `staging[c·2^r .. (c+1)·2^r]`; at `r = 0` the order is the identity and the handle passes are skipped.
-    let order: &CosetOrder = match knobs.order {
-        Some(order) => order,
-        None => {
-            scratch.order.rebuild(&span, X::NEEDS_BETA);
-            &scratch.order
-        }
-    };
-    debug_assert_eq!(order.positions(), sum.num_buckets());
-    debug_assert_eq!(order.dimension(), span.dimension());
-    let identity_order = order.is_identity();
-    if !identity_order {
-        let buckets = sum.buckets_mut();
-        scratch.staging.resize_with(buckets.len(), BucketColumns::default);
-        for (beta, columns) in buckets.iter_mut().enumerate() {
-            scratch.staging[order.position_of(beta as u32) as usize] = std::mem::take(columns);
-        }
-    }
-    lap!(stamp, scratch.stats.permute_ns);
+    debug_assert!(knobs.order.is_none_or(|order| order.dimension() == span.dimension()));
 
-    // Each coset reads and writes only its own chunk (engine/coset.rs); research/FINDINGS.md §Static coset→worker placement.
-    {
-        if num_cosets >= MIN_COSETS_FOR_PARALLEL {
-            let pool = rayon::current_num_threads().max(1);
-            if scratch.workers.len() < pool {
-                scratch.workers.resize_with(pool, Mutex::default);
-            }
+    // Each coset reads and writes only its own buckets (engine/coset.rs).
+    let len = if num_cosets < MIN_COSETS_FOR_PARALLEL {
+        let buckets = DisjointSlots::new(sum.buckets_mut());
+        (0..num_cosets as u32)
+            .map(|coset| run_coset(coset, &span, &buckets, &plan, policy, &mut scratch.task, extra))
+            .sum()
+    } else {
+        let pool = rayon::current_num_threads().max(1);
+        if scratch.workers.len() < pool {
+            scratch.workers.resize_with(pool, Mutex::default);
         }
         let workers = &scratch.workers;
-        let chunks: &mut [BucketColumns<W>] =
-            if identity_order { sum.buckets_mut() } else { scratch.staging.as_mut_slice() };
-        if num_cosets < MIN_COSETS_FOR_PARALLEL {
-            for (coset_index, chunk) in chunks.chunks_mut(coset_size).enumerate() {
-                let base = coset_index * coset_size;
-                fill_coset::<W, T, X>(chunk, &plan, policy, &mut scratch.task, extra, base, order);
-            }
-        } else {
-            chunks.par_chunks_mut(coset_size).enumerate().for_each(|(coset_index, chunk)| {
-                let base = coset_index * coset_size;
+        let buckets = DisjointSlots::new(sum.buckets_mut());
+        (0..num_cosets as u32)
+            .into_par_iter()
+            .map(|coset| {
                 // `workers` was sized to `current_num_threads()` above, and this closure runs on that pool.
                 let worker = rayon::current_thread_index()
                     .expect("the coset loop runs on a Rayon pool worker");
                 let mut worker_scratch = workers[worker].lock().unwrap();
-                fill_coset::<W, T, X>(
-                    chunk,
-                    &plan,
-                    policy,
-                    &mut worker_scratch,
-                    extra,
-                    base,
-                    order,
-                );
-            });
-        }
-    }
+                run_coset(coset, &span, &buckets, &plan, policy, &mut worker_scratch, extra)
+            })
+            .sum()
+    };
     lap!(stamp, scratch.stats.coset_loop_ns);
-
-    if !identity_order {
-        let buckets = sum.buckets_mut();
-        for (beta, columns) in buckets.iter_mut().enumerate() {
-            *columns =
-                std::mem::take(&mut scratch.staging[order.position_of(beta as u32) as usize]);
-        }
-    }
-    lap!(stamp, scratch.stats.unpermute_ns);
-    sum.recount();
+    sum.set_len_after_layer(len);
     lap!(stamp, scratch.stats.recount_ns);
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
+}
+
+/// Swap coset `coset`'s buckets into the task's member slots, fill them, and swap the outputs back; returns the coset's output terms.
+fn run_coset<const W: usize, T, X>(
+    coset: u32,
+    span: &Gf2Span,
+    buckets: &DisjointSlots<'_, BucketColumns<W>>,
+    plan: &DeltaPlan<'_, W>,
+    policy: &T,
+    scratch: &mut CosetScratch<W>,
+    extra: &X,
+) -> usize
+where
+    T: TruncationPolicy<W> + ?Sized,
+    X: ExtraRows<W>,
+{
+    let representative = span.representative_at(coset);
+    let mut members = std::mem::take(&mut scratch.members);
+    let mut betas = std::mem::take(&mut scratch.betas);
+    betas.clear();
+    betas.extend((0..span.coset_size() as u32).map(|j| span.member(representative, j)));
+    members.resize_with(betas.len(), BucketColumns::default);
+    for (slot, &beta) in members.iter_mut().zip(&betas) {
+        // SAFETY: the cosets partition the buckets, so no other task reaches bucket `beta`.
+        std::mem::swap(slot, unsafe { buckets.get(beta as usize) });
+    }
+    fill_coset::<W, T, X>(&mut members, plan, policy, scratch, extra, &betas);
+    let mut len = 0;
+    for (slot, &beta) in members.iter_mut().zip(&betas) {
+        len += slot.len();
+        // SAFETY: as above.
+        std::mem::swap(slot, unsafe { buckets.get(beta as usize) });
+    }
+    scratch.members = members;
+    scratch.betas = betas;
+    len
+}
+
+/// A slice shared by tasks that each touch pairwise distinct elements.
+struct DisjointSlots<'a, T> {
+    base: *mut T,
+    len: usize,
+    _slice: std::marker::PhantomData<&'a mut [T]>,
+}
+
+// SAFETY: `get`'s contract keeps every element reached by at most one task at a time, so sharing the wrapper shares no element.
+unsafe impl<T: Send> Sync for DisjointSlots<'_, T> {}
+
+impl<'a, T> DisjointSlots<'a, T> {
+    fn new(slice: &'a mut [T]) -> Self {
+        Self { base: slice.as_mut_ptr(), len: slice.len(), _slice: std::marker::PhantomData }
+    }
+
+    /// Element `index`.
+    ///
+    /// # Safety
+    ///
+    /// No other reference to element `index` may be live while the returned one is.
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get(&self, index: usize) -> &mut T {
+        assert!(index < self.len, "DisjointSlots: index {index} out of {}", self.len);
+        // SAFETY: in bounds, and exclusive by the caller's contract.
+        unsafe { &mut *self.base.add(index) }
+    }
 }
 
 /// In-place coefficient rescale for a key-preserving channel, with the general path's zero drop and `keep_term`.

@@ -4,7 +4,6 @@ use num_complex::Complex64;
 
 use super::{DeltaPlan, ExtraRows, ZERO};
 use crate::channel::prepared::LocalPtm;
-use crate::engine::coset::CosetOrder;
 use crate::engine::merge::{merge_identity_and_rest, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
@@ -24,6 +23,10 @@ pub(in crate::engine) struct CosetScratch<const W: usize> {
     pub(super) runs: Vec<GatherRun<W>>,
     /// The per-run sort's scratch.
     pub(super) sort: SortScratch<W>,
+    /// The coset's bucket handles while it runs, member `j` at index `j`; all empty between cosets.
+    pub(super) members: Vec<BucketColumns<W>>,
+    /// The coset's bucket indices, member `j` at index `j`.
+    pub(super) betas: Vec<u32>,
     /// This slot's busy-time counters.
     #[cfg(feature = "phase-timing")]
     pub(super) stats: CosetStats,
@@ -144,21 +147,21 @@ fn debug_assert_received_rows_joined_the_rest<const W: usize>(
 /// Below this many cosets the layer runs serially.
 pub(in crate::engine) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
-/// Gather, sort and merge one coset's `2^r` bucket columns in place; `chunk_base` and `order` name each member's original bucket for `extra`.
+/// Gather, sort and merge one coset's `2^r` bucket columns in place; `betas[j]` is member `j`'s bucket, which `extra` is asked about.
 pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
     chunk: &mut [BucketColumns<W>],
     plan: &DeltaPlan<'_, W>,
     policy: &T,
     scratch: &mut CosetScratch<W>,
     extra: &X,
-    chunk_base: usize,
-    order: &CosetOrder,
+    betas: &[u32],
 ) where
     T: TruncationPolicy<W> + ?Sized,
     X: ExtraRows<W>,
 {
     let members = chunk.len();
-    let beta_of = |j: usize| -> u32 { order.bucket_at((chunk_base + j) as u32) };
+    debug_assert_eq!(betas.len(), members);
+    let beta_of = |j: usize| -> u32 { betas[j] };
     let CosetScratch { old, runs, sort, .. } = scratch;
     stamp!(stamp);
     old.resize_with(members, BucketColumns::default);

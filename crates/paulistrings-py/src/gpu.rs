@@ -335,7 +335,7 @@ mod cuda {
             self.inner.device()
         }
 
-        /// Current bucket count of the device partition, grow-only like `PauliSum.num_buckets`.
+        /// Current bucket count of the device partition, grow-only.
         #[getter]
         fn num_buckets(&self) -> usize {
             self.inner.num_buckets()

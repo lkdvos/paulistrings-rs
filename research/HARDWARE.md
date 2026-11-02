@@ -210,6 +210,30 @@ One exclusive node each, governor `performance`; family/model from `/proc/cpuinf
 | genoa | AuthenticAMD Zen4 | 25 / 17 | no | 2 × EPYC 9474F, 48c | 2 (NPS1) |
 | icelake | GenuineIntel Ice Lake-SP | 6 / 106 | no | 2 × Xeon Platinum 8362, 32c, no SMT | 2 |
 
+### genoa — thread scaling
+
+worker7096, job 7392301, rev e699b406: `scripts/slurm/thread-scaling.sbatch`, no SMT, one 32 MB L3 per 6-core CCD (`0-5`, `6-11`, …), THP `always`.
+Compact is the first T CPUs of node 0 with memory bound there (both nodes, first touch, past 48); spread deals node 0's CPUs over its CCDs.
+membench is best of 5 over 2 GiB arrays, STREAM-convention GB/s; engine GB/s counts 48 B per term in and per term out (`W = 2`) over the layer's wall.
+
+| T | compact read / copy | spread read / copy | `heavyhex_step` ms/layer, eff | engine GB/s, % of compact copy | `rotation_zz` ms/layer, eff | engine GB/s, % of compact copy |
+|---:|---|---|---|---|---|---|
+| 1 | 40.6 / 36.0 | — | 399.3, 1.00 | 6.9, 19% | 518.0, 1.00 | 5.6, 16% |
+| 4 | 52.1 / 53.7 | — | 107.0, 0.93 | 25.7, 48% | 132.3, 0.98 | 21.8, 41% |
+| 8 | 102.0 / 104.5 | 255.8 / 165.9 | 52.8, 0.94 | 52.0, 50% | 69.6, 0.93 | 41.4, 40% |
+| 16 | 155.1 / 156.9 | 325.8 / 215.4 | 27.1, 0.92 | 101.4, 65% | 35.9, 0.90 | 80.2, 51% |
+| 24 | 203.9 / 193.7 | 343.4 / 239.1 | 18.8, 0.88 | 146.1, 75% | 24.6, 0.88 | 116.9, 60% |
+| 32 | 237.3 / 221.3 | — | 14.8, 0.84 | 185.9, 84% | 18.4, 0.88 | 156.1, 71% |
+| 40 | 331.8 / 233.4 | — | 13.3, 0.75 | 207.0, 89% | 17.6, 0.73 | 163.4, 70% |
+| 48 | 336.7 / 243.1 | — | 15.3, 0.55 | 180.2, 74% | 14.8, 0.73 | 194.7, 80% |
+| 64 | 349.5 / 286.8 | — | 9.3, 0.67 | 295.0, 103% | 10.6, 0.77 | 272.8, 95% |
+| 96 | 277.3 / 226.8 | — | 12.3, 0.34 | 223.6, 99% | 11.6, 0.46 | 247.4, 109% |
+
+`heavyhex_step` is `--truncation coeff:2^-15 --reps 4` (2.86e7 terms/layer on average), `rotation_zz` is `--n 2e7 --reps 20` (3.0e7); each cell is one run, and the A/B job saw ±7% between runs of one cell at 48 threads.
+Spread at 6–24 threads runs the layers within 5% of compact.
+Interleaved pages at 64 / 96 threads: `heavyhex_step` 10.7 / 11.7 ms, `rotation_zz` 11.3 / 12.4 ms.
+The phase timers cost under 1% of wall in every cell (`11·layers + 5·cosets + 2·runs` reads at 25 ns).
+
 ### JCC branch-padding cost off Skylake
 
 `-Cllvm-args=-x86-branches-within-32B-boundaries`, 7 pairs `abba` per cell, `--reps 20`, 1 thread.

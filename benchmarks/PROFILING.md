@@ -73,6 +73,7 @@ Both sides being the working tree, or both resolving to the same clean commit, i
 - `scripts/profile.sh bench apply_layer_bucketed 10` — flamegraph a criterion bench group via `--profile-time <seconds>` (default 10s).
 - `scripts/profile.sh bin ./target/release/some_bin --args` — flamegraph an arbitrary prebuilt binary, no build step.
 - `scripts/perf-stat.sh --n 1000000 --threads 32 --layers rotation_zz` — hardware counters (cycles/string, IPC, LLC miss rate) plus a DRAM pass for one `(layer, thread count)` cell. `PROBE=/path/to/binary` skips the `cargo build` and measures a prebuilt binary instead.
+- `python3 scripts/scaling-report.py SIDECAR.jsonl...` — per-phase strong-scaling table from probe sidecars, one row per thread count: speedup and efficiency, the serial share outside the coset loop, the loop's parallel efficiency, each busy phase's ns per input term summed over workers (the first column to grow with `T` is the phase that stops scaling first).
 - `scripts/bandwidth.sh` — the host's STREAM-style bandwidth ceiling across the placement matrix in `host-topology.sh`; run once per host or after hardware changes. First stdout line is the `# ceiling-map:` header `perf-viz.py` parses.
 - `python3 scripts/criterion-report.py snapshot out.json --filter <substr> [--merge]` — snapshot `target/criterion/` to JSON. `--merge` updates an existing `out.json` instead of overwriting.
 - `python3 scripts/criterion-report.py compare old.json new.json` — markdown Δ-table between two snapshots.

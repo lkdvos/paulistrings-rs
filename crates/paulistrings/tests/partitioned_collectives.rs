@@ -14,11 +14,11 @@
 //! affordable.
 
 use num_complex::Complex64;
-use paulistrings::test_support::desired_bits;
 use paulistrings::test_support::BITS_AGREE_EVERY;
 use paulistrings::test_support::{
     assert_terms_close, rand_sum_real, unpinned_partitions, zz_rotation,
 };
+use paulistrings::test_support::{desired_bits, rebucketed_bits};
 use paulistrings::PauliRotation;
 use paulistrings::WeightCutoff;
 use paulistrings::{
@@ -136,13 +136,12 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
     let trace = ps.take_trace().expect("tracing is on");
 
     assert_eq!(total(&trace), 0, "P = 1 has nobody to reduce with");
-    // Exactly `propagate`'s own rule, every layer: the running maximum of
-    // `desired_bits`. No lag, because there is nothing to lag behind.
+    // Exactly `propagate`'s own rule, every layer, with no lag because there is nothing to lag behind.
     let mut prev = before;
     let mut grew = false;
     for (k, layer) in trace.layers.iter().enumerate() {
         let want =
-            desired_bits(layer.terms_in[0], fine().target_bucket_len, fine().min_buckets).max(prev);
+            rebucketed_bits(layer.terms_in[0], prev, fine().target_bucket_len, fine().min_buckets);
         assert_eq!(
             layer.bits, want,
             "layer {k}: P = 1 must rebucket every layer ({} terms in)",
@@ -152,6 +151,60 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
         prev = layer.bits;
     }
     assert!(grew, "the fixture should have grown the bucket count");
+}
+
+/// A few low-weight terms buried in many heavy ones: the first layer's weight cutoff drops the heavy ones, so the sum shrinks far below its bucket count.
+fn collapsing_sum() -> paulistrings::PauliSum<1> {
+    let light = paulistrings::test_support::low_weight_sum::<1>(300, NQ, 2, 0xC0A);
+    let heavy = rand_sum_real::<1>(20_000, NQ, 0xC0B);
+    light.add(&heavy)
+}
+
+/// Once the sum shrinks, `P = 1` coarsens back to what its length wants, by the same rule every layer.
+#[test]
+fn one_partition_coarsens_once_the_sum_collapses() {
+    let circuit = steps(1, 0.1);
+    let runtime = PartitionRuntime::new(&config(1)).expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        collapsing_sum(),
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(PartitionRows::<1>::none(NQ)) },
+    );
+    let mut prev = ps.bits();
+    ps.enable_trace();
+    ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
+    let trace = ps.take_trace().expect("tracing is on");
+
+    let mut coarsened = false;
+    for (k, layer) in trace.layers.iter().enumerate() {
+        let want =
+            rebucketed_bits(layer.terms_in[0], prev, fine().target_bucket_len, fine().min_buckets);
+        assert_eq!(layer.bits, want, "layer {k}: {} terms in", layer.terms_in[0]);
+        coarsened |= layer.bits < prev;
+        prev = layer.bits;
+    }
+    assert!(coarsened, "the fixture should have coarsened the bucket count");
+}
+
+/// A group coarsens together, at an agreement, and the gathered result still matches `propagate`.
+#[test]
+fn a_group_coarsens_together_and_still_matches_propagate() {
+    let circuit = steps(1, 0.1);
+    let policy = WeightCutoff(3);
+    let sum = collapsing_sum();
+    let want = propagate(&circuit, sum.clone(), &policy, Direction::Forward);
+    let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
+    let mut ps = PartitionedSum::scatter_with(
+        sum,
+        ScatterOptions { runtime, rows: ScatterRows::Explicit(cut_rows()) },
+    );
+    ps.enable_trace();
+    ps.propagate_with(&circuit, &policy, Direction::Forward, fine());
+    let trace = ps.take_trace().expect("tracing is on");
+    let peak = trace.layers.iter().map(|layer| layer.bits).max().expect("layers ran");
+    assert!(ps.bits() < peak, "bits stayed at the peak {peak}");
+    let got = ps.into_gathered();
+    assert_terms_close(&got, &want, TOL, "P=2 after coarsening");
+    assert_eq!(got.len(), want.len(), "term count");
 }
 
 /// A start whose terms all live in the first block, plus a handful in the

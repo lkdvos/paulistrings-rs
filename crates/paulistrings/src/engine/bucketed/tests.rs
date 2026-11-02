@@ -796,12 +796,7 @@ fn capacity_stabilizes_across_repeated_layers() {
         let old_cap: usize = scratch.task.old.iter().map(|c| c.x.capacity()).sum();
         let run_cap: usize = scratch.task.runs.iter().map(|r| r.rest.x.capacity()).sum();
         let sort_cap = scratch.task.sort.total_capacity();
-        bucket_cap
-            + old_cap
-            + run_cap
-            + sort_cap
-            + scratch.order.capacity()
-            + scratch.staging.capacity()
+        bucket_cap + old_cap + run_cap + sort_cap + scratch.order.capacity()
     };
 
     let mut snapshots = Vec::new();

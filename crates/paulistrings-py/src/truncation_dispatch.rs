@@ -1,9 +1,8 @@
 //! Lowering of a [`BuiltinTruncation`] tree's per-term filter onto a generic policy, so a host propagate runs a monomorphized `keep_term` inside the merge instead of the tree's enum match.
 
-use num_complex::Complex64;
 use paulistrings::{
-    And, BuiltinTruncation, CoefficientThreshold, Collectives, PauliSum, TruncationPolicy,
-    WeightCutoff,
+    And, BuiltinTruncation, Coefficient, CoefficientThreshold, Collectives, PauliSum,
+    TruncationPolicy, WeightCutoff,
 };
 use pyo3::prelude::*;
 use std::sync::Mutex;
@@ -14,22 +13,28 @@ pub(crate) struct WithFilter<'a, F> {
     tree: &'a BuiltinTruncation,
 }
 
-impl<const W: usize, F: TruncationPolicy<W>> TruncationPolicy<W> for WithFilter<'_, F> {
+impl<const W: usize, C: Coefficient, F: TruncationPolicy<W, C>> TruncationPolicy<W, C>
+    for WithFilter<'_, F>
+{
     #[inline]
-    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
         self.filter.keep_term(x, z, c)
     }
 
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-        <BuiltinTruncation as TruncationPolicy<W>>::finalize_layer(self.tree, sum)
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
+        <BuiltinTruncation as TruncationPolicy<W, C>>::finalize_layer(self.tree, sum)
     }
 
     fn finalizes_layer(&self) -> bool {
-        <BuiltinTruncation as TruncationPolicy<W>>::finalizes_layer(self.tree)
+        <BuiltinTruncation as TruncationPolicy<W, C>>::finalizes_layer(self.tree)
     }
 
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
-        <BuiltinTruncation as TruncationPolicy<W>>::finalize_layer_partitioned(
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
+        <BuiltinTruncation as TruncationPolicy<W, C>>::finalize_layer_partitioned(
             self.tree,
             local,
             collectives,

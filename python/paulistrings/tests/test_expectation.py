@@ -14,10 +14,11 @@ import pytest
 from paulistrings import Circuit, PauliSum
 
 R = 1.0 / math.sqrt(2.0)
+DTYPES = ["float64", "float32", "complex128", "complex64"]
 
 
-def _sum(terms, num_qubits):
-    return PauliSum.from_strings(terms, num_qubits=num_qubits)
+def _sum(terms, num_qubits, dtype=None):
+    return PauliSum.from_strings(terms, num_qubits=num_qubits, dtype=dtype)
 
 
 # ---- expectation ----
@@ -32,8 +33,9 @@ def _sum(terms, num_qubits):
         ("ZI", 0.0, 0.0, 1.0),
     ],
 )
-def test_single_pauli_expectations(label, x_plus, y_plus, z_plus):
-    s = _sum({label: 1.0}, 2)
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_single_pauli_expectations(label, x_plus, y_plus, z_plus, dtype):
+    s = _sum({label: 1.0}, 2, dtype)
     assert s.expectation("x+").real == pytest.approx(x_plus)
     assert s.expectation("y+").real == pytest.approx(y_plus)
     assert s.expectation("z+").real == pytest.approx(z_plus)
@@ -66,10 +68,11 @@ def test_expectation_rejects_an_unknown_state():
         s.expectation("bogus")
 
 
+@pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("num_qubits", [3, 80, 200, 400, 800])
-def test_expectation_across_all_width_bands(num_qubits):
+def test_expectation_across_all_width_bands(num_qubits, dtype):
     label = "X" + "I" * (num_qubits - 1)
-    s = _sum({label: 2.0}, num_qubits)
+    s = _sum({label: 2.0}, num_qubits, dtype)
     assert s.expectation("x+").real == pytest.approx(2.0)
     assert s.expectation("z+").real == pytest.approx(0.0)
 
@@ -151,9 +154,10 @@ def test_identity_coefficient_is_zero_when_absent():
 # ---- end to end ----
 
 
-def test_expectation_after_propagation():
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_expectation_after_propagation(dtype):
     # H maps Z to X, so <Z> in |0..0> becomes <X> in |+..+> after conjugation.
-    s = _sum({"ZI": 1.0}, 2)
+    s = _sum({"ZI": 1.0}, 2, dtype)
     c = Circuit(2)
     c.h(0)
     out = s.propagate(circuit=c)

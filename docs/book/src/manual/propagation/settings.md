@@ -43,7 +43,7 @@ The full field list is in the [Library](../../library/propagate.md#propagationst
 
 ## Estimate the memory a run needs {#estimate-the-memory-a-run-needs}
 
-A term costs `16 × width + 16` bytes: two `uint64` key words per `width` word (the x and z columns) plus a `complex128` coefficient.
+A term costs `16 × width + 16` bytes: two `uint64` key words per `width` word (the x and z columns) plus a `complex128` coefficient, 8 bytes less for a `float64` or `complex64` sum and 12 less for `float32` ([coefficient types](../operators.md#dtypes)).
 `PauliSum.width` is the compile-time word tier the qubit count picked — 1 word up to 64 qubits, 2 up to 128, then 4, 8, 16 — so a 127-qubit sum is 48 B/term and a 1024-qubit sum 272 B/term.
 
 `stats.peak_terms` is the peak *resident* term count between layers, so `peak_terms × (16 × width + 16)` is the sum's own high-water mark:

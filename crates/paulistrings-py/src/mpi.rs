@@ -6,8 +6,9 @@
 
 use crate::sum::PropagateFailure;
 use crate::truncation_spec::{collapse_count, collapses_since};
-use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
+use paulistrings::mpi::{default_config, MpiError, MpiTransport};
 use paulistrings::BuiltinTruncation;
+use paulistrings::Coefficient;
 use paulistrings::Collectives;
 use paulistrings::{
     Circuit as CoreCircuit, Direction, PartitionRowPolicy, PartitionRuntime, PartitionTrace,
@@ -15,6 +16,9 @@ use paulistrings::{
 };
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+
+/// This rank's share of a sum split over an MPI group, at any coefficient type (the core's `MpiSum` alias is `Complex64`-only).
+pub(crate) type MpiShare<const W: usize, C> = paulistrings::DistributedSum<W, MpiTransport, C>;
 
 /// A core [`MpiError`] as a Python exception.
 ///
@@ -123,9 +127,9 @@ pub struct MpiRun {
 }
 
 /// This rank's side of a distributed propagate.
-pub struct MpiOutcome<const W: usize> {
+pub struct MpiOutcome<const W: usize, C: Coefficient> {
     /// The gathered sum on rank 0 (empty elsewhere), or this rank's own partition.
-    pub sum: CorePauliSum<W>,
+    pub sum: CorePauliSum<W, C>,
     pub rank: u32,
     pub size: u32,
     /// This rank's [`PartitionTrace`], when asked for.
@@ -142,15 +146,15 @@ impl MpiRun {
     }
 
     /// Scatter, propagate, and take this rank's answer. **Collective**, and so is the `collapses` reduction, which every rank enters alike since the policy is replicated.
-    pub fn propagate<const W: usize>(
+    pub fn propagate<const W: usize, C: Coefficient>(
         self,
         circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W>,
+        sum: &CorePauliSum<W, C>,
         policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<MpiOutcome<W>, PropagateFailure> {
+    ) -> Result<MpiOutcome<W, C>, PropagateFailure> {
         let Self { transport, rows, gather } = self;
         check_input_placement(sum, &rows, &transport)?;
         let scatter_options = ScatterOptions {
@@ -158,7 +162,7 @@ impl MpiRun {
                 .map_err(PropagateFailure::Topology)?,
             rows: ScatterRows::Policy(rows),
         };
-        let mut split = MpiSum::<W>::scatter_with(sum.clone(), transport, scatter_options);
+        let mut split = MpiShare::<W, C>::scatter_with(sum.clone(), transport, scatter_options);
         if traced {
             split.enable_trace();
         }
@@ -179,8 +183,8 @@ impl MpiRun {
 /// Refuse an input that is neither replicated nor already on the ranks `rows` name, which the scatter would silently thin out. **Collective**: one all-reduce of `2 · size` words.
 ///
 /// A `comm=` call takes the same sum on every rank and keeps each rank's own terms; a `result="local"` share passed back in is still accepted when every term already sits on its rank, the deprecated chaining.
-fn check_input_placement<const W: usize>(
-    sum: &CorePauliSum<W>,
+fn check_input_placement<const W: usize, C: Coefficient>(
+    sum: &CorePauliSum<W, C>,
     rows: &PartitionRowPolicy,
     transport: &MpiTransport,
 ) -> Result<(), PropagateFailure> {
@@ -204,7 +208,7 @@ fn check_input_placement<const W: usize>(
 }
 
 /// An order-independent fold of `sum`'s keys, equal on ranks that hold the same terms.
-fn key_fingerprint<const W: usize>(sum: &CorePauliSum<W>) -> u64 {
+fn key_fingerprint<const W: usize, C: Coefficient>(sum: &CorePauliSum<W, C>) -> u64 {
     let mut fold = sum.len() as u64;
     for (x, z, _) in sum.iter() {
         let mut word: u64 = 0xcbf2_9ce4_8422_2325;
@@ -217,16 +221,16 @@ fn key_fingerprint<const W: usize>(sum: &CorePauliSum<W>) -> u64 {
 }
 
 /// `sum` split over `transport`'s group by `rows`, this rank's share on the one-partition runtime of [`default_config`]. **Collective.**
-pub(crate) fn scatter<const W: usize>(
-    sum: CorePauliSum<W>,
+pub(crate) fn scatter<const W: usize, C: Coefficient>(
+    sum: CorePauliSum<W, C>,
     transport: MpiTransport,
     rows: PartitionRowPolicy,
-) -> Result<MpiSum<W>, TopologyError> {
+) -> Result<MpiShare<W, C>, TopologyError> {
     let options = ScatterOptions {
         runtime: PartitionRuntime::new(&default_config())?,
         rows: ScatterRows::Policy(rows),
     };
-    Ok(MpiSum::<W>::scatter_with(sum, transport, options))
+    Ok(MpiShare::<W, C>::scatter_with(sum, transport, options))
 }
 
 /// The call's collapses as rank 0 counted them, all-reduced so every rank reports the same number; `None` without a sampler, and then no collective either.
@@ -244,10 +248,13 @@ pub(crate) fn agreed_collapses(
 }
 
 /// What this rank returns: the gathered sum on rank 0 (an empty sum elsewhere), or its own partition.
-fn harvest<const W: usize>(split: &MpiSum<W>, gather: bool) -> CorePauliSum<W> {
+fn harvest<const W: usize, C: Coefficient>(
+    split: &MpiShare<W, C>,
+    gather: bool,
+) -> CorePauliSum<W, C> {
     if gather {
         // Collective; `Some` on rank 0 only.
-        split.gather().unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
+        split.gather().unwrap_or_else(|| CorePauliSum::<W, C>::empty(split.num_qubits()))
     } else {
         split.local().clone()
     }
@@ -317,15 +324,15 @@ impl MpiGpuRun {
     }
 
     /// Scatter, propagate and take this rank's answer. **Collective**; every error is agreed over the group, and so is the `collapses` reduction.
-    pub fn propagate<const W: usize>(
+    pub fn propagate<const W: usize, C: Coefficient>(
         self,
         circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W>,
+        sum: &CorePauliSum<W, C>,
         policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<MpiOutcome<W>, MpiGpuFailure> {
+    ) -> Result<MpiOutcome<W, C>, MpiGpuFailure> {
         use paulistrings::gpu::MpiGpuSum;
         let Self { transport, rows, gather, device } = self;
         use paulistrings::gpu::{GpuError, GpuScatterOptions};
@@ -341,7 +348,7 @@ impl MpiGpuRun {
                 GpuScatterOptions { rows: ScatterRows::Policy(rows.clone()), ..options }
             }
         };
-        let mut split = MpiGpuSum::<W>::scatter_to_device_with(sum, transport, scatter)
+        let mut split = MpiGpuSum::<W, C>::scatter_to_device_with(sum, transport, scatter)
             .map_err(MpiGpuFailure::Gpu)?;
         if traced {
             split.enable_trace();
@@ -355,7 +362,7 @@ impl MpiGpuRun {
             split
                 .gather()
                 .map_err(MpiGpuFailure::Gpu)?
-                .unwrap_or_else(|| CorePauliSum::<W>::empty(split.num_qubits()))
+                .unwrap_or_else(|| CorePauliSum::<W, C>::empty(split.num_qubits()))
         } else {
             // A local download: agreed here so a rank whose download fails does not leave its peers a call ahead.
             let share = split.local_to_host();

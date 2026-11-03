@@ -8,8 +8,8 @@ propagate -> save -> load -> propagate further).
 
 Format ``paulistrings-npz-v1``: an ``np.savez_compressed`` archive with keys
 ``format`` (this module's version string), ``num_qubits`` (int), ``x``,
-``z`` (the ``uint64`` symplectic arrays) and ``coefficients``
-(``complex128``). ``load`` hard-errors on a missing or unrecognized
+``z`` (the ``uint64`` symplectic arrays) and ``coefficients`` (in the
+sum's dtype, which ``load`` restores). ``load`` hard-errors on a missing or unrecognized
 ``format`` key rather than guessing — a format change bumps the version
 string instead of silently reinterpreting old files.
 """
@@ -65,4 +65,4 @@ def load(path: str | os.PathLike) -> PauliSum:
         x = data["x"]
         z = data["z"]
         coefficients = data["coefficients"]
-    return PauliSum.from_arrays(x, z, coefficients, num_qubits)
+    return PauliSum.from_arrays(x, z, coefficients, num_qubits, dtype=coefficients.dtype)

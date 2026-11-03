@@ -9,7 +9,7 @@ Expectation value in a single-qubit product state. `state` is either:
 | `"x+"` / `"y+"` / `"z+"` | uniform product state, the `+1` eigenstate of that Pauli on every qubit (case-insensitive) |
 | a per-qubit label string, `num_qubits` characters | one character per qubit, qiskit's `Statevector.from_label` alphabet: `0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±, case-sensitive |
 
-Cost is one masked pass over the terms either way. Returns a Python `complex`; take `.real` for a Hermitian operator.
+Cost is one masked pass over the terms either way. Returns a Python `float` for a real-dtype sum and a `complex` otherwise; take `.real` of the latter for a Hermitian operator.
 
 ## `expectation_stabilizer(generators)`
 

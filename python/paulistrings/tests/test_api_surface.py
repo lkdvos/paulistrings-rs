@@ -24,6 +24,9 @@ def test_top_level_names():
     assert hasattr(paulistrings, "mpi_available")
     assert hasattr(paulistrings, "cuda_available")
     assert hasattr(PauliSum, "to_device")
+    assert hasattr(PauliSum, "dtype")
+    assert hasattr(PauliSum, "astype")
+    assert hasattr(paulistrings.PartitionedPauliSum, "dtype")
 
 
 def test_gpu_pauli_sum_exists_exactly_in_a_cuda_build():
@@ -87,6 +90,7 @@ def test_constructors_pick_a_width():
     s = PauliSum(20)
     assert s.num_qubits == 20
     assert len(s) == 0
+    assert s.dtype == "complex128"
 
     c = Circuit(20)
     assert c.num_qubits == 20

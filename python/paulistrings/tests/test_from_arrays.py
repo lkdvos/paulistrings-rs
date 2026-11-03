@@ -99,16 +99,18 @@ def test_from_arrays_on_empty_arrays():
 # ---- to_arrays, the inverse ----
 
 
+@pytest.mark.parametrize("dtype", [np.float64, np.float32, np.complex128, np.complex64])
 @pytest.mark.parametrize("num_qubits", [3, 65, 200])
-def test_to_arrays_round_trips_through_from_arrays(num_qubits):
+def test_to_arrays_round_trips_through_from_arrays(num_qubits, dtype):
     rng = np.random.default_rng(num_qubits)
-    labels = {"".join(rng.choice(list("IXYZ"), num_qubits)): complex(*rng.normal(size=2)) for _ in range(50)}
-    s = PauliSum.from_strings(labels, num_qubits=num_qubits)
+    parts = 1 if np.dtype(dtype).kind == "f" else 2
+    labels = {"".join(rng.choice(list("IXYZ"), num_qubits)): complex(*rng.normal(size=parts)) for _ in range(50)}
+    s = PauliSum.from_strings(labels, num_qubits=num_qubits, dtype=dtype)
     x, z, coeffs = s.to_arrays()
-    assert x.dtype == np.uint64 and z.dtype == np.uint64 and coeffs.dtype == np.complex128
+    assert x.dtype == np.uint64 and z.dtype == np.uint64 and coeffs.dtype == dtype
     assert x.shape == z.shape == (len(s), s.width)
     assert coeffs.shape == (len(s),)
-    _assert_close(PauliSum.from_arrays(x, z, coeffs, num_qubits), s)
+    _assert_close(PauliSum.from_arrays(x, z, coeffs, num_qubits, dtype=dtype), s)
 
 
 def test_to_arrays_matches_the_column_snapshots():

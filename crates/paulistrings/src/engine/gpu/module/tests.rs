@@ -145,9 +145,8 @@ fn layer_shared_bytes_matches_the_carve_layout() {
 }
 
 #[test]
-fn every_arch_maps_to_itself() {
-    for arch in KNOWN_ARCHES {
-        assert_eq!(arch_static(arch), arch);
-    }
-    assert_eq!(arch_static("compute_121"), "compute_121");
+fn any_arch_reaches_nvrtc_as_an_option() {
+    let options = compile_options(1, CoefficientLayout::of::<Complex64>(), "compute_121", &[]);
+    assert_eq!(options.arch, None);
+    assert_eq!(options.options[0], "--gpu-architecture=compute_121");
 }

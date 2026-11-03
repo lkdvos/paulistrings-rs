@@ -189,27 +189,7 @@ pub(crate) fn compile_ptx(
         return Err(GpuError::LibraryMissing("libnvrtc"));
     }
     let source = KERNEL_SOURCES.concat();
-    let mut options = vec![
-        format!("-DW={w}"),
-        format!("-DTHREADS={}", layer_threads(w)),
-        format!("-DLAYER_CAP={LAYER_CAP}"),
-        format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
-        format!("-DKEEP_NODES={KEEP_NODES}"),
-        format!("-DOP_KEEP={OP_KEEP}"),
-        format!("-DOP_COEFF={OP_COEFF}"),
-        format!("-DOP_WEIGHT={OP_WEIGHT}"),
-        format!("-DOP_AND={OP_AND}"),
-        format!("-DOP_OR={OP_OR}"),
-        "--std=c++17".to_string(),
-    ];
-    options.extend(coefficient.options());
-    options.extend_from_slice(extra_options);
-    let compile_options = CompileOptions {
-        arch: Some(arch_static(arch)),
-        fmad: Some(false),
-        options,
-        ..Default::default()
-    };
+    let compile_options = compile_options(w, coefficient, arch, extra_options);
     if let Some(ptx) = cache.and_then(|dir| kernel_cache::lookup(dir, &source, &compile_options)) {
         log::debug!(target: GPU_LOG_TARGET, "kernels W={w} {} {arch}: kernel cache hit", coefficient.name());
         return Ok(ptx);
@@ -231,27 +211,30 @@ pub(crate) fn compile_ptx(
     Ok(ptx)
 }
 
-/// Virtual architectures from Volta to Blackwell, which [`arch_static`] hands out without allocating.
-const KNOWN_ARCHES: [&str; 10] = [
-    "compute_70",
-    "compute_72",
-    "compute_75",
-    "compute_80",
-    "compute_86",
-    "compute_87",
-    "compute_89",
-    "compute_90",
-    "compute_100",
-    "compute_120",
-];
-
-/// `CompileOptions::arch` wants `&'static str`; an unlisted arch is leaked, once per compile, which the per-device kernel cache bounds.
-fn arch_static(arch: &str) -> &'static str {
-    KNOWN_ARCHES
-        .iter()
-        .find(|known| **known == arch)
-        .copied()
-        .unwrap_or_else(|| Box::leak(arch.to_string().into_boxed_str()))
+/// NVRTC options for [`compile_ptx`]; the arch goes in as a plain `--gpu-architecture` option, since `CompileOptions::arch` wants a `&'static str`.
+fn compile_options(
+    w: usize,
+    coefficient: CoefficientLayout,
+    arch: &str,
+    extra_options: &[String],
+) -> CompileOptions {
+    let mut options = vec![
+        format!("--gpu-architecture={arch}"),
+        format!("-DW={w}"),
+        format!("-DTHREADS={}", layer_threads(w)),
+        format!("-DLAYER_CAP={LAYER_CAP}"),
+        format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
+        format!("-DKEEP_NODES={KEEP_NODES}"),
+        format!("-DOP_KEEP={OP_KEEP}"),
+        format!("-DOP_COEFF={OP_COEFF}"),
+        format!("-DOP_WEIGHT={OP_WEIGHT}"),
+        format!("-DOP_AND={OP_AND}"),
+        format!("-DOP_OR={OP_OR}"),
+        "--std=c++17".to_string(),
+    ];
+    options.extend(coefficient.options());
+    options.extend_from_slice(extra_options);
+    CompileOptions { fmad: Some(false), options, ..Default::default() }
 }
 
 type CacheKey = (u32, usize, CoefficientLayout, Vec<String>);

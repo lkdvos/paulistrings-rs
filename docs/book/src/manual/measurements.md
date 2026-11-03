@@ -27,7 +27,7 @@ print(evolved.expectation("0+1r").real) # |0>|+>|1>|+i> per qubit
 0.25
 ```
 
-The return type is Python `complex`; take `.real` for a Hermitian observable, and treat a non-negligible imaginary part as a sign the sum is not Hermitian rather than as noise to discard.
+The return type is Python `complex` (`float` for a [real-dtype](operators.md#dtypes) sum); take `.real` for a Hermitian observable, and treat a non-negligible imaginary part as a sign the sum is not Hermitian rather than as noise to discard.
 A label of the wrong length, or a character outside the alphabet, is a `ValueError` that restates the rule.
 
 The pass is cheap next to the propagation that produced the sum, and the state is the thing that is cheap to vary: one propagation, any number of product states.

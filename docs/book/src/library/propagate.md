@@ -114,6 +114,7 @@ A sum kept split between calls, over this process's NUMA partitions (`partitions
 | `.gather()` | the whole sum, on rank 0 under MPI (empty elsewhere) |
 | `.local()` | this process's terms: the whole sum in one process, this rank's share under MPI |
 | `.partition_rows()`, `.hash_rows()`, `.hash_seed`, `.num_buckets`, `.num_partitions`, `.rank`, `.num_qubits` | the current rows and placement; `rank` is `None` in one process |
+| `.dtype` | the coefficient type of the sum it was split from, which `gather()` and `local()` keep |
 
 Under MPI every member that reads or changes the whole sum is collective; `local()`, `repr()` and the properties are not.
 Exact `truncation.topn` raises `NotImplementedError`, as for any partitioned run.

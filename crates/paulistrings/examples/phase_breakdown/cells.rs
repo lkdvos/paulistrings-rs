@@ -172,9 +172,25 @@ pub(crate) fn note_generator(layer: LayerKind, gen_qubits: (usize, usize), group
     );
 }
 
-/// `sum` in the coefficient type `C`, keeping the real part for a real type.
+/// `sum` in the coefficient type `C`, keeping the real part for a real type; moved, not copied, when `C` is `Complex64`.
 pub(crate) fn narrow<const W: usize, C: Coefficient>(sum: PauliSum<W>) -> PauliSum<W, C> {
-    sum.cast(f64::INFINITY).expect("an infinite tolerance admits every coefficient")
+    let mut slot = Some(sum);
+    if let Some(same) =
+        (&mut slot as &mut dyn std::any::Any).downcast_mut::<Option<PauliSum<W, C>>>()
+    {
+        return same.take().expect("filled above");
+    }
+    let narrowed = slot
+        .expect("not taken")
+        .cast(f64::INFINITY)
+        .expect("an infinite tolerance admits every coefficient");
+    // The freed input sits in the workers' malloc arenas, which the propagation does not reuse; returning it keeps VmHWM comparable across dtypes.
+    #[cfg(target_os = "linux")]
+    // SAFETY: `malloc_trim` only releases free heap memory.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    narrowed
 }
 
 pub(crate) fn run_cell<const W: usize, C: Coefficient, P>(

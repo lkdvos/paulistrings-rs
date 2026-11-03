@@ -456,6 +456,70 @@ fn empty_partition_participates() {
     assert_terms_close(&got, &want, TOL, "empty partition");
 }
 
+/// A rotation whose generator crosses, against the oracle at a generic and a Clifford angle; `tabulated` names the prepared arm the generator must land on.
+fn check_remote_rotation<const W: usize>(
+    input: &PauliSum<W>,
+    generator: PauliString<W>,
+    rows: &PartitionRows<W>,
+    tabulated: bool,
+) {
+    for theta in [0.41, std::f64::consts::FRAC_PI_2] {
+        let rotation = PauliRotation::new(generator, theta);
+        for adjoint in [false, true] {
+            let want = naive_apply_layer(input, &rotation, &AlwaysKeep, adjoint);
+            for bits in [0u8, 6] {
+                let hash = Gf2Hash::<W>::new(input.num_qubits(), bits, 0x9DB);
+                let whole = input.clone().with_hash(hash);
+                let prepared =
+                    Prepare::<W>::prepare(&rotation, whole.hash(), adjoint).expect("prepare");
+                assert_eq!(matches!(prepared, Prepared::Local(_)), tabulated, "prepared arm");
+                assert!(PartitionPlan::new(&prepared, rows, 0).has_remote());
+                let (parts, _) = run_parts(&whole, &prepared, rows, &AlwaysKeep, Some(2));
+                let got = PauliSum::merge_partitions(parts);
+                let what = format!("W={W} theta={theta} adjoint={adjoint} bits={bits}");
+                assert_terms_close(&got, &want, TOL, &what);
+            }
+        }
+    }
+}
+
+/// The product of single-qubit Paulis `(qubit, 'X' | 'Y' | 'Z')`.
+fn pauli_product<const W: usize>(factors: &[(usize, char)]) -> PauliString<W> {
+    let mut product = PauliString::<W>::identity();
+    for &(qubit, pauli) in factors {
+        let factor = match pauli {
+            'X' => PauliString::<W>::x(qubit),
+            'Y' => PauliString::<W>::y(qubit),
+            _ => PauliString::<W>::z(qubit),
+        };
+        product.mul_assign(&factor);
+    }
+    product
+}
+
+/// A two-qubit table, a wide generator of four set bits (`PartnerOrder`) and one of six (the sort).
+#[test]
+fn remote_rotations_match_naive_oracle_w1() {
+    let input = rand_sum::<1>(1500, 8, 0x9DA);
+    let rows = rows_seeing_qubit_2_x();
+    check_remote_rotation(&input, pauli_product(&[(0, 'X'), (2, 'X')]), &rows, true);
+    check_remote_rotation(&input, wide_gen(), &rows, false);
+    let six_bits = pauli_product(&[(0, 'Y'), (2, 'Y'), (4, 'X'), (6, 'X')]);
+    check_remote_rotation(&input, six_bits, &rows, false);
+}
+
+/// The same with generators straddling the word boundary.
+#[test]
+fn remote_rotations_match_naive_oracle_w2() {
+    let input = rand_sum_real::<2>(1500, 128, 0x9DC);
+    let rows = PartitionRows::<2>::from_rows(128, vec![[0, 1]], vec![[0, 0]]);
+    check_remote_rotation(&input, pauli_product(&[(63, 'Z'), (64, 'X')]), &rows, true);
+    let wide = pauli_product(&[(0, 'Z'), (63, 'X'), (64, 'X'), (100, 'Z')]);
+    check_remote_rotation(&input, wide, &rows, false);
+    let six_bits = pauli_product(&[(0, 'Y'), (63, 'Y'), (64, 'X'), (100, 'X')]);
+    check_remote_rotation(&input, six_bits, &rows, false);
+}
+
 /// Each partition's output agrees across Rayon pool sizes.
 #[test]
 fn partitioned_output_agrees_across_pool_sizes() {

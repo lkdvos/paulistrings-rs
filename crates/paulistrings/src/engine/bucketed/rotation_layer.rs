@@ -6,8 +6,10 @@ use crate::coefficient::Coefficient;
 
 use super::coset_fill::{CosetScratch, GatherRun};
 use super::partner_order::PartnerOrder;
-use crate::channel::prepared::{LocalPtm, LOCAL_DIM};
-use crate::engine::merge::merge_identity_and_rest;
+use super::ExtraRows;
+use crate::channel::prepared::{LocalPtm, PreparedRotation, LOCAL_DIM};
+use crate::engine::merge::{merge_identity_and_rest, SortKernel};
+use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::truncation::TruncationPolicy;
 
@@ -102,6 +104,131 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             coeff.truncate(kept);
         }
     }
+}
+
+/// A rotation whose generator crosses to a partner, as a receiving bucket applies it: its own strings take the identity half, and the partners arrive from the partner's export.
+// Built once per layer on the stack, so the table variant's size costs nothing.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum ReceivedRotation<'p, const W: usize, C: Coefficient> {
+    Table(RotationLayer<'p, W, C>),
+    /// `order` is `None` when the generator has too many set bits for [`PartnerOrder`], and the partners are sorted instead.
+    Wide {
+        rotation: &'p PreparedRotation<W, C::Real>,
+        order: Option<PartnerOrder<W>>,
+        clifford: bool,
+    },
+}
+
+impl<'p, const W: usize, C: Coefficient> ReceivedRotation<'p, W, C> {
+    pub(super) fn wide(rotation: &'p PreparedRotation<W, C::Real>) -> Self {
+        let (mask_x, mask_z) = rotation.generator_mask();
+        Self::Wide {
+            rotation,
+            order: PartnerOrder::try_new(&mask_x, &mask_z),
+            // As for a table: `cos θ` at a quarter turn is a rounding residue.
+            clifford: (C::ONE * rotation.cos).norm_sqr()
+                <= f64::EPSILON * f64::EPSILON * (C::ONE * rotation.sin).norm_sqr(),
+        }
+    }
+
+    /// The identity half of [`RotationLayer::scan`]: scale each anticommuting string by `a₀`, or on the Clifford arm drop it.
+    fn scale(&self, bucket: &mut BucketColumns<W, C>) {
+        match self {
+            Self::Table(layer) => scale_identity(bucket, layer.clifford, |x, z| {
+                let pattern = layer.ptm.support_bits(x, z);
+                (layer.partner[pattern].is_nonzero(), layer.identity[pattern])
+            }),
+            Self::Wide { rotation, clifford, .. } => {
+                let cos = C::ONE * rotation.cos;
+                scale_identity(bucket, *clifford, |x, z| {
+                    let commutes =
+                        PauliString::<W> { x: *x, z: *z }.commutes_with(&rotation.generator);
+                    (!commutes, if commutes { C::ONE } else { cos })
+                })
+            }
+        }
+    }
+
+    fn partner_order(&self) -> Option<&PartnerOrder<W>> {
+        match self {
+            Self::Table(layer) => Some(&layer.order),
+            Self::Wide { order, .. } => order.as_ref(),
+        }
+    }
+}
+
+/// Scale `bucket` in place by `identity(x, z) = (anticommutes, a₀)`, or on the Clifford arm drop the anticommuting strings.
+fn scale_identity<const W: usize, C: Coefficient>(
+    bucket: &mut BucketColumns<W, C>,
+    clifford: bool,
+    identity: impl Fn(&[u64; W], &[u64; W]) -> (bool, C),
+) {
+    let BucketColumns { x, z, coeff } = bucket;
+    if clifford {
+        let mut kept = 0usize;
+        for row in 0..coeff.len() {
+            let (key_x, key_z, c) = (x[row], z[row], coeff[row]);
+            x[kept] = key_x;
+            z[kept] = key_z;
+            coeff[kept] = c;
+            kept += usize::from(!identity(&key_x, &key_z).0);
+        }
+        x.truncate(kept);
+        z.truncate(kept);
+        coeff.truncate(kept);
+    } else {
+        for row in 0..coeff.len() {
+            coeff[row] *= identity(&x[row], &z[row]).1;
+        }
+    }
+}
+
+/// Apply `layer` to bucket `β`: scale it in place and merge in the partners `extra` received for it, which come from the single source bucket `β ⊕ h(g)` in its key order, as [`PartnerOrder`] needs.
+pub(super) fn fill_received_rotation_bucket<const W: usize, C: Coefficient, T, X>(
+    members: &mut [BucketColumns<W, C>],
+    betas: &[u32],
+    layer: &ReceivedRotation<'_, W, C>,
+    policy: &T,
+    scratch: &mut CosetScratch<W, C>,
+    extra: &X,
+) where
+    T: TruncationPolicy<W, C> + ?Sized,
+    X: ExtraRows<W, C>,
+{
+    debug_assert_eq!(members.len(), 1, "a remote generator leaves only the identity delta local");
+    let bucket = &mut members[0];
+    if scratch.runs.is_empty() {
+        scratch.runs.push(GatherRun::default());
+    }
+    if scratch.old.is_empty() {
+        scratch.old.push(BucketColumns::default());
+    }
+    stamp!(stamp);
+    tally!(scratch.stats.rows_gathered, bucket.len());
+    tally!(scratch.stats.rows_id, bucket.len());
+    layer.scale(bucket);
+    let CosetScratch { runs, old, sort, .. } = scratch;
+    let run = &mut runs[0];
+    run.rest.clear();
+    extra.append_into(betas[0], &mut run.rest);
+    lap!(stamp, scratch.stats.gather_ns);
+    tally!(scratch.stats.rows_gathered, run.rest.len());
+    tally!(scratch.stats.rows_sorted, run.rest.len());
+    let partners = match layer.partner_order() {
+        Some(order) => {
+            order.order(&run.rest, &mut run.identity, sort.indices());
+            run.identity.view()
+        }
+        None => {
+            SortKernel::Comparison.sort(&mut run.rest, sort);
+            run.rest.view()
+        }
+    };
+    lap!(stamp, scratch.stats.sort_ns);
+    merge_partners(bucket, partners, policy, &mut old[0]);
+    lap!(stamp, scratch.stats.merge_ns);
+    tally!(scratch.stats.cosets, 1);
+    tally!(scratch.stats.runs, 1);
 }
 
 /// Apply `layer` to one coset, one bucket or the pair `{β, β ⊕ h(g)}`, each partner run merging into the other member.

@@ -1,7 +1,10 @@
-//! One layer applied to a [`HashSum`] in place, coset by coset.
+//! One layer applied to a [`HashSum`](super::HashSum) in place, coset by coset.
 //!
-//! Each coset runs three passes: every source entry is rescaled in place by its identity amplitude while its other outputs go to per-member side buffers, the side buffers are accumulated into the member tables, and the touched tables are filtered.
-//! The in-place rescale is safe because an entry's own slot is read only by itself; every cross-key contribution waits in a side buffer until the coset's first pass is done.
+//! A layer walks each coset's entries in position order; the first present member of a closed key group ([`GroupPlan`]) the walk reaches reads the group, applies its block, writes its present members in place and queues its absent ones.
+//! A done bit per position marks the members already written, so each group is read once, with its input coefficients.
+//! Truncated entries are removed after the walk and queued ones appended after that, so every position stays valid while it runs; truncation is exact because a group's outputs are final when written.
+//! A monomial PTM (a Clifford) maps distinct keys to distinct keys, so it relabels every entry with no lookup and re-indexes; a diagonal one only rescales.
+
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -9,61 +12,38 @@ use std::time::Instant;
 use num_complex::Complex64;
 use rayon::prelude::*;
 
-use super::fused::{local_source, pass1_local, pass1_rotation, pass2, rotation_source, FusedPlan, Row};
-use super::orbit::{
-    leaders_local, leaders_rotation, process_local, process_rotation, rescale_singletons, Leader,
-    OrbitPlan,
-};
-use super::table::{accumulate, Entry, HashSum, Table};
-use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
+use super::plan::{monomial, GroupPlan, Plan};
+use super::sum::HashSum;
+use super::table::{key_hash, Entry, Table};
+use crate::channel::prepared::{Prepared, PreparedRotation, LOCAL_DIM};
 use crate::engine::coset::Gf2Span;
 use crate::pauli_string::PauliString;
 use crate::phase::Phase;
 use crate::truncation::TruncationPolicy;
 
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
-const ONE: Complex64 = Complex64::new(1.0, 0.0);
 
-/// How a layer moves contributions between keys.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Kernel {
-    /// Rescale in place, buffer every cross-key row, accumulate the buffers, then filter.
-    Scatter,
-    /// Read, transform and write back each closed group of keys ([`orbit`](super::orbit)).
-    Orbit,
-    /// Rotations and Cliffords land each cross-key row with one lookup ([`fused`](super::fused)); any other channel runs [`Kernel::Orbit`].
-    Fused,
-}
-
-/// Nanoseconds spent per pass, summed over cosets and workers.
+/// Nanoseconds per pass, summed over cosets and workers.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PassTimes {
-    /// In-place rescale plus side-buffer emission.
-    pub emit_ns: u64,
-    /// Side-buffer rows accumulated into the tables.
-    pub accumulate_ns: u64,
-    /// The filter pass.
-    pub retain_ns: u64,
-    /// Side-buffer rows, summed over layers.
-    pub rows_emitted: u64,
-}
-
-impl PassTimes {
-    fn absorb(&mut self, other: &Self) {
-        self.emit_ns += other.emit_ns;
-        self.accumulate_ns += other.accumulate_ns;
-        self.retain_ns += other.retain_ns;
-        self.rows_emitted += other.rows_emitted;
-    }
+    /// The walk, or the relabelling of a monomial layer.
+    pub walk_ns: u64,
+    /// Removal of the truncated entries.
+    pub remove_ns: u64,
+    /// Appending the new keys, or re-indexing after a relabelling.
+    pub append_ns: u64,
+    /// Keys appended, summed over layers.
+    pub appended: u64,
 }
 
 /// One coset task's working set.
 #[derive(Default)]
 struct CosetWork<const W: usize> {
     tables: Vec<Table<W>>,
-    side: Vec<Vec<Entry<W>>>,
-    leaders: Vec<Leader<W>>,
-    rows: Vec<Vec<Row<W>>>,
+    done: Vec<Vec<u64>>,
+    dead: Vec<Vec<u64>>,
+    pending: Vec<Vec<Entry<W>>>,
+    staying: Vec<Vec<Entry<W>>>,
     betas: Vec<u32>,
     times: PassTimes,
 }
@@ -85,101 +65,38 @@ impl<const W: usize> HashScratch<W> {
     pub fn take_times(&mut self) -> PassTimes {
         let mut total = std::mem::take(&mut self.serial.times);
         for worker in &self.workers {
-            total.absorb(&std::mem::take(&mut worker.lock().unwrap().times));
+            let times = std::mem::take(&mut worker.lock().unwrap().times);
+            total.walk_ns += times.walk_ns;
+            total.remove_ns += times.remove_ns;
+            total.append_ns += times.append_ns;
+            total.appended += times.appended;
         }
         total
     }
 }
 
-/// One non-identity output of a support pattern.
-#[derive(Clone, Copy)]
-struct Emit<const W: usize> {
-    mask_x: [u64; W],
-    mask_z: [u64; W],
-    coordinate: u32,
-    amplitude: Complex64,
-}
-
-/// A local PTM tabulated by input support pattern: the identity amplitude and the list of nonzero other outputs.
-struct LocalPlan<'p, const W: usize> {
-    ptm: &'p LocalPtm<W>,
-    identity: [Complex64; LOCAL_DIM],
-    /// Patterns whose only output is themselves at amplitude one, whose entries the emit pass leaves untouched.
-    untouched: [bool; LOCAL_DIM],
-    emits: Vec<Emit<W>>,
-    offsets: [u16; LOCAL_DIM + 1],
-}
-
-impl<'p, const W: usize> LocalPlan<'p, W> {
-    fn new(ptm: &'p LocalPtm<W>, span: &Gf2Span) -> Self {
-        let mut identity = [ZERO; LOCAL_DIM];
-        let mut emits = Vec::new();
-        let mut offsets = [0u16; LOCAL_DIM + 1];
-        for s in 0..LOCAL_DIM {
-            for delta in ptm.deltas() {
-                let amplitude = delta.amplitude[s];
-                if amplitude == ZERO {
-                    continue;
-                }
-                if delta.local_delta == 0 {
-                    identity[s] = amplitude;
-                } else {
-                    emits.push(Emit {
-                        mask_x: delta.mask_x,
-                        mask_z: delta.mask_z,
-                        coordinate: span.coordinate_of(delta.bucket_delta),
-                        amplitude,
-                    });
-                }
-            }
-            offsets[s + 1] = emits.len() as u16;
-        }
-        let mut untouched = [false; LOCAL_DIM];
-        for s in 0..LOCAL_DIM {
-            untouched[s] = identity[s] == ONE && offsets[s] == offsets[s + 1];
-        }
-        Self { ptm, identity, untouched, emits, offsets }
-    }
-}
-
-enum Plan<'p, const W: usize> {
-    Local(LocalPlan<'p, W>),
-    Rotation { rotation: &'p PreparedRotation<W>, generator_coordinate: u32 },
-    OrbitLocal(OrbitPlan<'p, W>),
-    OrbitRotation { rotation: &'p PreparedRotation<W>, generator_coordinate: u32 },
-    FusedLocal(FusedPlan<'p, W>),
-    FusedRotation { rotation: &'p PreparedRotation<W>, generator_coordinate: u32 },
-}
-
-/// Apply one prepared channel to `sum` in place, folding `keep_term` into the filter pass.
+/// Apply one prepared channel to `sum` in place, truncating each written term under `policy`.
 pub fn apply_layer_hashed<const W: usize, T>(
     sum: &mut HashSum<W>,
     prepared: &Prepared<W>,
     policy: &T,
     scratch: &mut HashScratch<W>,
-    kernel: Kernel,
 ) where
     T: TruncationPolicy<W> + ?Sized,
 {
     let span = Gf2Span::new(&prepared.bucket_deltas(), sum.hash.bits());
-    let plan = match (prepared, kernel) {
-        (Prepared::Local(ptm), Kernel::Scatter) => Plan::Local(LocalPlan::new(ptm, &span)),
-        (Prepared::Local(ptm), Kernel::Orbit) => {
-            Plan::OrbitLocal(OrbitPlan::new(ptm, &sum.hash, &span))
+    let plan = match prepared {
+        Prepared::Local(ptm) => {
+            let plan = GroupPlan::new(ptm, &sum.hash, &span);
+            match monomial(&plan) {
+                Some((sigma, factor)) if sigma.iter().enumerate().all(|(p, &q)| p == q as usize) => {
+                    Plan::Diagonal { plan, factor }
+                }
+                Some((sigma, factor)) => Plan::Monomial { plan, sigma, factor },
+                None => Plan::Local(plan),
+            }
         }
-        (Prepared::Rotation(rotation), Kernel::Scatter) => Plan::Rotation {
-            rotation,
-            generator_coordinate: span.coordinate_of(rotation.bucket_delta_generator),
-        },
-        (Prepared::Local(ptm), Kernel::Fused) => match FusedPlan::new(ptm, &sum.hash, &span) {
-            Some(fused) => Plan::FusedLocal(fused),
-            None => Plan::OrbitLocal(OrbitPlan::new(ptm, &sum.hash, &span)),
-        },
-        (Prepared::Rotation(rotation), Kernel::Fused) => Plan::FusedRotation {
-            rotation,
-            generator_coordinate: span.coordinate_of(rotation.bucket_delta_generator),
-        },
-        (Prepared::Rotation(rotation), Kernel::Orbit) => Plan::OrbitRotation {
+        Prepared::Rotation(rotation) => Plan::Rotation {
             rotation,
             generator_coordinate: span.coordinate_of(rotation.bucket_delta_generator),
         },
@@ -216,117 +133,65 @@ fn run_coset<const W: usize, T>(
     T: TruncationPolicy<W> + ?Sized,
 {
     let representative = span.representative_at(coset);
-    let CosetWork { tables, side, leaders, rows, betas, times } = work;
+    let CosetWork { tables, done, dead, pending, staying, betas, times } = work;
     betas.clear();
     betas.extend((0..span.coset_size() as u32).map(|j| span.member(representative, j)));
-    tables.resize_with(betas.len(), Table::default);
-    side.resize_with(betas.len(), Vec::new);
-    rows.resize_with(betas.len(), Vec::new);
-    for (slot, &beta) in tables.iter_mut().zip(betas.iter()) {
-        // SAFETY: the cosets partition the buckets, so no other task reaches bucket `beta`.
-        std::mem::swap(slot, unsafe { buckets.get(beta as usize) });
-    }
+    let m = betas.len();
+    tables.resize_with(m, Table::default);
+    done.resize_with(m, Vec::new);
+    dead.resize_with(m, Vec::new);
+    pending.resize_with(m, Vec::new);
+    staying.resize_with(m, Vec::new);
+    swap(tables, betas, buckets);
 
     let start = Instant::now();
-    if WARM.load(std::sync::atomic::Ordering::Relaxed) {
-        warm(tables);
+    if let Plan::Monomial { plan, sigma, factor } = plan {
+        relabel(tables, staying, pending, plan, sigma, factor, policy);
+        let walked = Instant::now();
+        for b in 0..m {
+            times.appended += pending[b].len() as u64;
+            let mut entries = std::mem::take(&mut staying[b]);
+            entries.append(&mut pending[b]);
+            tables[b].set_entries(entries);
+        }
+        times.walk_ns += (walked - start).as_nanos() as u64;
+        times.append_ns += walked.elapsed().as_nanos() as u64;
+        swap(tables, betas, buckets);
+        return;
     }
+    clear_bits(tables, dead);
     match plan {
-        Plan::Local(local) => emit_local(tables, side, local),
+        Plan::Diagonal { plan, factor } => rescale(tables, dead, plan, factor, policy),
+        Plan::Local(plan) => {
+            clear_bits(tables, done);
+            walk_local(tables, done, dead, pending, plan, policy);
+        }
         Plan::Rotation { rotation, generator_coordinate } => {
-            emit_rotation(tables, side, rotation, *generator_coordinate)
+            clear_bits(tables, done);
+            walk_rotation(tables, done, dead, pending, rotation, *generator_coordinate, policy);
         }
-        Plan::OrbitLocal(orbit) => {
-            rescale_singletons(tables, orbit, policy);
-            leaders.clear();
-            leaders_local(tables, orbit, leaders);
-            let found = Instant::now();
-            process_local(tables, orbit, leaders, policy);
-            finish_orbit(times, start, found, leaders.len());
-            swap_back(tables, betas, buckets);
-            return;
-        }
-        Plan::FusedLocal(fused) => {
-            pass1_local(tables, rows, fused, policy);
-            let found = Instant::now();
-            let emitted: usize = rows.iter().map(Vec::len).sum();
-            for j in 0..tables.len() {
-                pass2(tables, j, &mut rows[j], local_source(fused), policy);
-            }
-            finish_orbit(times, start, found, emitted);
-            swap_back(tables, betas, buckets);
-            return;
-        }
-        Plan::FusedRotation { rotation, generator_coordinate } => {
-            pass1_rotation(tables, rows, rotation, *generator_coordinate);
-            let found = Instant::now();
-            let emitted: usize = rows.iter().map(Vec::len).sum();
-            for j in 0..tables.len() {
-                pass2(
-                    tables,
-                    j,
-                    &mut rows[j],
-                    rotation_source(rotation, *generator_coordinate),
-                    policy,
-                );
-            }
-            finish_orbit(times, start, found, emitted);
-            swap_back(tables, betas, buckets);
-            return;
-        }
-        Plan::OrbitRotation { rotation, generator_coordinate } => {
-            leaders.clear();
-            leaders_rotation(tables, rotation, *generator_coordinate, leaders);
-            let found = Instant::now();
-            process_rotation(tables, rotation, *generator_coordinate, leaders, policy);
-            finish_orbit(times, start, found, leaders.len());
-            swap_back(tables, betas, buckets);
-            return;
+        Plan::Monomial { .. } => unreachable!(),
+    }
+    let walked = Instant::now();
+    for (table, dead) in tables.iter_mut().zip(dead.iter_mut()) {
+        table.remove_marked(dead);
+    }
+    let removed = Instant::now();
+    for (table, pending) in tables.iter_mut().zip(pending.iter_mut()) {
+        times.appended += pending.len() as u64;
+        table.reserve(pending.len());
+        for e in pending.drain(..) {
+            table.push_unique(e);
         }
     }
-    let emitted = Instant::now();
-    for (table, rows) in tables.iter_mut().zip(side.iter_mut()) {
-        times.rows_emitted += rows.len() as u64;
-        for e in rows.drain(..) {
-            accumulate(table, e);
-        }
-    }
-    let accumulated = Instant::now();
-    for table in tables.iter_mut() {
-        table.retain(|e| {
-            ((e.c.re != 0.0) | (e.c.im != 0.0)) && policy.keep_term(&e.x, &e.z, e.c)
-        });
-    }
-    let retained = Instant::now();
-    times.emit_ns += (emitted - start).as_nanos() as u64;
-    times.accumulate_ns += (accumulated - emitted).as_nanos() as u64;
-    times.retain_ns += (retained - accumulated).as_nanos() as u64;
-    swap_back(tables, betas, buckets);
+    let appended = Instant::now();
+    times.walk_ns += (walked - start).as_nanos() as u64;
+    times.remove_ns += (removed - walked).as_nanos() as u64;
+    times.append_ns += (appended - removed).as_nanos() as u64;
+    swap(tables, betas, buckets);
 }
 
-/// Whether each coset streams its tables in before the random-access passes; a prototype switch.
-pub static WARM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Stream every entry of the coset's tables through the cache, so the random lookups that follow hit in L2 instead of missing to DRAM.
-fn warm<const W: usize>(tables: &[Table<W>]) {
-    let mut fold = 0u64;
-    for table in tables {
-        for e in table.iter() {
-            fold ^= e.x[0];
-        }
-    }
-    std::hint::black_box(fold);
-}
-
-/// The orbit kernel's leader pass counts as `emit`, its write-back as `accumulate`.
-fn finish_orbit(times: &mut PassTimes, start: Instant, found: Instant, leaders: usize) {
-    let done = Instant::now();
-    times.emit_ns += (found - start).as_nanos() as u64;
-    times.accumulate_ns += (done - found).as_nanos() as u64;
-    times.rows_emitted += leaders as u64;
-}
-
-fn swap_back<const W: usize>(
+fn swap<const W: usize>(
     tables: &mut [Table<W>],
     betas: &[u32],
     buckets: &DisjointSlots<'_, Table<W>>,
@@ -337,62 +202,199 @@ fn swap_back<const W: usize>(
     }
 }
 
-fn emit_local<const W: usize>(
-    tables: &mut [Table<W>],
-    side: &mut [Vec<Entry<W>>],
-    plan: &LocalPlan<'_, W>,
-) {
-    // A `retain`, so an entry the identity delta does not keep frees its slot before the side rows land and a permutation runs at constant occupancy.
-    for (i, table) in tables.iter_mut().enumerate() {
-        table.retain(|e| {
-            let s = plan.ptm.support_bits(&e.x, &e.z);
-            if plan.untouched[s] {
-                return true;
-            }
-            let c = e.c;
-            e.c = c * plan.identity[s];
-            let emits = &plan.emits[plan.offsets[s] as usize..plan.offsets[s + 1] as usize];
-            for emit in emits {
-                let mut x = e.x;
-                let mut z = e.z;
-                for w in 0..W {
-                    x[w] ^= emit.mask_x[w];
-                    z[w] ^= emit.mask_z[w];
-                }
-                side[i ^ emit.coordinate as usize].push(Entry { x, z, c: c * emit.amplitude });
-            }
-            plan.identity[s] != ZERO
-        });
+/// One cleared bit per position of each table.
+fn clear_bits<const W: usize>(tables: &[Table<W>], bits: &mut [Vec<u64>]) {
+    for (table, bits) in tables.iter().zip(bits.iter_mut()) {
+        bits.clear();
+        bits.resize(table.len().div_ceil(64), 0);
     }
 }
 
-fn emit_rotation<const W: usize>(
+#[inline(always)]
+fn kept<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    x: &[u64; W],
+    z: &[u64; W],
+    c: Complex64,
+    policy: &T,
+) -> bool {
+    ((c.re != 0.0) | (c.im != 0.0)) && policy.keep_term(x, z, c)
+}
+
+#[inline(always)]
+fn is_set(bits: &[u64], position: usize) -> bool {
+    (bits[position / 64] >> (position % 64)) & 1 != 0
+}
+
+#[inline(always)]
+fn set(bits: &mut [u64], position: usize) {
+    bits[position / 64] |= 1 << (position % 64);
+}
+
+/// The dense column pass: every entry scaled by its pattern's factor, the identity's being one.
+fn rescale<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     tables: &mut [Table<W>],
-    side: &mut [Vec<Entry<W>>],
+    dead: &mut [Vec<u64>],
+    plan: &GroupPlan<'_, W>,
+    factor: &[Complex64; LOCAL_DIM],
+    policy: &T,
+) {
+    for (table, dead) in tables.iter_mut().zip(dead.iter_mut()) {
+        for (position, (x, z, c)) in table.coefficients_mut().enumerate() {
+            *c *= factor[plan.ptm.support_bits(x, z)];
+            if !kept(x, z, *c, policy) {
+                set(dead, position);
+            }
+        }
+    }
+}
+
+/// Split each table's entries into those that keep their key, rescaled in `staying`, and those that move, relabelled into `pending` of their new table.
+fn relabel<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    tables: &mut [Table<W>],
+    staying: &mut [Vec<Entry<W>>],
+    pending: &mut [Vec<Entry<W>>],
+    plan: &GroupPlan<'_, W>,
+    sigma: &[u8; LOCAL_DIM],
+    factor: &[Complex64; LOCAL_DIM],
+    policy: &T,
+) {
+    for b in 0..tables.len() {
+        let mut entries = tables[b].take_entries();
+        entries.retain_mut(|e| {
+            let p = plan.ptm.support_bits(&e.x, &e.z);
+            let q = sigma[p] as usize;
+            let c = e.c * factor[p];
+            if q == p {
+                e.c = c;
+                return kept(&e.x, &e.z, c, policy);
+            }
+            let (j, mut moved) = plan.shifted(b, &e.x, &e.z, p ^ q);
+            moved.c = c;
+            if kept(&moved.x, &moved.z, c, policy) {
+                pending[j].push(moved);
+            }
+            false
+        });
+        staying[b] = entries;
+    }
+}
+
+fn walk_local<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    tables: &mut [Table<W>],
+    done: &mut [Vec<u64>],
+    dead: &mut [Vec<u64>],
+    pending: &mut [Vec<Entry<W>>],
+    plan: &GroupPlan<'_, W>,
+    policy: &T,
+) {
+    let mut keys = [(0usize, Entry { x: [0; W], z: [0; W], c: ZERO }); LOCAL_DIM];
+    let mut at = [None::<usize>; LOCAL_DIM];
+    for b in 0..tables.len() {
+        for i in 0..tables[b].len() {
+            if is_set(&done[b], i) {
+                continue;
+            }
+            let e = tables[b].entries()[i];
+            let p = plan.ptm.support_bits(&e.x, &e.z);
+            let component = plan.component[p] as usize;
+            if plan.skip[component] {
+                continue;
+            }
+            let n = plan.sizes[component] as usize;
+            let block = &plan.blocks[plan.offsets[component]..plan.offsets[component] + n * n];
+            if n == 1 {
+                let c = e.c * block[0];
+                if kept(&e.x, &e.z, c, policy) {
+                    *tables[b].coefficient_mut(i) = c;
+                } else {
+                    set(&mut dead[b], i);
+                }
+                continue;
+            }
+            for a in 0..n {
+                let q = plan.members[component][a] as usize;
+                if q == p {
+                    keys[a] = (b, e);
+                    at[a] = Some(i);
+                    continue;
+                }
+                let (j, mut key) = plan.shifted(b, &e.x, &e.z, p ^ q);
+                at[a] = tables[j].find(key_hash(&key.x, &key.z), &key.x, &key.z);
+                if let Some(position) = at[a] {
+                    key.c = tables[j].entries()[position].c;
+                    set(&mut done[j], position);
+                }
+                keys[a] = (j, key);
+            }
+            for a in 0..n {
+                let mut c = ZERO;
+                for m in 0..n {
+                    c += block[a * n + m] * keys[m].1.c;
+                }
+                let (j, key) = keys[a];
+                match (at[a], kept(&key.x, &key.z, c, policy)) {
+                    (Some(position), true) => *tables[j].coefficient_mut(position) = c,
+                    (Some(position), false) => set(&mut dead[j], position),
+                    (None, true) => pending[j].push(Entry { c, ..key }),
+                    (None, false) => {}
+                }
+            }
+        }
+    }
+}
+
+fn walk_rotation<const W: usize, T: TruncationPolicy<W> + ?Sized>(
+    tables: &mut [Table<W>],
+    done: &mut [Vec<u64>],
+    dead: &mut [Vec<u64>],
+    pending: &mut [Vec<Entry<W>>],
     rotation: &PreparedRotation<W>,
     generator_coordinate: u32,
+    policy: &T,
 ) {
-    for (i, table) in tables.iter_mut().enumerate() {
-        table.for_each_mut(|e| {
-            let key = PauliString::<W> { x: e.x, z: e.z };
-            if key.commutes_with(&rotation.generator) {
-                return;
+    let generator = &rotation.generator;
+    for b in 0..tables.len() {
+        let j = b ^ generator_coordinate as usize;
+        for i in 0..tables[b].len() {
+            if is_set(&done[b], i) {
+                continue;
             }
-            let c = e.c;
-            e.c = c * rotation.cos;
-            let mut product = key;
-            let phase = product.mul_assign(&rotation.generator);
-            side[i ^ generator_coordinate as usize].push(Entry {
-                x: product.x,
-                z: product.z,
-                c: (Phase::I + phase).apply(c) * rotation.sin,
-            });
-        });
+            let e = tables[b].entries()[i];
+            let v = PauliString::<W> { x: e.x, z: e.z };
+            if v.commutes_with(generator) {
+                continue;
+            }
+            let mut w = v;
+            let phase_v_to_w = Phase::I + w.mul_assign(generator);
+            let mut back = w;
+            let phase_w_to_v = Phase::I + back.mul_assign(generator);
+            let partner = tables[j].find(key_hash(&w.x, &w.z), &w.x, &w.z);
+            let cw = match partner {
+                Some(position) => {
+                    set(&mut done[j], position);
+                    tables[j].entries()[position].c
+                }
+                None => ZERO,
+            };
+            let new_v = e.c * rotation.cos + phase_w_to_v.apply(cw) * rotation.sin;
+            let new_w = cw * rotation.cos + phase_v_to_w.apply(e.c) * rotation.sin;
+            if kept(&v.x, &v.z, new_v, policy) {
+                *tables[b].coefficient_mut(i) = new_v;
+            } else {
+                set(&mut dead[b], i);
+            }
+            match (partner, kept(&w.x, &w.z, new_w, policy)) {
+                (Some(position), true) => *tables[j].coefficient_mut(position) = new_w,
+                (Some(position), false) => set(&mut dead[j], position),
+                (None, true) => pending[j].push(Entry { x: w.x, z: w.z, c: new_w }),
+                (None, false) => {}
+            }
+        }
     }
 }
 
 /// A slice shared by tasks that each touch pairwise distinct elements.
-pub(super) struct DisjointSlots<'a, T> {
+struct DisjointSlots<'a, T> {
     base: *mut T,
     len: usize,
     _slice: std::marker::PhantomData<&'a mut [T]>,
@@ -402,7 +404,7 @@ pub(super) struct DisjointSlots<'a, T> {
 unsafe impl<T: Send> Sync for DisjointSlots<'_, T> {}
 
 impl<'a, T> DisjointSlots<'a, T> {
-    pub(super) fn new(slice: &'a mut [T]) -> Self {
+    fn new(slice: &'a mut [T]) -> Self {
         Self { base: slice.as_mut_ptr(), len: slice.len(), _slice: std::marker::PhantomData }
     }
 
@@ -410,7 +412,7 @@ impl<'a, T> DisjointSlots<'a, T> {
     ///
     /// No other reference to element `index` may be live while the returned one is.
     #[allow(clippy::mut_from_ref)]
-    pub(super) unsafe fn get(&self, index: usize) -> &mut T {
+    unsafe fn get(&self, index: usize) -> &mut T {
         assert!(index < self.len);
         // SAFETY: in bounds, and exclusive by the caller's contract.
         unsafe { &mut *self.base.add(index) }

@@ -1,4 +1,4 @@
-//! Sorted-column engine against the prototype hash-table kernel, across bucket targets and thread counts.
+//! The sorted-column engine against the hash engine, across bucket targets and thread counts.
 //!
 //! ```bash
 //! source scripts/jcc-rustflags.sh
@@ -8,10 +8,7 @@
 use std::time::Instant;
 
 use num_complex::Complex64;
-use paulistrings::hash_kernel::{
-    propagate_hashed, propagate_indexed, HashOptions, HashScratch, HashSum, IndexedOptions,
-    IndexedScratch, IndexedSum, Kernel, PassTimes,
-};
+use paulistrings::hash_kernel::{propagate_hashed, HashOptions, HashScratch, HashSum};
 use paulistrings::test_support::{
     assert_terms_close, haar_su4_matrix, heavy_hex_127_edges, rand_sum,
     sqrt_swap_matrix, zz_rotation, KeepAll,
@@ -41,13 +38,7 @@ fn parse() -> Config {
         reps: 10,
         threads: vec![1],
         targets: vec![256, 1024, 4096, 16384, 65536, usize::MAX],
-        engines: vec![
-            "sorted".into(),
-            "scatter".into(),
-            "orbit".into(),
-            "fused".into(),
-            "indexed".into(),
-        ],
+        engines: vec!["sorted".into(), "hashed".into()],
         threshold: None,
         check: false,
     };
@@ -70,12 +61,6 @@ fn parse() -> Config {
             "--targets" => cfg.targets = sizes(value),
             "--engines" => cfg.engines = list(value),
             "--threshold" => cfg.threshold = Some(value.parse().unwrap()),
-            "--prefetch" => paulistrings::hash_kernel::set_prefetch_slots(value.parse().unwrap()),
-            "--warm" => {
-                paulistrings::hash_kernel::WARM.store(true, std::sync::atomic::Ordering::Relaxed);
-                i += 1;
-                continue;
-            }
             "--check" => {
                 cfg.check = true;
                 i += 1;
@@ -175,12 +160,11 @@ fn sorted_options(target: usize) -> PropagateOptions {
     }
 }
 
-fn hashed_options(target: usize, kernel: Kernel) -> HashOptions {
+fn hashed_options(target: usize) -> HashOptions {
     if target == usize::MAX {
-        HashOptions { target_bucket_len: usize::MAX / 2, min_buckets: 1, kernel }
+        HashOptions { target_bucket_len: usize::MAX / 2, min_buckets: 1 }
     } else {
-        let defaults = PropagateOptions::default();
-        HashOptions { target_bucket_len: target, min_buckets: defaults.min_buckets, kernel }
+        HashOptions { target_bucket_len: target, min_buckets: PropagateOptions::default().min_buckets }
     }
 }
 
@@ -218,10 +202,9 @@ fn run_hashed<const W: usize, P: TruncationPolicy<W>>(
     cfg: &Config,
     policy: &P,
     target: usize,
-    kernel: Kernel,
 ) -> (Cell, PauliSum<W>) {
     let circuit = circuit::<W>(layer, cfg);
-    let options = hashed_options(target, kernel);
+    let options = hashed_options(target);
     let mut scratch = HashScratch::<W>::new();
     let mut sum = HashSum::from_pauli_sum(&input::<W>(layer, cfg));
     if !is_trotter(layer) {
@@ -234,48 +217,13 @@ fn run_hashed<const W: usize, P: TruncationPolicy<W>>(
     let wall_ns = started.elapsed().as_nanos() as u64;
     let cpu_ns = cpu_ns() - cpu;
     let times = scratch.take_times();
-    let entry_bytes = std::mem::size_of::<([u64; W], [u64; W], Complex64)>() + 1;
+    let busy = (times.walk_ns + times.remove_ns + times.append_ns).max(1) as f64;
     let detail = format!(
-        "{} | load {:.2} | {:.0} B/term",
-        pass_detail(&times, terms_in, cfg),
-        sum.len() as f64 / sum.capacity().max(1) as f64,
-        (sum.capacity() * entry_bytes) as f64 / sum.len().max(1) as f64,
-    );
-    let cell = Cell {
-        wall_ns,
-        cpu_ns,
-        terms: if is_trotter(layer) { sum.len() } else { terms_in },
-        buckets: sum.num_buckets(),
-        detail,
-    };
-    (cell, sum.to_pauli_sum())
-}
-
-fn run_indexed<const W: usize, P: TruncationPolicy<W>>(
-    layer: &str,
-    cfg: &Config,
-    policy: &P,
-    target: usize,
-) -> (Cell, PauliSum<W>) {
-    let circuit = circuit::<W>(layer, cfg);
-    let sizing = hashed_options(target, Kernel::Orbit);
-    let options =
-        IndexedOptions { target_bucket_len: sizing.target_bucket_len, min_buckets: sizing.min_buckets };
-    let mut scratch = IndexedScratch::<W>::new();
-    let mut sum = IndexedSum::from_pauli_sum(&input::<W>(layer, cfg));
-    if !is_trotter(layer) {
-        propagate_indexed(&circuit, &mut sum, policy, Direction::Heisenberg, &mut scratch, options);
-        scratch.take_times();
-    }
-    let terms_in = sum.len();
-    let (started, cpu) = (Instant::now(), cpu_ns());
-    propagate_indexed(&circuit, &mut sum, policy, Direction::Heisenberg, &mut scratch, options);
-    let wall_ns = started.elapsed().as_nanos() as u64;
-    let cpu_ns = cpu_ns() - cpu;
-    let times = scratch.take_times();
-    let detail = format!(
-        "{} | {:.0} B/term",
-        pass_detail(&times, terms_in, cfg),
+        "walk {:.0}% remove {:.0}% append {:.0}% | appended/term-layer {:.2} | {:.0} B/term",
+        100.0 * times.walk_ns as f64 / busy,
+        100.0 * times.remove_ns as f64 / busy,
+        100.0 * times.append_ns as f64 / busy,
+        times.appended as f64 / (terms_in.max(1) * cfg.reps) as f64,
         sum.bytes() as f64 / sum.len().max(1) as f64,
     );
     let cell = Cell {
@@ -286,18 +234,6 @@ fn run_indexed<const W: usize, P: TruncationPolicy<W>>(
         detail,
     };
     (cell, sum.to_pauli_sum())
-}
-
-/// Pass shares and emitted rows; for `indexed` the passes are walk, append and remove.
-fn pass_detail(times: &PassTimes, terms_in: usize, cfg: &Config) -> String {
-    let busy = (times.emit_ns + times.accumulate_ns + times.retain_ns).max(1) as f64;
-    format!(
-        "pass1 {:.0}% pass2 {:.0}% pass3 {:.0}% | rows/term-layer {:.2}",
-        100.0 * times.emit_ns as f64 / busy,
-        100.0 * times.accumulate_ns as f64 / busy,
-        100.0 * times.retain_ns as f64 / busy,
-        times.rows_emitted as f64 / (terms_in.max(1) * cfg.reps) as f64,
-    )
 }
 
 fn run<const W: usize, P: TruncationPolicy<W>>(cfg: &Config, policy: &P) {
@@ -313,10 +249,7 @@ fn run<const W: usize, P: TruncationPolicy<W>>(cfg: &Config, policy: &P) {
                 for engine in &cfg.engines {
                     let (cell, output) = pool.install(|| match engine.as_str() {
                         "sorted" => run_sorted::<W, P>(layer, cfg, policy, target),
-                        "scatter" => run_hashed::<W, P>(layer, cfg, policy, target, Kernel::Scatter),
-                        "orbit" => run_hashed::<W, P>(layer, cfg, policy, target, Kernel::Orbit),
-                        "fused" => run_hashed::<W, P>(layer, cfg, policy, target, Kernel::Fused),
-                        "indexed" => run_indexed::<W, P>(layer, cfg, policy, target),
+                        "hashed" => run_hashed::<W, P>(layer, cfg, policy, target),
                         other => panic!("unknown engine {other}"),
                     });
                     let units = if is_trotter(layer) {

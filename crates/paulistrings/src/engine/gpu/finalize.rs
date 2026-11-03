@@ -1,5 +1,6 @@
 //! [`ApproxTopN`](crate::truncation::ApproxTopN)'s layer pass on device by octave histogram, and exact [`TopN`](crate::truncation::TopN)'s on one device by radix-select.
 
+use crate::coefficient::Coefficient;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
 use super::columns::{grow, DeviceColumns};
@@ -25,9 +26,9 @@ fn whole_sum_launch(buckets: usize) -> LaunchConfig {
 }
 
 /// `[len, bin 0, …, bin 2047]` of `sum`, the packed layout of the host's collective `ApproxTopN` pass.
-fn octave_histogram_device<const W: usize>(
-    sum: &GpuSum<W>,
-    scratch: &mut LayerScratch<W>,
+fn octave_histogram_device<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
 ) -> Result<Vec<u64>, GpuError> {
     let stream = sum.stream.clone();
     let buckets = sum.hash.num_buckets();
@@ -53,7 +54,7 @@ fn octave_histogram_device<const W: usize>(
 }
 
 /// Clear `sum` on device.
-fn clear_device<const W: usize>(sum: &mut GpuSum<W>) -> Result<(), GpuError> {
+fn clear_device<const W: usize, C: Coefficient>(sum: &mut GpuSum<W, C>) -> Result<(), GpuError> {
     let buckets = sum.hash.num_buckets();
     sum.stream.memset_zeros(&mut sum.columns.lengths.slice_mut(0..buckets))?;
     sum.columns.len = 0;
@@ -62,9 +63,9 @@ fn clear_device<const W: usize>(sum: &mut GpuSum<W>) -> Result<(), GpuError> {
 }
 
 /// Apply `edge` to `sum` in place of [`retain_at_edge`](crate::truncation::builtin::retain_at_edge), keeping `local_quota` boundary-octave terms, each bucket's order and its start offset.
-fn retain_at_edge_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    scratch: &mut LayerScratch<W>,
+fn retain_at_edge_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
     edge: EdgeDecision,
     local_quota: usize,
 ) -> Result<(), GpuError> {
@@ -79,8 +80,8 @@ fn retain_at_edge_device<const W: usize>(
 
 /// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, histogram…]`, the edge, at a boundary one more of the per-rank boundary counts, retain.
 /// `sum` is `None` on a partition that already failed; it still enters both reductions, with zeros, so the group stays in lock-step.
-pub(crate) fn approx_top_n_device<const W: usize>(
-    sum: Option<(&mut GpuSum<W>, &mut LayerScratch<W>)>,
+pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
+    sum: Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)>,
     n: usize,
     collectives: &dyn Collectives,
 ) -> Result<(), GpuError> {
@@ -116,9 +117,9 @@ pub(crate) fn approx_top_n_device<const W: usize>(
 }
 
 /// The radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down, and its rank among the terms tied at it, which is how many of them `TopN(n)` keeps.
-fn radix_select_bits<const W: usize>(
-    sum: &GpuSum<W>,
-    scratch: &mut LayerScratch<W>,
+fn radix_select_bits<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
     n: usize,
 ) -> Result<(u64, u64), GpuError> {
     let stream = sum.stream.clone();
@@ -189,9 +190,9 @@ fn radix_select_bits<const W: usize>(
 
 /// Keep the terms whose `|c|²` bits shifted right by `shift` exceed `boundary`, plus the first `quota` equal to it in bucket order, in each bucket's order and at its start offset.
 /// The quota is split by a per-bucket count and an exclusive scan, so the kept equal terms are the first `quota` in bucket order, never a race winner.
-fn retain_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    scratch: &mut LayerScratch<W>,
+fn retain_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
     boundary: u64,
     shift: u32,
     quota: u64,
@@ -203,7 +204,7 @@ fn retain_device<const W: usize>(
     let extent = scratch.extent.max(sum.len());
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, extent, buckets)?,
+        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, extent, buckets)?,
     };
     out.len = 0;
     out.buckets = 0;
@@ -278,9 +279,9 @@ fn retain_device<const W: usize>(
 }
 
 /// One `TopN(n)` layer pass on one device: [`radix_select_bits`] gives the `n`-th largest `|c|²` and how many terms tied at it fit, then [`retain_device`].
-pub(crate) fn top_n_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    scratch: &mut LayerScratch<W>,
+pub(crate) fn top_n_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
     n: usize,
 ) -> Result<(), GpuError> {
     if sum.len() <= n {

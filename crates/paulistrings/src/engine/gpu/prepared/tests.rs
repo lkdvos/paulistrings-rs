@@ -154,7 +154,7 @@ fn restrict_renumbers_the_chosen_entries_and_sources_them_locally() {
     assert_eq!((r.entries, r.received_entries, r.key_preserving), (3, 0, false));
     assert_eq!(r.dense, su4.dense);
     for (j, &e) in pick.iter().enumerate() {
-        let a = LOCAL_DIM * 2;
+        let a = LOCAL_DIM;
         assert_eq!(r.amplitude[j * a..(j + 1) * a], su4.amplitude[e * a..(e + 1) * a]);
         assert_eq!(r.mask[j * 4..(j + 1) * 4], su4.mask[e * 4..(e + 1) * 4]);
         assert_eq!(

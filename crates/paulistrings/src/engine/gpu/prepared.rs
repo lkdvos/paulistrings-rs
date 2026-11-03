@@ -1,6 +1,7 @@
 //! [`DevicePrepared`], one prepared channel in the layout `kernels/prelude.cuh`'s `Table` reads.
 
 use crate::coefficient::Coefficient;
+use num_complex::Complex64;
 
 use super::fingerprint::FingerprintRows;
 use crate::channel::prepared::{Prepared, LOCAL_DIM};
@@ -18,7 +19,7 @@ const DENSE_ROWS_PER_PATTERN: f64 = 2.0;
 
 /// A prepared channel's tables as the kernels take them; `bucket_delta` is recomputed from the masks for the current hash, so a refine between `prepare` and the layer costs no second `prepare`.
 #[derive(Clone, Debug)]
-pub(crate) struct DevicePrepared<const W: usize> {
+pub(crate) struct DevicePrepared<const W: usize, C = Complex64> {
     /// `MODE_LOCAL` or `MODE_ROTATION`.
     pub(crate) mode: u32,
     pub(crate) entries: usize,
@@ -27,8 +28,8 @@ pub(crate) struct DevicePrepared<const W: usize> {
     pub(crate) qubit_1: u32,
     pub(crate) rotation_cos: f64,
     pub(crate) rotation_sin: f64,
-    /// `16 × LOCAL_DIM` complex amplitudes as f64 pairs.
-    pub(crate) amplitude: Vec<f64>,
+    /// `16 × LOCAL_DIM` amplitudes, entry-major.
+    pub(crate) amplitude: Vec<C>,
     /// 16 entries of `(x-mask, z-mask)` word pairs in the prelude's row layout.
     pub(crate) mask: Vec<u64>,
     /// Per entry, bit `s` set when pattern `s` emits.
@@ -54,7 +55,12 @@ pub(crate) struct DevicePrepared<const W: usize> {
     masks: Vec<([u64; W], [u64; W])>,
 }
 
-impl<const W: usize> DevicePrepared<W> {
+/// `r` widened to `f64` exactly, as the kernels take a rotation's cos and sin and narrow them back to `real_t`.
+fn widen<C: Coefficient>(r: C::Real) -> f64 {
+    (C::ONE * r).to_complex64().re
+}
+
+impl<const W: usize, C: Coefficient> DevicePrepared<W, C> {
     /// `remote` names the entries whose rows arrive from a partner instead of a local bucket, in the plan's order.
     pub(crate) fn new(
         prepared: &Prepared<W, C>,
@@ -62,7 +68,7 @@ impl<const W: usize> DevicePrepared<W> {
         fingerprints: &FingerprintRows<W>,
         remote: &[RemoteDelta],
     ) -> Self {
-        let mut amplitude = vec![0f64; 16 * LOCAL_DIM * 2];
+        let mut amplitude = vec![C::ZERO; 16 * LOCAL_DIM];
         let mut nonzero_patterns = vec![0u32; 16];
         let mut masks: Vec<([u64; W], [u64; W])> = Vec::new();
         let mut entry_of = vec![NO_ENTRY; LOCAL_DIM];
@@ -84,8 +90,7 @@ impl<const W: usize> DevicePrepared<W> {
                 one_entry_per_pattern = true;
                 for (e, d) in ptm.deltas().iter().enumerate() {
                     for s in 0..LOCAL_DIM {
-                        amplitude[(e * LOCAL_DIM + s) * 2] = d.amplitude[s].re;
-                        amplitude[(e * LOCAL_DIM + s) * 2 + 1] = d.amplitude[s].im;
+                        amplitude[e * LOCAL_DIM + s] = d.amplitude[s];
                         if d.amplitude[s] != C::ZERO {
                             nonzero_patterns[e] |= 1 << s;
                             if s < dim {
@@ -118,8 +123,8 @@ impl<const W: usize> DevicePrepared<W> {
                 support_size = 0;
                 qubit_0 = 0;
                 qubit_1 = 0;
-                rotation_cos = r.cos;
-                rotation_sin = r.sin;
+                rotation_cos = widen::<C>(r.cos);
+                rotation_sin = widen::<C>(r.sin);
                 dense = false;
                 key_preserving = false;
             }
@@ -207,14 +212,14 @@ impl<const W: usize> DevicePrepared<W> {
         assert!(self.mode == 0, "only a tabulated channel restricts");
         let mut t = self.clone();
         t.entries = entries.len();
-        t.amplitude.fill(0.0);
+        t.amplitude.fill(C::ZERO);
         t.mask.fill(0);
         t.nonzero_patterns.fill(0);
         t.bucket_delta.fill(0);
         t.fingerprint_delta.fill(0);
         t.received_slot.fill(NO_REMOTE);
         t.masks.clear();
-        let a = LOCAL_DIM * 2;
+        let a = LOCAL_DIM;
         for (j, &e) in entries.iter().enumerate() {
             t.amplitude[j * a..(j + 1) * a].copy_from_slice(&self.amplitude[e * a..(e + 1) * a]);
             t.mask[j * 2 * W..(j + 1) * 2 * W]

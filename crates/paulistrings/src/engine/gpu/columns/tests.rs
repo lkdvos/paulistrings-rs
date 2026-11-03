@@ -40,7 +40,7 @@ fn reserve_keeps_the_live_terms_and_csr() {
     let g: Vec<u64> = vec![7, 8, 9];
     s.memcpy_htod(&x, &mut columns.x).unwrap();
     s.memcpy_htod(&z, &mut columns.z).unwrap();
-    s.memcpy_htod(&c, &mut columns.coeff).unwrap();
+    s.memcpy_htod(bytemuck::cast_slice::<f64, u8>(&c), &mut columns.coeff).unwrap();
     s.memcpy_htod(&g, &mut columns.fingerprint).unwrap();
     s.memcpy_htod(&[0u32, 1, 3], &mut columns.start).unwrap();
     s.memcpy_htod(&[1u32, 2], &mut columns.lengths).unwrap();
@@ -52,7 +52,14 @@ fn reserve_keeps_the_live_terms_and_csr() {
     assert_eq!(columns.term_capacity(), 1000);
     assert_eq!(s.clone_dtoh(&columns.x.slice(0..6)).unwrap(), x);
     assert_eq!(s.clone_dtoh(&columns.z.slice(0..6)).unwrap(), z);
-    assert_eq!(s.clone_dtoh(&columns.coeff.slice(0..6)).unwrap(), c);
+    let coeff = s.clone_dtoh(&columns.coeff.slice(0..6 * size_of::<f64>())).unwrap();
+    assert_eq!(
+        coeff
+            .chunks_exact(8)
+            .map(|b| f64::from_ne_bytes(b.try_into().unwrap()))
+            .collect::<Vec<_>>(),
+        c
+    );
     assert_eq!(s.clone_dtoh(&columns.fingerprint.slice(0..3)).unwrap(), g);
     assert_eq!(s.clone_dtoh(&columns.start.slice(0..3)).unwrap(), vec![0, 1, 3]);
     assert_eq!(s.clone_dtoh(&columns.lengths.slice(0..2)).unwrap(), vec![1, 2]);

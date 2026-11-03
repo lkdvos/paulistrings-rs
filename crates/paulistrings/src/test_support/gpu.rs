@@ -1,5 +1,8 @@
 //! Device hooks for tests, benches and the probe: fault injection on the device drivers and the crate-private `GpuSum` checks.
 
+use num_complex::Complex64;
+
+use crate::coefficient::Coefficient;
 use crate::engine::gpu::partition::DevicePartition;
 use crate::engine::gpu::{GpuError, GpuPartitionedSum, GpuSum};
 use crate::engine::partitioned::{DistributedSum, PartitionedSum};
@@ -9,19 +12,23 @@ use crate::pauli_sum::PauliSum;
 pub use crate::engine::gpu::{FaultPlan, WireFault};
 
 /// A device driver whose partitions a test can reach by rank.
-pub trait DeviceSplit<const W: usize> {
+pub trait DeviceSplit<const W: usize, C: Coefficient = Complex64> {
     #[doc(hidden)]
-    fn device_partition_mut(&mut self, rank: usize) -> &mut DevicePartition<W>;
+    fn device_partition_mut(&mut self, rank: usize) -> &mut DevicePartition<W, C>;
 }
 
-impl<const W: usize> DeviceSplit<W> for PartitionedSum<W, DevicePartition<W>> {
-    fn device_partition_mut(&mut self, rank: usize) -> &mut DevicePartition<W> {
+impl<const W: usize, C: Coefficient> DeviceSplit<W, C>
+    for PartitionedSum<W, C, DevicePartition<W, C>>
+{
+    fn device_partition_mut(&mut self, rank: usize) -> &mut DevicePartition<W, C> {
         &mut self.backends_mut()[rank]
     }
 }
 
-impl<const W: usize, X: Transport> DeviceSplit<W> for DistributedSum<W, X, DevicePartition<W>> {
-    fn device_partition_mut(&mut self, rank: usize) -> &mut DevicePartition<W> {
+impl<const W: usize, C: Coefficient, X: Transport> DeviceSplit<W, C>
+    for DistributedSum<W, X, C, DevicePartition<W, C>>
+{
+    fn device_partition_mut(&mut self, rank: usize) -> &mut DevicePartition<W, C> {
         assert_eq!(
             rank,
             self.rank() as usize,
@@ -32,8 +39,8 @@ impl<const W: usize, X: Transport> DeviceSplit<W> for DistributedSum<W, X, Devic
 }
 
 /// Arm `plan` on partition `rank` of `split`, every fault firing once from the next call; a distributed split takes its own rank only.
-pub fn set_fault_plan<const W: usize>(
-    split: &mut impl DeviceSplit<W>,
+pub fn set_fault_plan<const W: usize, C: Coefficient>(
+    split: &mut impl DeviceSplit<W, C>,
     rank: usize,
     plan: FaultPlan,
 ) {
@@ -41,20 +48,25 @@ pub fn set_fault_plan<const W: usize>(
 }
 
 /// `sum`'s device-side structural invariant, order within a bucket free: the first class of violation, or the device error that stopped the check.
-pub fn assert_invariants_device<const W: usize>(sum: &GpuSum<W>) -> Result<(), String> {
+pub fn assert_invariants_device<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+) -> Result<(), String> {
     sum.assert_invariants_device()
 }
 
 /// Refine `sum` until its bucket count is `1 << bits`, up to four bits per counting pass.
-pub fn refine_to<const W: usize>(sum: &mut GpuSum<W>, bits: u8) -> Result<(), GpuError> {
+pub fn refine_to<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    bits: u8,
+) -> Result<(), GpuError> {
     sum.refine_to(bits)
 }
 
 /// [`GpuPartitionedSum::from_host`] with extra NVRTC options, such as the `-DFINGERPRINT_BITS=<b>` collision hook.
-pub fn from_host_with_nvrtc_options<const W: usize>(
-    sum: &PauliSum<W>,
+pub fn from_host_with_nvrtc_options<const W: usize, C: Coefficient>(
+    sum: &PauliSum<W, C>,
     device: u32,
     extra_options: &[String],
-) -> Result<GpuPartitionedSum<W>, GpuError> {
+) -> Result<GpuPartitionedSum<W, C>, GpuError> {
     GpuPartitionedSum::one_device(sum, device, extra_options)
 }

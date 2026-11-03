@@ -1,5 +1,7 @@
 //! [`GpuDistributedSum`], [`DistributedSum`] over one device partition per process, with the MPI front door `MpiGpuSum` and the device pick `local_device_for_comm` (feature `mpi`).
 
+use crate::coefficient::Coefficient;
+use num_complex::Complex64;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -61,15 +63,16 @@ fn agree<T>(collectives: &dyn Collectives, result: Result<T, GpuError>) -> Resul
 /// A group of more than one rank moves its exchange columns device to device over NCCL (features `cuda` and `mpi`), started at scatter: a rank that cannot load NCCL, or two ranks on one device, fail the scatter on every rank.
 /// Device failures are agreed over the group: a scatter, propagate or gather that fails on any rank fails on every rank, with that rank's own error on the failing one and [`GpuError::Poisoned`] naming it on its peers, so the group never falls out of step.
 /// After a failed `propagate` a group of more than one rank is poisoned, as a [`GpuPartitionedSum`](super::GpuPartitionedSum) is, until the caller scatters again.
-pub type GpuDistributedSum<const W: usize, X> = DistributedSum<W, X, DevicePartition<W>>;
+pub type GpuDistributedSum<const W: usize, X, C = Complex64> =
+    DistributedSum<W, X, C, DevicePartition<W, C>>;
 
 /// [`GpuDistributedSum`] over MPI: one CUDA device per rank.
 ///
 /// The universe is the application's, as for [`MpiSum`](crate::engine::partitioned::mpi::MpiSum); pick each rank's device with [`local_device_for_comm`].
 #[cfg(feature = "mpi")]
-pub type MpiGpuSum<const W: usize> = GpuDistributedSum<W, MpiTransport>;
+pub type MpiGpuSum<const W: usize, C = Complex64> = GpuDistributedSum<W, MpiTransport, C>;
 
-impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
+impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C, DevicePartition<W, C>> {
     /// Split the replicated `sum` across `transport`'s group by seeded rows ([`PartitionRowPolicy::Seeded`] at the sum's own hash seed), and upload this rank's share to `device`. **Collective.**
     ///
     /// # Errors
@@ -115,7 +118,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         transport: X,
         (runtime, layer): (Result<Arc<PartitionRuntime>, GpuError>, GpuLayerOptions),
         rows: PartitionRows<W>,
-        start: impl FnOnce(&X, &mut DevicePartition<W>) -> Result<(), GpuError>,
+        start: impl FnOnce(&X, &mut DevicePartition<W, C>) -> Result<(), GpuError>,
     ) -> Result<Self, GpuError> {
         let (rank, size) = (transport.rank(), transport.size());
         layer.assert_valid();
@@ -175,7 +178,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
         let single = self.size() == 1;
         let partition = self.backend_mut();
         partition.check_poison()?;
-        let keep = lower_for_run(circuit, &policy, direction, partition.hash(), single)?;
+        let keep = lower_for_run::<W, C>(circuit, &policy, direction, partition.hash(), single)?;
         // A stale error stays recorded: this rank skips every layer in step with its peers, and the agreement after the loop returns it.
         partition.resync_hash();
         partition.keep = keep;
@@ -253,9 +256,9 @@ fn lone_device(runtime: &PartitionRuntime) -> Result<u32, GpuError> {
 }
 
 /// Nothing at one rank; above it, start NCCL for the group (feature `mpi`), which is the only exchange a device group over a transport has. **Collective.**
-fn start_exchange<const W: usize, X: Transport>(
+fn start_exchange<const W: usize, C: Coefficient, X: Transport>(
     transport: &X,
-    partition: &mut DevicePartition<W>,
+    partition: &mut DevicePartition<W, C>,
 ) -> Result<(), GpuError> {
     if transport.size() == 1 {
         return Ok(());
@@ -273,9 +276,9 @@ fn start_exchange<const W: usize, X: Transport>(
 
 /// Agree that the group can start NCCL, then bootstrap and warm up the communicator. **Collective.**
 #[cfg(feature = "mpi")]
-fn start_nccl<const W: usize>(
+fn start_nccl<const W: usize, C: Coefficient>(
     collectives: &dyn Collectives,
-    partition: &mut DevicePartition<W>,
+    partition: &mut DevicePartition<W, C>,
 ) -> Result<(), GpuError> {
     use super::nccl::{self, NcclComm};
     use super::wire::DeviceWire;
@@ -324,7 +327,7 @@ fn bootstrap<C>(
 ///
 /// As [`GpuDistributedSum::scatter_to_device`], [`propagate`](GpuDistributedSum::propagate) and [`gather`](GpuDistributedSum::gather), plus [`GpuError::NoDevice`] from the device pick — every one agreed over the group.
 #[cfg(feature = "mpi")]
-pub fn propagate_mpi_gpu<const W: usize>(
+pub fn propagate_mpi_gpu<const W: usize, C: Coefficient>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W, C>,
     policy: impl Into<BuiltinTruncation>,
@@ -339,7 +342,7 @@ pub fn propagate_mpi_gpu<const W: usize>(
         None => local_device_for_comm(comm),
     };
     let device = agree(&transport, picked)?;
-    let mut split = MpiGpuSum::<W>::scatter_to_device(sum, transport, device)?;
+    let mut split = MpiGpuSum::<W, C>::scatter_to_device(sum, transport, device)?;
     split.propagate_with(circuit, policy, direction, options)?;
     split.gather()
 }

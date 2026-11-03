@@ -2,17 +2,18 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::coefficient::Coefficient;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, PushKernelArg};
+use num_complex::Complex64;
 use rayon::prelude::*;
 
 use super::columns::DeviceColumns;
 use super::device;
 use super::error::GpuError;
 use super::fingerprint::FingerprintRows;
-use super::module::{self, thread_per, warp_per_bucket, KernelSet};
+use super::module::{self, thread_per, warp_per_bucket, CoefficientLayout, KernelSet};
 use super::scan::{exclusive_scan, ScanScratch};
 use super::staging::HostStaging;
+use crate::coefficient::Coefficient;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
@@ -40,17 +41,17 @@ fn flat_rows<const W: usize>(rows: impl Iterator<Item = ([u64; W], [u64; W])>) -
 ///
 /// Within a bucket keys are unique in no particular order; [`Self::to_host`] restores the host order.
 /// [`Self::from_host`] and [`Self::to_host`] round-trip bitwise, bucket by bucket, under the host sum's [`Gf2Hash`].
-/// Resident device memory is `16·W + 24` bytes per term plus `8` per bucket, doubled once a refine has run.
+/// Resident device memory is `16·W + 8` bytes per term plus its coefficient (`size_of::<C>()`, 4 to 16 bytes) and `8` per bucket, doubled once a refine has run.
 /// Every fallible operation returns a [`GpuError`], device allocation failure as [`GpuError::OutOfMemory`].
-pub struct GpuSum<const W: usize> {
+pub struct GpuSum<const W: usize, C: Coefficient = Complex64> {
     pub(super) context: Arc<CudaContext>,
     pub(super) stream: Arc<CudaStream>,
     pub(super) kernels: Arc<KernelSet>,
     pub(super) hash: Gf2Hash<W>,
     pub(super) num_qubits: usize,
-    pub(super) columns: DeviceColumns<W>,
+    pub(super) columns: DeviceColumns<W, C>,
     /// The previous columns, kept as the next refine's or layer's target.
-    pub(super) spare: Option<DeviceColumns<W>>,
+    pub(super) spare: Option<DeviceColumns<W, C>>,
     /// The rows of `hash` up to [`Self::max_bits`], so a refine uploads nothing.
     pub(super) hash_rows: CudaSlice<u64>,
     /// `FingerprintRows::new(hash.seed())`, and its rows in device layout.
@@ -59,7 +60,7 @@ pub struct GpuSum<const W: usize> {
     /// The refine's scan buffers and `[total, max]`.
     scan: (ScanScratch, CudaSlice<u32>),
     /// Page-locked download staging, allocated on first [`Self::to_host`] and reused.
-    staging: Mutex<HostStaging>,
+    staging: Mutex<HostStaging<C>>,
 }
 
 /// `k_fingerprint`: the fingerprint of rows `0..n` of `(x, z)` into `g`, enqueued on `stream`.
@@ -89,11 +90,11 @@ pub(super) fn launch_fingerprint(
     Ok(())
 }
 
-impl<const W: usize> GpuSum<W> {
+impl<const W: usize, C: Coefficient> GpuSum<W, C> {
     /// Upload `sum` to device `ordinal`, bucket by bucket in the host's order, and compute every term's fingerprint on the device.
-    /// The first call per `(ordinal, W)` compiles the kernels through NVRTC.
+    /// The first call per `(ordinal, W, C)` compiles the kernels through NVRTC.
     pub fn from_host(sum: &PauliSum<W, C>, ordinal: u32) -> Result<Self, GpuError> {
-        Self::upload(sum, ordinal, module::kernel_set(ordinal, W)?)
+        Self::upload(sum, ordinal, module::kernel_set(ordinal, W, CoefficientLayout::of::<C>())?)
     }
 
     /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook.
@@ -102,7 +103,16 @@ impl<const W: usize> GpuSum<W> {
         ordinal: u32,
         extra_options: &[String],
     ) -> Result<Self, GpuError> {
-        Self::upload(sum, ordinal, module::kernel_set_with_options(ordinal, W, extra_options)?)
+        Self::upload(
+            sum,
+            ordinal,
+            module::kernel_set_with_options(
+                ordinal,
+                W,
+                CoefficientLayout::of::<C>(),
+                extra_options,
+            )?,
+        )
     }
 
     fn upload(
@@ -114,11 +124,11 @@ impl<const W: usize> GpuSum<W> {
         let stream = context.new_stream()?;
         let hash = sum.hash().clone();
         let (n, b) = (sum.len(), hash.num_buckets());
-        let mut columns = DeviceColumns::<W>::with_capacity(&stream, ordinal, n, b)?;
+        let mut columns = DeviceColumns::<W, C>::with_capacity(&stream, ordinal, n, b)?;
 
         let mut x = Vec::with_capacity(n * W);
         let mut z = Vec::with_capacity(n * W);
-        let mut c: Vec<f64> = Vec::with_capacity(2 * n);
+        let mut c: Vec<C> = Vec::with_capacity(n);
         let mut start = Vec::with_capacity(b + 1);
         let mut lens = Vec::with_capacity(b);
         for bucket in 0..b {
@@ -127,13 +137,13 @@ impl<const W: usize> GpuSum<W> {
             lens.push(bucket_coeff.len() as u32);
             x.extend_from_slice(bucket_x.as_flattened());
             z.extend_from_slice(bucket_z.as_flattened());
-            c.extend_from_slice(bytemuck::cast_slice::<C, f64>(bucket_coeff));
+            c.extend_from_slice(bucket_coeff);
         }
         start.push(n as u32);
         if n > 0 {
             stream.memcpy_htod(&x, &mut columns.x)?;
             stream.memcpy_htod(&z, &mut columns.z)?;
-            stream.memcpy_htod(&c, &mut columns.coeff)?;
+            stream.memcpy_htod(bytemuck::cast_slice::<C, u8>(&c), &mut columns.coeff)?;
         }
         stream.memcpy_htod(&start, &mut columns.start)?;
         stream.memcpy_htod(&lens, &mut columns.lengths)?;
@@ -199,17 +209,17 @@ impl<const W: usize> GpuSum<W> {
                 staging.z.slice_mut(extent * W),
             )?;
             stream.memcpy_dtoh(
-                &self.columns.coeff.slice(0..2 * extent),
-                staging.coeff.slice_mut(2 * extent),
+                &self.columns.coeff.slice(0..extent * DeviceColumns::<W, C>::COEFFICIENT_BYTES),
+                bytemuck::cast_slice_mut::<C, u8>(staging.coeff.slice_mut(extent)),
             )?;
             stream.synchronize()?;
         }
-        let buckets = gather_sorted::<W>(
+        let buckets = gather_sorted::<W, C>(
             &start,
             &lens,
             staging.x.slice(extent * W),
             staging.z.slice(extent * W),
-            staging.coeff.slice(2 * extent),
+            staging.coeff.slice(extent),
         );
         Ok(PauliSum::from_buckets(buckets, self.hash.clone(), self.num_qubits))
     }
@@ -424,12 +434,12 @@ impl<const W: usize> GpuSum<W> {
 }
 
 /// Gather every bucket from the staged columns, sorting any bucket that is not already strictly ascending.
-fn gather_sorted<const W: usize>(
+fn gather_sorted<const W: usize, C: Coefficient>(
     start: &[u32],
     lens: &[u32],
     staged_x: &[u64],
     staged_z: &[u64],
-    staged_coeff: &[f64],
+    staged_coeff: &[C],
 ) -> Vec<BucketColumns<W, C>> {
     (0..lens.len())
         .into_par_iter()
@@ -438,7 +448,7 @@ fn gather_sorted<const W: usize>(
             let key = |column: &[u64], r: usize| -> [u64; W] {
                 std::array::from_fn(|w| column[r * W + w])
             };
-            let coeff = |r: usize| C::new(staged_coeff[2 * r], staged_coeff[2 * r + 1]);
+            let coeff = |r: usize| staged_coeff[r];
             let ascending = (first + 1..first + len).all(|r| {
                 (key(staged_x, r - 1), key(staged_z, r - 1)) < (key(staged_x, r), key(staged_z, r))
             });

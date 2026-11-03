@@ -1,5 +1,27 @@
 use super::*;
 use cudarc::driver::PushKernelArg;
+use num_complex::{Complex32, Complex64};
+
+fn c128() -> CoefficientLayout {
+    CoefficientLayout::of::<Complex64>()
+}
+
+/// Every coefficient type's layout, `Coefficient::NAME` order.
+fn every_layout() -> [CoefficientLayout; 4] {
+    [
+        CoefficientLayout::of::<f64>(),
+        CoefficientLayout::of::<f32>(),
+        CoefficientLayout::of::<Complex64>(),
+        CoefficientLayout::of::<Complex32>(),
+    ]
+}
+
+#[test]
+fn a_layout_has_its_types_bytes_and_name() {
+    let layouts = every_layout();
+    assert_eq!(layouts.map(CoefficientLayout::bytes), [8, 4, 16, 8]);
+    assert_eq!(layouts.map(CoefficientLayout::name), ["f64", "f32", "c128", "c64"]);
+}
 
 /// CI-runnable: needs NVRTC only, no device or driver.
 #[test]
@@ -8,18 +30,26 @@ fn kernels_compile_for_every_width() {
         return;
     }
     for w in [1usize, 2, 4, 8, 16] {
-        compile_ptx(w, "compute_80", &[], kernel_cache::directory())
-            .unwrap_or_else(|e| panic!("W={w}: {e}"));
+        for layout in every_layout() {
+            compile_ptx(w, layout, "compute_80", &[], kernel_cache::directory())
+                .unwrap_or_else(|e| panic!("W={w} {}: {e}", layout.name()));
+        }
     }
-    compile_ptx(2, "compute_80", &["-DFINGERPRINT_BITS=8".to_string()], kernel_cache::directory())
-        .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
+    compile_ptx(
+        2,
+        c128(),
+        "compute_80",
+        &["-DFINGERPRINT_BITS=8".to_string()],
+        kernel_cache::directory(),
+    )
+    .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
 }
 
 #[test]
 fn layer_variants_cover_the_record_cap_at_every_width() {
     crate::require_cuda!();
     for w in [1usize, 2, 4, 8, 16] {
-        let set = kernel_set(0, w).expect("compile+load");
+        let set = kernel_set(0, w, c128()).expect("compile+load");
         let threads = layer_threads(w) as usize;
         let largest = set.layer.last().expect("at least one variant").items;
         assert_eq!(largest * threads, LAYER_CAP, "W={w}");
@@ -34,16 +64,19 @@ fn layer_variants_fit_their_register_budget() {
     use cudarc::driver::sys::CUfunction_attribute::{
         CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, CU_FUNC_ATTRIBUTE_NUM_REGS,
     };
-    for w in [1usize, 2, 4, 8, 16] {
-        let set = kernel_set(0, w).expect("compile+load");
+    for (w, layout) in
+        [1usize, 2, 4, 8, 16].into_iter().flat_map(|w| every_layout().map(|l| (w, l)))
+    {
+        let set = kernel_set(0, w, layout).expect("compile+load");
         let budget = 65_536 / layer_threads(w) as i32;
+        let c = layout.name();
         for v in &set.layer {
             for (name, f) in [("serial", &v.serial), ("segscan", &v.segscan)] {
                 let regs = f.get_attribute(CU_FUNC_ATTRIBUTE_NUM_REGS).unwrap();
                 let local = f.get_attribute(CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES).unwrap();
-                println!("W={w} items={} {name}: {regs} regs, {local} B local", v.items);
-                assert!(regs <= budget, "W={w} items={} {name}: {regs} regs", v.items);
-                assert!(local < 1024, "W={w} items={} {name}: {local} B local", v.items);
+                println!("W={w} {c} items={} {name}: {regs} regs, {local} B local", v.items);
+                assert!(regs <= budget, "W={w} {c} items={} {name}: {regs} regs", v.items);
+                assert!(local < 1024, "W={w} {c} items={} {name}: {local} B local", v.items);
             }
         }
     }
@@ -53,15 +86,15 @@ fn layer_variants_fit_their_register_budget() {
 #[test]
 fn a_small_shared_memory_limit_loads_fewer_variants() {
     crate::require_cuda!();
-    let set =
-        kernel_set_with_options(0, 2, &["-DTEST_SHARED_LIMIT=40000".to_string()]).expect("load");
+    let set = kernel_set_with_options(0, 2, c128(), &["-DTEST_SHARED_LIMIT=40000".to_string()])
+        .expect("load");
     assert_eq!(set.layer.len(), 2);
     assert_eq!(set.layer_cap(), 2048);
     assert!(matches!(
-        kernel_set_with_options(0, 2, &["-DTEST_SHARED_LIMIT=1000".to_string()]),
+        kernel_set_with_options(0, 2, c128(), &["-DTEST_SHARED_LIMIT=1000".to_string()]),
         Err(GpuError::Unsupported(_))
     ));
-    let full = kernel_set(0, 2).expect("load");
+    let full = kernel_set(0, 2, c128()).expect("load");
     assert_eq!(full.layer_cap(), LAYER_CAP);
 }
 
@@ -72,9 +105,12 @@ fn layer_shared_bytes_matches_the_carve_layout() {
     let context = device::context(0).expect("context");
     let (major, minor) = context.compute_capability().expect("capability");
     let stream = context.default_stream();
-    for w in [1usize, 2, 4, 8, 16] {
+    for (w, layout) in
+        [1usize, 2, 4, 8, 16].into_iter().flat_map(|w| every_layout().map(|l| (w, l)))
+    {
         let ptx = compile_ptx(
             w,
+            layout,
             &format!("compute_{major}{minor}"),
             &["-DTEST_CARVE_BYTES".to_string()],
             kernel_cache::directory(),
@@ -100,8 +136,9 @@ fn layer_shared_bytes_matches_the_carve_layout() {
             let carved = stream.clone_dtoh(&out).unwrap()[0];
             assert_eq!(
                 carved,
-                u64::from(layer_shared_bytes(capacity, w)),
-                "W={w} capacity={capacity}"
+                u64::from(layer_shared_bytes(capacity, w, layout)),
+                "W={w} {} capacity={capacity}",
+                layout.name()
             );
         }
     }

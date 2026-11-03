@@ -1,6 +1,7 @@
 //! The device layer's knobs, [`GpuLayerOptions`], and the bucket count they size a layer at.
 
 use crate::channel::prepared::Prepared;
+use crate::coefficient::Coefficient;
 use crate::engine::gpu::GPU_LOG_TARGET;
 use crate::engine::gpu::GPU_MAX_BITS;
 use crate::engine::knob::Knob;
@@ -23,7 +24,7 @@ pub struct GpuLayerOptions {
     pub max_bits: u8,
     /// Merge one partner's exported rows by key on the sender before the exchange; on by default.
     pub premerge: bool,
-    /// Bytes the received rows of a remote layer may hold on the device at once, at `(2W + 3) × 8` per row.
+    /// Bytes the received rows of a remote layer may hold on the device at once, at `(2W + 1) × 8` bytes plus one coefficient per row.
     ///
     /// The receive then moves in chunks of destination positions, each merged by the fused layer before the next arrives; a chunk exceeds the cap only when one position alone does.
     /// The chunk count is a power of two, so one cut refines every coarser one and the group can agree on the largest count anyone asked for.
@@ -97,7 +98,7 @@ pub(crate) fn gpu_desired_bits(
 }
 
 /// The entries `prepared` emits records for, local and received alike: the fanout [`gpu_desired_bits`] sizes a block by.
-pub(crate) fn prepared_fanout<const W: usize>(prepared: &Prepared<W>) -> usize {
+pub(crate) fn prepared_fanout<const W: usize, C: Coefficient>(prepared: &Prepared<W, C>) -> usize {
     match prepared {
         Prepared::Local(ptm) => ptm.emitting_entries(),
         Prepared::Rotation(_) => 2,

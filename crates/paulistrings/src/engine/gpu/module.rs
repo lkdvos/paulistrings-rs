@@ -1,4 +1,4 @@
-//! NVRTC kernel compilation, cached per `(ordinal, W, extra options)`.
+//! NVRTC kernel compilation, cached per `(ordinal, W, coefficient type, extra options)`.
 //!
 //! Every `.cu` family in [`KERNEL_SOURCES`] is concatenated behind `kernels/prelude.cuh` into one translation unit, and [`KernelSet`] holds the loaded functions.
 
@@ -15,6 +15,7 @@ use super::error::GpuError;
 use super::kernel_cache;
 use super::truncation::{KEEP_NODES, OP_AND, OP_COEFF, OP_KEEP, OP_OR, OP_WEIGHT};
 use super::GPU_LOG_TARGET;
+use crate::coefficient::Coefficient;
 use crate::engine::cuda_context::libnvrtc_present;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
@@ -66,9 +67,47 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
     }
 }
 
+/// The coefficient type a kernel set compiles for, `-DCOEFF_SINGLE` and `-DCOEFF_COMPLEX` to the kernels, so two types never share a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct CoefficientLayout {
+    /// `f32` parts rather than `f64`.
+    pub(crate) single: bool,
+    /// An imaginary part besides the real one.
+    pub(crate) complex: bool,
+}
+
+impl CoefficientLayout {
+    pub(crate) fn of<C: Coefficient>() -> Self {
+        Self { single: std::mem::size_of::<C::Real>() == 4, complex: !C::IS_REAL }
+    }
+
+    /// Bytes of one coefficient, `size_of::<C>()`.
+    pub(crate) fn bytes(self) -> usize {
+        (1 + usize::from(self.complex)) * if self.single { 4 } else { 8 }
+    }
+
+    /// `Coefficient::NAME` of the type.
+    fn name(self) -> &'static str {
+        match (self.single, self.complex) {
+            (false, false) => "f64",
+            (true, false) => "f32",
+            (false, true) => "c128",
+            (true, true) => "c64",
+        }
+    }
+
+    fn options(self) -> [String; 2] {
+        [
+            format!("-DCOEFF_SINGLE={}", u8::from(self.single)),
+            format!("-DCOEFF_COMPLEX={}", u8::from(self.complex)),
+        ]
+    }
+}
+
 /// Dynamic shared bytes the fused layer needs for `capacity` records, the `carve` layout in `kernels/layer.cu`.
-pub(crate) fn layer_shared_bytes(capacity: usize, w: usize) -> u32 {
-    (11 * capacity + 144 + 4096 + 256 * w + 128 + 320 + 72 + 16 + 640) as u32
+pub(crate) fn layer_shared_bytes(capacity: usize, w: usize, coefficient: CoefficientLayout) -> u32 {
+    let c = coefficient.bytes();
+    (11 * capacity + 144 + 256 * c + 256 * w + 128 + 320 + 72 + 16 + 32 * c + 128) as u32
 }
 
 /// One warp per bucket over `b` buckets, eight warps a block.
@@ -120,6 +159,8 @@ pub(crate) struct KernelSet {
     pub(crate) retain: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
+    /// The coefficient type the set was compiled for.
+    pub(crate) coefficient: CoefficientLayout,
     threads: usize,
 }
 
@@ -136,9 +177,10 @@ thread_local! {
     pub(crate) static NVRTC_COMPILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Compiled NVRTC PTX for `w` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFINGERPRINT_BITS=<b>` hook), through the PTX cache in `cache`; needs only NVRTC, no device.
+/// Compiled NVRTC PTX for `w` and `coefficient` at `arch` (`compute_<major><minor>`), with `extra_options` appended (the `-DFINGERPRINT_BITS=<b>` hook), through the PTX cache in `cache`; needs only NVRTC, no device.
 pub(crate) fn compile_ptx(
     w: usize,
+    coefficient: CoefficientLayout,
     arch: &str,
     extra_options: &[String],
     cache: Option<&Path>,
@@ -160,6 +202,7 @@ pub(crate) fn compile_ptx(
         format!("-DOP_OR={OP_OR}"),
         "--std=c++17".to_string(),
     ];
+    options.extend(coefficient.options());
     options.extend_from_slice(extra_options);
     let compile_options = CompileOptions {
         arch: Some(arch_static(arch)),
@@ -168,7 +211,7 @@ pub(crate) fn compile_ptx(
         ..Default::default()
     };
     if let Some(ptx) = cache.and_then(|dir| kernel_cache::lookup(dir, &source, &compile_options)) {
-        log::debug!(target: GPU_LOG_TARGET, "kernels W={w} {arch}: kernel cache hit");
+        log::debug!(target: GPU_LOG_TARGET, "kernels W={w} {} {arch}: kernel cache hit", coefficient.name());
         return Ok(ptx);
     }
     #[cfg(any(test, feature = "test-utils"))]
@@ -178,7 +221,8 @@ pub(crate) fn compile_ptx(
         .map_err(|e| GpuError::Compile { width: w, log: e.to_string() })?;
     log::debug!(
         target: GPU_LOG_TARGET,
-        "kernels W={w} {arch}: NVRTC compile in {:.2} s",
+        "kernels W={w} {} {arch}: NVRTC compile in {:.2} s",
+        coefficient.name(),
         start.elapsed().as_secs_f64()
     );
     if let Some(dir) = cache {
@@ -210,7 +254,7 @@ fn arch_static(arch: &str) -> &'static str {
         .unwrap_or_else(|| Box::leak(arch.to_string().into_boxed_str()))
 }
 
-type CacheKey = (u32, usize, Vec<String>);
+type CacheKey = (u32, usize, CoefficientLayout, Vec<String>);
 type KernelCache = Mutex<HashMap<CacheKey, Arc<KernelSet>>>;
 static KERNEL_CACHE: OnceLock<KernelCache> = OnceLock::new();
 
@@ -218,25 +262,30 @@ fn cache() -> &'static KernelCache {
     KERNEL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The compiled [`KernelSet`] for `(ordinal, w)` with no extra options.
-pub(crate) fn kernel_set(ordinal: u32, w: usize) -> Result<Arc<KernelSet>, GpuError> {
-    kernel_set_with_options(ordinal, w, &[])
+/// The compiled [`KernelSet`] for `(ordinal, w, coefficient)` with no extra options.
+pub(crate) fn kernel_set(
+    ordinal: u32,
+    w: usize,
+    coefficient: CoefficientLayout,
+) -> Result<Arc<KernelSet>, GpuError> {
+    kernel_set_with_options(ordinal, w, coefficient, &[])
 }
 
-/// The compiled [`KernelSet`] for `(ordinal, w, extra_options)`, compiling and caching it on first use.
+/// The compiled [`KernelSet`] for `(ordinal, w, coefficient, extra_options)`, compiling and caching it on first use.
 pub(crate) fn kernel_set_with_options(
     ordinal: u32,
     w: usize,
+    coefficient: CoefficientLayout,
     extra_options: &[String],
 ) -> Result<Arc<KernelSet>, GpuError> {
-    let key = (ordinal, w, extra_options.to_vec());
+    let key = (ordinal, w, coefficient, extra_options.to_vec());
     if let Some(set) = cache().lock().expect("kernel cache mutex poisoned").get(&key) {
         return Ok(set.clone());
     }
     let context = device::context(ordinal)?;
     let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
-    let ptx = compile_ptx(w, &arch, extra_options, kernel_cache::directory())?;
+    let ptx = compile_ptx(w, coefficient, &arch, extra_options, kernel_cache::directory())?;
     let module = context.load_module(ptx).map_err(GpuError::from)?;
     let load = |name: &str| module.load_function(name).map_err(GpuError::from);
     let threads = layer_threads(w) as usize;
@@ -253,8 +302,10 @@ pub(crate) fn kernel_set_with_options(
     }
     let mut layer = Vec::new();
     let mut items = 1usize;
-    while items * threads <= LAYER_CAP && layer_shared_bytes(items * threads, w) as usize <= limit {
-        let shared_bytes = layer_shared_bytes(items * threads, w) as i32;
+    while items * threads <= LAYER_CAP
+        && layer_shared_bytes(items * threads, w, coefficient) as usize <= limit
+    {
+        let shared_bytes = layer_shared_bytes(items * threads, w, coefficient) as i32;
         let serial = load(&format!("k_layer_serial_{items}"))?;
         let segscan = load(&format!("k_layer_segscan_{items}"))?;
         // Opt-in shared memory above the 48 KB default; the attribute is per function.
@@ -299,6 +350,7 @@ pub(crate) fn kernel_set_with_options(
         boundary_counts: load("k_boundary_counts")?,
         retain: load("k_retain")?,
         layer,
+        coefficient,
         threads,
     });
     cache().lock().expect("kernel cache mutex poisoned").insert(key, set.clone());

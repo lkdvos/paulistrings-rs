@@ -13,11 +13,11 @@ use crate::engine::gpu::truncation::KeepProgram;
 use crate::engine::timing::timed;
 
 /// `k_rescale`: the key-preserving fast path, into the spare columns at the input's offsets.
-pub(super) fn rescale_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    table: &DevicePrepared<W>,
+pub(super) fn rescale_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     keep: &KeepProgram,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
 ) -> Result<(), GpuError> {
     let stream = sum.stream.clone();
     let kernels = sum.kernels.clone();
@@ -26,7 +26,7 @@ pub(super) fn rescale_device<const W: usize>(
     let extent = scratch.extent.max(sum.len());
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, extent, b)?,
+        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, extent, b)?,
     };
     out.len = 0;
     out.buckets = 0;
@@ -34,7 +34,7 @@ pub(super) fn rescale_device<const W: usize>(
     grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
     let amplitude = &mut scratch.table.amplitude;
     timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
-        stream.memcpy_htod(&table.amplitude, amplitude)?;
+        stream.memcpy_htod(bytemuck::cast_slice::<C, u8>(&table.amplitude), amplitude)?;
         Ok(())
     })?;
     let b32 = b as u32;
@@ -94,11 +94,11 @@ pub(in crate::engine::gpu) fn permute_threads(len: usize, buckets: usize, w: usi
 }
 
 /// `k_permute_*`: the permutation path, into the spare columns as a tight CSR in bucket order.
-pub(super) fn permute_device<const W: usize>(
-    sum: &mut GpuSum<W>,
-    table: &DevicePrepared<W>,
+pub(super) fn permute_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     keep: &KeepProgram,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
 ) -> Result<(), GpuError> {
     let stream = sum.stream.clone();
     let kernels = sum.kernels.clone();
@@ -109,14 +109,15 @@ pub(super) fn permute_device<const W: usize>(
     grow(&stream, &mut scratch.counts, b * table.entries, ordinal)?;
     let mut out = match sum.spare.take() {
         Some(spare) => spare,
-        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, n_in, b)?,
+        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, n_in, b)?,
     };
     out.len = 0;
     out.buckets = 0;
     out.reserve(n_in, b)?;
     let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
     timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
-        stream.memcpy_htod(&table.amplitude, &mut buffers.amplitude)?;
+        stream
+            .memcpy_htod(bytemuck::cast_slice::<C, u8>(&table.amplitude), &mut buffers.amplitude)?;
         stream.memcpy_htod(&table.mask, &mut buffers.mask)?;
         stream.memcpy_htod(&table.bucket_delta, &mut buffers.bucket_delta)?;
         stream.memcpy_htod(&table.fingerprint_delta, &mut buffers.fingerprint_delta)?;

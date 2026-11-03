@@ -10,6 +10,7 @@ use cudarc::driver::{CudaStream, CudaView, CudaViewMut, SyncOnDrop};
 use super::error::GpuError;
 use super::payload::DeviceBlock;
 use super::GPU_LOG_TARGET;
+use crate::coefficient::Coefficient;
 use crate::engine::knob::Knob;
 use crate::engine::partitioned::exchange_block::{chunk_rows_of, BlockHeader};
 use crate::engine::transport::{ChunkMap, Payload};
@@ -223,7 +224,7 @@ pub(crate) struct BlockSkeletons<const W: usize> {
 
 impl<const W: usize> BlockSkeletons<W> {
     /// The headers and offsets of `blocks`, reusing this payload's allocations.
-    pub(crate) fn fill_from(&mut self, blocks: &[DeviceBlock<W>]) {
+    pub(crate) fn fill_from<C: Coefficient>(&mut self, blocks: &[DeviceBlock<W, C>]) {
         self.blocks.truncate(blocks.len());
         self.blocks.resize_with(blocks.len(), Skeleton::default);
         for (skeleton, block) in self.blocks.iter_mut().zip(blocks) {
@@ -325,11 +326,11 @@ pub(crate) enum WireColumn {
 impl WireColumn {
     const ALL: [WireColumn; 3] = [WireColumn::X, WireColumn::Z, WireColumn::Coefficient];
 
-    /// Device elements per row at width `W`: `u64` words for a key column, `f64` halves for the coefficient.
-    pub(crate) fn elements_per_row<const W: usize>(self) -> usize {
+    /// Device elements per row at width `W`: `u64` words for a key column, bytes of a `C` for the coefficient.
+    pub(crate) fn elements_per_row<const W: usize, C: Coefficient>(self) -> usize {
         match self {
             WireColumn::X | WireColumn::Z => W,
-            WireColumn::Coefficient => 2,
+            WireColumn::Coefficient => size_of::<C>(),
         }
     }
 }

@@ -6,6 +6,7 @@
 //! A partition whose layer fails before its exchange still makes the call, with one empty skeleton per remote delta and a no vote.
 //! After a yes every partition posts every chunk's transfer even if its own layer fails mid-way, discarding what arrives; only a failed wire stops the posting, and its peers' bounded waits then fail too.
 
+use crate::coefficient::Coefficient;
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
@@ -31,8 +32,11 @@ use premerge::{premerge_groups, premerge_partner, PremergeScratch};
 use receive::{discard_received, position_chunks, receive_cap_rows, stage_receive, wire_ready};
 pub(crate) use receive::{finish_receive, receive_chunk};
 
+/// One send payload slot per partner, `None` for a partner this partition sends nothing.
+type SendPayloads<const W: usize, C> = Vec<Option<DevicePayload<W, C>>>;
+
 /// Grow-only device and host buffers of the export and receive passes, kept between layers.
-pub(crate) struct DeviceExport<const W: usize> {
+pub(crate) struct DeviceExport<const W: usize, C: Coefficient> {
     counts: CudaSlice<u32>,
     offsets: CudaSlice<u32>,
     /// Received blocks, concatenated: `received_offsets` is `K × (B + 1)` CSR offsets, `received_base[k]` block `k`'s row base.
@@ -40,7 +44,7 @@ pub(crate) struct DeviceExport<const W: usize> {
     pub(crate) received_base: CudaSlice<u32>,
     pub(crate) received_x: CudaSlice<u64>,
     pub(crate) received_z: CudaSlice<u64>,
-    pub(crate) received_coefficient: CudaSlice<f64>,
+    pub(crate) received_coefficient: CudaSlice<u8>,
     pub(crate) received_fingerprint: CudaSlice<u64>,
     offsets_host: Vec<u32>,
     base_host: Vec<u32>,
@@ -52,25 +56,25 @@ pub(crate) struct DeviceExport<const W: usize> {
     /// The group's device wire, `Some` in every group of more than one partition.
     pub(crate) wire: Option<Arc<dyn DeviceWire>>,
     /// Send payloads not in flight.
-    sends: Vec<DevicePayload<W>>,
+    sends: Vec<DevicePayload<W, C>>,
     /// Skeleton payloads not in flight.
     skeletons: Vec<BlockSkeletons<W>>,
     /// Test hook: the next remote layer's receive growth fails as out of memory.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_receive_growth: bool,
     /// The current layer's received rows still to move into `received_*`.
-    pub(crate) pending: Option<PendingReceive<W>>,
+    pub(crate) pending: Option<PendingReceive<W, C>>,
     /// Test hook: the next chunked receive fails as out of memory after moving this chunk.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_after_chunk: Option<usize>,
 }
 
 /// A remote layer's transfers not yet made, chunk `c` (positions `map.bound(c)..map.bound(c + 1)`) moving just before the fused layer reaches it.
-pub(crate) struct PendingReceive<const W: usize> {
+pub(crate) struct PendingReceive<const W: usize, C: Coefficient> {
     pub(crate) map: ChunkMap,
     /// The first chunk not yet moved.
     next: usize,
-    send: Vec<Option<DevicePayload<W>>>,
+    send: SendPayloads<W, C>,
     /// This partition's block for remote delta `k` is `send[own[k].0].blocks[own[k].1]`.
     own: Vec<(usize, usize)>,
     ops: Vec<ScheduledOp>,
@@ -78,8 +82,8 @@ pub(crate) struct PendingReceive<const W: usize> {
     failed: bool,
 }
 
-impl<const W: usize> DeviceExport<W> {
-    pub(crate) fn new(sum: &GpuSum<W>) -> Result<Self, GpuError> {
+impl<const W: usize, C: Coefficient> DeviceExport<W, C> {
+    pub(crate) fn new(sum: &GpuSum<W, C>) -> Result<Self, GpuError> {
         let stream = &sum.stream;
         Ok(Self {
             counts: stream.alloc_zeros(1)?,
@@ -88,7 +92,7 @@ impl<const W: usize> DeviceExport<W> {
             received_base: stream.alloc_zeros(16)?,
             received_x: stream.alloc_zeros(W)?,
             received_z: stream.alloc_zeros(W)?,
-            received_coefficient: stream.alloc_zeros(2)?,
+            received_coefficient: stream.alloc_zeros(size_of::<C>())?,
             received_fingerprint: stream.alloc_zeros(1)?,
             offsets_host: Vec::new(),
             base_host: Vec::new(),
@@ -116,11 +120,11 @@ impl<const W: usize> DeviceExport<W> {
 }
 
 /// The exchange a partition owes its partners when its own layer failed before exporting: one empty skeleton per remote delta the plan names and a no vote, so every receiver finishes the layer and the error surfaces after the loop.
-pub(crate) fn pair_empty_exchange<const W: usize, X: Transport>(
+pub(crate) fn pair_empty_exchange<const W: usize, C: Coefficient, X: Transport>(
     transport: &X,
     plan: &PartitionPlan,
     bits: u8,
-    export: &mut DeviceExport<W>,
+    export: &mut DeviceExport<W, C>,
 ) {
     let mut send: Vec<Option<BlockSkeletons<W>>> = (0..transport.size()).map(|_| None).collect();
     for r in &plan.remote {
@@ -147,11 +151,11 @@ fn vote<X: Transport>(transport: &X, ready: Option<u8>) -> Option<u8> {
 }
 
 /// One remote layer's exchange after the count: the export blocks, their skeletons and the vote, leaving on a yes the pending receive [`receive_chunk`] moves; on any no nobody posts and a rank that could not receive returns its error.
-pub(crate) fn exchange_rows<const W: usize, X: Transport>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
+pub(crate) fn exchange_rows<const W: usize, C: Coefficient, X: Transport>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     plan: &PartitionPlan,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
     let size = transport.size();
@@ -159,14 +163,14 @@ pub(crate) fn exchange_rows<const W: usize, X: Transport>(
     let (send, mut counts) = match export_blocks_device(sum, table, plan, scratch, size) {
         Ok(v) => v,
         Err(error) => {
-            pair_empty_exchange::<W, X>(transport, plan, sum.hash.bits(), &mut scratch.export);
+            pair_empty_exchange::<W, C, X>(transport, plan, sum.hash.bits(), &mut scratch.export);
             return Err(error);
         }
     };
     tally!(scratch.stats.export_ns, t_export.elapsed().as_nanos());
     tally!(scratch.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
     let buckets = sum.hash.num_buckets();
-    let cap_rows = receive_cap_rows::<W>(scratch.options.exchange_bytes);
+    let cap_rows = receive_cap_rows::<W, C>(scratch.options.exchange_bytes);
     let export = &mut scratch.export;
     let stats = &mut scratch.stats;
     timed!(let t_exchange = std::time::Instant::now());
@@ -245,10 +249,10 @@ fn paired_blocks<'a, const W: usize>(
 }
 
 /// `k_export_counts` and its scan for `entry` at `bucket_delta`, leaving the CSR offsets in `scratch.export.offsets` and their copy in `offsets`; returns the block's rows.
-fn export_offsets<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
-    scratch: &mut LayerScratch<W>,
+fn export_offsets<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
+    scratch: &mut LayerScratch<W, C>,
     bucket_delta: u32,
     entry: u32,
     offsets: &mut Vec<u32>,
@@ -299,15 +303,15 @@ struct FillContext<'a> {
 
 /// `k_export_fill` of `entry` at `bucket_delta` into `(x, z, coefficient)`, which hold the rows `context.offsets` names.
 #[allow(clippy::too_many_arguments)]
-fn export_fill<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
+fn export_fill<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     context: FillContext<'_>,
     bucket_delta: u32,
     entry: u32,
     x: &mut CudaSlice<u64>,
     z: &mut CudaSlice<u64>,
-    coefficient: &mut CudaSlice<f64>,
+    coefficient: &mut CudaSlice<u8>,
 ) -> Result<(), GpuError> {
     let stream = &sum.stream;
     let buckets = sum.hash.num_buckets();
@@ -345,14 +349,14 @@ fn export_fill<const W: usize>(
 }
 
 /// The export kernels for every remote delta into device blocks: one block per delta into pooled [`DevicePayload`]s, in ascending remote-delta index per partner.
-fn export_blocks_device<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
+fn export_blocks_device<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     plan: &PartitionPlan,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
     size: u32,
-) -> Result<(Vec<Option<DevicePayload<W>>>, LayerExchangeCounts), GpuError> {
-    let mut send: Vec<Option<DevicePayload<W>>> = (0..size).map(|_| None).collect();
+) -> Result<(SendPayloads<W, C>, LayerExchangeCounts), GpuError> {
+    let mut send: SendPayloads<W, C> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
     let buckets = sum.hash.num_buckets();
     let stream: Arc<CudaStream> = sum.stream.clone();
@@ -426,8 +430,8 @@ fn export_blocks_device<const W: usize>(
 }
 
 /// Device bytes one received row holds in `received_*`: both key columns, the coefficient and the fingerprint.
-pub(crate) const fn received_row_bytes<const W: usize>() -> usize {
-    (2 * W + 3) * std::mem::size_of::<u64>()
+pub(crate) const fn received_row_bytes<const W: usize, C: Coefficient>() -> usize {
+    (2 * W + 1) * size_of::<u64>() + size_of::<C>()
 }
 
 /// Rows the tag's offset field can address in one received segment.

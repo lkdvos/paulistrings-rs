@@ -739,6 +739,25 @@ fn run_host_cases(r: &mut Runner) {
         r.compare(&circuit, &sum, &KeepAll, Direction::Forward, got, "propagate_mpi");
     });
 
+    r.case("real and single-precision sums cross the wire", |r| {
+        let circuit = trotter_circuit::<1>(10, 0.2);
+        let sum = rand_sum_real::<1>(300, 10, 0xA016);
+        let want = propagate(&circuit, sum.clone(), &KeepAll, Direction::Heisenberg);
+        let widened = |got: Option<PauliSum<1>>, what: &str| {
+            if let Some(got) = r.root_result(got, what) {
+                assert_terms_close(&got, &want, if what == "f64" { TOL } else { 2e-5 }, what);
+            }
+        };
+        let options = PropagateOptions::default();
+        let heisenberg = Direction::Heisenberg;
+        let narrowed = sum.cast::<f64>(0.0).unwrap();
+        let got = propagate_mpi(&circuit, narrowed, &KeepAll, heisenberg, options, r.world);
+        widened(got.map(|s| s.cast(0.0).unwrap()), "f64");
+        let narrowed = sum.cast::<f32>(0.0).unwrap();
+        let got = propagate_mpi(&circuit, narrowed, &KeepAll, heisenberg, options, r.world);
+        widened(got.map(|s| s.cast(0.0).unwrap()), "f32");
+    });
+
     r.case("a one-byte chunk size still delivers", |r| {
         // The pathological end of the same path: every byte its own message.
         // Small input, or the message count explodes.

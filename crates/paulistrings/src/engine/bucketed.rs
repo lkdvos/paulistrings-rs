@@ -15,7 +15,9 @@ use super::trace::PartitionTrace;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
-use rotation_layer::{fill_rotation_coset, RotationLayer};
+use rotation_layer::{
+    fill_received_rotation_bucket, fill_rotation_coset, ReceivedRotation, RotationLayer,
+};
 
 #[cfg(feature = "phase-timing")]
 use super::stats::{PartitionPhaseStats, PhaseStats};
@@ -104,8 +106,6 @@ pub(super) enum DeltaPlan<'p, const W: usize, C: Coefficient = num_complex::Comp
         rotation: &'p PreparedRotation<W, C::Real>,
         coordinate_identity: u32,
         generator_coordinate: u32,
-        /// Whether the generator pass emits here ([`LayerKnobs::generator_local`]); `generator_coordinate` is 0 when not.
-        generator_local: bool,
     },
 }
 
@@ -118,7 +118,7 @@ pub(crate) struct LayerKnobs<'k> {
     pub rest_streams: Option<usize>,
     /// The unrestricted channel's [`rest_rows_per_key`], since a PTM cut down to local entries can look more disjoint than the channel is.
     pub rows_per_key: Option<f64>,
-    /// Whether a wide rotation's generator pass emits here; false when every generator row belongs to a partner.
+    /// Whether a rotation's generator pass emits here; false when the generator crosses to a partner, which sends the layer, tabulated or wide, to `fill_received_rotation_bucket`.
     pub generator_local: bool,
     /// The coset order a partitioned layer exported and chunks by, whose coset `c` must be the loop's coset `c` ([`Gf2Span::representative_at`]); checked in debug builds.
     pub order: Option<&'k CosetOrder>,
@@ -151,17 +151,17 @@ impl<'p, const W: usize, C: Coefficient> DeltaPlan<'p, W, C> {
                 });
                 DeltaPlan::Local { ptm, coordinates, has_identity, dense_identity, sort_kernel }
             }
-            Prepared::Rotation(rotation) => DeltaPlan::Rotation {
-                rotation,
-                coordinate_identity: span.coordinate_of(rotation.bucket_delta_identity),
-                // `coordinate_of` demands its argument be in the span, and a remote generator's bucket delta is not.
-                generator_coordinate: if knobs.generator_local {
-                    span.coordinate_of(rotation.bucket_delta_generator)
-                } else {
-                    0
-                },
-                generator_local: knobs.generator_local,
-            },
+            Prepared::Rotation(rotation) => {
+                debug_assert!(
+                    knobs.generator_local,
+                    "a remote generator runs on `ReceivedRotation`"
+                );
+                DeltaPlan::Rotation {
+                    rotation,
+                    coordinate_identity: span.coordinate_of(rotation.bucket_delta_identity),
+                    generator_coordinate: span.coordinate_of(rotation.bucket_delta_generator),
+                }
+            }
         }
     }
 }
@@ -227,6 +227,14 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
         }
         _ => None,
     };
+    // A partitioned rotation whose generator pass is off exported every partner.
+    let received_rotation = match prepared {
+        _ if !X::NEEDS_BETA || knobs.generator_local => None,
+        Prepared::Local(ptm) => Some(ReceivedRotation::Table(
+            RotationLayer::of(ptm).expect("only a rotation table runs with its generator pass off"),
+        )),
+        Prepared::Rotation(rotation) => Some(ReceivedRotation::wide(rotation)),
+    };
 
     let own_deltas;
     let deltas: &[u32] = match knobs.bucket_deltas {
@@ -239,15 +247,22 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     let span = Gf2Span::new(deltas, sum.hash().bits());
     debug_assert!(knobs.order.is_none_or(|order| order.dimension() == span.dimension()));
 
-    let len = match rotation {
-        Some(layer) => {
+    let len = match (received_rotation, rotation) {
+        (Some(layer), _) => {
+            debug_assert_eq!(span.dimension(), 0, "only the identity delta is local");
+            lap!(stamp, scratch.stats.span_plan_ns);
+            coset_loop(sum, &span, scratch, |members, betas, worker_scratch| {
+                fill_received_rotation_bucket(members, betas, &layer, policy, worker_scratch, extra)
+            })
+        }
+        (None, Some(layer)) => {
             debug_assert!(knobs.order.is_none());
             lap!(stamp, scratch.stats.span_plan_ns);
             coset_loop(sum, &span, scratch, |members, _, worker_scratch| {
                 fill_rotation_coset(members, &layer, policy, worker_scratch)
             })
         }
-        None => {
+        (None, None) => {
             let plan = DeltaPlan::new(prepared, &span, knobs);
             lap!(stamp, scratch.stats.span_plan_ns);
             coset_loop(sum, &span, scratch, |members, betas, worker_scratch| {
@@ -359,6 +374,11 @@ impl<'a, T> DisjointSlots<'a, T> {
         // SAFETY: in bounds, and exclusive by the caller's contract.
         unsafe { &mut *self.base.add(index) }
     }
+}
+
+/// Whether `ptm` has a rotation's shape, which a partitioned layer keeps whole when its generator crosses.
+pub(crate) fn is_rotation_table<const W: usize, C: Coefficient>(ptm: &LocalPtm<W, C>) -> bool {
+    RotationLayer::of(ptm).is_some()
 }
 
 /// In-place coefficient rescale for a key-preserving channel, with the general path's zero drop and `keep_term`.

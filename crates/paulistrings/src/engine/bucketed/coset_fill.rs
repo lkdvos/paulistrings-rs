@@ -187,15 +187,10 @@ pub(in crate::engine) fn fill_coset<const W: usize, C: Coefficient, T, X>(
                 }
                 (if *dense_identity { 0 } else { identity }, identity, rest)
             }
-            DeltaPlan::Rotation {
-                coordinate_identity,
-                generator_coordinate,
-                generator_local,
-                ..
-            } => (
+            DeltaPlan::Rotation { coordinate_identity, generator_coordinate, .. } => (
                 0,
                 old[j ^ *coordinate_identity as usize].len(),
-                if *generator_local { old[j ^ *generator_coordinate as usize].len() } else { 0 },
+                old[j ^ *generator_coordinate as usize].len(),
             ),
         };
         if X::NEEDS_BETA {
@@ -227,12 +222,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, C: Coefficient, T, X>(
                 );
             }
         }
-        DeltaPlan::Rotation {
-            rotation,
-            coordinate_identity,
-            generator_coordinate,
-            generator_local,
-        } => {
+        DeltaPlan::Rotation { rotation, coordinate_identity, generator_coordinate } => {
             // Every term emits one identity row, kept even when `cos == 0` (the signed-zero contract on `merge_identity_and_rest`), so the merge borrows the source keys.
             for (i, source) in old.iter().enumerate() {
                 for row in 0..source.len() {
@@ -243,17 +233,15 @@ pub(in crate::engine) fn fill_coset<const W: usize, C: Coefficient, T, X>(
                     } else {
                         runs[i ^ *coordinate_identity as usize]
                             .push_identity_coefficient(source.coeff[row] * rotation.cos);
-                        if *generator_local {
-                            let mut product = key;
-                            let phase = product.mul_assign(&rotation.generator);
-                            let total = Phase::I + phase;
-                            runs[i ^ *generator_coordinate as usize].push_if(
-                                true,
-                                product.x,
-                                product.z,
-                                source.coeff[row].mul_phase(total) * rotation.sin,
-                            );
-                        }
+                        let mut product = key;
+                        let phase = product.mul_assign(&rotation.generator);
+                        let total = Phase::I + phase;
+                        runs[i ^ *generator_coordinate as usize].push_if(
+                            true,
+                            product.x,
+                            product.z,
+                            source.coeff[row].mul_phase(total) * rotation.sin,
+                        );
                     }
                 }
             }

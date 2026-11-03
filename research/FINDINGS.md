@@ -226,6 +226,12 @@ Which `k` balances best depends on `P` (`k = 4` at 8 ranks, `k = 2` at 32); rows
 Measured with phase timers on, which cost 1.6–4.4% of wall here.
 The explicit-row API lands with PR #45.
 
+### Remote rotations run on the in-place rotation kernel
+
+A rotation whose generator crosses partitions runs on `fill_received_rotation_bucket` instead of the general coset fill.
+Genoa code A/B, P = 2 in process (jobs 7398796–7398798, 5 pairs): `heavyhex_step` under random rows at `coeff:2^-14` **−9.7% / −12.5%** wall at 96 / 48 threads (merge −55%, sort −21%, gather +52% as it now holds the scale and the received append), 24-qubit `tfim_step` at `2^-16` **−5.5% / −6.5%**, all 5/5; VmHWM within ±1%.
+The synthetic all-hit `rotation_remote` at 1e6 × 40 reps is +2.2% at 48 threads (5/5, merge +13%) and inconsistent at 96, against a +4% merge shift on the untouched `rotation_local`; untouched `cnot` no consistent change.
+
 ## GPU spike
 
 Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.

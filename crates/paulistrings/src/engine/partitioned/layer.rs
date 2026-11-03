@@ -7,7 +7,8 @@ use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::engine::bucketed::{
-    apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
+    apply_layer_bucketed, apply_layer_bucketed_with, is_rotation_table, ExtraRows, LayerKnobs,
+    LayerScratch,
 };
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::knob::{parse_positive, Knob};
@@ -197,14 +198,15 @@ where
             );
         }
     }
+    // A rotation's identity entry is always local, so on a remote layer its generator crosses: it stays whole and `generator_local` switches that pass off.
+    let rotation_table = matches!(prepared, Prepared::Local(ptm) if is_rotation_table(ptm));
     let retained;
     let local_prepared: &Prepared<W, C> = match prepared {
-        Prepared::Local(ptm) => {
+        Prepared::Local(ptm) if !rotation_table => {
             retained = Prepared::Local(ptm.retain_entries(&plan.local_entries));
             &retained
         }
-        // A rotation's identity entry is always local, so the generator crosses; `generator_local` switches its pass off.
-        Prepared::Rotation(_) => prepared,
+        Prepared::Local(_) | Prepared::Rotation(_) => prepared,
     };
     let knobs = LayerKnobs {
         bucket_deltas: Some(&plan.local_bucket_deltas),
@@ -216,7 +218,7 @@ where
         },
         generator_local: match prepared {
             Prepared::Rotation(_) => plan.local_entries[1],
-            Prepared::Local(_) => true,
+            Prepared::Local(_) => !rotation_table,
         },
         order: Some(&order),
     };

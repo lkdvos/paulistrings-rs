@@ -20,6 +20,12 @@ pub(super) struct PartnerOrder<const W: usize> {
 }
 
 impl<const W: usize> PartnerOrder<W> {
+    /// The order for `g = (mask_x, mask_z)`, or `None` if it has more than [`MAX_LEVELS`] set bits.
+    pub(super) fn try_new(mask_x: &[u64; W], mask_z: &[u64; W]) -> Option<Self> {
+        let bits: u32 = mask_x.iter().chain(mask_z).map(|word| word.count_ones()).sum();
+        (bits as usize <= MAX_LEVELS).then(|| Self::new(mask_x, mask_z))
+    }
+
     /// The order for the XOR mask `g = (mask_x, mask_z)`, which has at most [`MAX_LEVELS`] set bits.
     pub(super) fn new(mask_x: &[u64; W], mask_z: &[u64; W]) -> Self {
         let mut levels = [0u32; MAX_LEVELS];

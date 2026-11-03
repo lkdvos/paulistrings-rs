@@ -340,6 +340,7 @@ an orbit kernel with a separate leader scan: `cnot` 2.4× slower than sorted;
 a fused two-pass kernel for rotations and Cliffords (the exact form of PauliPropagation.jl's `fused=true`): ties sorted per gate, mixed Cliffords +10–17%, superseded by the indexed walk;
 streaming the coset in before the walk: helps only `su4` (−15–20%);
 appending absent keys during the walk instead of after the removals: `cnot` 41.7 → 53.8, the index holding old and new keys at once.
+keys stored a word per column, so a rotation layer's scan reads 16 of a `W = 2` entry's 48 bytes: the scan alone ran 2.5× faster cold, but heavy-hex gained 2% and depolarizing 21% while `su4` lost 68%, Cliffords 65%, `cnot` 46% and kicked Ising 18%, every lookup, push and removal touching `2W + 1` cache lines instead of one or two.
 Open: the depolarizing gap.
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

@@ -57,17 +57,17 @@ __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
 }
 
 __device__ __forceinline__ void seg_store(const Smem& S, u32 i, Coeff v) {
-    S.s_segr[i] = v.re;
+    S.s_segr[i] = v.part[0];
 #if COEFF_COMPLEX
-    S.s_segi[i] = v.im;
+    S.s_segi[i] = v.part[1];
 #endif
 }
 
 __device__ __forceinline__ Coeff seg_load(const Smem& S, u32 i) {
     Coeff v;
-    v.re = S.s_segr[i];
+    v.part[0] = S.s_segr[i];
 #if COEFF_COMPLEX
-    v.im = S.s_segi[i];
+    v.part[1] = S.s_segi[i];
 #endif
     return v;
 }

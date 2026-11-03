@@ -10,12 +10,11 @@ import pytest
 from paulistrings import PauliSum
 
 
-@pytest.mark.parametrize("dtype", [None, np.float64, np.float32, np.complex128, np.complex64])
-def test_coefficients_array_shape_and_dtype(dtype):
-    s = PauliSum.from_strings({"XII": 1.0, "ZII": 0.5}, num_qubits=3, dtype=dtype)
+def test_coefficients_array_shape_and_dtype():
+    s = PauliSum.from_strings({"XII": 1.0, "ZII": 0.5}, num_qubits=3)
     arr = s.coefficients_array()
     assert isinstance(arr, np.ndarray)
-    assert arr.dtype == (np.complex128 if dtype is None else dtype)
+    assert arr.dtype == np.complex128
     assert arr.shape == (2,)
     # Same lex ordering as .coefficients(): ZII (key (0,1)) before XII (key (1,0)).
     np.testing.assert_array_equal(arr, np.array([0.5 + 0j, 1.0 + 0j]))

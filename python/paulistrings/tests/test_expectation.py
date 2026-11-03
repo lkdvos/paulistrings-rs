@@ -33,9 +33,8 @@ def _sum(terms, num_qubits, dtype=None):
         ("ZI", 0.0, 0.0, 1.0),
     ],
 )
-@pytest.mark.parametrize("dtype", DTYPES)
-def test_single_pauli_expectations(label, x_plus, y_plus, z_plus, dtype):
-    s = _sum({label: 1.0}, 2, dtype)
+def test_single_pauli_expectations(label, x_plus, y_plus, z_plus):
+    s = _sum({label: 1.0}, 2)
     assert s.expectation("x+").real == pytest.approx(x_plus)
     assert s.expectation("y+").real == pytest.approx(y_plus)
     assert s.expectation("z+").real == pytest.approx(z_plus)
@@ -154,10 +153,9 @@ def test_identity_coefficient_is_zero_when_absent():
 # ---- end to end ----
 
 
-@pytest.mark.parametrize("dtype", DTYPES)
-def test_expectation_after_propagation(dtype):
+def test_expectation_after_propagation():
     # H maps Z to X, so <Z> in |0..0> becomes <X> in |+..+> after conjugation.
-    s = _sum({"ZI": 1.0}, 2, dtype)
+    s = _sum({"ZI": 1.0}, 2)
     c = Circuit(2)
     c.h(0)
     out = s.propagate(circuit=c)

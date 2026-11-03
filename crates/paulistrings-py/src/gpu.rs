@@ -217,12 +217,10 @@ mod cuda {
             Ok(for_each_width_convert!(GpuWidthSum => WidthSum, self, |s| s.gather()?))
         }
 
-        fn len(&self) -> usize {
-            for_each_width!(self, |s| s.len())
-        }
-
-        fn num_qubits(&self) -> usize {
-            for_each_width!(self, |s| s.num_qubits())
+        forward! {
+            for_each_width;
+            fn len(&self) -> usize;
+            fn num_qubits(&self) -> usize;
         }
 
         fn device(&self) -> u32 {
@@ -284,20 +282,12 @@ mod cuda {
             }
         }
 
-        pub(crate) fn len(&self) -> usize {
-            for_each_dtype!(self, |s| s.len())
-        }
-
-        pub(crate) fn num_qubits(&self) -> usize {
-            for_each_dtype!(self, |s| s.num_qubits())
-        }
-
-        pub(crate) fn device(&self) -> u32 {
-            for_each_dtype!(self, |s| s.device())
-        }
-
-        pub(crate) fn num_buckets(&self) -> usize {
-            for_each_dtype!(self, |s| s.num_buckets())
+        forward! {
+            for_each_dtype;
+            pub(crate) fn len(&self) -> usize;
+            pub(crate) fn num_qubits(&self) -> usize;
+            pub(crate) fn device(&self) -> u32;
+            pub(crate) fn num_buckets(&self) -> usize;
         }
 
         /// Step the resident sum through `circuit`, returning this call's trace when `traced`.

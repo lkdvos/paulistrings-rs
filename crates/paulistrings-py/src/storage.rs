@@ -28,17 +28,14 @@ impl<C: PyCoefficient> WidthSum<C> {
         for_num_qubits!(num_qubits, |W| CorePauliSum::<W, C>::empty(num_qubits))
     }
 
-    pub fn num_qubits(&self) -> usize {
-        for_each_width!(self, |s| s.num_qubits())
-    }
-
-    pub fn len(&self) -> usize {
-        for_each_width!(self, |s| s.len())
-    }
-
-    /// Current bucket count, `1 << hash().bits()`. Reflects whatever a prior `propagate` call left resident, not a request.
-    pub fn num_buckets(&self) -> usize {
-        for_each_width!(self, |s| s.num_buckets())
+    forward! {
+        for_each_width;
+        pub fn num_qubits(&self) -> usize;
+        pub fn len(&self) -> usize;
+        /// Current bucket count, `1 << hash().bits()`. Reflects whatever a prior `propagate` call left resident, not a request.
+        pub fn num_buckets(&self) -> usize;
+        pub fn identity_coefficient(&self) -> C;
+        pub fn bucket_lengths(&self) -> Vec<usize>;
     }
 
     /// Uniform product state: the `+1` eigenstate of `axis` on every qubit.
@@ -55,10 +52,6 @@ impl<C: PyCoefficient> WidthSum<C> {
     /// Stabilizer state given by one signed Pauli generator per qubit. Parsed at the active width and validated by the core, so a malformed string or an invalid generator set surfaces as a `ValueError`.
     pub fn expectation_stabilizer(&self, generators: &[String]) -> PyResult<C> {
         for_each_width!(self, |s| stabilizer_expectation(s, generators))
-    }
-
-    pub fn identity_coefficient(&self) -> C {
-        for_each_width!(self, |s| s.identity_coefficient())
     }
 
     /// The bucket hash's rows as coordinate flags: row `i`, column `c` is set when row `i` reads coordinate `c` (x-bits first, then z-bits).
@@ -103,10 +96,6 @@ impl<C: PyCoefficient> WidthSum<C> {
 
     pub fn hash_seed(&self) -> u64 {
         for_each_width!(self, |s| s.hash().seed())
-    }
-
-    pub fn bucket_lengths(&self) -> Vec<usize> {
-        for_each_width!(self, |s| s.bucket_lengths())
     }
 
     /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
@@ -315,40 +304,17 @@ impl PauliSumImpl {
         for_each_dtype!(self, |s| of(s))
     }
 
-    pub fn num_qubits(&self) -> usize {
-        for_each_dtype!(self, |s| s.num_qubits())
-    }
-
-    pub fn len(&self) -> usize {
-        for_each_dtype!(self, |s| s.len())
-    }
-
-    pub fn num_buckets(&self) -> usize {
-        for_each_dtype!(self, |s| s.num_buckets())
-    }
-
-    pub fn hash_seed(&self) -> u64 {
-        for_each_dtype!(self, |s| s.hash_seed())
-    }
-
-    pub fn bucket_lengths(&self) -> Vec<usize> {
-        for_each_dtype!(self, |s| s.bucket_lengths())
-    }
-
-    pub fn hash_rows(&self) -> Vec<Vec<bool>> {
-        for_each_dtype!(self, |s| s.hash_rows())
-    }
-
-    pub fn hash_rank_deficiency(&self) -> Option<String> {
-        for_each_dtype!(self, |s| s.hash_rank_deficiency())
-    }
-
-    pub fn partition_rank_deficiency(
-        &self,
-        policy: &PartitionRowPolicy,
-        bits: u8,
-    ) -> Option<String> {
-        for_each_dtype!(self, |s| s.partition_rank_deficiency(policy, bits))
+    forward! {
+        for_each_dtype;
+        pub fn num_qubits(&self) -> usize;
+        pub fn len(&self) -> usize;
+        pub fn num_buckets(&self) -> usize;
+        pub fn hash_seed(&self) -> u64;
+        pub fn bucket_lengths(&self) -> Vec<usize>;
+        pub fn hash_rows(&self) -> Vec<Vec<bool>>;
+        pub fn hash_rank_deficiency(&self) -> Option<String>;
+        pub fn xz_flat(&self) -> (usize, Vec<u64>, Vec<u64>);
+        pub fn partition_rank_deficiency(&self, policy: &PartitionRowPolicy, bits: u8) -> Option<String>;
     }
 
     pub fn with_hash_rows(&self, rows: &[Vec<bool>], seed: u64) -> Self {
@@ -390,10 +356,6 @@ impl PauliSumImpl {
         for_each_dtype!(self, |s| s.coeffs().into_pyarray_bound(py).into_any())
     }
 
-    pub fn xz_flat(&self) -> (usize, Vec<u64>, Vec<u64>) {
-        for_each_dtype!(self, |s| s.xz_flat())
-    }
-
     /// `(width, x_flat, z_flat, coefficients)` from one snapshot, the coefficients a NumPy array of the sum's dtype.
     pub fn columns<'py>(&self, py: Python<'py>) -> (usize, Vec<u64>, Vec<u64>, Bound<'py, PyAny>) {
         for_each_dtype!(self, |s| {
@@ -428,17 +390,6 @@ impl PauliSumImpl {
             .add_signed(y, subtract)
             .map(wrap))
         .flatten()
-    }
-
-    /// `self ± other` at `self`'s dtype, a `ValueError` when that is real and `other` has an imaginary part; `Ok(None)` on a width mismatch.
-    pub fn add_in_dtype(&self, other: &Self, subtract: bool) -> PyResult<Option<Self>> {
-        let dtype = self.dtype();
-        let b =
-            other.converted(dtype).ok_or_else(|| imaginary_error("the right operand", dtype))?;
-        Ok(for_each_dtype_pair!((self, b.as_ref()), |x, y, wrap| x
-            .add_signed(y, subtract)
-            .map(wrap))
-        .flatten())
     }
 
     /// `tr(self† · other) / 2^n` at the two dtypes' promotion; `None` on a width mismatch.

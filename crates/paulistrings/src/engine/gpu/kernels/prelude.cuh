@@ -63,107 +63,80 @@ typedef double real_t;
 #define COEFF_PARTS 1
 #endif
 
+// `part[0]` the real part, `part[1]` the imaginary part of a complex type; the loops over parts unroll.
 struct Coeff {
-    real_t re;
-#if COEFF_COMPLEX
-    real_t im;
-#endif
+    real_t part[COEFF_PARTS];
 };
+
+#define FOR_PARTS(j) _Pragma("unroll") for (int j = 0; j < COEFF_PARTS; ++j)
 
 __device__ __forceinline__ Coeff coeff_zero() {
     Coeff v;
-    v.re = 0;
-#if COEFF_COMPLEX
-    v.im = 0;
-#endif
+    FOR_PARTS(j) v.part[j] = 0;
     return v;
 }
 
 __device__ __forceinline__ Coeff coeff_load(const real_t* c, size_t i) {
     Coeff v;
-    v.re = c[COEFF_PARTS * i];
-#if COEFF_COMPLEX
-    v.im = c[COEFF_PARTS * i + 1];
-#endif
+    FOR_PARTS(j) v.part[j] = c[COEFF_PARTS * i + j];
     return v;
 }
 
 __device__ __forceinline__ void coeff_store(real_t* c, size_t i, Coeff v) {
-    c[COEFF_PARTS * i] = v.re;
-#if COEFF_COMPLEX
-    c[COEFF_PARTS * i + 1] = v.im;
-#endif
+    FOR_PARTS(j) c[COEFF_PARTS * i + j] = v.part[j];
 }
 
 __device__ __forceinline__ Coeff coeff_add(Coeff a, Coeff b) {
-    a.re += b.re;
-#if COEFF_COMPLEX
-    a.im += b.im;
-#endif
+    FOR_PARTS(j) a.part[j] += b.part[j];
     return a;
+}
+
+__device__ __forceinline__ Coeff coeff_scale(Coeff c, real_t s) {
+    FOR_PARTS(j) c.part[j] = c.part[j] * s;
+    return c;
+}
+
+__device__ __forceinline__ bool coeff_is_zero(Coeff c) {
+    bool zero = true;
+    FOR_PARTS(j) zero = zero && c.part[j] == 0;
+    return zero;
+}
+
+// `Coefficient::norm_sqr`: |c|^2 in double, the parts widened first.
+__device__ __forceinline__ double coeff_norm_sqr(Coeff c) {
+    double m = 0;
+    FOR_PARTS(j) m += (double)c.part[j] * (double)c.part[j];
+    return m;
+}
+
+__device__ __forceinline__ Coeff coeff_shfl_up(Coeff v, u32 offset) {
+    FOR_PARTS(j) v.part[j] = __shfl_up_sync(~0u, v.part[j], offset);
+    return v;
 }
 
 // `c * a`, num_complex's `Mul` for a complex type.
 __device__ __forceinline__ Coeff coeff_mul(Coeff c, Coeff a) {
     Coeff p;
 #if COEFF_COMPLEX
-    p.re = c.re * a.re - c.im * a.im;
-    p.im = c.re * a.im + c.im * a.re;
+    p.part[0] = c.part[0] * a.part[0] - c.part[1] * a.part[1];
+    p.part[1] = c.part[0] * a.part[1] + c.part[1] * a.part[0];
 #else
-    p.re = c.re * a.re;
+    p.part[0] = c.part[0] * a.part[0];
 #endif
     return p;
-}
-
-__device__ __forceinline__ Coeff coeff_scale(Coeff c, real_t s) {
-    c.re = c.re * s;
-#if COEFF_COMPLEX
-    c.im = c.im * s;
-#endif
-    return c;
 }
 
 // `Coefficient::mul_phase` by i^ph, a sign and a swap of the parts; a real type only ever sees an even ph.
 __device__ __forceinline__ Coeff coeff_mul_phase(Coeff c, u32 ph) {
     Coeff t;
 #if COEFF_COMPLEX
-    switch (ph) {
-        case 0: t.re = c.re; t.im = c.im; break;
-        case 1: t.re = -c.im; t.im = c.re; break;
-        case 2: t.re = -c.re; t.im = -c.im; break;
-        default: t.re = c.im; t.im = -c.re; break;
-    }
+    const real_t re = c.part[0], im = c.part[1];
+    t.part[0] = ph == 0 ? re : ph == 1 ? -im : ph == 2 ? -re : im;
+    t.part[1] = ph == 0 ? im : ph == 1 ? re : ph == 2 ? -im : -re;
 #else
-    t.re = (ph & 2u) ? -c.re : c.re;
+    t.part[0] = (ph & 2u) ? -c.part[0] : c.part[0];
 #endif
     return t;
-}
-
-__device__ __forceinline__ bool coeff_is_zero(Coeff c) {
-#if COEFF_COMPLEX
-    return c.re == 0 && c.im == 0;
-#else
-    return c.re == 0;
-#endif
-}
-
-// `Coefficient::norm_sqr`: |c|^2 in double, the parts widened first.
-__device__ __forceinline__ double coeff_norm_sqr(Coeff c) {
-    const double r = c.re;
-#if COEFF_COMPLEX
-    const double i = c.im;
-    return r * r + i * i;
-#else
-    return r * r;
-#endif
-}
-
-__device__ __forceinline__ Coeff coeff_shfl_up(Coeff v, u32 offset) {
-    v.re = __shfl_up_sync(~0u, v.re, offset);
-#if COEFF_COMPLEX
-    v.im = __shfl_up_sync(~0u, v.im, offset);
-#endif
-    return v;
 }
 
 struct KeepProg {

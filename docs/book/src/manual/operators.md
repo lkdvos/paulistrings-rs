@@ -342,7 +342,7 @@ A real dtype is exact for a Hermitian observable under channels that preserve He
 Every factory in `gates` and `noise` builds such a channel.
 A real sum raises `ValueError` before propagating through any other channel, and on a coefficient, scale factor or `astype` that would need an imaginary part.
 Readouts follow the dtype: `expectation`, `overlap` and `identity_coefficient` return a `float` for a real sum, and the arrays carry the sum's dtype.
-`+` and `-` between two dtypes return NumPy's promotion of the pair; `+=` and `-=` keep the left operand's.
+`+`, `-`, `+=` and `-=` between two dtypes give NumPy's promotion of the pair.
 
 A term costs `16 × width` bytes of key plus 16 (`complex128`), 8 (`float64`, `complex64`) or 4 (`float32`) bytes of coefficient.
 Single precision resolves about seven significant digits, so its rounding accumulates over layers and a coefficient threshold below about `1e-7` of the largest coefficient is below its resolution.

@@ -574,24 +574,13 @@ def _hermitian_observable(num_qubits):
 
 @needs_cuda
 @pytest.mark.parametrize("dtype,tol", DTYPES)
-def test_device_runs_agree_with_the_host_in_every_dtype(dtype, tol):
-    s, c = _hermitian_observable(8), _circuit(8)
-    want = s.propagate(c, direction="heisenberg")
-    narrowed = s.astype(dtype)
-    got = narrowed.propagate(c, direction="heisenberg", device=0)
-    assert got.dtype == np.dtype(dtype)
-    _assert_terms_close(got.astype("complex128"), want, tol=tol)
-
-
-@needs_cuda
-@pytest.mark.parametrize("dtype,tol", DTYPES)
-def test_a_resident_sum_keeps_its_dtype(dtype, tol):
-    s, c = _hermitian_observable(8), _circuit(8)
-    want = s.propagate(c, direction="heisenberg")
-    resident = s.astype(dtype).to_device(0)
+def test_device_runs_keep_the_dtype_and_agree_with_the_host(dtype, tol):
+    s, c = _hermitian_observable(8).astype(dtype), _circuit(8)
+    want = _hermitian_observable(8).propagate(c, direction="heisenberg")
+    resident = s.to_device(0)
     assert resident.dtype == np.dtype(dtype)
     assert (dtype in repr(resident)) == (dtype != "complex128")
     resident.propagate(c, direction="heisenberg")
-    got = resident.to_host()
-    assert got.dtype == np.dtype(dtype)
-    _assert_terms_close(got.astype("complex128"), want, tol=tol)
+    for got in (s.propagate(c, direction="heisenberg", device=0), resident.to_host()):
+        assert got.dtype == np.dtype(dtype)
+        _assert_terms_close(got.astype("complex128"), want, tol=tol)

@@ -1,4 +1,6 @@
 use num_complex::Complex64;
+
+use crate::coefficient::Coefficient;
 const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 use super::*;
 use crate::channel::rotation::PauliRotation;
@@ -63,7 +65,7 @@ fn via_prepared<const W: usize>(
                 let mut prod = input;
                 let phase = prod.mul_assign(&r.generator);
                 let total = crate::phase::Phase::I + phase;
-                out.push((prod.x, prod.z, total.apply(coeff) * r.sin));
+                out.push((prod.x, prod.z, coeff.mul_phase(total) * r.sin));
             }
         }
     }

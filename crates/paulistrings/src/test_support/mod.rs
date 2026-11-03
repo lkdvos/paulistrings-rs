@@ -3,6 +3,7 @@
 //! Compiled only under `cfg(test)` or the `test-utils` feature (the crate's self-dev-dependency); `#[doc(hidden)]`, not public API.
 
 mod circuits;
+mod coefficient;
 mod compare;
 #[cfg(feature = "cuda")]
 mod gpu;
@@ -12,6 +13,7 @@ mod rows;
 mod transport;
 
 pub use circuits::*;
+pub use coefficient::*;
 pub use compare::*;
 #[cfg(feature = "cuda")]
 pub use gpu::{

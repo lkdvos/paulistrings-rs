@@ -53,11 +53,11 @@ All five array/list accessors return the sum's canonical order (partition-bucket
 | Call | Returns |
 |---|---|
 | `a + b`, `a - b` | a new sum, coefficients combined on matching strings and the rest kept, at NumPy's promotion of the two dtypes |
-| `a += b`, `a -= b` | the same merge, in place, at `a`'s dtype |
+| `a += b`, `a -= b` | the same merge and dtype, in place |
 | `a * c`, `c * a`, `a *= c` | every coefficient scaled by a complex or real `c`, at `a`'s dtype |
 
 Both operands of `+`/`-` must have the same `num_qubits`; anything else is a `ValueError`.
-A real-dtype `a` raises `ValueError` on a `c`, or a `b` in `+=`/`-=`, with a nonzero imaginary part.
+A real-dtype `a` raises `ValueError` on a `c` with a nonzero imaginary part.
 Terms whose coefficients cancel exactly are dropped, as is every term when `c` is exactly zero.
 `*` is scalar-only: multiplying two sums is a full operator product, which this library does not implement.
 

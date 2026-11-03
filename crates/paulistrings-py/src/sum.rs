@@ -1250,7 +1250,7 @@ impl PauliSum {
         Ok(inner)
     }
 
-    /// `slf ± other`, in place and at `slf`'s dtype.
+    /// `slf ± other`, in place.
     /// `a += a` aliases one Python object into both operands, so that case merges against a snapshot rather than taking two borrows of the same cell.
     fn add_in_place(
         slf: &Bound<'_, Self>,
@@ -1260,20 +1260,14 @@ impl PauliSum {
         let combined = if slf.is(other) {
             let this = slf.borrow();
             let snapshot = this.inner.clone();
-            this.checked_add_in_dtype(&snapshot, subtract)?
+            this.checked_add(&snapshot, subtract)?
         } else {
             let this = slf.borrow();
             let that = other.borrow();
-            this.checked_add_in_dtype(&that.inner, subtract)?
+            this.checked_add(&that.inner, subtract)?
         };
         slf.borrow_mut().inner = combined;
         Ok(())
-    }
-
-    /// `self ± other` at `self`'s dtype.
-    fn checked_add_in_dtype(&self, other: &PauliSumImpl, subtract: bool) -> PyResult<PauliSumImpl> {
-        self.check_same_qubits(other)?;
-        self.inner.add_in_dtype(other, subtract)?.ok_or_else(width_mismatch)
     }
 }
 
@@ -1712,7 +1706,7 @@ impl PauliSum {
         Ok(Self::plain(self.checked_add(&other.inner, true)?))
     }
 
-    /// `self += other`, in place: `self` keeps its dtype, and a real `self` raises `ValueError` when `other` has a coefficient with a nonzero imaginary part.
+    /// `self += other`, in place, at the dtype `+` would give.
     fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
         Self::add_in_place(slf, other, false)
     }

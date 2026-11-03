@@ -186,8 +186,11 @@ impl<C: PyCoefficient> WidthSplit<C> {
         for_each_width!(self, |s| s.rows().num_partitions())
     }
 
-    fn rank(&self) -> Option<u32> {
-        for_each_width!(self, |s| s.rank())
+    forward! {
+        for_each_width;
+        fn rank(&self) -> Option<u32>;
+        fn len(&self) -> usize;
+        fn held(&self) -> usize;
     }
 
     fn num_buckets(&self) -> usize {
@@ -196,14 +199,6 @@ impl<C: PyCoefficient> WidthSplit<C> {
 
     fn hash_seed(&self) -> u64 {
         for_each_width!(self, |s| s.hash().seed())
-    }
-
-    fn len(&self) -> usize {
-        for_each_width!(self, |s| s.len())
-    }
-
-    fn held(&self) -> usize {
-        for_each_width!(self, |s| s.held())
     }
 
     fn partition_flags(&self) -> Vec<Vec<bool>> {
@@ -304,40 +299,19 @@ impl SplitImpl {
         for_each_dtype!(self, |s| of(s))
     }
 
-    fn num_qubits(&self) -> usize {
-        for_each_dtype!(self, |s| s.num_qubits())
-    }
-
-    fn num_partitions(&self) -> usize {
-        for_each_dtype!(self, |s| s.num_partitions())
-    }
-
-    fn rank(&self) -> Option<u32> {
-        for_each_dtype!(self, |s| s.rank())
-    }
-
-    fn num_buckets(&self) -> usize {
-        for_each_dtype!(self, |s| s.num_buckets())
-    }
-
-    fn hash_seed(&self) -> u64 {
-        for_each_dtype!(self, |s| s.hash_seed())
-    }
-
-    fn len(&self) -> usize {
-        for_each_dtype!(self, |s| s.len())
-    }
-
-    fn held(&self) -> usize {
-        for_each_dtype!(self, |s| s.held())
-    }
-
-    fn partition_flags(&self) -> Vec<Vec<bool>> {
-        for_each_dtype!(self, |s| s.partition_flags())
-    }
-
-    fn hash_flags(&self) -> Vec<Vec<bool>> {
-        for_each_dtype!(self, |s| s.hash_flags())
+    forward! {
+        for_each_dtype;
+        fn num_qubits(&self) -> usize;
+        fn num_partitions(&self) -> usize;
+        fn rank(&self) -> Option<u32>;
+        fn num_buckets(&self) -> usize;
+        fn hash_seed(&self) -> u64;
+        fn len(&self) -> usize;
+        fn held(&self) -> usize;
+        fn partition_flags(&self) -> Vec<Vec<bool>>;
+        fn hash_flags(&self) -> Vec<Vec<bool>>;
+        fn partition_shortfall(&self, policy: &PartitionRowPolicy) -> Option<String>;
+        fn rehash_target(&self, rows: &[Vec<bool>], seed: Option<u64>) -> HashTarget;
     }
 
     fn expectation(&self, state: &ProductState) -> Scalar {
@@ -352,16 +326,8 @@ impl SplitImpl {
         for_each_dtype_convert!(SplitImpl => PauliSumImpl, self, |s| s.local())
     }
 
-    fn partition_shortfall(&self, policy: &PartitionRowPolicy) -> Option<String> {
-        for_each_dtype!(self, |s| s.partition_shortfall(policy))
-    }
-
     fn repartition(&mut self, policy: &PartitionRowPolicy) {
         for_each_dtype!(self, |s| s.repartition(policy))
-    }
-
-    fn rehash_target(&self, rows: &[Vec<bool>], seed: Option<u64>) -> HashTarget {
-        for_each_dtype!(self, |s| s.rehash_target(rows, seed))
     }
 
     fn rehash(&mut self, target: HashTarget) -> Result<(), PropagateFailure> {

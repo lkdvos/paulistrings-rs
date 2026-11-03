@@ -15,6 +15,15 @@ macro_rules! for_each_width {
     };
 }
 
+/// Methods that forward to the same-named method of whichever variant `self` holds, through the dispatch macro `$dispatch` (`for_each_dtype` or `for_each_width`).
+macro_rules! forward {
+    ($dispatch:ident; $($(#[$attr:meta])* $vis:vis fn $name:ident(&self $(, $arg:ident: $ty:ty)*) -> $ret:ty;)*) => {
+        $($(#[$attr])* $vis fn $name(&self $(, $arg: $ty)*) -> $ret {
+            $dispatch!(self, |s| s.$name($($arg),*))
+        })*
+    };
+}
+
 /// Dispatch a pair of values of the same width-dispatch enum, requiring both to be the same width variant. `Some($body)` on a match, `None` on a width mismatch (used by `PauliSum::overlap`).
 macro_rules! for_each_width_pair {
     (($a:expr, $b:expr), |$x:ident, $y:ident| $body:expr) => {

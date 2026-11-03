@@ -57,9 +57,6 @@ pub trait Coefficient:
     /// `r` rounded to [`Self::Real`].
     fn real(r: f64) -> Self::Real;
 
-    /// `r` as a coefficient.
-    fn from_f64(r: f64) -> Self;
-
     /// `c` rounded to this type; `None` for a real type when `|c.im|` exceeds `tolerance`.
     fn from_complex64(c: Complex64, tolerance: f64) -> Option<Self>;
 
@@ -90,11 +87,6 @@ macro_rules! real_coefficient {
 
             #[inline]
             fn real(r: f64) -> $t {
-                r as $t
-            }
-
-            #[inline]
-            fn from_f64(r: f64) -> Self {
                 r as $t
             }
 
@@ -149,11 +141,6 @@ macro_rules! complex_coefficient {
             #[inline]
             fn real(r: f64) -> $r {
                 r as $r
-            }
-
-            #[inline]
-            fn from_f64(r: f64) -> Self {
-                <$t>::new(r as $r, 0.0)
             }
 
             #[inline]

@@ -353,37 +353,10 @@ Levers: merging positions into one block, or a shorter sort for short runs.
 The GPU wins at every measured size: `cnot` 2.3× at 1e4, 7.5× at 1e5, 12.4× at 1e6 against in-process `propagate_with`.
 Unexplained: in-process `propagate` ran 1.6–2.9× slower than the probe on the same cell.
 
-### Rotation gates at saturation change a third to two thirds of the strings, mostly as new keys
+### In-place rotation layer: 5–17% faster on rotation steps, +5–6% peak memory
 
-`phase_breakdown --rotation-sparsity` diffs the sum across every gate (`test_support::structural_diff`): a gate's first structural change falls at the front of nearly every bucket it touches, so a backward in-place merge rewrites the bucket anyway.
-On gates that change anything, the per-gate shift fraction (strings at or after a bucket's first insert or delete, over terms out) has p10/p50/p90 0.91–0.996 / 0.99–0.998 / 0.997–0.999 for `rx` and 0.65–0.95 / 0.98–0.999 / 0.998–1.0 for `ZZ`, in every sampled step of both circuits.
-`heavyhex_step` at `coeff:2^-15` (steps 0–7, peak 4.6e7 terms), active gates: `rx` 25–53% anticommuting, 16–44% inserted, shift 0.98–0.997; `ZZ` 19–46% inserted and as many deleted, never a hit, shift 0.96–0.98.
-`tfim_step` on 24 qubits at `coeff:2^-16`, steps 12, 16 and 19, where every gate is active (peak 9.7e7 terms): `rx` 52–70% anticommuting, 28–41% inserted, shift 0.99–1.0; `ZZ` 43–58% anticommuting, 43–57% inserted (96–100% of partners are new keys), shift 0.90–0.98.
-`rx` partners are new keys 53–82% of the time, so misses are the common case, not the exception.
-On heavy-hex the light cone never covers the lattice before coefficient truncation shrinks the sum: through step 7 at `2^-15`, 59–99% of term-weighted gate work per step was on gates whose support misses every string, a cost only of the first steps of a run.
-A shifted bucket is still in L2 (about 48 KB at the target length and `W = 2`), so a backward in-place merge costs DRAM one read and one write-back of the bucket, as the full pass does, and the shift itself is an in-cache `memmove`; whether that beats the gather, sort and merge needs the kernel's own A/B, not a byte count.
-
-### In-place rotation layer: 6–17% faster on rotation steps at 16 threads, 3–8% at 48
-
-Built: `engine/bucketed/rotation_layer.rs` takes every local table shaped like a rotation (an identity entry exactly one wherever the generator entry is zero, and generator patterns closed under `⊕ g`) on layers without received rows, so `rx`, `ZZ` and their partitioned local layers.
-Each coset (one bucket, or `{β, β ⊕ h(g)}`) is scanned once, emitting partners and scaling coefficients in place; partners are put in order by `PartnerOrder`, the block permutation of the sorted source; a hit-counting pass sizes a backward merge in the bucket's own buffer, which falls back to scratch and a swap when the spare capacity is short.
-Every output still passes `keep_term`, as on the general path, so an unfiltered input gives the same answer; a quarter turn (`|a₀| ≤ ε·|a₁|` on every anticommuting pattern) moves strings instead of scaling them and drops the `cos(π/2)` residues an unsnapped table keeps.
-ccqlin038 (a shared workstation, so these are rough relative signals) against `142e36e2`, steady 1.5e6-term `rotation_zz`: flat at 1 and 8 threads; `tfim_step` and `heavyhex_step` at `coeff:1e-3`/`1e-4` (at most 600 terms) 18–35% faster at 8 threads; no saturating sum was timed locally.
-`PartnerOrder` against the adaptive stable `sort_by` on the same rows, there: 10% slower on `rotation_zz` at one thread, 15% faster on `heavyhex_step` at `coeff:2^-15` and 8 threads; kept for the second.
-Measured and dropped on the way: a coefficient store only for anticommuting strings (+15% wall on `rotation_zz` at one thread, the branch mispredicts); a merge written from `len + partners` without counting hits (every steady `rotation_zz` partner is a hit, so each bucket shifted twice, +12–15% at 8 threads); reserving the bound `len + partners` before every merge (every merge in place, VmHWM +15%, slower at 8 threads).
-Genoa code A/B of `48cc61a1` against `142e36e2` (jobs 7396098–7396100, 5 ABBA pairs, every cell 5/5 in direction), median wall Δ:
-
-| cell | 16 threads | 48 threads | VmHWM |
-|---|---|---|---|
-| `heavyhex_step`, `coeff:2^-15` | −17.0% | −7.4% | +4.7% |
-| `tfim_step`, 24 qubits, `coeff:2^-16` | −6.7% | −3.1% | +6.4% |
-| `rotation_zz`, `n = 1e6` | −8.5% | −7.9% | |
-| `rotation_local`, `n = 1e6` | −8.2% | −5.9% | |
-| `cnot` (untouched) | −3.2%, 4/5 | −0.1%, 3/5 | |
-
-`cnot` has no consistent direction, so the rotation cells are the kernel, not layout; the gain halving from 16 to 48 threads is the socket's copy bandwidth (§Intra-node strong scaling is the socket's copy bandwidth).
-Growing a short bucket by exactly its new keys instead of the scratch fallback (`acc9ecf2`) made it worse: Genoa `heavyhex_step` −12.5% wall and VmHWM +20.6% at 16 threads, no consistent change at 48; `tfim_step` lost its gain (+1.1%, +4.5%, neither consistent; jobs 7396204–7396205).
-On ccqlin038, 4 `heavyhex_step` steps at `coeff:2^-14` and 8 threads: VmHWM 1.033 GB at `142e36e2`, +3.0% with the scratch fallback, +25.6% with exact growth, and the same ordering with `MALLOC_MMAP_THRESHOLD_=16384`, so the rise is held capacity, not heap fragmentation.
-A bucket merged in place keeps the largest capacity it reached, while the general path's output buffers circulate through worker scratch; `ZZ` moves strings back and forth within each pair, so in-place merging holds every bucket's high-water mark (unmeasured beyond VmHWM).
-Bucket capacity summed at step ends is not a proxy for VmHWM: it ranked exact growth below the general path.
-Kept with the scratch fallback at its VmHWM cost; handing a shrunk bucket's buffer back through scratch is the open lever.
+At saturation (`heavyhex_step` at `coeff:2^-15`, 24-qubit `tfim_step` at `2^-16`) an active rotation gate changes 20–70% of the strings, most partners are new keys, and a bucket's first change falls at its front, so the in-place merge rewrites nearly every bucket it touches, within L2.
+Genoa code A/B against `6723e31e` (jobs 7396289–7396291, 5 pairs, every rotation cell 5/5): `heavyhex_step` −16.9% / −8.0% at 16 / 48 threads, `tfim_step` −5.1% / −5.7%, `rotation_zz` −9.6% / −6.5%, `rotation_local` −8.9% / −5.5%, untouched `cnot` no consistent change; VmHWM +4.6–6.4%.
+The VmHWM cost is held capacity, not fragmentation (same ordering under `MALLOC_MMAP_THRESHOLD_=16384`): a bucket merged in place keeps its high-water capacity, while the general path's buffers circulate through scratch (#51).
+Rejected: a coefficient store only for anticommuting strings (+15%, mispredicts), merging without counting hits (+12–15%), reserving `len + partners` (VmHWM +15%), and growing a short bucket by exactly its new keys (VmHWM +20–26%, the TFIM gain lost).
+`PartnerOrder` against the stable `sort_by`: 15% faster on `heavyhex_step` at 8 threads, 10% slower on `rotation_zz` at one.

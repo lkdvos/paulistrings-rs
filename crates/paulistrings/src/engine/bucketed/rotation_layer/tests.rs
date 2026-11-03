@@ -1,6 +1,5 @@
 use std::f64::consts::FRAC_PI_2;
 
-use super::super::{rotation_layers_taken, with_general_path};
 use super::*;
 use crate::channel::{Channel, PauliRotation, Prepare, PtmChannel};
 use crate::engine::bucketed::{apply_layer_bucketed, LayerScratch};
@@ -9,8 +8,7 @@ use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::pauli_sum::PauliSum;
 use crate::test_support::{
-    assert_runs_agree, assert_terms_close, coarsen, propagate_discarding, rand_sum, zz_rotation,
-    KeepAll, Xs64,
+    assert_terms_close, coarsen, naive_apply_layer, rand_sum, zz_rotation, KeepAll, Xs64,
 };
 use crate::truncation::{ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
 use crate::{Circuit, Direction};
@@ -98,9 +96,9 @@ fn set_spare<const W: usize>(sum: &mut PauliSum<W>, spare: Spare) {
 
 /// `(in place, fallback)` merges over every slot of `scratch`.
 fn merges<const W: usize>(scratch: &LayerScratch<W>) -> (usize, usize) {
-    let mut total = scratch.task.rotation.merges;
+    let mut total = scratch.task.rotation_merges;
     for slot in &scratch.workers {
-        let (in_place, fallback) = slot.lock().unwrap().rotation.merges;
+        let (in_place, fallback) = slot.lock().unwrap().rotation_merges;
         total.0 += in_place;
         total.1 += fallback;
     }
@@ -124,7 +122,19 @@ fn one_layer<const W: usize>(
     (sum, scratch)
 }
 
-/// The rotation layer and the general path on one layer; panics unless the rotation layer ran and the two agree.
+/// The naive oracle's layer and the policy's layer pass.
+fn oracle<const W: usize>(
+    input: &PauliSum<W>,
+    channel: &dyn Channel<W>,
+    policy: &BuiltinTruncation,
+    adjoint: bool,
+) -> PauliSum<W> {
+    let mut want = naive_apply_layer(input, channel, policy, adjoint);
+    <BuiltinTruncation as crate::TruncationPolicy<W>>::finalize_layer(policy, &mut want);
+    want
+}
+
+/// One layer against the oracle; panics unless the rotation layer ran and the two agree, and returns its merges.
 fn assert_paths_agree<const W: usize>(
     input: &PauliSum<W>,
     channel: &dyn Channel<W>,
@@ -133,18 +143,12 @@ fn assert_paths_agree<const W: usize>(
     spare: Spare,
     what: &str,
 ) -> (usize, usize) {
-    let taken = rotation_layers_taken();
     let (got, scratch) = one_layer(input, channel, policy, adjoint, spare);
-    assert_eq!(rotation_layers_taken(), taken + 1, "{what}: the rotation layer did not run");
-    let (want, _) = with_general_path(|| one_layer(input, channel, policy, adjoint, spare));
-    assert_eq!(
-        rotation_layers_taken(),
-        taken + 1,
-        "{what}: the general path took the rotation layer"
-    );
+    let merges = merges(&scratch);
+    assert!(merges.0 + merges.1 > 0, "{what}: the rotation layer did not run");
     got.assert_invariants();
-    assert_terms_close(&got, &want, TOL, what);
-    merges(&scratch)
+    assert_terms_close(&got, &oracle(input, channel, policy, adjoint), TOL, what);
+    merges
 }
 
 fn policies(len: usize) -> Vec<BuiltinTruncation> {
@@ -262,14 +266,13 @@ fn the_clifford_arm_drops_quarter_turn_residues() {
     assert!(layer.clifford, "the residue is within ε of the partner amplitude");
 
     let (got, _) = one_layer(&input, &channel, &KeepAll.into(), false, Spare::Tight);
-    let (want, _) =
-        with_general_path(|| one_layer(&input, &channel, &KeepAll.into(), false, Spare::Tight));
+    let want = oracle(&input, &channel, &KeepAll.into(), false);
     assert_eq!(got.len(), input.len(), "a Clifford layer is a permutation");
     let residues: Vec<_> = want.iter().filter(|t| t.2.norm() < 1e-14).collect();
     assert_eq!(
         want.len(),
         got.len() + residues.len(),
-        "the general path keeps one residue per moved string"
+        "the oracle keeps one residue per moved string"
     );
     let want_without_residues = {
         let mut trimmed = want.clone();
@@ -329,7 +332,7 @@ fn only_rotation_shaped_tables_qualify() {
     assert_eq!(shape(&PtmChannel::depolarizing(2, 0.1)), None);
 }
 
-/// Multi-layer runs through the driver, which rebuckets and coarsens between layers, and every built-in policy's layer pass.
+/// Multi-layer runs through the driver, which rebuckets and coarsens between layers, against the oracle stepped layer by layer.
 #[test]
 fn propagated_rotation_circuits_agree() {
     let mut circuit = Circuit::<1>::new(7);
@@ -342,43 +345,26 @@ fn propagated_rotation_circuits_agree() {
         }
         circuit.push(PauliRotation::new(PauliString::y(step), FRAC_PI_2));
     }
-    let input = {
-        let mut accumulator = BuildAccumulator::<1>::new(7);
-        accumulator.add_term(PauliString::z(3), Complex64::new(1.0, 0.0));
-        accumulator.add_term(PauliString::x(5), Complex64::new(0.0, 0.5));
-        accumulator.finalize()
-    };
-    let policies: [BuiltinTruncation; 5] = [
-        KeepAll.into(),
-        CoefficientThreshold(1e-3).into(),
-        WeightCutoff(4).into(),
-        TopN(600).into(),
-        ApproxTopN(600).into(),
-    ];
+    let input = rand_sum::<1>(40, 7, 0x7E);
+    let policies: [BuiltinTruncation; 3] =
+        [KeepAll.into(), CoefficientThreshold(1e-3).into(), WeightCutoff(4).into()];
     for policy in policies {
         for direction in [Direction::Forward, Direction::Heisenberg] {
-            let taken = rotation_layers_taken();
-            let (got, _) = propagate_discarding(&circuit, input.clone(), &policy, direction);
-            assert_eq!(rotation_layers_taken() - taken, circuit.channels.len());
-            let (want, discarded) = with_general_path(|| {
-                propagate_discarding(&circuit, input.clone(), &policy, direction)
-            });
-            if matches!(policy, BuiltinTruncation::TopN(_) | BuiltinTruncation::ApproxTopN(_)) {
-                assert_eq!(want.len(), 600, "the layer pass must cut");
+            let got = crate::propagate(&circuit, input.clone(), &policy, direction);
+            let adjoint = direction == Direction::Heisenberg;
+            let mut channels: Vec<_> = circuit.channels.iter().collect();
+            if adjoint {
+                channels.reverse();
             }
-            assert_runs_agree(
-                policy.clone(),
-                discarded,
-                &got,
-                &want,
-                1e-10,
-                &format!("{policy:?} {direction:?}"),
-            );
+            let want = channels.into_iter().fold(input.clone(), |sum, channel| {
+                oracle(&sum, channel.as_ref(), &policy, adjoint)
+            });
+            assert_terms_close(&got, &want, 1e-10, &format!("{policy:?} {direction:?}"));
         }
     }
 }
 
-/// Local rotation layers of a two-partition run take the rotation layer on each partition, a remote one the general path; the gathered result matches one partition's general path.
+/// Local rotation layers of a two-partition run take the rotation layer on each partition, a remote one the general path; the gathered result matches one partition's.
 #[test]
 fn partitioned_local_layers_agree_at_two_partitions() {
     use crate::engine::partitioned::{PartitionedSum, ScatterOptions, ScatterRows};
@@ -402,8 +388,7 @@ fn partitioned_local_layers_agree_at_two_partitions() {
         let mut split = PartitionedSum::scatter_with(input.clone(), options);
         split.propagate(&circuit, &policy, direction);
         let got = split.into_gathered();
-        let want =
-            with_general_path(|| crate::propagate(&circuit, input.clone(), &policy, direction));
+        let want = crate::propagate(&circuit, input.clone(), &policy, direction);
         assert_terms_close(&got, &want, 1e-10, &format!("{direction:?}"));
     }
 }

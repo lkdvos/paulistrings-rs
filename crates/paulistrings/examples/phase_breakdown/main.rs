@@ -15,7 +15,6 @@ mod cli;
 mod device;
 mod output;
 mod rows;
-mod sparsity;
 mod workloads;
 
 use paulistrings::test_support::KeepAll;
@@ -34,7 +33,6 @@ use device::run_cell_mpi_gpu;
 #[cfg(feature = "cuda")]
 use device::{builtin_truncation, resolve_devices, run_cell_gpu};
 use output::{json_line, print_cell_line, print_json, print_table};
-use sparsity::run_rotation_sparsity;
 
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
 /// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
@@ -56,12 +54,6 @@ where
     P: TruncationPolicy<W>,
     PP: TruncationPolicy<W>,
 {
-    if let Some(path) = &cfg.rotation_sparsity {
-        for &layer in &cfg.layers {
-            run_rotation_sparsity::<W, P>(layer, cfg.threads[0], cfg, policy, path);
-        }
-        return;
-    }
     let mut sidecar = cfg.json_out.as_ref().map(|path| {
         // Under `--mpi` every rank writes its own file, suffixed by rank, to avoid interleaving.
         let path = mpi_sidecar_path(path, cfg);

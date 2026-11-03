@@ -105,22 +105,6 @@ impl<'p, const W: usize> RotationLayer<'p, W> {
     }
 }
 
-/// One worker's rotation working set; every buffer is cleared before use.
-#[derive(Clone, Debug, Default)]
-pub(in crate::engine) struct RotationScratch<const W: usize> {
-    /// Partner runs in source order, indexed by destination member.
-    partners: [BucketColumns<W>; 2],
-    /// One partner run in key order.
-    ordered: BucketColumns<W>,
-    /// [`PartnerOrder::order`]'s scratch.
-    divergence: Vec<u32>,
-    /// The merge target when a bucket lacks the spare capacity to merge in place.
-    merged: BucketColumns<W>,
-    /// Merges done in place, and in `merged`.
-    #[cfg(test)]
-    pub(super) merges: (usize, usize),
-}
-
 /// Apply `layer` to one coset, one bucket or the pair `{β, β ⊕ h(g)}`, each partner run merging into the other member.
 pub(super) fn fill_rotation_coset<const W: usize, T>(
     members: &mut [BucketColumns<W>],
@@ -132,11 +116,15 @@ pub(super) fn fill_rotation_coset<const W: usize, T>(
 {
     let size = members.len();
     debug_assert!(size == 1 || size == 2);
-    let rotation = &mut scratch.rotation;
+    // The general path's buffers, idle between its cosets: each member's run holds its partners in `rest` and in key order in `identity`, and `old[0]` is the merge fallback.
+    scratch.runs.resize_with(size.max(scratch.runs.len()), GatherRun::default);
+    if scratch.old.is_empty() {
+        scratch.old.push(BucketColumns::default());
+    }
     stamp!(stamp);
     // Every scan precedes every merge, so each partner carries its source's unscaled coefficient.
     for (j, bucket) in members.iter_mut().enumerate() {
-        let partners = &mut rotation.partners[j ^ (size - 1)];
+        let partners = &mut scratch.runs[j ^ (size - 1)].rest;
         partners.clear();
         // Counted as the general path's identity rows, whose keys stay put.
         tally!(scratch.stats.rows_gathered, bucket.len());
@@ -145,17 +133,17 @@ pub(super) fn fill_rotation_coset<const W: usize, T>(
     }
     lap!(stamp, scratch.stats.gather_ns);
     for (j, bucket) in members.iter_mut().enumerate() {
-        tally!(scratch.stats.rows_gathered, rotation.partners[j].len());
-        tally!(scratch.stats.rows_sorted, rotation.partners[j].len());
-        layer.order.order(&rotation.partners[j], &mut rotation.ordered, &mut rotation.divergence);
+        let run = &mut scratch.runs[j];
+        tally!(scratch.stats.rows_gathered, run.rest.len());
+        tally!(scratch.stats.rows_sorted, run.rest.len());
+        layer.order.order(&run.rest, &mut run.identity, scratch.sort.indices());
         lap!(stamp, scratch.stats.sort_ns);
         #[cfg_attr(not(test), allow(unused_variables))]
-        let in_place =
-            merge_partners(bucket, rotation.ordered.view(), policy, &mut rotation.merged);
+        let in_place = merge_partners(bucket, run.identity.view(), policy, &mut scratch.old[0]);
         #[cfg(test)]
         {
-            rotation.merges.0 += usize::from(in_place);
-            rotation.merges.1 += usize::from(!in_place);
+            scratch.rotation_merges.0 += usize::from(in_place);
+            scratch.rotation_merges.1 += usize::from(!in_place);
         }
         lap!(stamp, scratch.stats.merge_ns);
     }

@@ -9,7 +9,6 @@ mod gpu;
 mod oracle;
 mod random;
 mod rows;
-mod structure;
 mod transport;
 
 pub use circuits::*;
@@ -22,7 +21,6 @@ pub use gpu::{
 pub use oracle::*;
 pub use random::*;
 pub use rows::{circuit_generators, count_remote_deltas, GeneratorWeight};
-pub use structure::{structural_diff, StructuralDiff};
 pub use transport::*;
 
 pub use crate::engine::bucketed::apply_layer_bucketed;

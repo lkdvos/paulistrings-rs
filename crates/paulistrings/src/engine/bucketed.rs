@@ -225,7 +225,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                 lap!(stamp, scratch.stats.rescale_ns);
                 return;
             }
-            RotationLayer::of(ptm).filter(|_| !general_path_forced())
+            RotationLayer::of(ptm)
         }
         _ => None,
     };
@@ -244,8 +244,6 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     let len = match rotation {
         Some(layer) => {
             debug_assert!(knobs.order.is_none());
-            #[cfg(test)]
-            ROTATION_LAYERS.with(|taken| taken.set(taken.get() + 1));
             lap!(stamp, scratch.stats.span_plan_ns);
             coset_loop(sum, &span, scratch, |members, _, worker_scratch| {
                 fill_rotation_coset(members, &layer, policy, worker_scratch)
@@ -265,37 +263,6 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
 
     #[cfg(debug_assertions)]
     sum.assert_invariants();
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Set by [`with_general_path`]: the calling thread's layers skip every special path but the rescale.
-    static GENERAL_PATH_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Rotation layers taken on the calling thread.
-    static ROTATION_LAYERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Whether this thread is inside [`with_general_path`]; always `false` outside tests.
-fn general_path_forced() -> bool {
-    #[cfg(test)]
-    return GENERAL_PATH_ONLY.with(|forced| forced.get());
-    #[cfg(not(test))]
-    false
-}
-
-/// Run `f` with the rotation layer switched off on this thread, the reference its tests compare against.
-#[cfg(test)]
-pub(crate) fn with_general_path<R>(f: impl FnOnce() -> R) -> R {
-    GENERAL_PATH_ONLY.with(|forced| forced.set(true));
-    let result = f();
-    GENERAL_PATH_ONLY.with(|forced| forced.set(false));
-    result
-}
-
-/// Rotation layers taken on this thread so far.
-#[cfg(test)]
-pub(crate) fn rotation_layers_taken() -> usize {
-    ROTATION_LAYERS.with(|taken| taken.get())
 }
 
 /// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns; returns the output terms.

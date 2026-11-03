@@ -91,11 +91,6 @@ pub fn refine<const W: usize>(sum: &mut PauliSum<W>) {
     sum.refine();
 }
 
-/// The bucket count the one-partition driver settles on before a layer under `options`.
-pub fn rebucket<const W: usize>(sum: &mut PauliSum<W>, options: crate::PropagateOptions) {
-    sum.rebucket(options.target_bucket_len, options.min_buckets);
-}
-
 /// Halve the bucket count.
 pub fn coarsen<const W: usize>(sum: &mut PauliSum<W>) {
     sum.coarsen();

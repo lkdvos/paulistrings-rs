@@ -17,8 +17,8 @@ use paulistrings::{
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 
-/// This rank's share of a sum split over an MPI group, at any coefficient type (the core's `MpiSum` alias is `Complex64`-only).
-pub(crate) type MpiShare<const W: usize, C> = paulistrings::DistributedSum<W, MpiTransport, C>;
+/// This rank's share of a sum split over an MPI group.
+pub(crate) type MpiShare<const W: usize, C> = paulistrings::mpi::MpiSum<W, C>;
 
 /// A core [`MpiError`] as a Python exception.
 ///

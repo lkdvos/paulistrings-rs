@@ -629,15 +629,16 @@ fn run_host_cases(r: &mut Runner) {
 
     // ---- the collective schedule ----------------------------------------
     r.case("a long local run skips the bucket-count collective", |r| {
-        const NQ: usize = 16;
-        let circuit = local_run_then_one_crossing::<1>(NQ);
+        // At least one qubit per rank, so every block of the cut is nonempty.
+        let nq = 16.max(r.size as usize);
+        let circuit = local_run_then_one_crossing::<1>(nq);
         let layers = circuit.len();
         assert!(
             layers > 2 * BITS_AGREE_EVERY,
             "the schedule must have something to skip: {layers} layers",
         );
-        let rows = block_cut::<1>(NQ, r.size as usize);
-        let sum = rand_sum_real::<1>(600, NQ, 0xA021);
+        let rows = block_cut::<1>(nq, r.size as usize);
+        let sum = rand_sum_real::<1>(600, nq, 0xA021);
 
         let config = r.config();
         let runtime = PartitionRuntime::new(&config).expect("topology resolves");
@@ -683,16 +684,17 @@ fn run_host_cases(r: &mut Runner) {
 
     // ---- the row policy -------------------------------------------------
     r.case("a cut row policy puts each block on its own rank", |r| {
-        const NQ: usize = 16;
         let size = r.size as usize;
-        let per = NQ / size;
+        // At least one qubit per rank, so every block of the cut is nonempty.
+        let nq = 16.max(size);
+        let per = nq / size;
         let blocks: Vec<Vec<usize>> =
             (0..size).map(|b| (b * per..(b + 1) * per).collect()).collect();
 
         // One `Z` per qubit: a single-`Z` key has odd z-weight in exactly the
         // block holding that qubit, so its rank is that block's index.
-        let mut acc = BuildAccumulator::<1>::new(NQ);
-        for q in 0..NQ {
+        let mut acc = BuildAccumulator::<1>::new(nq);
+        for q in 0..nq {
             acc.add_term(PauliString::<1>::z(q), Complex64::new(1.0 + q as f64, 0.0));
         }
         let sum = acc.finalize();
@@ -712,7 +714,7 @@ fn run_host_cases(r: &mut Runner) {
 
         // A caller's rows are a placement, not a semantics: the gathered answer
         // is still the serial one.
-        let circuit = local_run_then_one_crossing::<1>(NQ);
+        let circuit = local_run_then_one_crossing::<1>(nq);
         split.propagate(&circuit, &WeightCutoff(4), Direction::Forward);
         if let Some(got) = split.gather() {
             let want = propagate(&circuit, sum, &WeightCutoff(4), Direction::Forward);

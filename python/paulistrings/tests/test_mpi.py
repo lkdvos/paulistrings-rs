@@ -69,6 +69,8 @@ mpi4py.rc.thread_level = "serialized"
 
 from mpi4py import MPI  # noqa: E402
 
+from ._evolved import propagated, propagated_with_stats
+
 COMM = MPI.COMM_WORLD
 RANK = COMM.Get_rank()
 SIZE = COMM.Get_size()
@@ -237,7 +239,7 @@ def reference(observable, circuit):
     """The serial answer, computed identically on every rank. Every rank builds
     it — it is the oracle each of them compares against, and computing it only
     on rank 0 would make the fixture rank-dependent."""
-    return observable.propagate(circuit, POLICY)
+    return propagated(observable, circuit, POLICY)
 
 
 # --------------------------------------------------------------------------
@@ -245,7 +247,7 @@ def reference(observable, circuit):
 
 
 def test_gather_returns_the_whole_sum_on_rank_zero(observable, circuit, reference):
-    got = observable.propagate(circuit, POLICY, comm=COMM)
+    got = propagated(observable, circuit, POLICY, comm=COMM)
     # Collectives are done; from here the assertions may differ per rank.
     assert got.num_qubits == NUM_QUBITS
     if RANK == 0:
@@ -261,8 +263,8 @@ def test_gather_agrees_under_a_truncating_approx_topn(light_observable, light_ci
     boundary-octave terms are chosen in rank order (`assert_runs_agree`).
     Spelled with an explicit `result="gather"`, which must mean what the
     default means."""
-    want = light_observable.propagate(light_circuit, TIGHT_POLICY)
-    got = light_observable.propagate(light_circuit, TIGHT_POLICY, comm=COMM, result="gather")
+    want = propagated(light_observable, light_circuit, TIGHT_POLICY)
+    got = propagated(light_observable, light_circuit, TIGHT_POLICY, comm=COMM, result="gather")
     assert len(want) < NUM_TERMS, "the tight policy must actually truncate"
     if RANK == 0:
         discarded = discarded_norm(light_observable, light_circuit, TIGHT_POLICY)
@@ -275,8 +277,8 @@ def test_gather_agrees_after_a_single_cut():
     """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(NUM_QUBITS):
         policy = truncation.approx_topn(n)
-        want = s.propagate(c, policy)
-        got = s.propagate(c, policy, comm=COMM)
+        want = propagated(s, c, policy)
+        got = propagated(s, c, policy, comm=COMM)
         if RANK == 0:
             assert_runs_agree(got, want, policy, discarded_norm(s, c, policy), TOL, name)
         else:
@@ -288,8 +290,8 @@ def test_gather_keeps_the_serial_count_through_heavy_cuts(direction):
     """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the group keeps the serial count."""
     c, s = heavy_cut(12)
     policy = truncation.approx_topn(400)
-    want = s.propagate(c, policy, direction=direction)
-    got = s.propagate(c, policy, direction=direction, comm=COMM)
+    want = propagated(s, c, policy, direction=direction)
+    got = propagated(s, c, policy, direction=direction, comm=COMM)
     if RANK == 0:
         assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
     else:
@@ -297,8 +299,8 @@ def test_gather_keeps_the_serial_count_through_heavy_cuts(direction):
 
 
 def test_gather_respects_the_direction(observable, circuit, reference):
-    want = observable.propagate(circuit, POLICY, direction="heisenberg")
-    got = observable.propagate(circuit, POLICY, direction="heisenberg", comm=COMM)
+    want = propagated(observable, circuit, POLICY, direction="heisenberg")
+    got = propagated(observable, circuit, POLICY, direction="heisenberg", comm=COMM)
     if RANK == 0:
         _assert_terms_close(got, want)
         # Guard against this being the forward run by accident: applying the
@@ -311,7 +313,7 @@ def test_gather_respects_the_direction(observable, circuit, reference):
 
 
 def test_local_shares_partition_the_gathered_sum(observable, circuit, reference):
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    local = propagated(observable, circuit, POLICY, comm=COMM, result="local")
     # Every reduction below runs on every rank, unconditionally.
     total_terms = COMM.allreduce(len(local))
     total_coeff = COMM.allreduce(complex(local.coefficients_array().sum()))
@@ -328,14 +330,14 @@ def test_local_shares_cover_exactly_the_gathered_keys(observable, circuit, refer
     """The keys, not just the counts: XOR-folding every rank's share must give
     the fold of the whole sum, which with the equal term count above says the
     shares tile the result and overlap nowhere."""
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    local = propagated(observable, circuit, POLICY, comm=COMM, result="local")
     fold = COMM.allreduce(_key_checksum(local), op=MPI.BXOR)
     assert fold == _key_checksum(reference)
 
 
 def test_local_share_arrays_reassemble_the_gathered_sum(observable, circuit, reference):
     """`to_arrays` on a share is this rank's terms; gathered and fed to `from_arrays` they are the whole sum."""
-    local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+    local = propagated(observable, circuit, POLICY, comm=COMM, result="local")
     x, z, c = local.to_arrays()
     assert len(c) == len(local)
     parts = COMM.allgather((x, z, c))
@@ -353,7 +355,7 @@ def test_local_share_arrays_reassemble_the_gathered_sum(observable, circuit, ref
 
 
 def test_stats_name_the_group(observable, circuit, reference):
-    got, stats = observable.propagate_with_stats(circuit, POLICY, comm=COMM)
+    got, stats = propagated_with_stats(observable, circuit, POLICY, comm=COMM)
     part = stats.partition
     assert part is not None
     assert part.size == SIZE
@@ -373,7 +375,7 @@ def test_stats_name_the_group(observable, circuit, reference):
 
 
 def test_stats_repr_names_rank_and_size(observable, circuit):
-    _, stats = observable.propagate_with_stats(circuit, POLICY, comm=COMM)
+    stats = observable.copy().propagate_with_stats(circuit, POLICY, comm=COMM)
     text = repr(stats.partition)
     assert f"rank={RANK}" in text
     assert f"size={SIZE}" in text
@@ -382,14 +384,14 @@ def test_stats_repr_names_rank_and_size(observable, circuit):
 def test_in_process_stats_still_report_no_rank(observable, circuit):
     """`rank`/`size` are `None` for a run that is not distributed — the phase-1
     records are unchanged."""
-    _, stats = observable.propagate_with_stats(circuit, POLICY)
+    stats = observable.copy().propagate_with_stats(circuit, POLICY)
     assert stats.partition.rank is None and stats.partition.size is None
 
 
 def test_multi_rank_run_actually_exchanges(observable, circuit):
     """At more than one rank the circuit must move rows across a boundary; a
     run that never exchanged would not be testing the transport at all."""
-    _, stats = observable.propagate_with_stats(circuit, POLICY, comm=COMM)
+    stats = observable.copy().propagate_with_stats(circuit, POLICY, comm=COMM)
     exported = COMM.allreduce(int(sum(stats.partition.rows_exported)))
     if SIZE > 1:
         assert exported > 0
@@ -413,7 +415,7 @@ def _cut_blocks(num_qubits=NUM_QUBITS, ranks=SIZE):
 def test_a_seed_is_a_placement_knob_not_a_semantic_one(observable, circuit, reference):
     """An explicit `partition_row_seed` reaches the distributed scatter and
     changes nothing about the answer."""
-    got = observable.propagate(circuit, POLICY, comm=COMM, partition_row_seed=0xC0FFEE)
+    got = propagated(observable, circuit, POLICY, comm=COMM, partition_row_seed=0xC0FFEE)
     if RANK == 0:
         assert len(got) == len(reference)
         _assert_terms_close(got, reference)
@@ -424,9 +426,7 @@ def test_a_locality_cut_is_a_placement_knob_not_a_semantic_one(
 ):
     """Same for an explicit cut, which is the point of the kwarg: the rows are
     the caller's, the result is still the serial one."""
-    got = observable.propagate(
-        circuit, POLICY, comm=COMM, partition_row_blocks=_cut_blocks()
-    )
+    got = propagated(observable, circuit, POLICY, comm=COMM, partition_row_blocks=_cut_blocks())
     if RANK == 0:
         assert len(got) == len(reference)
         _assert_terms_close(got, reference)
@@ -444,7 +444,7 @@ def test_a_locality_cut_holds_the_terms_it_names():
     s = PauliSum.from_strings(terms, num_qubits=NUM_QUBITS)
     empty = Circuit(NUM_QUBITS)
 
-    local = s.propagate(empty, comm=COMM, partition_row_blocks=blocks, result="local")
+    local = propagated(s, empty, comm=COMM, partition_row_blocks=blocks, result="local")
     # Collectives are done; the assertion below is this rank's own.
     zs = local.z_array()
     held = sorted(int(row[w]).bit_length() - 1 + 64 * w
@@ -484,7 +484,8 @@ def test_a_repartition_moves_every_term_to_the_rank_its_new_rows_name():
 
 def test_switching_partition_and_bucket_rows_mid_circuit_matches_the_serial_run(observable, circuit):
     first, second = circuit[: len(circuit) // 2], circuit[len(circuit) // 2:]
-    want = observable.propagate(first, POLICY).propagate(second, POLICY)
+    want = propagated(observable, first, POLICY)
+    want.propagate(second, POLICY)
     split = observable.partition(comm=COMM)
     split.propagate(first, POLICY)
     split.repartition(partition_row_blocks=_cut_blocks())
@@ -504,7 +505,7 @@ def test_a_split_raises_on_every_rank_for_rows_of_the_wrong_count(observable):
 def test_shares_passed_back_under_other_rows_raise_instead_of_dropping_terms(observable, circuit):
     """A deprecated `result="local"` share fed into a call split by other rows would be thinned by the scatter; the call refuses it on every rank."""
     with pytest.warns(DeprecationWarning, match="PauliSum.partition"):
-        local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
+        local = propagated(observable, circuit, POLICY, comm=COMM, result="local")
     if SIZE == 1:
         return
     with pytest.raises(ValueError, match="PauliSum.partition"):
@@ -513,8 +514,8 @@ def test_shares_passed_back_under_other_rows_raise_instead_of_dropping_terms(obs
 
 def test_shares_passed_back_under_the_same_rows_still_chain(observable, circuit, reference):
     with pytest.warns(DeprecationWarning):
-        local = observable.propagate(circuit, POLICY, comm=COMM, result="local")
-    got = local.propagate(Circuit(NUM_QUBITS), POLICY, comm=COMM)
+        local = propagated(observable, circuit, POLICY, comm=COMM, result="local")
+    got = propagated(local, Circuit(NUM_QUBITS), POLICY, comm=COMM)
     if RANK == 0:
         _assert_terms_close(got, reference)
 
@@ -553,7 +554,7 @@ def test_distributed_blocks_reject_an_out_of_range_qubit(observable, circuit):
 
 @needs_a_device_group
 def test_one_device_per_rank_gathers_the_serial_answer(observable, circuit, reference):
-    got, stats = observable.propagate_with_stats(circuit, POLICY, comm=COMM, device="auto")
+    got, stats = propagated_with_stats(observable, circuit, POLICY, comm=COMM, device="auto")
     part = stats.partition
     assert part.rank == RANK and part.size == SIZE and part.partitions == SIZE
     assert len(part.devices) == 1
@@ -567,10 +568,8 @@ def test_one_device_per_rank_gathers_the_serial_answer(observable, circuit, refe
 
 @needs_a_device_group
 def test_one_device_per_rank_respects_a_truncating_policy_and_direction(light_observable, light_circuit):
-    want = light_observable.propagate(light_circuit, TIGHT_POLICY, direction="heisenberg")
-    got = light_observable.propagate(
-        light_circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto"
-    )
+    want = propagated(light_observable, light_circuit, TIGHT_POLICY, direction="heisenberg")
+    got = propagated(light_observable, light_circuit, TIGHT_POLICY, direction="heisenberg", comm=COMM, device="auto")
     if RANK == 0:
         discarded = discarded_norm(light_observable, light_circuit, TIGHT_POLICY, "heisenberg")
         assert_runs_agree(got, want, TIGHT_POLICY, discarded, TOL)
@@ -578,7 +577,7 @@ def test_one_device_per_rank_respects_a_truncating_policy_and_direction(light_ob
 
 @needs_a_device_group
 def test_one_device_per_rank_local_shares_tile_the_answer(observable, circuit, reference):
-    local = observable.propagate(circuit, POLICY, comm=COMM, device=0, result="local")
+    local = propagated(observable, circuit, POLICY, comm=COMM, device=0, result="local")
     assert COMM.allreduce(len(local)) == len(reference)
     assert COMM.allreduce(_key_checksum(local), op=MPI.BXOR) == _key_checksum(reference)
 
@@ -588,9 +587,7 @@ def test_one_device_per_rank_honours_a_locality_cut():
     blocks = _cut_blocks(NUM_QUBITS, SIZE)
     terms = {"I" * q + "Z" + "I" * (NUM_QUBITS - q - 1): 1.0 + q for q in range(NUM_QUBITS)}
     s = PauliSum.from_strings(terms, num_qubits=NUM_QUBITS)
-    local = s.propagate(
-        Circuit(NUM_QUBITS), comm=COMM, device="auto", partition_row_blocks=blocks, result="local"
-    )
+    local = propagated(s, Circuit(NUM_QUBITS), comm=COMM, device="auto", partition_row_blocks=blocks, result="local")
     zs = local.z_array()
     held = sorted(int(row[w]).bit_length() - 1 + 64 * w
                   for row in zs for w in range(zs.shape[1]) if row[w])
@@ -627,9 +624,7 @@ EXCLUDED = [0, 2, 3, 5, 64, 67]
 @pytest.mark.parametrize("axis", ["x", "z"])
 def test_strings_differing_only_on_excluded_coordinates_share_a_rank(observable, circuit, reference, axis):
     """What a per-rank read-out over classes of such strings relies on: clearing the excluded bits leaves no key on two ranks."""
-    local = observable.propagate(
-        circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: EXCLUDED}
-    )
+    local = propagated(observable, circuit, POLICY, comm=COMM, result="local", partition_row_exclude={axis: EXCLUDED})
     x, z, _ = local.to_arrays()
     mask = np.zeros(x.shape[1], dtype=np.uint64)
     for q in EXCLUDED:
@@ -654,7 +649,7 @@ def test_distributed_partition_row_exclude_is_validated_first(observable, circui
 
 
 def test_collapse_sample_with_a_large_cache_is_the_serial_run(observable, circuit, reference):
-    got, stats = observable.propagate_with_stats(circuit, truncation.collapse_sample(10**9, 0) & POLICY, comm=COMM)
+    got, stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(10**9, 0) & POLICY, comm=COMM)
     assert stats.collapses == 0
     if RANK == 0:
         _assert_terms_close(got, reference)
@@ -662,16 +657,14 @@ def test_collapse_sample_with_a_large_cache_is_the_serial_run(observable, circui
 
 def test_collapse_sample_collapses_the_whole_group_and_every_rank_counts_it(observable, circuit):
     cache = NUM_TERMS // 2
-    local, stats = observable.propagate_with_stats(
-        circuit, truncation.collapse_sample(cache, 5), comm=COMM, result="local"
-    )
+    local, stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(cache, 5), comm=COMM, result="local")
     total = COMM.allreduce(len(local))
     counts = COMM.allgather(stats.collapses)
     assert counts == [counts[0]] * SIZE
     assert counts[0] >= 1
     assert total <= cache
     if SIZE == 1:
-        serial, serial_stats = observable.propagate_with_stats(circuit, truncation.collapse_sample(cache, 5))
+        serial, serial_stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(cache, 5))
         assert serial_stats.collapses == counts[0]
         _assert_terms_close(local, serial)
 

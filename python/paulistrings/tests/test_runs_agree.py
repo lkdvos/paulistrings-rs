@@ -7,6 +7,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, truncation
 
+from ._evolved import propagated
 from ._runs_agree import (
     _terms,
     assert_runs_agree,
@@ -99,8 +100,8 @@ def test_different_tie_choices_over_many_layers_pass(direction):
     for q in range(16):
         c.rx(0.02, q)
     policy = truncation.topn(2_000)
-    want = s.propagate(c, policy, direction=direction)
-    got = s.propagate(c, policy, direction=direction, target_bucket_len=16, min_buckets=256)
+    want = propagated(s, c, policy, direction=direction)
+    got = propagated(s, c, policy, direction=direction, target_bucket_len=16, min_buckets=256)
     assert set(_terms(got)) != set(_terms(want)), "the bucket counts should choose different ties"
     assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), 1e-12)
 
@@ -108,8 +109,8 @@ def test_different_tie_choices_over_many_layers_pass(direction):
 def _heavy_runs(policy):
     """``heavy_cut`` at two bucket counts, and the reference's ``Δ``."""
     c, s = heavy_cut(12)
-    want = s.propagate(c, policy)
-    got = s.propagate(c, policy, target_bucket_len=16, min_buckets=256)
+    want = propagated(s, c, policy)
+    got = propagated(s, c, policy, target_bucket_len=16, min_buckets=256)
     return got, want, discarded_norm(s, c, policy)
 
 

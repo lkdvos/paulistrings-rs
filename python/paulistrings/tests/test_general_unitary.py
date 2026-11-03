@@ -18,6 +18,8 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates
 
+from ._evolved import propagated
+
 R = 1.0 / math.sqrt(2.0)
 
 H = np.array([[R, R], [R, -R]], dtype=complex)
@@ -66,11 +68,11 @@ def test_1q_unitary_matches_the_named_gate(matrix, named):
 
     via_matrix = Circuit(4)
     via_matrix.unitary_1q(0, matrix)
-    got = initial.propagate(circuit=via_matrix)
+    got = propagated(initial, circuit=via_matrix)
 
     via_named = Circuit(4)
     getattr(via_named, named)(0)
-    want = initial.propagate(circuit=via_named)
+    want = propagated(initial, circuit=via_named)
 
     _assert_close(got, want)
 
@@ -84,11 +86,11 @@ def test_2q_unitary_matches_the_named_gate(matrix, named, args):
 
     via_matrix = Circuit(4)
     via_matrix.unitary_2q(args[0], args[1], matrix)
-    got = initial.propagate(circuit=via_matrix)
+    got = propagated(initial, circuit=via_matrix)
 
     via_named = Circuit(4)
     getattr(via_named, named)(*args)
-    want = initial.propagate(circuit=via_named)
+    want = propagated(initial, circuit=via_named)
 
     _assert_close(got, want)
 
@@ -99,7 +101,7 @@ def test_gates_factory_and_circuit_method_agree():
     a.unitary_1q(0, H)
     b = Circuit(4)
     b.append(gates.unitary_1q(0, H))
-    _assert_close(initial.propagate(circuit=a), initial.propagate(circuit=b))
+    _assert_close(propagated(initial, circuit=a), propagated(initial, circuit=b))
 
 
 # ---- non-Clifford ----
@@ -109,7 +111,7 @@ def test_t_gate_maps_x_to_a_two_term_sum():
     initial = _sum(4, {"XIII": 1.0})
     c = Circuit(4)
     c.unitary_1q(0, T)
-    out = initial.propagate(circuit=c)
+    out = propagated(initial, circuit=c)
     # T X T† = (X + Y)/sqrt(2)
     assert len(out) == 2
     for coeff in out.coefficients():
@@ -120,8 +122,8 @@ def test_t_gate_round_trips_under_heisenberg():
     initial = _sum(4, {"XIII": 1.0, "ZIII": 0.3})
     c = Circuit(4)
     c.unitary_1q(0, T)
-    fwd = initial.propagate(circuit=c, direction="forward")
-    back = fwd.propagate(circuit=c, direction="heisenberg")
+    fwd = propagated(initial, circuit=c, direction="forward")
+    back = propagated(fwd, circuit=c, direction="heisenberg")
     _assert_close(back, initial)
 
 

@@ -204,7 +204,8 @@ def _exact(theta: float, steps: int = DEEP_STEPS) -> float:
 def _propagate(theta: float, eps: float, *, steps: int = DEEP_STEPS, n: int = N):
     """One truncated Heisenberg propagation; returns `(value, stats)`."""
     observable = _observable(n)
-    evolved, stats = observable.propagate_with_stats(
+    evolved = observable.copy()
+    stats = evolved.propagate_with_stats(
         _spec(theta, steps, n).to_circuit(),
         harness.make_policy(min_abs_coeff=eps),
         direction=DIRECTION,
@@ -806,7 +807,8 @@ def test_loose_cutoff_sanity_on_the_full_lattice(theta_label, theta):
     started = time.perf_counter()
     peaks, finals, values = [], [], []
     for eps in LOOSE_COEFFS:
-        evolved, stats = observable.propagate_with_stats(
+        evolved = observable.copy()
+        stats = evolved.propagate_with_stats(
             circuit, harness.make_policy(min_abs_coeff=eps), direction=DIRECTION
         )
         peaks.append(stats.peak_terms)

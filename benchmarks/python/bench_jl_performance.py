@@ -710,7 +710,8 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     logger.addHandler(collector)
     ps.reset_log_cache()
     try:
-        evolved = task.observable.propagate(
+        evolved = task.observable.copy()
+        evolved.propagate(
             circuit=task.circuit,
             policy=task.truncation,
             direction=task.direction,

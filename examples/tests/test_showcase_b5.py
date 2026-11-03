@@ -80,10 +80,12 @@ def test_backpropagated_task_reproduces_full_circuit_expectation(tmp_path):
     front_circuit = front.to_circuit()
     tail_circuit = tail.to_circuit()
 
-    full_evolved = observable.propagate(full_circuit, None, direction="heisenberg")
+    full_evolved = observable.copy()
+    full_evolved.propagate(full_circuit, None, direction="heisenberg")
     full_expectation = complex(full_evolved.expectation("z+"))
 
-    tail_evolved = observable.propagate(tail_circuit, None, direction="heisenberg")
+    tail_evolved = observable.copy()
+    tail_evolved.propagate(tail_circuit, None, direction="heisenberg")
 
     # Round-trip the evolved observable through the paulistrings.io npz format
     # (A3) -- the "save the evolved observable" half of the showcase.
@@ -108,7 +110,8 @@ def test_backpropagated_task_reproduces_full_circuit_expectation(tmp_path):
     assert loaded.truncation is None
     assert loaded.state == "z+"
 
-    composed_evolved = loaded.observable.propagate(
+    composed_evolved = loaded.observable.copy()
+    composed_evolved.propagate(
         loaded.circuit, loaded.truncation, direction=loaded.direction
     )
     composed_expectation = complex(composed_evolved.expectation(loaded.state))
@@ -141,10 +144,13 @@ def test_backpropagated_task_reproduces_full_circuit_under_a_shared_policy():
 
     policy = truncation.coeff(1e-3)
 
-    composed = observable.propagate(tail_circuit, policy, direction="heisenberg").propagate(
+    composed = observable.copy()
+    composed.propagate(tail_circuit, policy, direction="heisenberg")
+    composed.propagate(
         front_circuit, policy, direction="heisenberg"
     )
-    one_shot = observable.propagate(full_circuit, policy, direction="heisenberg")
+    one_shot = observable.copy()
+    one_shot.propagate(full_circuit, policy, direction="heisenberg")
 
     composed_value = complex(composed.expectation("z+"))
     one_shot_value = complex(one_shot.expectation("z+"))

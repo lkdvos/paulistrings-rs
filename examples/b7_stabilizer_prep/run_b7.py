@@ -503,7 +503,8 @@ def run_pipeline() -> list[report.RunRecord]:
             kept_terms = max(kept_terms, record.final_terms)
 
             # The fully untruncated run: same answer, plus ~6e5 dust terms.
-            exact = observable.propagate(tail, None, direction="heisenberg")
+            exact = observable.copy()
+            exact.propagate(tail, None, direction="heisenberg")
             dust_gap = max(
                 dust_gap,
                 abs(exact.expectation_stabilizer(generators).real - values[name]),
@@ -570,7 +571,8 @@ def run_pipeline() -> list[report.RunRecord]:
 
     # --- cross-check 2: the |0...0> special case, on one evolved sum.
     tail = _tail(n, edges, PIPELINE_STEPS, DEEP_THETA_H)
-    evolved = local_observable.propagate(
+    evolved = local_observable.copy()
+    evolved.propagate(
         tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     product_value = complex(evolved.expectation("z+"))
@@ -693,7 +695,8 @@ def run_preparation_depth() -> None:
 
     # One evolved sum, reused for every preparation below: the Heisenberg side
     # never sees the state, so there is nothing to recompute per preparation.
-    evolved = stabilizer_observable.propagate(
+    evolved = stabilizer_observable.copy()
+    evolved.propagate(
         tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     print(
@@ -797,7 +800,8 @@ def run_preparation_depth() -> None:
     own_observable = PauliSum.from_strings({own_label: 1.0}, num_qubits=n)
     depth0 = own_observable.expectation_stabilizer(generators).real
     own_tail = _tail(n, edges, OWN_STABILIZER_STEPS, DEEP_THETA_H)
-    own_evolved = own_observable.propagate(
+    own_evolved = own_observable.copy()
+    own_evolved.propagate(
         own_tail, truncation.coeff(OWN_STABILIZER_CUTOFF), direction="heisenberg"
     )
     own_value = own_evolved.expectation_stabilizer(generators).real
@@ -1205,7 +1209,8 @@ def run_validation() -> dict[str, Any]:
         )
         tail = _tail(n, edges, steps, theta)
 
-        evolved = observable.propagate(
+        evolved = observable.copy()
+        evolved.propagate(
             tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
         )
         pp_value = evolved.expectation_stabilizer(generators)

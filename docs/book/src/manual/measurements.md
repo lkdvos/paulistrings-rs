@@ -14,7 +14,8 @@ observable = PauliSum.from_strings(
 )
 circuit = Circuit(4)
 circuit.rz(0.3, 0)
-evolved = observable.propagate(circuit, truncation.coeff(1e-10), direction="heisenberg")
+evolved = observable.copy()
+evolved.propagate(circuit, truncation.coeff(1e-10), direction="heisenberg")
 
 print(evolved.expectation("x+"))        # |++++>
 print(evolved.expectation("z+").real)   # |0000>
@@ -50,8 +51,11 @@ One `rx` rotation on `Z`, read against the `Y` eigenstate `"r"`, shows the two a
 z0 = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
 rotate = Circuit(1)
 rotate.rx(0.7, 0)
-print(z0.propagate(rotate, direction="heisenberg").expectation("r").real)
-print(z0.propagate(rotate, direction="forward").expectation("r").real)
+heisenberg, forward = z0.copy(), z0.copy()
+heisenberg.propagate(rotate, direction="heisenberg")
+forward.propagate(rotate, direction="forward")
+print(heisenberg.expectation("r").real)
+print(forward.expectation("r").real)
 ```
 
 ```text
@@ -107,7 +111,8 @@ Its two everyday uses are the norm `Σ|c|²` as `a.overlap(a)`, introduced under
 `identity_coefficient()` is the coefficient of `I…I`, or `0` when the sum has no identity term, which equals `tr(O) / 2^n` and hence the expectation of `O` in the maximally mixed state.
 
 ```python
-truncated = observable.propagate(circuit, truncation.coeff(1e-1), direction="heisenberg")
+truncated = observable.copy()
+truncated.propagate(circuit, truncation.coeff(1e-1), direction="heisenberg")
 print(evolved.overlap(evolved).real, truncated.overlap(evolved).real)
 print(evolved.identity_coefficient())
 ```

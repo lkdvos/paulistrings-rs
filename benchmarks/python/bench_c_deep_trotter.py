@@ -1130,7 +1130,7 @@ def _rust_leg(
             "min_abs_coeff_label": dyadic_label(eps),
         },
     )
-    _, stats = observable.propagate_with_stats(
+    stats = observable.copy().propagate_with_stats(
         circuit, harness.make_policy(min_abs_coeff=eps), direction=DIRECTION
     )
     return record, list(stats.terms_out), spec

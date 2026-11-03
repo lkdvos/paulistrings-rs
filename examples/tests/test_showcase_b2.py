@@ -61,6 +61,13 @@ if str(_EXAMPLES_DIR) not in sys.path:
 from b2_noisy_verification import run_b2  # noqa: E402
 from common import circuits, observables, oracles  # noqa: E402
 
+
+def _heisenberg(observable, circuit, policy=None):
+    """`observable` Heisenberg-evolved through `circuit`, leaving `observable` untouched."""
+    evolved = observable.copy()
+    evolved.propagate(circuit, policy, direction="heisenberg")
+    return evolved
+
 TOLERANCE = 1e-10
 
 # ==========================================================================
@@ -358,8 +365,7 @@ def test_heisenberg_expectation_matches_the_dense_density_matrix(kind, strength)
     spec = validation_spec(kind, strength)
     q = VALIDATION_N // 2
     engine = complex(
-        observables.single_z(q, VALIDATION_N)
-        .propagate(spec.to_circuit(), None, direction="heisenberg")
+        _heisenberg(observables.single_z(q, VALIDATION_N), spec.to_circuit())
         .expectation("z+")
     )
     label = observables.pauli_string({q: "Z"}, VALIDATION_N)
@@ -390,7 +396,8 @@ def test_forward_direction_matches_every_dense_pauli_coefficient(kind, strength)
     Heisenberg one above.
     """
     spec = validation_spec(kind, strength, n=FORWARD_N, layers=2, seed=11)
-    evolved = _zero_state_density_sum(FORWARD_N).propagate(
+    evolved = _zero_state_density_sum(FORWARD_N)
+    evolved.propagate(
         spec.to_circuit(), None, direction="forward"
     )
     engine = {label: coefficient for label, coefficient in oracles.pauli_terms(evolved)}
@@ -429,15 +436,13 @@ def test_amplitude_damping_drives_z_to_the_plus_one_fixed_point():
             ),
         )
         value = complex(
-            observables.single_z(0, n)
-            .propagate(spec.to_circuit(), None, direction="heisenberg")
+            _heisenberg(observables.single_z(0, n), spec.to_circuit())
             .expectation("z+")
         ).real
         assert value == pytest.approx(1.0, abs=TOLERANCE), f"gamma={gamma}"
         # Starting from |1> (the state that actually decays) gives 2*gamma - 1.
         flipped = complex(
-            observables.single_z(0, n)
-            .propagate(spec.to_circuit(), None, direction="heisenberg")
+            _heisenberg(observables.single_z(0, n), spec.to_circuit())
             .expectation("1" + "0" * (n - 1))
         ).real
         assert flipped == pytest.approx(2.0 * gamma - 1.0, abs=TOLERANCE), f"gamma={gamma}"
@@ -455,8 +460,7 @@ def test_the_dense_reference_reproduces_a_noiseless_unitary_evolution():
     assert spec.is_unitary
     q = VALIDATION_N // 2
     engine = complex(
-        observables.single_z(q, VALIDATION_N)
-        .propagate(spec.to_circuit(), None, direction="heisenberg")
+        _heisenberg(observables.single_z(q, VALIDATION_N), spec.to_circuit())
         .expectation("z+")
     ).real
     reference = dense_expectation(spec, observables.pauli_string({q: "Z"}, VALIDATION_N))
@@ -478,7 +482,8 @@ def test_validation_spec_with_no_noise_emits_only_unitary_gates():
 
 
 def _evolved_terms(circuit, observable, policy=None, direction="heisenberg"):
-    evolved = observable.propagate(circuit, policy, direction=direction)
+    evolved = observable.copy()
+    evolved.propagate(circuit, policy, direction=direction)
     return sorted(oracles.pauli_terms(evolved))
 
 
@@ -621,13 +626,14 @@ def test_clifford_point_coefficient_is_exactly_the_hand_counted_decay():
                 hits += 1
             continue
         one = oracles.CircuitSpec(num_qubits=n, gates=(gate,)).to_circuit()
-        current = current.propagate(one, dust, direction="heisenberg")
+        current.propagate(one, dust, direction="heisenberg")
         assert len(current) == 1, "a Clifford step must keep a single Pauli string"
         label = oracles.pauli_terms(current)[0][0]
         support = {i for i, ch in enumerate(label) if ch != "I"}
 
     circuit = run_b2.noisy_kicked_ising(n, steps, theta_h, run_b2.depolarizing(p), edges=edges)
-    evolved = observables.single_z(seed_q, n).propagate(circuit, dust, direction="heisenberg")
+    evolved = observables.single_z(seed_q, n)
+    evolved.propagate(circuit, dust, direction="heisenberg")
     assert len(evolved) == 1
     label, coefficient = oracles.pauli_terms(evolved)[0]
     assert hits > 3 * steps, f"only {hits} noise hits; the test would be vacuous"
@@ -645,7 +651,8 @@ def test_more_noise_keeps_a_strictly_smaller_tracked_set():
     peaks, weights = [], []
     for p in (0.0, 5e-3, 3e-2, 1e-1):
         circuit = run_b2.noisy_kicked_ising(n, steps, theta_h, run_b2.depolarizing(p))
-        evolved, stats = observable.propagate_with_stats(
+        evolved = observable.copy()
+        stats = evolved.propagate_with_stats(
             circuit, truncation.coeff(eps), direction="heisenberg"
         )
         peaks.append(stats.peak_terms)
@@ -716,8 +723,7 @@ def test_small_scale_noiseless_limit_recovers_the_exact_answer():
         circuit = run_b2.noisy_kicked_ising(n, steps, theta_h, run_b2.depolarizing(p),
                                             edges=edges)
         value = complex(
-            observable.propagate(circuit, truncation.coeff(1e-12), direction="heisenberg")
-            .expectation("z+")
+            _heisenberg(observable, circuit, truncation.coeff(1e-12)).expectation("z+")
         ).real
         gaps.append(abs(value - exact))
     assert gaps[0] < TOLERANCE, f"p=0 must reproduce the exact value, gap {gaps[0]:.3e}"

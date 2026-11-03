@@ -19,8 +19,9 @@ circuit.rz(0.3, 0)
 circuit.cnot(0, 1)
 policy = truncation.coeff(1e-10)
 
-heisenberg = observable.propagate(circuit, policy, direction="heisenberg")
-forward = observable.propagate(circuit, policy, direction="forward")
+heisenberg, forward = observable.copy(), observable.copy()
+heisenberg.propagate(circuit, policy, direction="heisenberg")
+forward.propagate(circuit, policy, direction="forward")
 ```
 
 **The default is `"forward"`, and most examples on this site do not use it.**
@@ -50,8 +51,9 @@ both.rx(0.9, 2)
 both.cnot(1, 2)
 
 exact = truncation.coeff(1e-12)
-heisenberg = observable.propagate(both, exact, direction="heisenberg")
-forward = observable.propagate(both, exact, direction="forward")
+heisenberg, forward = observable.copy(), observable.copy()
+heisenberg.propagate(both, exact, direction="heisenberg")
+forward.propagate(both, exact, direction="forward")
 
 print("heisenberg", heisenberg.expectation("x+").real)
 print("forward   ", forward.expectation("x+").real)

@@ -52,7 +52,7 @@ import paulistrings
 from paulistrings import truncation
 
 if paulistrings.cuda_available():
-    evolved = observable.propagate(
+    observable.propagate(
         circuit,
         truncation.approx_topn(10_000_000),
         direction="heisenberg",
@@ -68,7 +68,7 @@ if paulistrings.cuda_available():
 
 <!-- doctest: skip -->
 ```python
-_, stats = observable.propagate_with_stats(circuit, policy, device=0)
+stats = observable.propagate_with_stats(circuit, policy, device=0)
 print(stats.partition.devices)   # [0]
 print(stats.nanos)               # wall time per layer, on the device
 ```
@@ -96,7 +96,7 @@ A list places one partition on each entry, split by GF(2) partition rows and exc
 
 <!-- doctest: skip -->
 ```python
-evolved, stats = observable.propagate_with_stats(
+stats = observable.propagate_with_stats(
     circuit, truncation.approx_topn(10_000_000), direction="heisenberg", device=[0, 1, 2, 3]
 )
 print(stats.partition.devices)   # [0, 1, 2, 3]
@@ -115,7 +115,7 @@ With `comm=`, `device=` names this rank's one device: an ordinal, or `"auto"` fo
 
 <!-- doctest: skip -->
 ```python
-evolved = observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
+observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
 ```
 
 Everything else is the host `comm=` contract: replicated input, collective calls, `result="gather"` or `"local"`, and `stats.partition` holding this rank's entry, with `devices` this rank's device.

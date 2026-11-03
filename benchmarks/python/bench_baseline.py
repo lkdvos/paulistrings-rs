@@ -183,7 +183,12 @@ def test_conjugate_paulistrings(benchmark, labels_by_size, coeffs_by_size, pauli
     pytest.importorskip("paulistrings")
     sum_in = _build_paulistrings_sum(n, labels_by_size, coeffs_by_size)
     circuit = paulistrings_h_cnot_circuit
-    result = benchmark(sum_in.propagate, circuit=circuit, direction="heisenberg")
+    def propagated():
+        evolved = sum_in.copy()
+        evolved.propagate(circuit=circuit, direction="heisenberg")
+        return evolved
+
+    result = benchmark(propagated)
     # H + CNOT is unitary: term count is preserved on random inputs (no
     # cancellation expected).
     assert len(result) == n

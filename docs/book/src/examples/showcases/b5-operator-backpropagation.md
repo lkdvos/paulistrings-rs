@@ -31,11 +31,12 @@ Key calls — an excerpt from the actual example script, verified by `pytest exa
 
 <!-- doctest: skip -->
 ```python
-tail_evolved = observable.propagate(tail_circuit, policy, direction="heisenberg")
+tail_evolved = observable.copy()
+tail_evolved.propagate(tail_circuit, policy, direction="heisenberg")
 psio.save(npz_path, tail_evolved)                 # round-trip through disk
 loaded = interop.load_task(task_path)
-composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
-                                        direction=loaded.direction)
+composed = loaded.observable
+composed.propagate(loaded.circuit, loaded.truncation, direction=loaded.direction)
 ```
 
 This regenerates every artifact in the directory — both task JSONs, the `.npz`, the CSV, both SVG figures — and the whole sweep runs in about **3 seconds** on a laptop-class machine; this page is about depth reduction, not speed. The CI-visible correctness gate is numpy-only and runs well under a second: `pytest examples/tests/test_showcase_b5.py`.

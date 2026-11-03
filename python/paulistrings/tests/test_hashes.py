@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 
 import paulistrings
-
 from paulistrings import PauliSum, hashes, numa_nodes
 
+from ._evolved import propagated
 from .test_bucket_knobs import _assert_terms_close, _fanout_circuit
 
 N = 20
@@ -51,7 +51,7 @@ def test_sparse_rows_read_their_weight_and_even_weights_fall_one_short():
 def test_with_hash_leads_with_the_given_rows_and_keeps_the_result():
     circuit = _fanout_circuit(N)
     start = _start()
-    want = start.propagate(circuit)
+    want = propagated(start, circuit)
     assert start.hash_rows().shape == (31, 2 * N)
     for rows in [hashes.sparse(N, 3, 3, 4), hashes.projection(N, 6, 4), hashes.dense(N, 31, 4), None]:
         with warnings.catch_warnings():
@@ -61,7 +61,7 @@ def test_with_hash_leads_with_the_given_rows_and_keeps_the_result():
         if rows is not None:
             np.testing.assert_array_equal(rehashed.hash_rows()[: len(rows)], rows)
         assert hashes.rank(rehashed.hash_rows()) == 31
-        got = rehashed.propagate(circuit)
+        got = propagated(rehashed, circuit)
         np.testing.assert_array_equal(got.hash_rows(), rehashed.hash_rows())
         assert got.num_buckets > 1 and got.bucket_lengths().sum() == len(got)
         _assert_terms_close(got, want, tol=1e-10)
@@ -76,7 +76,7 @@ def test_dependent_hash_rows_warn_and_still_give_the_same_result():
     rows[0, 3] = rows[1, 3] = True
     with pytest.warns(RuntimeWarning, match="31 rows have rank 29"):
         rehashed = _start().with_hash(rows)
-    _assert_terms_close(rehashed.propagate(circuit), _start().propagate(circuit), tol=1e-10)
+    _assert_terms_close(propagated(rehashed, circuit), propagated(_start(), circuit), tol=1e-10)
 
 
 @pytest.mark.parametrize("rows, message", [
@@ -96,10 +96,12 @@ needs_two_domains = pytest.mark.skipif(len(numa_nodes()) < 2, reason="needs two 
 @pytest.mark.parametrize("rows", [hashes.sparse(N, 1, 3, 2), hashes.projection(N, 1, 2), hashes.dense(N, 1, 2, exclude={"z": list(range(N))})])
 def test_explicit_partition_rows_keep_the_result(rows):
     circuit = _fanout_circuit(N)
-    want = _start().propagate(circuit)
+    want = _start()
+    want.propagate(circuit)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        got = _start().propagate(circuit, partitions=2, partition_rows=rows)
+        got = _start()
+        got.propagate(circuit, partitions=2, partition_rows=rows)
     _assert_terms_close(got, want, tol=1e-10)
 
 
@@ -120,10 +122,10 @@ def test_partition_rows_in_the_bucket_span_are_logged_once_the_run_reaches_them(
         paulistrings.reset_log_cache()
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            got = start.propagate(circuit, partitions=2, partition_rows=start.hash_rows()[:1])
+            got = propagated(start, circuit, partitions=2, partition_rows=start.hash_rows()[:1])
     paulistrings.reset_log_cache()
     assert [r for r in caplog.records if "overlap the span of the bucket hash" in r.getMessage()]
-    _assert_terms_close(got, start.propagate(circuit), tol=1e-10)
+    _assert_terms_close(got, propagated(start, circuit), tol=1e-10)
 
 
 @pytest.mark.parametrize("kwargs, message", [
@@ -146,6 +148,6 @@ def test_remote_layers_predict_the_engines_plan():
     assert len(deltas) == len(circuit) and all(d.shape[1] == 2 * N for d in deltas)
     for rows in [hashes.dense(N, 1, 3), hashes.projection(N, 1, 5), hashes.dense(N, 1, 4, exclude={"x": list(range(N))})]:
         predicted = hashes.remote_layers(rows, deltas)
-        _, stats = _start().propagate_with_stats(circuit, partitions=2, partition_rows=rows)
+        stats = _start().propagate_with_stats(circuit, partitions=2, partition_rows=rows)
         planned = [predicted[i] for i in stats.circuit_index]
         assert [not local for local in stats.partition.local] == planned

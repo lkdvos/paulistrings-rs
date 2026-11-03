@@ -50,14 +50,14 @@ comm = MPI.COMM_WORLD
 observable = build_observable(seed=20260908)   # the SAME terms on every rank
 circuit = build_circuit()
 
-evolved = observable.propagate(
+observable.propagate(
     circuit,
     truncation.approx_topn(1_000_000),
     direction="heisenberg",
     comm=comm,
 )
 if comm.Get_rank() == 0:
-    print(len(evolved), evolved.expectation("z+"))
+    print(len(observable), observable.expectation("z+"))
 ```
 
 `comm` and `partitions` are alternatives — passing both is a `ValueError`.
@@ -72,7 +72,7 @@ By default the rows are a GF(2)-random draw from the sum's own hash seed, which 
 ```python
 half = observable.num_qubits // 2
 blocks = [list(range(half)), list(range(half, observable.num_qubits))]
-evolved = observable.propagate(circuit, policy, comm=comm, partition_row_blocks=blocks)
+observable.propagate(circuit, policy, comm=comm, partition_row_blocks=blocks)
 ```
 
 Both kwargs work the same way under `partitions=`, and the two are alternatives to each other.
@@ -84,7 +84,7 @@ A term's rank is then the XOR of the blocks it has odd Z-weight in, so a term su
 <!-- doctest: skip -->
 ```python
 everything = list(range(observable.num_qubits))
-evolved = observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
+observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
 ```
 
 A gate that never changes the excluded bits never moves a string between ranks: CZ and `rz` leave x-bits alone, so rows drawn on x-bits only keep a CZ/`rz` circuit's exchange to its `rx` gates.
@@ -95,7 +95,7 @@ A combination of rows that the circuit conserves splits nothing: kicked Ising co
 
 ## Keeping the sum split
 
-`propagate(comm=...)` returns the whole evolved sum on rank 0 and an **empty** `PauliSum` of the same `num_qubits` on every other rank, which materializes everything on one rank.
+`propagate(comm=...)` leaves the whole evolved sum on rank 0 and an **empty** `PauliSum` of the same `num_qubits` on every other rank, which materializes everything on one rank.
 To keep the sum split between calls, read a scalar without gathering, or change the rows mid-circuit, split it once with `PauliSum.partition(comm=...)`:
 
 <!-- doctest: skip -->
@@ -190,7 +190,7 @@ Reduce over `comm` for the group's picture:
 
 <!-- doctest: skip -->
 ```python
-_, stats = observable.propagate_with_stats(circuit, policy, comm=comm)
+stats = observable.propagate_with_stats(circuit, policy, comm=comm)
 exported = comm.allreduce(sum(stats.partition.rows_exported))
 ```
 

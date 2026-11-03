@@ -30,7 +30,8 @@ observable = PauliSum.from_strings({"Z" + "I" * (n - 1): 1.0}, num_qubits=n)
 norm_in = float(np.sum(np.abs(observable.coefficients_array()) ** 2))
 
 for eps in [1e-1, 1e-2, 1e-3, 1e-4, 1e-5]:
-    evolved = observable.propagate(circuit, truncation.coeff(eps), direction="heisenberg")
+    evolved = observable.copy()
+    evolved.propagate(circuit, truncation.coeff(eps), direction="heisenberg")
     retained = float(np.sum(np.abs(evolved.coefficients_array()) ** 2)) / norm_in
     print(f"{eps:7.0e}  terms={len(evolved):6d}  <Z0>={evolved.expectation('z+').real:+.9f}  retained={retained:.6f}")
 ```

@@ -15,8 +15,9 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, interop
+from paulistrings import Circuit, PauliSum, interop
 
+from ._evolved import propagated
 
 TOL = 1e-10
 
@@ -85,7 +86,8 @@ def test_stim_hermitian_y_convention_matches_stim():
 
     circuit, observable = interop.circuit_from_stim("S 0")
     assert observable is None
-    out = _sum(1, {"X": 1.0}).propagate(circuit=circuit, direction="forward")
+    out = _sum(1, {"X": 1.0})
+    out.propagate(circuit=circuit, direction="forward")
     got = _full_dict(out, 1)
     assert got == {"Y": pytest.approx(1.0 + 0.0j)}
 
@@ -101,7 +103,8 @@ def test_stim_s_dag_maps_to_the_named_sdg_gate():
 
     circuit, observable = interop.circuit_from_stim("S_DAG 0")
     assert observable is None
-    out = _sum(1, {"X": 1.0}).propagate(circuit=circuit, direction="forward")
+    out = _sum(1, {"X": 1.0})
+    out.propagate(circuit=circuit, direction="forward")
     assert _full_dict(out, 1) == {"Y": pytest.approx(-1.0 + 0.0j)}
 
     # ...and it is the *named* sdg channel, not a unitary_1q fallback.
@@ -110,7 +113,7 @@ def test_stim_s_dag_maps_to_the_named_sdg_gate():
     both, _ = interop.circuit_from_stim("S 0\nS_DAG 0")
     for label in ("X", "Y", "Z"):
         initial = _sum(1, {label: 1.0})
-        _assert_close(initial.propagate(circuit=both, direction="forward"), initial)
+        _assert_close(propagated(initial, circuit=both, direction="forward"), initial)
 
 
 def test_stim_round_trip_matches_tableau_conjugation():
@@ -122,7 +125,7 @@ def test_stim_round_trip_matches_tableau_conjugation():
 
     for label in ("ZI", "IX", "XI", "YZ", "ZY"):
         got = _full_dict(
-            _sum(2, {label: 1.0}).propagate(circuit=circuit, direction="forward"), 2
+            propagated(_sum(2, {label: 1.0}), circuit=circuit, direction="forward"), 2
         )
         want_p = tab(stim.PauliString("+" + label))
         want_key = "".join("IXYZ"[want_p[i]] for i in range(len(want_p)))
@@ -147,7 +150,8 @@ def test_stim_depolarize1_matches_hand_computed_factor():
     assert observable is None
     # stim's DEPOLARIZE1(p) is a uniform-Pauli-p/3 channel; this library's
     # depolarize(p) dual is 1 - 4p/3 = 1 - 0.4 = 0.6.
-    out = _sum(1, {"X": 1.0}).propagate(circuit=circuit, direction="forward")
+    out = _sum(1, {"X": 1.0})
+    out.propagate(circuit=circuit, direction="forward")
     assert abs(out.coefficients()[0] - (0.6 + 0.0j)) < TOL
 
 
@@ -160,8 +164,8 @@ def test_stim_depolarize2_matches_the_binding():
     via_binding.append(noise.depolarize2(0.3, 0, 1))
     initial = _sum(2, {"XZ": 1.0, "II": 2.0})
     _assert_close(
-        initial.propagate(circuit=circuit, direction="forward"),
-        initial.propagate(circuit=via_binding, direction="forward"),
+        propagated(initial, circuit=circuit, direction="forward"),
+        propagated(initial, circuit=via_binding, direction="forward"),
     )
 
 
@@ -180,10 +184,12 @@ def test_stim_pauli_error_channels_hand_computed(instr, slot):
     letters = "XYZ"
     same = letters[slot]
     others = [c for c in letters if c != same]
-    out_same = _sum(1, {same: 1.0}).propagate(circuit=circuit, direction="forward")
+    out_same = _sum(1, {same: 1.0})
+    out_same.propagate(circuit=circuit, direction="forward")
     assert abs(out_same.coefficients()[0] - 1.0) < TOL
     for other in others:
-        out = _sum(1, {other: 1.0}).propagate(circuit=circuit, direction="forward")
+        out = _sum(1, {other: 1.0})
+        out.propagate(circuit=circuit, direction="forward")
         assert abs(out.coefficients()[0] - (1 - 2 * p)) < TOL
 
 
@@ -199,8 +205,8 @@ def test_stim_named_gates_broadcast_over_repeated_target():
     manual.h(0)
     initial = _sum(1, {"X": 1.0})
     _assert_close(
-        initial.propagate(circuit=circuit, direction="forward"),
-        initial.propagate(circuit=manual, direction="forward"),
+        propagated(initial, circuit=circuit, direction="forward"),
+        propagated(initial, circuit=manual, direction="forward"),
     )
 
 
@@ -233,9 +239,9 @@ def test_stim_string_source_and_path_both_work(tmp_path):
     from_str_path, _ = interop.circuit_from_stim(str(p))
 
     initial = _sum(2, {"XI": 1.0, "IZ": 0.5})
-    want = initial.propagate(circuit=from_text, direction="forward")
-    _assert_close(initial.propagate(circuit=from_path, direction="forward"), want)
-    _assert_close(initial.propagate(circuit=from_str_path, direction="forward"), want)
+    want = propagated(initial, circuit=from_text, direction="forward")
+    _assert_close(propagated(initial, circuit=from_path, direction="forward"), want)
+    _assert_close(propagated(initial, circuit=from_str_path, direction="forward"), want)
 
 
 @pytest.mark.parametrize(
@@ -304,8 +310,8 @@ def test_qiskit_named_gates_map_directly():
 
     initial = _sum(3, {"XYZ": 1.0, "IZI": 0.5})
     _assert_close(
-        initial.propagate(circuit=imported, direction="forward"),
-        initial.propagate(circuit=manual, direction="forward"),
+        propagated(initial, circuit=imported, direction="forward"),
+        propagated(initial, circuit=manual, direction="forward"),
     )
 
 
@@ -323,8 +329,8 @@ def test_qiskit_rzz_matches_pauli_rotation():
 
     initial = _sum(2, {"XI": 1.0, "IY": 0.5})
     _assert_close(
-        initial.propagate(circuit=imported, direction="forward"),
-        initial.propagate(circuit=native, direction="forward"),
+        propagated(initial, circuit=imported, direction="forward"),
+        propagated(initial, circuit=native, direction="forward"),
     )
 
 
@@ -343,8 +349,8 @@ def test_qiskit_rxx_ryy_match_pauli_rotation(name, pauli):
 
     initial = _sum(2, {"ZI": 1.0, "IZ": 0.25})
     _assert_close(
-        initial.propagate(circuit=imported, direction="forward"),
-        initial.propagate(circuit=native, direction="forward"),
+        propagated(initial, circuit=imported, direction="forward"),
+        propagated(initial, circuit=native, direction="forward"),
     )
 
 
@@ -358,7 +364,8 @@ def test_qiskit_t_gate_fallback_matches_general_unitary_conjugation():
     qc.t(0)
     imported = interop.circuit_from_qiskit(qc)
 
-    out = _sum(1, {"X": 1.0}).propagate(circuit=imported, direction="forward")
+    out = _sum(1, {"X": 1.0})
+    out.propagate(circuit=imported, direction="forward")
     assert len(out) == 2
     r = 1.0 / math.sqrt(2.0)
     for coeff in out.coefficients():
@@ -381,8 +388,8 @@ def test_qiskit_sdg_maps_to_the_named_sdg_gate():
     initial = _sum(1, {"X": 1.0})
     # S^dagger X S = -Y, i.e. running Sdg forward is the same as running S in
     # the heisenberg (adjoint) direction.
-    want = initial.propagate(circuit=forward_s, direction="heisenberg")
-    got = initial.propagate(circuit=imported, direction="forward")
+    want = propagated(initial, circuit=forward_s, direction="heisenberg")
+    got = propagated(initial, circuit=imported, direction="forward")
     _assert_close(got, want)
 
 
@@ -405,8 +412,8 @@ def test_qiskit_2q_unitary_fallback_matches_named_cnot():
 
     initial = _sum(2, {"XI": 1.0, "IZ": 0.5, "YY": -0.25})
     _assert_close(
-        initial.propagate(circuit=imported, direction="forward"),
-        initial.propagate(circuit=native, direction="forward"),
+        propagated(initial, circuit=imported, direction="forward"),
+        propagated(initial, circuit=native, direction="forward"),
     )
 
 
@@ -507,8 +514,8 @@ def test_load_task_from_dict_builds_a_consistent_task():
     manual.rz(0.4, 1)
     initial = _sum(2, {"XI": 1.0, "IY": 0.3})
     _assert_close(
-        initial.propagate(circuit=task.circuit, direction="forward"),
-        initial.propagate(circuit=manual, direction="forward"),
+        propagated(initial, circuit=task.circuit, direction="forward"),
+        propagated(initial, circuit=manual, direction="forward"),
     )
 
 
@@ -534,7 +541,7 @@ def test_load_task_from_file_round_trip_build_run_expectation(tmp_path):
     assert task.threads == 1  # default
     assert task.truncation is None  # omitted
 
-    evolved = task.observable.propagate(circuit=task.circuit, direction=task.direction)
+    evolved = propagated(task.observable, circuit=task.circuit, direction=task.direction)
     got = evolved.expectation(state=task.state)
     assert abs(got.real - 1.0) < 1e-10
 
@@ -631,8 +638,8 @@ def test_load_task_pauli_rotation_and_channel_gates():
     manual.depolarize2(0.05, [(0, 1)])
     initial = _sum(2, {"XI": 1.0, "IZ": 0.2})
     _assert_close(
-        initial.propagate(circuit=task.circuit, direction="forward"),
-        initial.propagate(circuit=manual, direction="forward"),
+        propagated(initial, circuit=task.circuit, direction="forward"),
+        propagated(initial, circuit=manual, direction="forward"),
     )
 
 
@@ -650,8 +657,8 @@ def test_load_task_unitary_gates_from_nested_matrix():
     manual.h(0)
     initial = _sum(1, {"X": 1.0})
     _assert_close(
-        initial.propagate(circuit=task.circuit, direction="forward"),
-        initial.propagate(circuit=manual, direction="forward"),
+        propagated(initial, circuit=task.circuit, direction="forward"),
+        propagated(initial, circuit=manual, direction="forward"),
     )
 
 
@@ -661,8 +668,8 @@ def test_circuit_from_json_matches_load_task_for_the_same_gates():
     from_direct = interop.circuit_from_json(d["circuit"], d["n_qubits"])
     initial = _sum(2, {"YI": 1.0})
     _assert_close(
-        initial.propagate(circuit=from_load_task, direction="forward"),
-        initial.propagate(circuit=from_direct, direction="forward"),
+        propagated(initial, circuit=from_load_task, direction="forward"),
+        propagated(initial, circuit=from_direct, direction="forward"),
     )
 
 
@@ -692,8 +699,8 @@ def test_circuit_from_json_stim_file_round_trip(tmp_path):
     manual.cnot(0, 1)
     initial = _sum(2, {"XI": 1.0})
     _assert_close(
-        initial.propagate(circuit=task.circuit, direction="forward"),
-        initial.propagate(circuit=manual, direction="forward"),
+        propagated(initial, circuit=task.circuit, direction="forward"),
+        propagated(initial, circuit=manual, direction="forward"),
     )
 
 
@@ -746,5 +753,6 @@ def test_stim_s_dag_maps_to_the_named_sdg_gate():
     circuit, observable = interop.circuit_from_stim("S_DAG 0")
     assert observable is None
     assert circuit.gates == [{"name": "sdg", "qubits": [0]}]
-    out = _sum(1, {"X": 1.0}).propagate(circuit=circuit, direction="forward")
+    out = _sum(1, {"X": 1.0})
+    out.propagate(circuit=circuit, direction="forward")
     assert _full_dict(out, 1) == {"Y": pytest.approx(-1.0 + 0.0j)}

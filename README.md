@@ -47,8 +47,8 @@ circuit.rz(math.pi / 8, 0)
 circuit.cnot(0, 1)
 circuit.h(2)
 
-evolved = observable.propagate(circuit, direction="heisenberg")
-print(evolved.expectation("x+").real)
+observable.propagate(circuit, direction="heisenberg")
+print(observable.expectation("x+").real)
 ```
 
 ## Showcase

@@ -5,7 +5,7 @@ This one is about watching it run: the per-layer counters, how to turn a term co
 
 ## Stats {#stats}
 
-`propagate_with_stats` returns the same evolved sum `propagate` would, alongside a `PropagationStats` with one entry per layer in application order.
+`propagate_with_stats` evolves the sum in place as `propagate` does and returns a `PropagationStats` with one entry per layer in application order.
 Enabling it does not change the propagated sum.
 
 ```python
@@ -18,7 +18,8 @@ circuit.cnot(0, 1)
 circuit.depolarize(0.01, [0, 1])
 policy = truncation.coeff(1e-10)
 
-evolved, stats = observable.propagate_with_stats(circuit, policy, direction="heisenberg")
+evolved = observable.copy()
+stats = evolved.propagate_with_stats(circuit, policy, direction="heisenberg")
 
 print(stats.layers, stats.peak_terms, stats.final_terms)
 print(stats.terms_in, stats.terms_out)   # one entry per layer, post-truncation
@@ -131,7 +132,8 @@ Term counts, on the other hand, are exact integers and are the load-independent 
 The result is the exact evolved operator, and it is the reference the [cutoff sweep](validation.md#score-against-an-exact-reference-where-you-can) is scored against wherever the problem is small enough to afford it.
 
 ```python
-exact = observable.propagate(circuit, None, direction="heisenberg")
+exact = observable.copy()
+exact.propagate(circuit, None, direction="heisenberg")
 print(len(exact), "terms untruncated")
 ```
 

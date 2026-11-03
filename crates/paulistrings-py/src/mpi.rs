@@ -149,20 +149,20 @@ impl MpiRun {
     pub fn propagate<const W: usize, C: Coefficient>(
         self,
         circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W, C>,
+        sum: CorePauliSum<W, C>,
         policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
     ) -> Result<MpiOutcome<W, C>, PropagateFailure> {
         let Self { transport, rows, gather } = self;
-        check_input_placement(sum, &rows, &transport)?;
+        check_input_placement(&sum, &rows, &transport)?;
         let scatter_options = ScatterOptions {
             runtime: PartitionRuntime::new(&default_config())
                 .map_err(PropagateFailure::Topology)?,
             rows: ScatterRows::Policy(rows),
         };
-        let mut split = MpiShare::<W, C>::scatter_with(sum.clone(), transport, scatter_options);
+        let mut split = MpiShare::<W, C>::scatter_with(sum, transport, scatter_options);
         if traced {
             split.enable_trace();
         }
@@ -327,7 +327,7 @@ impl MpiGpuRun {
     pub fn propagate<const W: usize, C: Coefficient>(
         self,
         circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W, C>,
+        sum: CorePauliSum<W, C>,
         policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
@@ -348,8 +348,9 @@ impl MpiGpuRun {
                 GpuScatterOptions { rows: ScatterRows::Policy(rows.clone()), ..options }
             }
         };
-        let mut split = MpiGpuSum::<W, C>::scatter_to_device_with(sum, transport, scatter)
-            .map_err(MpiGpuFailure::Gpu)?;
+        let split = MpiGpuSum::<W, C>::scatter_to_device_with(&sum, transport, scatter);
+        drop(sum);
+        let mut split = split.map_err(MpiGpuFailure::Gpu)?;
         if traced {
             split.enable_trace();
         }

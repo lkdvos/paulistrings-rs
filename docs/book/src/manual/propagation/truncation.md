@@ -83,8 +83,9 @@ fused = Circuit(1)
 fused.unitary_1q(0, rz(0.15) @ rx(1.0))
 
 for policy in (None, truncation.coeff(0.1)):
-    a = observable.propagate(two_gates, policy, direction="heisenberg")
-    b = observable.propagate(fused, policy, direction="heisenberg")
+    a, b = observable.copy(), observable.copy()
+    a.propagate(two_gates, policy, direction="heisenberg")
+    b.propagate(fused, policy, direction="heisenberg")
     print(f"{str(policy):22s} two gates: {len(a)} terms  <Z>={a.expectation('z+').real:+.6f}   fused: {len(b)} terms  <Z>={b.expectation('z+').real:+.6f}")
 ```
 

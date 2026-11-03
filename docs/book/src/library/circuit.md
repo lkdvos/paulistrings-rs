@@ -69,7 +69,7 @@ See [Noise channels](../manual/circuits.md#noise-channels) for a worked example.
 | `circuit.gates` | the channel list as a list of task-JSON schema-v1 gate dicts |
 | `circuit.deltas()` | each channel's nonzero key shifts, one `bool` array of shape `(k, 2 * num_qubits)` per channel (x-bits first, `None` for a channel the partitioned engine declines); [`hashes.remote_layers`](propagate.md#paulistringshashes) turns them into the layers a choice of partition rows makes exchange |
 
-`circuit.adjoint()` satisfies `obs.propagate(c, direction="heisenberg") == obs.propagate(c.adjoint(), direction="forward")` to floating-point tolerance.
+`circuit.adjoint()` makes `direction="heisenberg"` through `c` and `direction="forward"` through `c.adjoint()` evolve a sum to the same result, to floating-point tolerance.
 Per gate: `rz`/`rx`/`ry`/`pauli_rotation` negate `theta`, `s` becomes `sdg` (and back), `unitary_1q`/`unitary_2q` conjugate-transpose, and `h`/`x`/`y`/`z`/`cnot`/`cz`/`swap` are self-adjoint.
 A non-unitary channel (a noise channel) raises `ValueError` naming it.
 

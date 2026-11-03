@@ -18,6 +18,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates, noise
 
+from ._evolved import propagated
 
 H = np.array([[1, 1], [1, -1]], dtype=complex) / math.sqrt(2.0)
 CNOT = np.array(
@@ -143,5 +144,5 @@ def test_a_valid_circuit_still_propagates():
     c = Circuit(2)
     c.h(0)
     c.cnot(0, 1)
-    out = s.propagate(circuit=c, direction="forward")
+    out = propagated(s, circuit=c, direction="forward")
     assert len(out) == 1

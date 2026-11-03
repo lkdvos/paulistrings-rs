@@ -13,7 +13,8 @@ for n in (1, 100, 1000):
     observable = PauliSum.from_strings({"I" * q + "Z": 1.0}, num_qubits=n)
     circuit = Circuit(n)
     circuit.h(q)
-    value = observable.propagate(circuit, direction="heisenberg").expectation("x+")
+    observable.propagate(circuit, direction="heisenberg")
+    value = observable.expectation("x+")
     assert abs(value - 1.0) < 1e-12, (n, value)
 
 print(f"paulistrings {paulistrings.__version__} smoke test passed")

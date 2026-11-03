@@ -7,6 +7,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum
 
+from ._evolved import propagated
 
 TOL = 1e-12
 
@@ -89,11 +90,11 @@ def test_target_bucket_len_and_min_buckets_realize_a_small_partition():
     assert s.num_buckets == 1
     c = _fanout_circuit(num_qubits)
 
-    default = s.propagate(c)
+    default = propagated(s, c)
     assert len(default) > 8192, "the fanout circuit must actually cross the split threshold"
     assert default.num_buckets > 1
 
-    minimal = s.propagate(c, min_buckets=1 << 30, target_bucket_len=1 << 30)
+    minimal = propagated(s, c, min_buckets=1 << 30, target_bucket_len=1 << 30)
     assert minimal.num_buckets == 1
     _assert_terms_close(minimal, default)
 
@@ -104,7 +105,7 @@ def test_the_defaults_are_the_engines():
         parameters = inspect.signature(method).parameters
         assert parameters["target_bucket_len"].default == 1024
         assert parameters["min_buckets"].default == 128
-    _assert_terms_close(s.propagate(c), s.propagate(c, target_bucket_len=1024, min_buckets=128))
+    _assert_terms_close(propagated(s, c), propagated(s, c, target_bucket_len=1024, min_buckets=128))
 
 
 @pytest.mark.parametrize("method", ["propagate", "propagate_with_stats"])

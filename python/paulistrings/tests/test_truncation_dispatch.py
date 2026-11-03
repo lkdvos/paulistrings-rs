@@ -9,6 +9,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, _paulistrings, truncation
 
+from ._evolved import propagated, propagated_with_stats
 from .test_from_arrays import _as_dict
 
 TOL = 1e-12
@@ -77,7 +78,7 @@ def _placements(name):
 
 
 def _run(s, c, policy, placement):
-    out = s.propagate(c, policy, **placement)
+    out = propagated(s, c, policy, **placement)
     return out, _paulistrings._last_host_policy()
 
 
@@ -91,7 +92,7 @@ def _assert_close(got, want):
 def test_a_dispatched_tree_truncates_as_its_undispatched_equal(name):
     dispatched, fallback = CASES[name]
     s, c = _observable(), _circuit()
-    untruncated = len(s.propagate(c))
+    untruncated = len(propagated(s, c))
     for placement in _placements(name):
         got, got_type = _run(s, c, dispatched, placement)
         want, want_type = _run(s, c, fallback, placement)
@@ -117,7 +118,7 @@ def test_a_dispatched_collapse_sample_draws_the_undispatched_trajectory():
 def test_propagate_with_stats_dispatches_too():
     s, c = _observable(), _circuit()
     policy = truncation.coeff(1e-3)
-    out, stats = s.propagate_with_stats(c, policy)
+    out, stats = propagated_with_stats(s, c, policy)
     assert "WithFilter" in _paulistrings._last_host_policy()
-    _assert_close(out, s.propagate(c, _both_or(policy)))
+    _assert_close(out, propagated(s, c, _both_or(policy)))
     assert stats.final_terms == len(out)

@@ -338,7 +338,8 @@ def test_heisenberg_contraction_matches_a_dense_reference():
         unitary = _embed(gate, qubits, n) @ unitary
     observable = _dense_observable(terms, n)
 
-    evolved = _sum(terms, n).propagate(circuit=circuit, direction="heisenberg")
+    evolved = _sum(terms, n)
+    evolved.propagate(circuit=circuit, direction="heisenberg")
 
     seen_nontrivial = False
     for labels in ("0000", "01+-", "rlrl", "0+r1", "1-l0", "++++"):
@@ -363,7 +364,8 @@ def test_forward_direction_matches_the_dense_reference_too():
     for gate, qubits in ((_H, [1]), (_CNOT, [1, 2]), (_rz(0.9), [0])):
         unitary = _embed(gate, qubits, n) @ unitary
     observable = _dense_observable(terms, n)
-    evolved = _sum(terms, n).propagate(circuit=circuit, direction="forward")
+    evolved = _sum(terms, n)
+    evolved.propagate(circuit=circuit, direction="forward")
     for labels in ("000", "0+r", "1-l"):
         psi = unitary.conj().T @ _dense_state(labels)
         want = complex(np.conj(psi) @ observable @ psi)

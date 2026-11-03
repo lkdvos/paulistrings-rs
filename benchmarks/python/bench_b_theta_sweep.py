@@ -491,7 +491,8 @@ def self_converged_reference(
     for eps in grid:
         policy = harness.make_policy(min_abs_coeff=eps)
         start = time.perf_counter()
-        evolved, stats = observable.propagate_with_stats(
+        evolved = observable.copy()
+        stats = evolved.propagate_with_stats(
             circuit, policy, direction=direction
         )
         value = complex(evolved.expectation(state)).real
@@ -1008,7 +1009,7 @@ def julia_parity(
             "warm": True,
         },
     )
-    _, rust_stats = observable.propagate_with_stats(
+    rust_stats = observable.copy().propagate_with_stats(
         circuit, harness.make_policy(min_abs_coeff=min_abs_coeff), direction=DIRECTION
     )
     rust_layers = list(rust_stats.terms_out)

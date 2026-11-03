@@ -20,7 +20,8 @@ def _start():
 @pytest.mark.parametrize("partitions", [1, pytest.param(2, marks=needs_two_domains)])
 def test_a_split_propagates_to_the_serial_answer(partitions):
     circuit = _fanout_circuit(N)
-    want = _start().propagate(circuit)
+    want = _start()
+    want.propagate(circuit)
     split = _start().partition(partitions=partitions)
     assert isinstance(split, PartitionedPauliSum) and split.num_partitions == partitions and split.rank is None
     split.propagate(circuit)
@@ -35,7 +36,9 @@ def test_a_split_propagates_to_the_serial_answer(partitions):
 def test_partition_and_bucket_rows_switch_mid_circuit_without_changing_the_result():
     circuit = _fanout_circuit(N)
     first, second = circuit[: len(circuit) // 2], circuit[len(circuit) // 2:]
-    want = _start().propagate(first).propagate(second)
+    want = _start()
+    want.propagate(first)
+    want.propagate(second)
     split = _start().partition(partitions=2, partition_rows=hashes.dense(N, 1, 1))
     split.propagate(first)
     new_rows = hashes.dense(N, 1, 2, exclude={"x": list(range(N))})

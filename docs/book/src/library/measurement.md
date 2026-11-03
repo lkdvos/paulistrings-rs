@@ -33,4 +33,4 @@ Coefficient of the `I...I` term, i.e. `tr(O) / 2^n`.
 
 ## `propagate_with_stats`
 
-`propagate_with_stats(...)` returns `(evolved, PropagationStats)`; see [propagate / propagate_with_stats](propagate.md) for the full signature and stats fields.
+`propagate_with_stats(...)` evolves the sum in place and returns a `PropagationStats`; see [propagate / propagate_with_stats](propagate.md) for the full signature and stats fields.

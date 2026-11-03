@@ -99,7 +99,8 @@ def _estimate(n, edges, adjacency, q, steps, theta_h, generators=None):
     """`<K_q>` after `steps` Trotter steps, by the showcase's own pipeline."""
     if generators is None:
         generators = sp.cluster_state_stabilizers(n, edges)
-    evolved = _stabilizer_observable(n, adjacency, q).propagate(
+    evolved = _stabilizer_observable(n, adjacency, q)
+    evolved.propagate(
         _tail(n, edges, steps, theta_h), truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     return evolved.expectation_stabilizer(generators)
@@ -180,7 +181,8 @@ def test_pipeline_matches_a_dense_state_vector(rows, cols, steps, theta_h):
     preparation = sp.cluster_prep_circuit(n, edges)
     tail = _tail(n, edges, steps, theta_h)
 
-    evolved = observable.propagate(
+    evolved = observable.copy()
+    evolved.propagate(
         tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     got = evolved.expectation_stabilizer(sp.cluster_state_stabilizers(n, edges))
@@ -208,7 +210,8 @@ def test_zero_state_generators_reproduce_the_product_state_path():
     observable = PauliSum.from_strings(
         {sp.pauli_label({5: "Z"}, n): 1.0}, num_qubits=n
     )
-    evolved = observable.propagate(
+    evolved = observable.copy()
+    evolved.propagate(
         _tail(n, edges, 2, 0.6), truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     product = complex(evolved.expectation("z+"))
@@ -348,7 +351,8 @@ def test_a_clifford_tail_matches_stim_on_the_composed_circuit(theta_h, steps):
     prep_circuit, _ = interop.circuit_from_stim(preparation)
     tail = _tail(n, edges, steps, theta_h)
 
-    evolved = observable.propagate(
+    evolved = observable.copy()
+    evolved.propagate(
         tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     got = evolved.expectation_stabilizer(generators)
@@ -367,7 +371,8 @@ def test_identity_padding_changes_neither_the_generators_nor_the_estimate():
     n, edges, adjacency = _lattice(3, 4)
     q = _even_degree_sites(adjacency)[-1]
     observable = _stabilizer_observable(n, adjacency, q)
-    evolved = observable.propagate(
+    evolved = observable.copy()
+    evolved.propagate(
         _tail(n, edges, 2, 0.6), truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     base = sp.cluster_prep_stim(n, edges)

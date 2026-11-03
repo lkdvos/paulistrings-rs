@@ -188,7 +188,8 @@ def run_rust(task: Task | Mapping[str, Any]) -> dict[str, Any]:
     logger.addHandler(collector)
     ps.reset_log_cache()
     try:
-        evolved = observable.propagate(
+        evolved = observable.copy()
+        evolved.propagate(
             circuit=circuit, policy=policy, direction=direction
         )
     finally:

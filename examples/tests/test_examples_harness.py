@@ -54,7 +54,9 @@ def _circuit() -> Circuit:
 
 
 def _evolved(policy=None) -> PauliSum:
-    return _observable().propagate(_circuit(), policy, direction="heisenberg")
+    observable = _observable()
+    observable.propagate(_circuit(), policy, direction="heisenberg")
+    return observable
 
 
 # --- make_policy (A7) ----------------------------------------------------
@@ -394,7 +396,8 @@ def test_diff_identical_sums_matches():
 
 def test_diff_catches_an_injected_coefficient_difference():
     reference = _evolved()
-    perturbed = _observable().propagate(
+    perturbed = _observable()
+    perturbed.propagate(
         _circuit_with_angle(THETA + 1e-6), None, direction="heisenberg"
     )
     diff = harness.diff_pauli_sums(reference, perturbed, tol=1e-12)

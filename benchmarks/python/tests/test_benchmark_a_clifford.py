@@ -69,7 +69,9 @@ COEFF_GRID = (1e-12, 1e-8, 1e-4)
 
 def _kicked_ising_heisenberg(observable, theta_h, *, policy):
     circuit = circuits.heavy_hex_kicked_ising(N, trotter_steps=TROTTER_STEPS, theta_h=theta_h)
-    return observable.propagate(circuit=circuit, policy=policy, direction="heisenberg")
+    evolved = observable.copy()
+    evolved.propagate(circuit=circuit, policy=policy, direction="heisenberg")
+    return evolved
 
 
 def _assert_single_clifford_term(evolved, expected_sign: float, *, label: str) -> None:
@@ -250,7 +252,8 @@ def test_small_sublattice_stim_round_trip_at_both_clifford_points(theta_h):
 
     # U Z_seed U^dagger, computed by the engine (direction="forward" is the
     # Schrodinger conjugation -- see test_examples_circuits.py's docstring note).
-    stabilizer = seed.propagate(circuit=circuit, policy=truncation.coeff(1e-9), direction="forward")
+    stabilizer = seed.copy()
+    stabilizer.propagate(circuit=circuit, policy=truncation.coeff(1e-9), direction="forward")
     assert len(stabilizer) == 1, f"theta_h={theta_h}: expected a single Clifford stabilizer term"
 
     # Feeding that stabilizer back into stim's independent tableau simulation

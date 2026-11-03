@@ -34,9 +34,8 @@ Evolution is one `propagate` call per Trotter step, truncating after each — an
 from paulistrings import truncation
 from common import observables
 
-evolved = observables.single_z(center, n).propagate(
-    step_circuit, truncation.coeff(min_abs_coeff), direction="heisenberg"
-)
+evolved = observables.single_z(center, n)
+evolved.propagate(step_circuit, truncation.coeff(min_abs_coeff), direction="heisenberg")
 ```
 
 Every quantity below is read from three arrays exported once —

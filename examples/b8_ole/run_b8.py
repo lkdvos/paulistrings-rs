@@ -114,7 +114,8 @@ def main(argv=None) -> int:
             stats = split.propagate_with_stats(circuit, build_policy(args, seed), direction="heisenberg")
             result = split.local()
         else:
-            result, stats = obs.propagate_with_stats(
+            result = obs.copy()
+            stats = result.propagate_with_stats(
                 circuit, build_policy(args, seed), direction="heisenberg", **kwargs
             )
         t_prop = time.perf_counter() - t0

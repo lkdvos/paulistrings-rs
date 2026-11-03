@@ -65,9 +65,9 @@ def _chain(n: int) -> list[tuple[int, int]]:
 def _evolve(n: int, steps: int, theta_h: float, *, policy=None):
     """Heisenberg-evolve `Z_{n/2}` through a 1D kicked-Ising Trotter circuit."""
     circuit = circuits.heavy_hex_kicked_ising(n, steps, theta_h, edges=_chain(n))
-    return observables.single_z(n // 2, n).propagate(
-        circuit, policy, direction="heisenberg"
-    )
+    observable = observables.single_z(n // 2, n)
+    observable.propagate(circuit, policy, direction="heisenberg")
+    return observable
 
 
 def _diagnostics(pauli_sum, cut: int) -> dict[str, float]:

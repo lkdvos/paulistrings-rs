@@ -23,6 +23,7 @@ import pytest
 
 from paulistrings import Circuit, PauliSum, gates
 
+from ._evolved import propagated
 
 TOL = 1e-10
 
@@ -71,7 +72,7 @@ def test_weight_one_z_rotation_matches_rz():
     initial = _sum(1, {"X": 1.0})
     c = Circuit(1)
     c.append(gates.pauli_rotation("Z", [0], theta))
-    out = initial.propagate(circuit=c, direction="forward")
+    out = propagated(initial, circuit=c, direction="forward")
     want = _sum(1, {"X": math.cos(theta), "Y": math.sin(theta)})
     _assert_close(out, want)
 
@@ -84,8 +85,8 @@ def test_weight_one_agrees_with_rz_term_for_term():
     via_rz = Circuit(3)
     via_rz.rz(theta, 0)
     _assert_close(
-        initial.propagate(circuit=via_pauli, direction="forward"),
-        initial.propagate(circuit=via_rz, direction="forward"),
+        propagated(initial, circuit=via_pauli, direction="forward"),
+        propagated(initial, circuit=via_rz, direction="forward"),
     )
 
 
@@ -97,8 +98,8 @@ def test_weight_one_x_rotation_matches_rx():
     via_rx = Circuit(2)
     via_rx.rx(theta, 0)
     _assert_close(
-        initial.propagate(circuit=via_pauli, direction="forward"),
-        initial.propagate(circuit=via_rx, direction="forward"),
+        propagated(initial, circuit=via_pauli, direction="forward"),
+        propagated(initial, circuit=via_rx, direction="forward"),
     )
 
 
@@ -119,7 +120,7 @@ def test_zz_rotation_on_xi_is_hand_computed():
     initial = _sum(2, {"XI": 1.0})
     c = Circuit(2)
     c.append(gates.pauli_rotation("ZZ", [0, 1], theta))
-    out = initial.propagate(circuit=c, direction="forward")
+    out = propagated(initial, circuit=c, direction="forward")
     want = _sum(2, {"XI": math.cos(theta), "YZ": math.sin(theta)})
     _assert_close(out, want)
 
@@ -131,7 +132,7 @@ def test_kicked_ising_bond_maps_xi_to_minus_yz():
     initial = _sum(2, {"XI": 1.0})
     c = Circuit(2)
     c.pauli_rotation("ZZ", [0, 1], -math.pi / 2)
-    got = _as_dict(initial.propagate(circuit=c, direction="forward"))
+    got = _as_dict(propagated(initial, circuit=c, direction="forward"))
     # "YZ" = qubit 0 Y (x and z bits), qubit 1 Z (z bit) → x=(1,), z=(3,).
     yz = ((1,), (3,))
     xi = ((1,), (0,))
@@ -155,8 +156,8 @@ def test_zz_rotation_matches_the_cnot_rz_cnot_decomposition():
     decomposed.cnot(0, 1)
 
     _assert_close(
-        initial.propagate(circuit=native, direction="forward"),
-        initial.propagate(circuit=decomposed, direction="forward"),
+        propagated(initial, circuit=native, direction="forward"),
+        propagated(initial, circuit=decomposed, direction="forward"),
     )
 
 
@@ -170,8 +171,8 @@ def test_qubit_order_in_the_compact_form_is_positional():
     b = Circuit(2)
     b.pauli_rotation("ZX", [0, 1], theta)
     _assert_close(
-        initial.propagate(circuit=a, direction="forward"),
-        initial.propagate(circuit=b, direction="forward"),
+        propagated(initial, circuit=a, direction="forward"),
+        propagated(initial, circuit=b, direction="forward"),
     )
 
 
@@ -193,7 +194,7 @@ def test_weight_three_generator_across_a_word_boundary():
     initial = _sum(n, {_string(n, {63: "X"}): 1.0})
     c = Circuit(n)
     c.pauli_rotation("ZZZ", [63, 64, 65], theta)
-    out = initial.propagate(circuit=c, direction="forward")
+    out = propagated(initial, circuit=c, direction="forward")
     want = _sum(
         n,
         {
@@ -217,8 +218,8 @@ def test_weight_three_round_trips_under_heisenberg():
     )
     c = Circuit(n)
     c.pauli_rotation("XYZ", [63, 64, 65], theta)
-    fwd = initial.propagate(circuit=c, direction="forward")
-    back = fwd.propagate(circuit=c, direction="heisenberg")
+    fwd = propagated(initial, circuit=c, direction="forward")
+    back = propagated(fwd, circuit=c, direction="heisenberg")
     _assert_close(back, initial)
 
 
@@ -230,8 +231,8 @@ def test_weight_four_y_generator_round_trips():
     initial = _sum(n, {_string(n, {1: "X", 66: "Z"}): 1.0})
     c = Circuit(n)
     c.pauli_rotation("YYXZ", [1, 2, 65, 66], theta)
-    fwd = initial.propagate(circuit=c, direction="forward")
-    back = fwd.propagate(circuit=c, direction="heisenberg")
+    fwd = propagated(initial, circuit=c, direction="forward")
+    back = propagated(fwd, circuit=c, direction="heisenberg")
     _assert_close(back, initial)
 
 
@@ -244,8 +245,8 @@ def test_factory_and_method_agree():
     b = Circuit(n)
     b.append(gates.pauli_rotation("ZYX", [0, 2, 3], theta))
     _assert_close(
-        initial.propagate(circuit=a, direction="forward"),
-        initial.propagate(circuit=b, direction="forward"),
+        propagated(initial, circuit=a, direction="forward"),
+        propagated(initial, circuit=b, direction="forward"),
     )
 
 

@@ -180,9 +180,9 @@ def cut_bonds(edges: Sequence[tuple[int, int]], cut: int) -> int:
 def evolve(n: int, steps: int, theta_h: float, *, policy=None):
     """Heisenberg-evolve `Z_{n/2}` through `steps` kicked-Ising Trotter steps."""
     circuit = circuits.heavy_hex_kicked_ising(n, steps, theta_h, edges=chain_edges(n))
-    return observables.single_z(n // 2, n).propagate(
-        circuit, policy, direction="heisenberg"
-    )
+    observable = observables.single_z(n // 2, n)
+    observable.propagate(circuit, policy, direction="heisenberg")
+    return observable
 
 
 def all_diagnostics(pauli_sum, cut: int) -> dict[str, Any]:

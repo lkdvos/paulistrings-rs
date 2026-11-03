@@ -61,7 +61,8 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
     oracle = oracles.statevector_expectation(spec, obs, "z+").real
 
     circuit = spec.to_circuit()
-    evolved = obs.propagate(circuit, None, direction="heisenberg")
+    evolved = obs.copy()
+    evolved.propagate(circuit, None, direction="heisenberg")
     engine = complex(evolved.expectation("z+")).real
 
     assert engine == pytest.approx(oracle, abs=1e-10)
@@ -78,7 +79,8 @@ def test_su4_staircase_matches_statevector_for_every_uniform_state(state):
     oracle = oracles.statevector_expectation(spec, obs, state).real
 
     circuit = spec.to_circuit()
-    evolved = obs.propagate(circuit, None, direction="heisenberg")
+    evolved = obs.copy()
+    evolved.propagate(circuit, None, direction="heisenberg")
     engine = complex(evolved.expectation(state)).real
 
     assert engine == pytest.approx(oracle, abs=1e-10)
@@ -101,7 +103,8 @@ def test_su4_staircase_matches_statevector_with_truncation():
     oracle = oracles.statevector_expectation(spec, obs, "z+").real
 
     circuit = spec.to_circuit()
-    evolved, stats = obs.propagate_with_stats(
+    evolved = obs.copy()
+    stats = evolved.propagate_with_stats(
         circuit, truncation.coeff(eps), direction="heisenberg"
     )
     engine = complex(evolved.expectation("z+")).real
@@ -126,7 +129,8 @@ def test_same_seed_twice_gives_identical_term_counts_and_expectation():
         obs = observables.single_z(q, n)
         circuit = circuits.random_su4_staircase(n, depth, SEED)
         policy = harness.make_policy(min_abs_coeff=eps)
-        evolved, stats = obs.propagate_with_stats(circuit, policy, direction="heisenberg")
+        evolved = obs.copy()
+        stats = evolved.propagate_with_stats(circuit, policy, direction="heisenberg")
         return stats.final_terms, stats.peak_terms, complex(evolved.expectation("z+"))
 
     terms_a, peak_a, exp_a = run_once()
@@ -148,8 +152,11 @@ def test_different_seeds_give_different_circuits():
     circuit_a = circuits.random_su4_staircase(n, depth, seed=1)
     circuit_b = circuits.random_su4_staircase(n, depth, seed=2)
 
-    exp_a = complex(obs.propagate(circuit_a, None, direction="heisenberg").expectation("z+"))
-    exp_b = complex(obs.propagate(circuit_b, None, direction="heisenberg").expectation("z+"))
+    evolved_a, evolved_b = obs.copy(), obs.copy()
+    evolved_a.propagate(circuit_a, None, direction="heisenberg")
+    evolved_b.propagate(circuit_b, None, direction="heisenberg")
+    exp_a = complex(evolved_a.expectation("z+"))
+    exp_b = complex(evolved_b.expectation("z+"))
 
     assert abs(exp_a - exp_b) > 1e-6
 

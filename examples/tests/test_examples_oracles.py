@@ -60,7 +60,8 @@ from common import circuits, observables, oracles  # noqa: E402
 
 def _heisenberg_expectation(spec, observable, state="z+"):
     """The engine's own answer for the same question the oracles answer."""
-    evolved = observable.propagate(spec.to_circuit(), None, direction="heisenberg")
+    evolved = observable.copy()
+    evolved.propagate(spec.to_circuit(), None, direction="heisenberg")
     return complex(evolved.expectation(state))
 
 
@@ -185,8 +186,10 @@ def test_record_gates_round_trips_through_the_engine(builder, args):
 
     n = spec.num_qubits
     observable = observables.single_z(n // 2, n)
-    from_spec = observable.propagate(spec.to_circuit(), None, direction="heisenberg")
-    from_direct = observable.propagate(direct, None, direction="heisenberg")
+    from_spec = observable.copy()
+    from_spec.propagate(spec.to_circuit(), None, direction="heisenberg")
+    from_direct = observable.copy()
+    from_direct.propagate(direct, None, direction="heisenberg")
     assert from_spec.expectation("z+") == pytest.approx(
         from_direct.expectation("z+"), abs=1e-12
     )
@@ -651,7 +654,8 @@ def test_stim_reads_a_stim_file_and_its_observable(tmp_path):
     assert oracles.stim_clifford_exact(stim_module.Circuit(program)) == 1
     # ... and the engine's own answer for the same file, same observable.
     circuit, observable = interop.circuit_from_stim(path)
-    evolved = observable.propagate(circuit, None, direction="heisenberg")
+    evolved = observable.copy()
+    evolved.propagate(circuit, None, direction="heisenberg")
     assert evolved.expectation("z+") == pytest.approx(1.0, abs=1e-12)
 
 

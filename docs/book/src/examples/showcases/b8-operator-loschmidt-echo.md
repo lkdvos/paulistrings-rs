@@ -18,7 +18,8 @@ The echo is `S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)`, where `A = C†OC`, `O = Z^{�
 import ole
 from paulistrings import truncation
 policy = truncation.collapse_sample(cache=500_000_000, seed=s)
-A = O.propagate(C, policy, direction="heisenberg")
+A = O.copy()
+A.propagate(C, policy, direction="heisenberg")
 S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 ```
 

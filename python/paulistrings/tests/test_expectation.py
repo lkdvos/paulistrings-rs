@@ -13,6 +13,8 @@ import pytest
 
 from paulistrings import Circuit, PauliSum
 
+from ._evolved import propagated
+
 R = 1.0 / math.sqrt(2.0)
 DTYPES = ["float64", "float32", "complex128", "complex64"]
 
@@ -114,7 +116,8 @@ def test_overlap_of_a_small_sum_with_a_propagated_many_bucket_sum():
             c.rz(0.7 - 0.03 * q, q)
         for q in range(num_qubits - 1):
             c.cnot(q, q + 1)
-    big = _sum({"Z" * num_qubits: 1.0}, num_qubits).propagate(c)
+    big = _sum({"Z" * num_qubits: 1.0}, num_qubits)
+    big.propagate(c)
     assert big.num_buckets > 1, "the circuit must spread the sum over many buckets"
 
     rows = list(zip(big.x_array(), big.z_array(), big.coefficients()))
@@ -158,6 +161,6 @@ def test_expectation_after_propagation():
     s = _sum({"ZI": 1.0}, 2)
     c = Circuit(2)
     c.h(0)
-    out = s.propagate(circuit=c)
+    out = propagated(s, circuit=c)
     assert out.expectation("x+").real == pytest.approx(1.0)
     assert out.expectation("z+").real == pytest.approx(0.0)

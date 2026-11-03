@@ -392,7 +392,7 @@ fn emit_rotation<const W: usize>(
 }
 
 /// A slice shared by tasks that each touch pairwise distinct elements.
-struct DisjointSlots<'a, T> {
+pub(super) struct DisjointSlots<'a, T> {
     base: *mut T,
     len: usize,
     _slice: std::marker::PhantomData<&'a mut [T]>,
@@ -402,7 +402,7 @@ struct DisjointSlots<'a, T> {
 unsafe impl<T: Send> Sync for DisjointSlots<'_, T> {}
 
 impl<'a, T> DisjointSlots<'a, T> {
-    fn new(slice: &'a mut [T]) -> Self {
+    pub(super) fn new(slice: &'a mut [T]) -> Self {
         Self { base: slice.as_mut_ptr(), len: slice.len(), _slice: std::marker::PhantomData }
     }
 
@@ -410,7 +410,7 @@ impl<'a, T> DisjointSlots<'a, T> {
     ///
     /// No other reference to element `index` may be live while the returned one is.
     #[allow(clippy::mut_from_ref)]
-    unsafe fn get(&self, index: usize) -> &mut T {
+    pub(super) unsafe fn get(&self, index: usize) -> &mut T {
         assert!(index < self.len);
         // SAFETY: in bounds, and exclusive by the caller's contract.
         unsafe { &mut *self.base.add(index) }

@@ -6,11 +6,14 @@
 #![allow(clippy::needless_range_loop, clippy::large_enum_variant)]
 
 mod fused;
+mod indexed;
+mod indexed_table;
 mod layer;
 mod open_table;
 mod orbit;
 mod table;
 
+pub use indexed::{apply_layer_indexed, propagate_indexed, IndexedOptions, IndexedScratch, IndexedSum};
 pub use layer::{apply_layer_hashed, HashScratch, Kernel, PassTimes, WARM};
 pub use table::HashSum;
 

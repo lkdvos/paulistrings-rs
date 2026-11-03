@@ -18,6 +18,12 @@ const SIZINGS: [HashOptions; 9] = [
     HashOptions { target_bucket_len: 8, min_buckets: 16, kernel: Kernel::Fused },
 ];
 
+const INDEXED_SIZINGS: [IndexedOptions; 3] = [
+    IndexedOptions { target_bucket_len: usize::MAX / 2, min_buckets: 1 },
+    IndexedOptions { target_bucket_len: 64, min_buckets: 16 },
+    IndexedOptions { target_bucket_len: 8, min_buckets: 16 },
+];
+
 fn sorted_reference<const W: usize, T: TruncationPolicy<W>>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -46,6 +52,24 @@ fn hashed<const W: usize, T: TruncationPolicy<W>>(
     hashed.to_pauli_sum()
 }
 
+fn indexed<const W: usize, T: TruncationPolicy<W>>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &T,
+    direction: Direction,
+    options: IndexedOptions,
+) -> PauliSum<W> {
+    let mut indexed = IndexedSum::from_pauli_sum(sum);
+    propagate_indexed(circuit, &mut indexed, policy, direction, &mut IndexedScratch::new(), options);
+    assert_eq!(indexed.len(), indexed.buckets.iter().map(|t| t.len()).sum::<usize>());
+    for (b, table) in indexed.buckets.iter().enumerate() {
+        for e in table.entries() {
+            assert_eq!(indexed.hash.bucket_of(&e.x, &e.z) as usize, b, "entry in the wrong bucket");
+        }
+    }
+    indexed.to_pauli_sum()
+}
+
 fn agree_on<const W: usize>(channels: Vec<(&'static str, Box<dyn Channel<W>>)>, num_qubits: usize) {
     let sum = rand_sum::<W>(3000, num_qubits, 7);
     for (name, channel) in channels {
@@ -55,6 +79,10 @@ fn agree_on<const W: usize>(channels: Vec<(&'static str, Box<dyn Channel<W>>)>, 
             let want = sorted_reference(&circuit, &sum, &KeepAll, direction);
             for options in SIZINGS {
                 let got = hashed(&circuit, &sum, &KeepAll, direction, options);
+                assert_terms_close(&got, &want, 1e-12, &format!("{name} {options:?}"));
+            }
+            for options in INDEXED_SIZINGS {
+                let got = indexed(&circuit, &sum, &KeepAll, direction, options);
                 assert_terms_close(&got, &want, 1e-12, &format!("{name} {options:?}"));
             }
         }
@@ -79,6 +107,10 @@ fn random_circuits_agree<const W: usize>(num_qubits: usize) {
         let want = sorted_reference(&circuit, &sum, &policy, Direction::Heisenberg);
         for options in SIZINGS {
             let got = hashed(&circuit, &sum, &policy, Direction::Heisenberg, options);
+            assert_terms_close(&got, &want, 1e-10, &format!("seed {seed} {options:?}"));
+        }
+        for options in INDEXED_SIZINGS {
+            let got = indexed(&circuit, &sum, &policy, Direction::Heisenberg, options);
             assert_terms_close(&got, &want, 1e-10, &format!("seed {seed} {options:?}"));
         }
     }
@@ -125,6 +157,10 @@ fn truncated_rotations_agree<const W: usize>(num_qubits: usize) {
         let want = sorted_reference(&circuit, &sum, &policy, Direction::Heisenberg);
         for options in SIZINGS {
             let got = hashed(&circuit, &sum, &policy, Direction::Heisenberg, options);
+            assert_terms_close(&got, &want, 1e-10, &format!("threshold {threshold} {options:?}"));
+        }
+        for options in INDEXED_SIZINGS {
+            let got = indexed(&circuit, &sum, &policy, Direction::Heisenberg, options);
             assert_terms_close(&got, &want, 1e-10, &format!("threshold {threshold} {options:?}"));
         }
     }

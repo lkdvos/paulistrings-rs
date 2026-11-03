@@ -20,25 +20,25 @@ const ONE: Complex64 = Complex64::new(1.0, 0.0);
 
 /// A local PTM as the blocks of its pattern graph's connected components.
 pub(super) struct OrbitPlan<'p, const W: usize> {
-    ptm: &'p LocalPtm<W>,
+    pub(super) ptm: &'p LocalPtm<W>,
     /// Component of each support pattern.
-    component: [u8; LOCAL_DIM],
+    pub(super) component: [u8; LOCAL_DIM],
     /// Position of each pattern among its component's members.
-    rank: [u8; LOCAL_DIM],
+    pub(super) rank: [u8; LOCAL_DIM],
     /// Members of each component, ascending; `sizes[c]` are meaningful.
-    members: [[u8; LOCAL_DIM]; LOCAL_DIM],
-    sizes: [u8; LOCAL_DIM],
+    pub(super) members: [[u8; LOCAL_DIM]; LOCAL_DIM],
+    pub(super) sizes: [u8; LOCAL_DIM],
     /// Components whose block is the identity, left untouched.
-    skip: [bool; LOCAL_DIM],
+    pub(super) skip: [bool; LOCAL_DIM],
     /// Whether some one-member component is not skipped.
-    has_singletons: bool,
+    pub(super) has_singletons: bool,
     /// Component `c`'s block, row-major `sizes[c]²` from `offsets[c]`: entry `(a, b)` takes member `b` to member `a`.
-    blocks: Vec<Complex64>,
-    offsets: [usize; LOCAL_DIM],
+    pub(super) blocks: Vec<Complex64>,
+    pub(super) offsets: [usize; LOCAL_DIM],
     /// Per local delta `d`: the XOR masks and the coset coordinate of its bucket delta.
-    mask_x: [[u64; W]; LOCAL_DIM],
-    mask_z: [[u64; W]; LOCAL_DIM],
-    coordinate: [u32; LOCAL_DIM],
+    pub(super) mask_x: [[u64; W]; LOCAL_DIM],
+    pub(super) mask_z: [[u64; W]; LOCAL_DIM],
+    pub(super) coordinate: [u32; LOCAL_DIM],
 }
 
 impl<'p, const W: usize> OrbitPlan<'p, W> {
@@ -137,7 +137,7 @@ impl<'p, const W: usize> OrbitPlan<'p, W> {
 
     /// `key ⊕ d` and the coset member it lives in, from member `i`.
     #[inline(always)]
-    fn shifted(&self, i: usize, x: &[u64; W], z: &[u64; W], d: usize) -> (usize, Entry<W>) {
+    pub(super) fn shifted(&self, i: usize, x: &[u64; W], z: &[u64; W], d: usize) -> (usize, Entry<W>) {
         debug_assert!(self.coordinate[d] != u32::MAX, "a component delta outside the span");
         let mut e = Entry { x: *x, z: *z, c: ZERO };
         for w in 0..W {

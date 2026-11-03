@@ -5,20 +5,20 @@
 
 use super::table::{key_hash, Entry};
 
-const EMPTY: u8 = 0;
-const DELETED: u8 = 1;
+pub(super) const EMPTY: u8 = 0;
+pub(super) const DELETED: u8 = 1;
 
 /// Live entries plus tombstones may fill at most `MAX_LOAD_NUMERATOR / 8` of the slots before a rebuild.
-const MAX_LOAD_NUMERATOR: usize = 7;
+pub(super) const MAX_LOAD_NUMERATOR: usize = 7;
 
-const MIN_CAPACITY: usize = GROUP;
+pub(super) const MIN_CAPACITY: usize = GROUP;
 
 /// Tags probed at once; `tags` mirrors its first `GROUP` bytes past the end, so a group read never wraps.
-const GROUP: usize = 16;
+pub(super) const GROUP: usize = 16;
 
 /// Bit `k` set iff byte `k` of the group at `tags[0..GROUP]` equals `value`.
 #[inline(always)]
-fn match_byte(tags: &[u8], value: u8) -> u32 {
+pub(super) fn match_byte(tags: &[u8], value: u8) -> u32 {
     debug_assert!(tags.len() >= GROUP);
     #[cfg(target_arch = "x86_64")]
     {
@@ -39,7 +39,7 @@ fn match_byte(tags: &[u8], value: u8) -> u32 {
 pub(crate) static PREFETCH_SLOTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(32);
 
 #[inline(always)]
-fn prefetch<T>(slots: &[T], slot: usize) {
+pub(super) fn prefetch<T>(slots: &[T], slot: usize) {
     #[cfg(target_arch = "x86_64")]
     if slot < slots.len() {
         // SAFETY: a prefetch of an in-bounds address has no architectural effect.
@@ -54,7 +54,7 @@ fn prefetch<T>(slots: &[T], slot: usize) {
 
 /// Bit `k` set iff byte `k` of the group is free (empty or a tombstone): its high bit is clear.
 #[inline(always)]
-fn match_free(tags: &[u8]) -> u32 {
+pub(super) fn match_free(tags: &[u8]) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
         use core::arch::x86_64::{_mm_loadu_si128, _mm_movemask_epi8};
@@ -68,7 +68,7 @@ fn match_free(tags: &[u8]) -> u32 {
 }
 
 #[inline(always)]
-fn tag_of(hash: u64) -> u8 {
+pub(super) fn tag_of(hash: u64) -> u8 {
     0x80 | (hash >> 57) as u8
 }
 

@@ -15,6 +15,7 @@
 #   THREADS  thread counts (default "1 16")
 #   TARGETS  bucket targets for the hash engines (default 64,256,1024,4096,16384,inf); the sorted engine runs 256,1024,4096
 #   REPEATS  repetitions per cell (default 3)
+#   INDEXED  1 (default) also runs the indexed engine; 0 for a PS_REV that predates it
 #   PS_REV   commit to build (default: HEAD when the job starts)
 #   SMOKE=1  the pre-submit check, run locally as `SMOKE=1 bash scripts/slurm/hash-kernel.sbatch`
 set -euo pipefail
@@ -26,7 +27,7 @@ if [ "${SMOKE:-0}" = 1 ]; then
     : "${THREADS:=1 2}" "${TARGETS:=256,inf}" "${REPEATS:=1}"
 fi
 : "${CELLS:=--layers rotation_zz,rotation_wide,cnot,clifford,depolarizing --n 1000000 --reps 10;--layers su4,gu2q --n 100000 --reps 4;--layers tfim --qubits 64 --threshold 1.220703125e-4 --reps 8;--layers heavyhex --qubits 127 --threshold 1.220703125e-4 --reps 3}"
-: "${THREADS:=1 16}" "${TARGETS:=64,256,1024,4096,16384,inf}" "${REPEATS:=3}"
+: "${THREADS:=1 16}" "${TARGETS:=64,256,1024,4096,16384,inf}" "${REPEATS:=3}" "${INDEXED:=1}"
 
 use_shared_rust
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
@@ -60,6 +61,12 @@ for repeat in $(seq "$REPEATS"); do
                 numactl --physcpubind="$cpus" --membind=0 "$bin" $cell --threads "$threads" \
                     --targets "$TARGETS" --engines scatter,orbit,fused $warm | tee -a "$out"
             done
+            if [ "$INDEXED" = 1 ]; then
+                echo "## repeat $repeat threads $threads indexed :: $cell" | tee -a "$out"
+                # shellcheck disable=SC2086
+                numactl --physcpubind="$cpus" --membind=0 "$bin" $cell --threads "$threads" \
+                    --targets "$TARGETS" --engines indexed | tee -a "$out"
+            fi
             echo "## repeat $repeat threads $threads sorted :: $cell" | tee -a "$out"
             # shellcheck disable=SC2086
             numactl --physcpubind="$cpus" --membind=0 "$bin" $cell --threads "$threads" \

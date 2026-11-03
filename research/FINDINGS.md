@@ -241,7 +241,8 @@ Rejected: a smaller row threshold (4096 → 512, no change on ccqlin038), freshl
 Pass 1 now streams at ~30 of ccqlin038's 39 GB/s socket read ceiling; fusing it into the fill needs a sum-sized staging buffer and was not built.
 Across genoa nodes, one rank per socket at 48 threads, 5/5 pairs each: 4 ranks on 2 nodes wall **−51.2%** (4.86 → 2.37 s), export 2.72 → 0.67 s; 8 ranks on 4 nodes wall **−46.9%** (3.34 → 1.77 s), export 1.82 → 0.59 s (jobs 7399800–1, measured at the reverted column-only commit).
 There the merge's busy time also falls 41–48% (5/5) though its code is unchanged; unattributed, plausibly the inbound transfer overlapping the merge less once partners send earlier.
-Workers still spend 15.4 s (4 ranks) and 7.8 s (8 ranks) of busy time waiting for a received chunk: sending each chunk as soon as it is filled, rather than after the whole export, is the next lever and is unmeasured.
+Against `main` after §Remote rotations run on the in-place rotation kernel (`d97db49b`), 4 genoa ranks on 2 nodes: wall **−47.5%** (4.57 → 2.40 s), export 2.63 → 0.73 s, 5/5 (job 7400053).
+Rejected: sending each chunk as soon as it is filled (branch `stream-sends`, `19f29c19`), wall **+26.9% / +31.5%** at 4 / 8 genoa ranks against this fill (5/5 each, jobs 7400054–5), export +84–87% against an exchange wait −12–20%; the export's extra cost is unattributed.
 
 ## GPU spike
 

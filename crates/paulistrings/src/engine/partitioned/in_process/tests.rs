@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::partitioned::exchange_block::check_stride;
+use num_complex::Complex64;
 use std::time::{Duration, Instant};
 
 /// A one-column [`Payload`].
@@ -423,4 +424,69 @@ fn on_every_rank_caught(
             .collect();
         handles.into_iter().map(|h| h.join().expect("rank thread")).collect()
     })
+}
+
+/// A streamed exchange posts each chunk the fill wrote: the partner receives exactly those bytes, the fill sees only real partners, and the body gets the lent state.
+#[test]
+fn a_streamed_exchange_delivers_what_the_fill_wrote() {
+    use crate::engine::partitioned::exchange_block::{
+        chunk_rows_of, ExchangeBlock, PartnerPayload,
+    };
+    let map = ChunkMap::new(8, 0, 4);
+    let counts = [3u32, 0, 1, 2, 0, 0, 4, 1];
+    let byte = |rank: usize, k: usize| (16 * (rank + 1) + k) as u8;
+    let results = on_every_rank(2, |transport| {
+        let rank = transport.rank() as usize;
+        let partner = 1 - rank;
+        let mut send: Vec<Option<PartnerPayload<2>>> = vec![None, None];
+        send[partner] =
+            Some(PartnerPayload { blocks: vec![ExchangeBlock::<2>::with_counts(7, &counts)] });
+        let filled = std::cell::Cell::new(0usize);
+        let mut lent = 10 * rank;
+        let (received, seen) = transport.exchange_layer_streamed(
+            send,
+            &mut Vec::new(),
+            &map,
+            &mut lent,
+            |state, k, views| {
+                assert_eq!(*state, 10 * rank, "the fill reads the lent state");
+                assert!(views[rank].is_none(), "a partition fills nothing for itself");
+                let parts = views[partner].as_mut().expect("the partner's chunk views");
+                assert_eq!(parts.len(), 3, "x, z and coeff of the one block");
+                for part in parts.iter_mut() {
+                    part.fill(byte(rank, k));
+                }
+                filled.set(filled.get() + 1);
+            },
+            |state, received, wait| {
+                *state += 1;
+                for k in 0..map.chunks() {
+                    wait.wait_chunk(k);
+                }
+                let block = &received[partner].as_ref().expect("the partner's payload").blocks[0];
+                let bounds = chunk_rows_of(&block.offsets, &map);
+                let (x, z, coeff) = block.columns();
+                for k in 0..map.chunks() {
+                    let rows = bounds[k]..bounds[k + 1];
+                    let want = byte(partner, k);
+                    let bytes: Vec<u8> =
+                        bytemuck::cast_slice::<u64, u8>(x[rows.clone()].as_flattened())
+                            .iter()
+                            .chain(bytemuck::cast_slice::<u64, u8>(z[rows.clone()].as_flattened()))
+                            .chain(bytemuck::cast_slice::<Complex64, u8>(&coeff[rows]))
+                            .copied()
+                            .collect();
+                    assert!(bytes.iter().all(|&b| b == want), "chunk {k} from rank {partner}");
+                }
+                *state
+            },
+        );
+        assert!(received[partner].is_some());
+        (filled.get(), seen, lent)
+    });
+    for (rank, (filled, seen, lent)) in results.into_iter().enumerate() {
+        assert_eq!(filled, map.chunks(), "rank {rank}: one fill call per chunk");
+        assert_eq!(seen, 10 * rank + 1, "rank {rank}: the body saw the lent state");
+        assert_eq!(lent, 10 * rank + 1, "rank {rank}: the body's write is kept");
+    }
 }

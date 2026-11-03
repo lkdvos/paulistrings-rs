@@ -118,6 +118,26 @@ pub trait Payload: Default + Send + 'static {
         let _ = map;
         Vec::new()
     }
+
+    /// The sender's split: the `early_parts`, and the `bulk_parts` as writable views cut exactly as `bulk_parts` cuts them, so a chunk can be written and sent before the next is written.
+    fn split_for_send(&mut self, map: &ChunkMap) -> (Vec<&[u8]>, Vec<Vec<&mut [u8]>>) {
+        let _ = map;
+        (self.early_parts(), Vec::new())
+    }
+}
+
+/// Chunk `k` of every sender's split bulk views, by partner: `views[q][i]` is part `i` of partner `q`'s chunk `k`, taken out of `bulk`.
+pub(crate) fn chunk_views<'v>(
+    bulk: &mut [Option<Vec<Vec<&'v mut [u8]>>>],
+    k: usize,
+) -> Vec<Option<Vec<&'v mut [u8]>>> {
+    bulk.iter_mut()
+        .map(|parts| {
+            parts.as_mut().map(|parts| {
+                parts.iter_mut().map(|chunks| std::mem::take(&mut chunks[k])).collect()
+            })
+        })
+        .collect()
 }
 
 /// What a coset task waits on before it reads a received row of its chunk.
@@ -139,11 +159,29 @@ impl ChunkWait for AlreadyHere {
 ///
 /// Sealed through [`Collectives`]; not object-safe, so the layer loop monomorphizes over it.
 pub trait Transport: Collectives {
-    /// Send `send[q]` to partition `q`, run `body` on what the partners sent here, and return the received payloads with `body`'s result.
+    /// Send `send[q]` to partition `q`, writing its bulk parts chunk by chunk with `fill`, run `body` on what the partners sent here, and return the received payloads with `body`'s result.
     ///
+    /// `fill(state, k, views)` writes chunk `k` of every outgoing payload, `views[q]` being partner `q`'s [`chunk_views`]; it runs once per chunk in ascending order, before `body`, and a transport may send chunk `k` before chunk `k + 1` is written.
     /// Two-phase: the `early_parts` have arrived before `body` starts, and `body` calls `ChunkWait::wait_chunk` before reading a chunk's bulk rows.
     /// `send.len()` must be the group size with `None` in the own slot and for any partner with nothing to send; every partition passes the same `map`.
     /// `spare` is a payload pool in unspecified state, possibly empty: the transport takes receive payloads from it and returns finished send payloads to it.
+    /// `state` is lent to `fill` and then to `body`, which may mutate what the fill read.
+    fn exchange_layer_streamed<P, S, G, F, R>(
+        &self,
+        send: Vec<Option<P>>,
+        spare: &mut Vec<P>,
+        map: &ChunkMap,
+        state: &mut S,
+        fill: G,
+        body: F,
+    ) -> (Vec<Option<P>>, R)
+    where
+        P: Payload,
+        S: ?Sized,
+        G: FnMut(&S, usize, &mut [Option<Vec<&mut [u8]>>]),
+        F: FnOnce(&mut S, &[Option<P>], &dyn ChunkWait) -> R;
+
+    /// [`exchange_layer_streamed`](Self::exchange_layer_streamed) of payloads whose bulk parts are already written.
     fn exchange_layer<P, F, R>(
         &self,
         send: Vec<Option<P>>,
@@ -153,7 +191,17 @@ pub trait Transport: Collectives {
     ) -> (Vec<Option<P>>, R)
     where
         P: Payload,
-        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R;
+        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+    {
+        self.exchange_layer_streamed(
+            send,
+            spare,
+            map,
+            &mut (),
+            |_, _, _| {},
+            |_, received, wait| body(received, wait),
+        )
+    }
 
     /// The blocking [`exchange_layer`](Self::exchange_layer) under an empty `ChunkMap`, for payloads whose every part is early.
     fn exchange<P: Payload>(&self, send: Vec<Option<P>>, spare: &mut Vec<P>) -> Vec<Option<P>> {
@@ -216,19 +264,23 @@ impl Collectives for SoloTransport {
 }
 
 impl Transport for SoloTransport {
-    fn exchange_layer<P, F, R>(
+    fn exchange_layer_streamed<P, S, G, F, R>(
         &self,
         send: Vec<Option<P>>,
         _spare: &mut Vec<P>,
         _map: &ChunkMap,
+        state: &mut S,
+        _fill: G,
         body: F,
     ) -> (Vec<Option<P>>, R)
     where
         P: Payload,
-        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+        S: ?Sized,
+        G: FnMut(&S, usize, &mut [Option<Vec<&mut [u8]>>]),
+        F: FnOnce(&mut S, &[Option<P>], &dyn ChunkWait) -> R,
     {
         debug_assert!(send.iter().all(Option::is_none), "a group of one sends to no one");
-        let result = body(&send, &AlreadyHere);
+        let result = body(state, &send, &AlreadyHere);
         (send, result)
     }
 }

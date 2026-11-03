@@ -3,8 +3,9 @@
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
 
-use crate::coefficient::Coefficient;
 use rayon::prelude::*;
+
+use crate::coefficient::Coefficient;
 
 use super::exchange_block::{ExchangeBlock, PartnerPayload};
 use super::layer::LayerExchangeCounts;
@@ -17,23 +18,23 @@ use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
 /// Scanned input terms below which a block's fill stays on one thread.
 const FILL_PARALLEL_MIN_TERMS: usize = 16384;
 
-/// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
+/// Reusable scratch for [`prepare_export`], so a steady-state layer allocates nothing.
 #[derive(Debug, Default)]
-pub(crate) struct ExportScratch<const W: usize, C: Coefficient = num_complex::Complex64> {
+pub(crate) struct ExportScratch {
     /// Pass-1 counts, bucket-major: `counts[β * num_remote + i]`.
     counts: Vec<u32>,
     /// One block's counts by destination position.
     block_counts: Vec<u32>,
-    /// `source_of[position] = order.bucket_at(position) ^ bucket_delta`.
+    /// Remote delta `i`'s `source_of[position] = order.bucket_at(position) ^ bucket_delta`, at `i * num_buckets`.
     source_of: Vec<u32>,
-    /// One block's prefix sums of input terms its fill scans, by destination position; a position that exports nothing scans nothing.
+    /// Remote delta `i`'s CSR offsets by destination position, at `i * (num_buckets + 1)`.
+    offsets: Vec<u32>,
+    /// Remote delta `i`'s prefix sums of the input terms its fill scans, at `i * (num_buckets + 1)`; a position that exports nothing scans nothing.
     work_prefix: Vec<usize>,
-    /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
-    pub(crate) pool: Vec<PartnerPayload<W, C>>,
 }
 
 /// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
-enum RowEmitter<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
+enum RowEmitter<'p, const W: usize, C: Coefficient> {
     Tabulated {
         ptm: &'p LocalPtm<W, C>,
         entry: &'p DeltaEntry<W, C>,
@@ -53,39 +54,87 @@ impl<const W: usize, C: Coefficient> RowEmitter<'_, W, C> {
     }
 }
 
-/// This partition's outgoing payloads for one layer, one slot per partner rank.
-///
-/// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
+/// This partition's outgoing payloads for one layer, filled whole.
+#[cfg(test)]
 pub(crate) fn export_layer<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
     order: &CosetOrder,
-    scratch: &mut ExportScratch<W, C>,
+    scratch: &mut ExportScratch,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
     export_layer_with(local, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
 }
 
 /// [`export_layer`] with the fill's leaf size in scanned input terms.
+#[cfg(test)]
 fn export_layer_with<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
     order: &CosetOrder,
-    scratch: &mut ExportScratch<W, C>,
+    scratch: &mut ExportScratch,
     min_terms: usize,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
+    use crate::engine::transport::{chunk_views, ChunkMap, Payload};
+    let (mut send, counts, fill) = prepare_export_with(
+        local,
+        prepared,
+        plan,
+        size,
+        order,
+        scratch,
+        &mut Vec::new(),
+        min_terms,
+    );
+    let map = ChunkMap::of_order(order, 1);
+    let mut bulk: Vec<Option<Vec<Vec<&mut [u8]>>>> = send
+        .iter_mut()
+        .map(|payload| payload.as_mut().map(|payload| payload.split_for_send(&map).1))
+        .collect();
+    if plan.has_remote() {
+        fill.chunk(local, 0, &map, &mut chunk_views(&mut bulk, 0));
+    }
+    drop(bulk);
+    (send, counts)
+}
+
+/// This partition's outgoing payloads for one layer, one slot per partner rank, sized and indexed but not yet written; the [`ExportFill`] writes them chunk by chunk.
+///
+/// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
+pub(crate) fn prepare_export<'a, const W: usize, C: Coefficient>(
+    local: &PauliSum<W, C>,
+    prepared: &'a Prepared<W, C>,
+    plan: &PartitionPlan,
+    size: u32,
+    order: &CosetOrder,
+    scratch: &'a mut ExportScratch,
+    pool: &mut Vec<PartnerPayload<W, C>>,
+) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts, ExportFill<'a, W, C>) {
+    prepare_export_with(local, prepared, plan, size, order, scratch, pool, FILL_PARALLEL_MIN_TERMS)
+}
+
+/// [`prepare_export`] with the fill's leaf size in scanned input terms.
+#[allow(clippy::too_many_arguments)]
+fn prepare_export_with<'a, const W: usize, C: Coefficient>(
+    local: &PauliSum<W, C>,
+    prepared: &'a Prepared<W, C>,
+    plan: &PartitionPlan,
+    size: u32,
+    order: &CosetOrder,
+    scratch: &'a mut ExportScratch,
+    pool: &mut Vec<PartnerPayload<W, C>>,
+    min_terms: usize,
+) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts, ExportFill<'a, W, C>) {
     let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
     let mut send: Vec<Option<PartnerPayload<W, C>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
-    if num_remote == 0 {
-        return (send, counts);
-    }
+    let mut blocks_of: Vec<Vec<usize>> = vec![Vec::new(); size as usize];
 
-    let emitters: Vec<RowEmitter<'_, W, C>> = plan
+    let emitters: Vec<RowEmitter<'a, W, C>> = plan
         .remote
         .iter()
         .map(|remote| match prepared {
@@ -114,13 +163,15 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     // Pass 1: bucket-major counts, `counts[β * num_remote + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
     scratch.counts.resize(num_buckets * num_remote, 0);
-    scratch
-        .counts
-        .par_chunks_mut(num_remote)
-        .enumerate()
-        .for_each(|(bucket, slot)| count_bucket(local, prepared, plan, &dense, bucket, slot));
+    if num_remote > 0 {
+        scratch
+            .counts
+            .par_chunks_mut(num_remote)
+            .enumerate()
+            .for_each(|(bucket, slot)| count_bucket(local, prepared, plan, &dense, bucket, slot));
+    }
 
-    // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
+    // One block per remote delta, sized in pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
         order.positions(),
         num_buckets,
@@ -129,57 +180,114 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     scratch.block_counts.clear();
     scratch.block_counts.resize(num_buckets, 0);
     scratch.source_of.clear();
-    scratch.source_of.resize(num_buckets, 0);
+    scratch.source_of.resize(num_remote * num_buckets, 0);
+    scratch.offsets.clear();
+    scratch.offsets.resize(num_remote * (num_buckets + 1), 0);
     scratch.work_prefix.clear();
-    scratch.work_prefix.resize(num_buckets + 1, 0);
-    let mut blocks_used = vec![0usize; size as usize];
+    scratch.work_prefix.resize(num_remote * (num_buckets + 1), 0);
     for (i, remote) in plan.remote.iter().enumerate() {
+        let source_of = &mut scratch.source_of[i * num_buckets..(i + 1) * num_buckets];
+        let work_prefix =
+            &mut scratch.work_prefix[i * (num_buckets + 1)..(i + 1) * (num_buckets + 1)];
         let mut work = 0usize;
         for position in 0..num_buckets {
             let source = order.bucket_at(position as u32) ^ remote.bucket_delta;
             let count = scratch.counts[source as usize * num_remote + i];
-            scratch.source_of[position] = source;
+            source_of[position] = source;
             scratch.block_counts[position] = count;
             if count != 0 {
                 work += local.bucket_len(source as usize);
             }
-            scratch.work_prefix[position + 1] = work;
+            work_prefix[position + 1] = work;
         }
         let partner = remote.partner as usize;
-        let payload = send[partner].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
+        let payload = send[partner].get_or_insert_with(|| pool.pop().unwrap_or_default());
         let block_index = plan.sent_block_index(i);
-        blocks_used[partner] = block_index + 1;
+        debug_assert_eq!(
+            block_index,
+            blocks_of[partner].len(),
+            "a partner's blocks follow the plan's remote order",
+        );
+        blocks_of[partner].push(i);
         if payload.blocks.len() <= block_index {
             payload.blocks.resize_with(block_index + 1, ExchangeBlock::<W, C>::default);
         }
         let block = &mut payload.blocks[block_index];
         block.set_counts(remote.entry as u32, &scratch.block_counts);
-        let rows = block.rows();
-        {
-            let ExchangeBlock { ref offsets, ref mut x, ref mut z, ref mut coeff, .. } = *block;
-            let columns =
-                ColumnsMut { x: &mut x[..rows], z: &mut z[..rows], coeff: &mut coeff[..rows] };
-            let fill = Fill {
-                local,
-                emitter: &emitters[i],
-                offsets,
-                source_of: &scratch.source_of,
-                work_prefix: &scratch.work_prefix,
-                min_terms,
-            };
-            fill.range(0, num_buckets, columns);
-        }
-        counts.rows_sent[partner] += rows as u64;
+        scratch.offsets[i * (num_buckets + 1)..(i + 1) * (num_buckets + 1)]
+            .copy_from_slice(&block.offsets);
+        counts.rows_sent[partner] += block.rows() as u64;
         counts.bytes_sent[partner] += block.bytes() as u64;
     }
     // A pooled payload may carry more blocks than this layer fills; the extras must not travel.
     for (partner, payload) in send.iter_mut().enumerate() {
         if let Some(payload) = payload {
-            payload.blocks.truncate(blocks_used[partner]);
+            payload.blocks.truncate(blocks_of[partner].len());
         }
     }
 
-    (send, counts)
+    let scratch: &'a ExportScratch = scratch;
+    let fill = ExportFill {
+        emitters,
+        source_of: &scratch.source_of,
+        offsets: &scratch.offsets,
+        work_prefix: &scratch.work_prefix,
+        blocks_of,
+        num_buckets,
+        min_terms,
+    };
+    (send, counts, fill)
+}
+
+/// Writes the rows of a layer's outgoing blocks, one chunk of destination positions at a time, from the counts [`prepare_export`] sized them by.
+pub(crate) struct ExportFill<'a, const W: usize, C: Coefficient> {
+    emitters: Vec<RowEmitter<'a, W, C>>,
+    source_of: &'a [u32],
+    offsets: &'a [u32],
+    work_prefix: &'a [usize],
+    /// Remote-delta indices in block order, by partner.
+    blocks_of: Vec<Vec<usize>>,
+    num_buckets: usize,
+    min_terms: usize,
+}
+
+impl<const W: usize, C: Coefficient> ExportFill<'_, W, C> {
+    /// Write chunk `k` of `map` from `local`, the sum [`prepare_export`] counted, into `views`, partner `q`'s being the x, z and coeff chunk views of its blocks in order, as [`chunk_views`](crate::engine::transport::chunk_views) cuts them.
+    pub(crate) fn chunk(
+        &self,
+        local: &PauliSum<W, C>,
+        k: usize,
+        map: &crate::engine::transport::ChunkMap,
+        views: &mut [Option<Vec<&mut [u8]>>],
+    ) {
+        let (start, end) = (map.bound(k) as usize, map.bound(k + 1) as usize);
+        let positions = self.num_buckets + 1;
+        for (partner, blocks) in self.blocks_of.iter().enumerate() {
+            if blocks.is_empty() {
+                continue;
+            }
+            let parts = views[partner].as_mut().expect("chunk views for every partner sent to");
+            debug_assert_eq!(parts.len(), 3 * blocks.len(), "x, z and coeff per block");
+            for (block, &i) in blocks.iter().enumerate() {
+                let [x, z, coeff] = &mut parts[3 * block..3 * block + 3] else {
+                    unreachable!("three parts per block")
+                };
+                let (x, x_rest) = bytemuck::cast_slice_mut::<u8, u64>(x).as_chunks_mut::<W>();
+                let (z, z_rest) = bytemuck::cast_slice_mut::<u8, u64>(z).as_chunks_mut::<W>();
+                debug_assert!(x_rest.is_empty() && z_rest.is_empty(), "whole keys per chunk");
+                let coeff = bytemuck::cast_slice_mut::<u8, C>(coeff);
+                let fill = Fill {
+                    local,
+                    emitter: &self.emitters[i],
+                    offsets: &self.offsets[i * positions..(i + 1) * positions],
+                    source_of: &self.source_of[i * self.num_buckets..(i + 1) * self.num_buckets],
+                    work_prefix: &self.work_prefix[i * positions..(i + 1) * positions],
+                    min_terms: self.min_terms,
+                };
+                fill.range(start, end, ColumnsMut { x, z, coeff });
+            }
+        }
+    }
 }
 
 /// Count one source bucket's exported rows, one slot per remote delta.
@@ -289,22 +397,23 @@ fn split_at_half_work(work_prefix: &[usize], start: usize, end: usize) -> usize 
     middle.min(end - 1)
 }
 
-/// Every exported row belongs to the partner it is addressed to.
+/// Every row of a written chunk belongs to the partner it is addressed to; `views` as [`ExportFill::chunk`] takes them.
 #[cfg(debug_assertions)]
-pub(super) fn debug_assert_exported_partitions<const W: usize, C: Coefficient>(
-    send: &[Option<PartnerPayload<W, C>>],
+pub(super) fn debug_assert_chunk_partitions<const W: usize>(
+    views: &[Option<Vec<&mut [u8]>>],
     rows: &crate::pauli_sum::hash::PartitionRows<W>,
 ) {
-    for (partner, payload) in send.iter().enumerate() {
-        let Some(payload) = payload else { continue };
-        for block in &payload.blocks {
-            for i in 0..block.rows() {
-                let owner = rows.partition_of(&block.x[i], &block.z[i]);
+    for (partner, parts) in views.iter().enumerate() {
+        let Some(parts) = parts else { continue };
+        for block in parts.chunks_exact(3) {
+            let x = bytemuck::cast_slice::<u8, u64>(block[0]).as_chunks::<W>().0;
+            let z = bytemuck::cast_slice::<u8, u64>(block[1]).as_chunks::<W>().0;
+            for (row, (x, z)) in x.iter().zip(z).enumerate() {
+                let owner = rows.partition_of(x, z);
                 debug_assert_eq!(
                     owner, partner as u32,
-                    "export: row {i} of the block for entry {} is addressed to partition {partner} \
-                     but belongs to partition {owner}",
-                    block.header.entry,
+                    "export: chunk row {row} is addressed to partition {partner} but belongs to \
+                     partition {owner}",
                 );
             }
         }

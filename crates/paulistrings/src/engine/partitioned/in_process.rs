@@ -5,7 +5,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::collectives::Collectives;
-use crate::engine::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport};
+use crate::engine::transport::{chunk_views, AlreadyHere, ChunkMap, ChunkWait, Payload, Transport};
 
 /// Which transport call an arrival belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -469,17 +469,31 @@ impl Collectives for InProcessTransport {
 
 impl Transport for InProcessTransport {
     /// Moves each payload to its partner, so the transfer is complete before `body` runs and `map` and `spare` go unused.
-    fn exchange_layer<P, F, R>(
+    /// Writes every chunk before moving the payloads, since the partner reads them only once they move.
+    fn exchange_layer_streamed<P, S, G, F, R>(
         &self,
-        send: Vec<Option<P>>,
+        mut send: Vec<Option<P>>,
         _spare: &mut Vec<P>,
-        _map: &ChunkMap,
+        map: &ChunkMap,
+        state: &mut S,
+        mut fill: G,
         body: F,
     ) -> (Vec<Option<P>>, R)
     where
         P: Payload,
-        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+        S: ?Sized,
+        G: FnMut(&S, usize, &mut [Option<Vec<&mut [u8]>>]),
+        F: FnOnce(&mut S, &[Option<P>], &dyn ChunkWait) -> R,
     {
+        {
+            let mut bulk: Vec<Option<Vec<Vec<&mut [u8]>>>> = send
+                .iter_mut()
+                .map(|payload| payload.as_mut().map(|payload| payload.split_for_send(map).1))
+                .collect();
+            for k in 0..map.chunks() {
+                fill(state, k, &mut chunk_views(&mut bulk, k));
+            }
+        }
         let n = self.size as usize;
         assert_eq!(
             send.len(),
@@ -518,7 +532,7 @@ impl Transport for InProcessTransport {
                 .collect()
         };
 
-        let out = body(&received, &AlreadyHere);
+        let out = body(state, &received, &AlreadyHere);
         (received, out)
     }
 }

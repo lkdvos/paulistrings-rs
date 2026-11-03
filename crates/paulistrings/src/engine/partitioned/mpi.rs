@@ -21,7 +21,9 @@ use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 use crate::circuit::Circuit;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT};
+use crate::engine::transport::{
+    chunk_views, AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT,
+};
 use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
@@ -242,15 +244,13 @@ impl MpiTransport {
         });
     }
 
-    /// Post one partner's header, early parts, then bulk parts chunk-major, so non-overtaking delivers chunk `k` before chunk `k + 1`.
+    /// Post one partner's header and early parts, ahead of any of its bulk chunks.
     #[allow(clippy::too_many_arguments)]
-    fn post_layer_send<'a, Sc>(
+    fn post_header_and_early<'a, Sc>(
         &self,
         dst: usize,
         header: &'a [u8],
         early: &[&'a [u8]],
-        bulk: &[Vec<&'a [u8]>],
-        chunks: usize,
         tags: Tags,
         scope: Sc,
         requests: &mut RequestCollection<'a, [u8]>,
@@ -259,21 +259,34 @@ impl MpiTransport {
         Sc: Scope<'a> + Copy,
     {
         let peer = self.comm.process_at_rank(dst as Rank);
-        let mut post = |req, slot_of: &mut Vec<usize>| {
-            let i = requests.add(req);
-            note_slot(slot_of, i, SLOT_SEND);
-        };
-        post(peer.immediate_send_with_tag(scope, header, tags.header), slot_of);
+        let i = requests.add(peer.immediate_send_with_tag(scope, header, tags.header));
+        note_slot(slot_of, i, SLOT_SEND);
         for part in early {
             for piece in part.chunks(self.chunk) {
-                post(peer.immediate_send_with_tag(scope, piece, tags.early), slot_of);
+                let i = requests.add(peer.immediate_send_with_tag(scope, piece, tags.early));
+                note_slot(slot_of, i, SLOT_SEND);
             }
         }
-        for k in 0..chunks {
-            for part in bulk {
-                for piece in part[k].chunks(self.chunk) {
-                    post(peer.immediate_send_with_tag(scope, piece, tags.part), slot_of);
-                }
+    }
+
+    /// Post one chunk's bulk parts to `dst` in part order, as the receiver posts them; chunks are posted in ascending order, so non-overtaking delivers chunk `k` before chunk `k + 1`.
+    fn post_chunk<'a, Sc>(
+        &self,
+        dst: usize,
+        parts: Vec<&'a mut [u8]>,
+        tags: Tags,
+        scope: Sc,
+        requests: &mut RequestCollection<'a, [u8]>,
+        slot_of: &mut Vec<usize>,
+    ) where
+        Sc: Scope<'a> + Copy,
+    {
+        let peer = self.comm.process_at_rank(dst as Rank);
+        for part in parts {
+            let part: &'a [u8] = part;
+            for piece in part.chunks(self.chunk) {
+                let i = requests.add(peer.immediate_send_with_tag(scope, piece, tags.part));
+                note_slot(slot_of, i, SLOT_SEND);
             }
         }
     }
@@ -459,16 +472,20 @@ impl Transport for MpiTransport {
     /// Non-overtaking matches sends to receives in posting order, so both sides walk partners, parts and chunks ascending, and every rank must use the same chunk count (`PAULISTRINGS_EXCHANGE_CHUNKS`, never a thread count); the header carries the count as requested, before the clamp, so a mismatch panics on both ranks of a pair at the first exchange, before any bulk receive is posted.
     /// Raw host bytes: every rank runs the same architecture and `W`.
     /// Deadlock freedom is `ChunkPipeline`'s (`mpi/pipeline.rs`).
-    fn exchange_layer<P, F, R>(
+    fn exchange_layer_streamed<P, S, G, F, R>(
         &self,
-        send: Vec<Option<P>>,
+        mut send: Vec<Option<P>>,
         spare: &mut Vec<P>,
         map: &ChunkMap,
+        state: &mut S,
+        mut fill: G,
         body: F,
     ) -> (Vec<Option<P>>, R)
     where
         P: Payload,
-        F: FnOnce(&[Option<P>], &dyn ChunkWait) -> R,
+        S: ?Sized,
+        G: FnMut(&S, usize, &mut [Option<Vec<&mut [u8]>>]),
+        F: FnOnce(&mut S, &[Option<P>], &dyn ChunkWait) -> R,
     {
         let n = self.size as usize;
         assert_eq!(
@@ -484,32 +501,34 @@ impl Transport for MpiTransport {
         );
         let recv: Vec<Option<P>> = (0..n).map(|_| None).collect();
         if n == 1 {
-            let out = body(&recv, &AlreadyHere);
+            let out = body(state, &recv, &AlreadyHere);
             return (recv, out);
         }
 
         let tags = Tags::exchange(self.next_epoch());
         let partners: Vec<usize> = (0..n).filter(|&q| send[q].is_some()).collect();
         if partners.is_empty() {
-            let out = body(&recv, &AlreadyHere);
+            let out = body(state, &recv, &AlreadyHere);
             return (recv, out);
         }
 
-        let all_parts: Vec<Vec<&[u8]>> = partners
-            .iter()
-            .map(|&q| send[q].as_ref().expect("a partner's payload").byte_parts())
-            .collect();
         let chunks = map.chunks();
-        let headers: Vec<Vec<u64>> =
-            all_parts.iter().map(|p| encode_header(self.rank, map.requested_chunks(), p)).collect();
-        let early: Vec<Vec<&[u8]>> = partners
+        let headers: Vec<Vec<u64>> = partners
             .iter()
-            .map(|&q| send[q].as_ref().expect("a partner's payload").early_parts())
+            .map(|&q| {
+                let payload = send[q].as_ref().expect("a partner's payload");
+                encode_header(self.rank, map.requested_chunks(), &payload.byte_parts())
+            })
             .collect();
-        let bulk: Vec<Vec<Vec<&[u8]>>> = partners
-            .iter()
-            .map(|&q| send[q].as_ref().expect("a partner's payload").bulk_parts(map))
-            .collect();
+        let mut early: Vec<Vec<&[u8]>> = Vec::with_capacity(partners.len());
+        let mut bulk: Vec<Option<Vec<Vec<&mut [u8]>>>> = (0..n).map(|_| None).collect();
+        for (q, payload) in send.iter_mut().enumerate() {
+            if let Some(payload) = payload {
+                let (early_parts, bulk_parts) = payload.split_for_send(map);
+                early.push(early_parts);
+                bulk[q] = Some(bulk_parts);
+            }
+        }
 
         // SAFETY: while `body` runs, the `&mut` views MPI fills and the `&[Option<P>]` the body reads alias.
         // They never touch the same bytes at once: the early parts complete before `body` starts, and a chunk's columns are read only after `wait_chunk` saw its receives complete.
@@ -519,17 +538,24 @@ impl Transport for MpiTransport {
             ::mpi::request::multiple_scope(partners.len() * (2 + 3 * chunks), |scope, requests| {
                 let mut slot_of: Vec<usize> = Vec::new();
                 for (i, &dst) in partners.iter().enumerate() {
-                    self.post_layer_send(
+                    self.post_header_and_early(
                         dst,
                         bytemuck::cast_slice(&headers[i]),
                         &early[i],
-                        &bulk[i],
-                        chunks,
                         tags,
                         scope,
                         requests,
                         &mut slot_of,
                     );
+                }
+                // Each chunk leaves as soon as it is written, while the next is filled.
+                for k in 0..chunks {
+                    let mut views = chunk_views(&mut bulk, k);
+                    fill(state, k, &mut views);
+                    for &dst in &partners {
+                        let parts = views[dst].take().expect("a partner's chunk views");
+                        self.post_chunk(dst, parts, tags, scope, requests, &mut slot_of);
+                    }
                 }
 
                 // Every send is posted before the first blocking receive.
@@ -603,7 +629,7 @@ impl Transport for MpiTransport {
 
                 let mut pipeline = ChunkPipeline::new(requests, slot_of, chunks.max(1));
                 // SAFETY: see `recv_cell`.
-                let out = body(unsafe { &*recv_cell.get() }, &pipeline);
+                let out = body(state, unsafe { &*recv_cell.get() }, &pipeline);
                 pipeline.finish();
                 out
             });

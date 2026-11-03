@@ -442,3 +442,57 @@ fn a_fully_split_fill_equals_an_unsplit_one() {
         }
     }
 }
+
+/// Filling chunk by chunk through a sender's split views gives the same payload as [`export_layer`], for every chunking.
+#[test]
+fn a_chunked_fill_equals_the_whole_export() {
+    use crate::engine::transport::{chunk_views, ChunkMap, Payload};
+    let input = rand_sum::<1>(3000, 8, 0x9C8);
+    for (name, channel) in &differential_channels_w1() {
+        for &pbits in &[1u8, 2] {
+            let rows = PartitionRows::<1>::from_seed(8, pbits, 0x7777);
+            let whole = input.clone().with_hash(Gf2Hash::<1>::new(8, 5, 0xAB));
+            let prepared = channel.prepare(whole.hash(), false).expect("prepare");
+            let size = rows.num_partitions() as u32;
+            for rank in 0..size {
+                let local = whole.filter_partition(&rows, rank);
+                let plan = PartitionPlan::new(&prepared, &rows, rank);
+                let order = order_for(&plan, local.num_buckets());
+                let (want, want_counts) = export_layer(
+                    &local,
+                    &prepared,
+                    &plan,
+                    size,
+                    &order,
+                    &mut ExportScratch::default(),
+                );
+                for chunks in [1usize, 3, 8] {
+                    let map = ChunkMap::of_order(&order, chunks);
+                    let mut scratch = ExportScratch::default();
+                    let mut pool = Vec::new();
+                    let (mut send, counts, fill) = prepare_export(
+                        &local,
+                        &prepared,
+                        &plan,
+                        size,
+                        &order,
+                        &mut scratch,
+                        &mut pool,
+                    );
+                    {
+                        let mut bulk: Vec<Option<Vec<Vec<&mut [u8]>>>> = send
+                            .iter_mut()
+                            .map(|payload| payload.as_mut().map(|p| p.split_for_send(&map).1))
+                            .collect();
+                        for k in 0..map.chunks() {
+                            fill.chunk(&local, k, &map, &mut chunk_views(&mut bulk, k));
+                        }
+                    }
+                    let what = format!("{name} p={pbits} rank={rank} chunks={chunks}");
+                    assert_eq!(counts, want_counts, "{what}: counts");
+                    assert_eq!(send, want, "{what}: payload");
+                }
+            }
+        }
+    }
+}

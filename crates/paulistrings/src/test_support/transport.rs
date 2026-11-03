@@ -90,19 +90,23 @@ impl crate::collectives::Collectives for LoggingTransport {
 }
 
 impl crate::engine::transport::Transport for LoggingTransport {
-    fn exchange_layer<P, F, R>(
+    fn exchange_layer_streamed<P, S, G, F, R>(
         &self,
         send: Vec<Option<P>>,
         spare: &mut Vec<P>,
         map: &crate::engine::transport::ChunkMap,
+        state: &mut S,
+        fill: G,
         body: F,
     ) -> (Vec<Option<P>>, R)
     where
         P: crate::engine::transport::Payload,
-        F: FnOnce(&[Option<P>], &dyn crate::engine::transport::ChunkWait) -> R,
+        S: ?Sized,
+        G: FnMut(&S, usize, &mut [Option<Vec<&mut [u8]>>]),
+        F: FnOnce(&mut S, &[Option<P>], &dyn crate::engine::transport::ChunkWait) -> R,
     {
         self.log.push("exchange_layer");
-        self.inner.exchange_layer(send, spare, map, body)
+        self.inner.exchange_layer_streamed(send, spare, map, state, fill, body)
     }
     fn exchange<P: crate::engine::transport::Payload>(
         &self,

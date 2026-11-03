@@ -77,6 +77,45 @@ fn the_early_and_bulk_parts_partition_the_wire() {
     }
 }
 
+/// A sender's split hands out the early parts unchanged and the bulk parts as writable chunks of the very columns `byte_parts` reads.
+#[test]
+fn split_for_send_hands_out_the_early_parts_and_writable_bulk_chunks() {
+    for bits in [0u8, 3, 5] {
+        for chunks in [1usize, 3, 8] {
+            let map = map_of(bits, &[0], chunks);
+            let mut payload = payload_of::<2>(bits, 2, 0x5E1D + u64::from(bits));
+            let early_want: Vec<Vec<u8>> =
+                payload.early_parts().into_iter().map(<[u8]>::to_vec).collect();
+            let lens_want: Vec<Vec<usize>> = payload
+                .bulk_parts(&map)
+                .iter()
+                .map(|p| p.iter().map(|c| c.len()).collect())
+                .collect();
+            {
+                let (early, mut bulk) = payload.split_for_send(&map);
+                let early: Vec<Vec<u8>> = early.into_iter().map(<[u8]>::to_vec).collect();
+                assert_eq!(early, early_want, "bits={bits} chunks={chunks}: early parts");
+                let lens: Vec<Vec<usize>> =
+                    bulk.iter().map(|p| p.iter().map(|c| c.len()).collect()).collect();
+                assert_eq!(lens, lens_want, "bits={bits} chunks={chunks}: bulk chunk lengths");
+                for (i, part) in bulk.iter_mut().enumerate() {
+                    for (k, piece) in part.iter_mut().enumerate() {
+                        piece.fill((16 * i + k) as u8);
+                    }
+                }
+            }
+            for (i, part) in payload.bulk_parts(&map).iter().enumerate() {
+                for (k, piece) in part.iter().enumerate() {
+                    assert!(
+                        piece.iter().all(|&b| b == (16 * i + k) as u8),
+                        "bits={bits} chunks={chunks}: part {i} chunk {k} was not written through",
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Deterministic xorshift64 row filler.
 fn fill<const W: usize>(block: &mut ExchangeBlock<W>, seed: u64) {
     let mut s = seed | 1;

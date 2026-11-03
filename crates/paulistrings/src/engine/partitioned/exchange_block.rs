@@ -298,20 +298,28 @@ impl<const W: usize, C: Coefficient> Payload for PartnerPayload<W, C> {
     }
 
     fn bulk_receive_into(&mut self, map: &ChunkMap) -> Vec<Vec<&mut [u8]>> {
-        let mut parts = Vec::with_capacity(3 * self.blocks.len());
+        self.split_for_send(map).1
+    }
+
+    fn split_for_send(&mut self, map: &ChunkMap) -> (Vec<&[u8]>, Vec<Vec<&mut [u8]>>) {
+        let mut early = Vec::with_capacity(2 * self.blocks.len());
+        let mut bulk = Vec::with_capacity(3 * self.blocks.len());
         for block in &mut self.blocks {
             let rows = block.header.rows as usize;
             let bounds = chunk_rows_of(&block.offsets, map);
-            let ExchangeBlock { x, z, coeff, .. } = block;
-            parts.push(chunk_slices_mut(&mut x[..rows], &bounds, |s| {
+            let ExchangeBlock { header, offsets, x, z, coeff } = block;
+            let (header, offsets): (&BlockHeader, &Vec<u32>) = (header, offsets);
+            early.push(bytemuck::bytes_of(header));
+            early.push(bytemuck::cast_slice(offsets));
+            bulk.push(chunk_slices_mut(&mut x[..rows], &bounds, |s| {
                 bytemuck::cast_slice_mut(s.as_flattened_mut())
             }));
-            parts.push(chunk_slices_mut(&mut z[..rows], &bounds, |s| {
+            bulk.push(chunk_slices_mut(&mut z[..rows], &bounds, |s| {
                 bytemuck::cast_slice_mut(s.as_flattened_mut())
             }));
-            parts.push(chunk_slices_mut(&mut coeff[..rows], &bounds, bytemuck::cast_slice_mut));
+            bulk.push(chunk_slices_mut(&mut coeff[..rows], &bounds, bytemuck::cast_slice_mut));
         }
-        parts
+        (early, bulk)
     }
 }
 

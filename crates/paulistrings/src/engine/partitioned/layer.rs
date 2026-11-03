@@ -2,7 +2,7 @@
 //! It neither rebuckets nor finalizes the layer; the driver owns both.
 
 use super::exchange_block::{ExchangeBlock, PartnerPayload};
-use super::export::{export_layer, ExportScratch};
+use super::export::{prepare_export, ExportScratch};
 use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
@@ -125,7 +125,9 @@ impl<const W: usize, C: Coefficient> ExtraRows<W, C> for ReceivedRows<'_, W, C> 
 #[derive(Debug, Default)]
 pub(crate) struct PartitionState<const W: usize, C: Coefficient = num_complex::Complex64> {
     pub layer: LayerScratch<W, C>,
-    pub export: ExportScratch<W, C>,
+    pub export: ExportScratch,
+    /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
+    pub pool: Vec<PartnerPayload<W, C>>,
     pub chunks: ChunkMap,
 }
 
@@ -184,12 +186,13 @@ where
     let mut order = std::mem::take(&mut state.layer.order);
     order.rebuild(&span, true);
     state.chunks = ChunkMap::of_order(&order, *EXCHANGE_CHUNKS.get());
-    let (send, mut counts) = export_layer(local, prepared, plan, size, &order, &mut state.export);
-    lap!(stamp, state.layer.stats.export_ns);
-    tally!(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
+    let PartitionState { layer: layer_scratch, export: export_scratch, pool, chunks: map } = state;
+    let (send, mut counts, export_fill) =
+        prepare_export(local, prepared, plan, size, &order, export_scratch, pool);
+    lap!(stamp, layer_scratch.stats.export_ns);
+    tally!(layer_scratch.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
     #[cfg(debug_assertions)]
     {
-        super::export::debug_assert_exported_partitions(&send, rows);
         for remote in &plan.remote {
             debug_assert!(
                 send[remote.partner as usize].is_some(),
@@ -223,13 +226,25 @@ where
         order: Some(&order),
     };
 
-    let PartitionState { layer: layer_scratch, export: export_scratch, chunks: map } = state;
     timed!(let body_ns = std::cell::Cell::new(0u64));
+    timed!(let fill_ns = std::cell::Cell::new(0u64));
     timed!(let exchange_start = std::time::Instant::now());
+    let map: &ChunkMap = map;
 
-    // The rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
-    let (received, rows_received) =
-        transport.exchange_layer(send, &mut export_scratch.pool, map, |received, wait| {
+    // A chunk may leave while the next is written, and the rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
+    let (received, rows_received) = transport.exchange_layer_streamed(
+        send,
+        pool,
+        map,
+        local,
+        |local, k, views| {
+            timed!(let fill_start = std::time::Instant::now());
+            export_fill.chunk(local, k, map, views);
+            #[cfg(debug_assertions)]
+            super::export::debug_assert_chunk_partitions(views, rows);
+            timed!(fill_ns.set(fill_ns.get() + fill_start.elapsed().as_nanos() as u64));
+        },
+        |local, received, wait| {
             timed!(let body_start = std::time::Instant::now());
             #[cfg(debug_assertions)]
             for block in received.iter().flatten().flat_map(|payload| &payload.blocks) {
@@ -268,14 +283,16 @@ where
                 body_ns.set(body_start.elapsed().as_nanos() as u64);
             }
             rows_received
-        });
+        },
+    );
     timed! {
-        // Excludes the body it wraps: the transfer the coset loop did not hide.
+        layer_scratch.stats.export_ns += fill_ns.get();
+        // Excludes the fill and the body it wraps: the transfer neither hid.
         layer_scratch.stats.exchange_ns +=
-            exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
+            exchange_start.elapsed().as_nanos() as u64 - body_ns.get() - fill_ns.get();
         stamp.rearm();
     }
-    export_scratch.pool.extend(received.into_iter().flatten());
+    pool.extend(received.into_iter().flatten());
     layer_scratch.order = order;
 
     counts.remote_deltas = plan.remote.len();

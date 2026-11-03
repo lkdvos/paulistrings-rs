@@ -251,6 +251,54 @@ fn merges_in_place_exactly_when_the_spare_capacity_allows() {
     }
 }
 
+/// Hand-merged runs: with room for every partner the hits go uncounted and the bucket shifts down over them, without room the merge falls back, and both give the same terms.
+#[test]
+fn merges_hits_and_drops_with_and_without_room() {
+    let columns = |terms: &[(u64, f64)]| {
+        let mut columns = BucketColumns::<1>::default();
+        for &(k, c) in terms {
+            columns.push([k], [0], Complex64::new(c, 0.0));
+        }
+        columns
+    };
+    let bucket = [(1, 1.0), (2, 2.0), (4, 3.0), (8, 4.0)];
+    type Terms = &'static [(u64, f64)];
+    let cases: [(Terms, Terms, bool); 2] = [
+        // Every partner a hit, so it merges in place even without spare room.
+        (
+            &[(1, 10.0), (2, 20.0), (4, 30.0), (8, 40.0)],
+            &[(1, 11.0), (2, 22.0), (4, 33.0), (8, 44.0)],
+            true,
+        ),
+        // Two new keys, and a hit cancelling to an exact zero.
+        (
+            &[(0, 5.0), (2, -2.0), (5, 6.0)],
+            &[(0, 5.0), (1, 1.0), (4, 3.0), (5, 6.0), (8, 4.0)],
+            false,
+        ),
+    ];
+    for (partners, want, in_place_without_room) in cases {
+        for room in [true, false] {
+            let mut got = columns(&bucket);
+            if room {
+                got.x.reserve(partners.len());
+                got.z.reserve(partners.len());
+                got.coeff.reserve(partners.len());
+            } else {
+                got.x.shrink_to_fit();
+                got.z.shrink_to_fit();
+                got.coeff.shrink_to_fit();
+            }
+            let partners = columns(partners);
+            let mut merged = BucketColumns::default();
+            let in_place = merge_partners(&mut got, partners.view(), &KeepAll, &mut merged);
+            assert_eq!(in_place, room || in_place_without_room, "{partners:?} room={room}");
+            assert_eq!(got.x, columns(want).x, "{partners:?} room={room}");
+            assert_eq!(got.coeff, columns(want).coeff, "{partners:?} room={room}");
+        }
+    }
+}
+
 /// A rotation built as a dense unitary keeps `cos(π/2)` as a residue of order `ε`, which the general path keeps and the Clifford arm drops.
 #[test]
 fn the_clifford_arm_drops_quarter_turn_residues() {

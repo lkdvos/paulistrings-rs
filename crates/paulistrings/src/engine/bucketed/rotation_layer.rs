@@ -153,7 +153,7 @@ pub(super) fn fill_rotation_coset<const W: usize, T>(
 
 /// Merge the strictly ascending `partners` into the strictly ascending `bucket`, summing equal keys bucket-first and keeping each output iff it is nonzero and `keep_term` passes; returns whether it ran in place.
 ///
-/// In place needs spare capacity for every partner that is a new key; otherwise the merge runs into `merged`, which is swapped in, as the general path does.
+/// In place needs spare capacity for every partner that is a new key: with room for every partner the hits go uncounted and the merge starts at that bound, else they are counted; without room the merge runs into `merged`, which is swapped in, as the general path does.
 fn merge_partners<const W: usize, T>(
     bucket: &mut BucketColumns<W>,
     partners: ColumnsRef<'_, W>,
@@ -163,8 +163,9 @@ fn merge_partners<const W: usize, T>(
 where
     T: TruncationPolicy<W> + ?Sized,
 {
-    let total = bucket.len() + partners.coeff.len() - count_hits(bucket.view(), partners);
+    let bound = bucket.len() + partners.coeff.len();
     let spare = bucket.x.capacity().min(bucket.z.capacity()).min(bucket.coeff.capacity());
+    let total = if spare >= bound { bound } else { bound - count_hits(bucket.view(), partners) };
     if spare >= total {
         merge_backward_in_place(bucket, partners, policy, total);
         true
@@ -191,7 +192,7 @@ fn count_hits<const W: usize>(bucket: ColumnsRef<'_, W>, partners: ColumnsRef<'_
     hits
 }
 
-/// [`merge_partners`] in the bucket's own buffer: written from the back of `total`, the length before drops, then shifted to the front over the slots drops left.
+/// [`merge_partners`] in the bucket's own buffer: written from the back of `total`, at least the length before drops, then shifted to the front over the slots hits and drops left.
 fn merge_backward_in_place<const W: usize, T>(
     bucket: &mut BucketColumns<W>,
     partners: ColumnsRef<'_, W>,
@@ -202,7 +203,7 @@ fn merge_backward_in_place<const W: usize, T>(
 {
     let ColumnsRef { x: p_x, z: p_z, coeff: p_c } = partners;
     let (len, extra) = (bucket.len(), p_c.len());
-    debug_assert_eq!(total, len + extra - count_hits(bucket.view(), partners));
+    debug_assert!(total >= len + extra - count_hits(bucket.view(), partners));
     debug_assert!(bucket.x.capacity() >= total);
     debug_assert!(bucket.z.capacity() >= total);
     debug_assert!(bucket.coeff.capacity() >= total);

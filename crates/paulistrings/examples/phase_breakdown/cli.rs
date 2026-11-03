@@ -33,6 +33,8 @@ Options:
                            crossing the fewest of the layer's lattice edges
   --initial random|z0      Input sum: random, or Z on qubit --qubits/2 (the default for
                            tfim_step and heavyhex_step)
+  --dtype f64|f32|c128|c64 Coefficient type of the propagated sum (default: c128); a real type
+                           keeps the real part of the input
   --format table|json      Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE
   -h, --help               Print this message";
@@ -240,6 +242,8 @@ pub(crate) struct Config {
     pub(crate) reps: usize,
     pub(crate) seed: u64,
     pub(crate) truncation: TruncSpec,
+    /// `--dtype`: the coefficient type's `Coefficient::NAME`.
+    pub(crate) dtype: &'static str,
     pub(crate) format: Format,
     /// Sidecar file that gets one JSON line appended per cell, regardless of `--format`.
     pub(crate) json_out: Option<String>,
@@ -318,6 +322,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
+    let mut dtype = "c128";
     let mut partitions: Vec<usize> = vec![1];
     let mut partition_cpus = PartitionCpus::Auto;
     let mut bind_memory = true;
@@ -376,6 +381,19 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--gpu-partitions" => gpu_partitions = parse_usize(value, "--gpu-partitions")?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
+            "--dtype" => {
+                dtype = match value.as_str() {
+                    "f64" => "f64",
+                    "f32" => "f32",
+                    "c128" => "c128",
+                    "c64" => "c64",
+                    other => {
+                        return Err(format!(
+                            "--dtype expects f64 | f32 | c128 | c64, got '{other}'"
+                        ))
+                    }
+                }
+            }
             other => return Err(format!("unknown flag '{other}' (see --help)")),
         }
         i += 2;
@@ -539,6 +557,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         reps,
         seed,
         truncation,
+        dtype,
         format,
         json_out,
     })

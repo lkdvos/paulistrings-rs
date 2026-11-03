@@ -32,27 +32,44 @@ use cli::{parse_args, Config, Format, TruncSpec, USAGE};
 use device::run_cell_mpi_gpu;
 #[cfg(feature = "cuda")]
 use device::{builtin_truncation, resolve_devices, run_cell_gpu};
+use num_complex::{Complex32, Complex64};
 use output::{json_line, print_cell_line, print_json, print_table};
+use paulistrings::Coefficient;
 
 /// Dispatch `--truncation` into exactly one monomorphization of [`run_cells`], so the policy's
 /// `keep_term` inlines into the merge the way a real caller's does. Each spec supplies two policy
 /// values: the unpartitioned one and its partitioned form (`topn` has none, already rejected by
 /// [`parse_args`]).
-fn run<const W: usize>(cfg: &Config) {
+fn run<const W: usize, C: Coefficient>(cfg: &Config) {
     match cfg.truncation {
-        TruncSpec::Keep => run_cells::<W, _, _>(cfg, &KeepAll, Some(&KeepAll)),
+        TruncSpec::Keep => run_cells::<W, C, _, _>(cfg, &KeepAll, Some(&KeepAll)),
         TruncSpec::Coefficient(t) => {
-            run_cells::<W, _, _>(cfg, &CoefficientThreshold(t), Some(&CoefficientThreshold(t)))
+            run_cells::<W, C, _, _>(cfg, &CoefficientThreshold(t), Some(&CoefficientThreshold(t)))
         }
-        TruncSpec::TopN(n) => run_cells::<W, _, ApproxTopN>(cfg, &TopN(n), None),
-        TruncSpec::ApproxTopN(n) => run_cells::<W, _, _>(cfg, &ApproxTopN(n), Some(&ApproxTopN(n))),
+        TruncSpec::TopN(n) => run_cells::<W, C, _, ApproxTopN>(cfg, &TopN(n), None),
+        TruncSpec::ApproxTopN(n) => {
+            run_cells::<W, C, _, _>(cfg, &ApproxTopN(n), Some(&ApproxTopN(n)))
+        }
     }
 }
 
-fn run_cells<const W: usize, P, PP>(cfg: &Config, policy: &P, partitioned_policy: Option<&PP>)
-where
-    P: TruncationPolicy<W>,
-    PP: TruncationPolicy<W>,
+/// [`run`] at the `--dtype` coefficient type.
+fn run_dtype<const W: usize>(cfg: &Config) {
+    match cfg.dtype {
+        "f64" => run::<W, f64>(cfg),
+        "f32" => run::<W, f32>(cfg),
+        "c64" => run::<W, Complex32>(cfg),
+        _ => run::<W, Complex64>(cfg),
+    }
+}
+
+fn run_cells<const W: usize, C: Coefficient, P, PP>(
+    cfg: &Config,
+    policy: &P,
+    partitioned_policy: Option<&PP>,
+) where
+    P: TruncationPolicy<W, C>,
+    PP: TruncationPolicy<W, C>,
 {
     let mut sidecar = cfg.json_out.as_ref().map(|path| {
         // Under `--mpi` every rank writes its own file, suffixed by rank, to avoid interleaving.
@@ -66,6 +83,10 @@ where
     // A device cell has no thread axis: one cell per layer, `--threads[0]` echoed into the row.
     #[cfg(feature = "cuda")]
     if let Some(spec) = &cfg.device {
+        if C::NAME != "c128" {
+            eprintln!("phase_breakdown: --device runs at --dtype c128 only");
+            std::process::exit(2);
+        }
         let policy = builtin_truncation(cfg.truncation);
         #[cfg(feature = "mpi")]
         if cfg.mpi {
@@ -91,12 +112,12 @@ where
             for &threads in &cfg.threads {
                 #[cfg(feature = "mpi")]
                 if cfg.mpi {
-                    let cell = run_cell_mpi::<W, PP>(layer, threads, cfg, partitioned_policy());
+                    let cell = run_cell_mpi::<W, C, PP>(layer, threads, cfg, partitioned_policy());
                     emit_cell(cfg, &cell, sidecar.as_mut());
                     continue;
                 }
                 let cell = if partitions > 1 {
-                    run_cell_partitioned::<W, PP>(
+                    run_cell_partitioned::<W, C, PP>(
                         layer,
                         threads,
                         partitions,
@@ -104,7 +125,7 @@ where
                         partitioned_policy(),
                     )
                 } else {
-                    run_cell::<W, P>(layer, threads, cfg, policy)
+                    run_cell::<W, C, P>(layer, threads, cfg, policy)
                 };
                 emit_cell(cfg, &cell, sidecar.as_mut());
             }
@@ -188,8 +209,8 @@ fn main() {
 
     let words = cfg.qubits.div_ceil(64);
     match words {
-        1 => run::<1>(&cfg),
-        2 => run::<2>(&cfg),
+        1 => run_dtype::<1>(&cfg),
+        2 => run_dtype::<2>(&cfg),
         w => {
             eprintln!(
                 "phase_breakdown: --qubits {} needs W={w} 64-bit words, but this probe only \

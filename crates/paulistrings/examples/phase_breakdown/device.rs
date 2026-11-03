@@ -4,11 +4,11 @@ use std::time::Instant;
 
 use paulistrings::gpu::GpuError;
 use paulistrings::{
-    BuiltinTruncation, Direction, PartitionConfig, PartitionRuntime, Placement, PropagateOptions,
-    ScatterRows,
+    BuiltinTruncation, Coefficient, Direction, PartitionConfig, PartitionRuntime, Placement,
+    PropagateOptions, ScatterRows,
 };
 
-use crate::cells::{partition_stats, warm_up_then_time, CellResult, DeviceCellStats};
+use crate::cells::{narrow, partition_stats, warm_up_then_time, CellResult, DeviceCellStats};
 use crate::cli::{check_device_partitions, Config, DeviceSpec, TruncSpec};
 use crate::rows::{choose_generator, choose_partition_rows};
 use crate::workloads::{build_base_sum, build_circuit, LayerKind};
@@ -24,7 +24,7 @@ pub(crate) fn builtin_truncation(spec: TruncSpec) -> BuiltinTruncation {
 }
 
 /// One device cell, `--gpu-partitions` partitions on each of `devices`: [`run_cell_partitioned`](crate::cells::run_cell_partitioned) with `GpuPartitionedSum`.
-pub(crate) fn run_cell_gpu<const W: usize>(
+pub(crate) fn run_cell_gpu<const W: usize, C: Coefficient>(
     layer: LayerKind,
     threads: usize,
     devices: &[u32],
@@ -58,6 +58,7 @@ pub(crate) fn run_cell_gpu<const W: usize>(
     let hash_seed = base.hash().seed();
 
     let started = Instant::now();
+    let base = narrow::<W, C>(base);
     let mut split = GpuPartitionedSum::scatter_to_devices_with(
         &base,
         GpuScatterOptions {
@@ -120,7 +121,7 @@ pub(crate) fn resolve_devices(spec: &DeviceSpec, cfg: &Config) -> Vec<u32> {
 
 /// One `--mpi --device` cell: [`run_cell_mpi`](crate::cells::run_cell_mpi) with this rank's partition on one CUDA device (`MpiGpuSum`).
 #[cfg(feature = "mpi")]
-pub(crate) fn run_cell_mpi_gpu<const W: usize>(
+pub(crate) fn run_cell_mpi_gpu<const W: usize, C: Coefficient>(
     layer: LayerKind,
     threads: usize,
     spec: &DeviceSpec,
@@ -162,6 +163,7 @@ pub(crate) fn run_cell_mpi_gpu<const W: usize>(
         rows: ScatterRows::Explicit(rows),
         ..GpuScatterOptions::new(&[device]).unwrap_or_else(|e| fail("placement", e))
     };
+    let base = narrow::<W, C>(base);
     let mut split = MpiGpuSum::scatter_to_device_with(&base, transport, options)
         .unwrap_or_else(|e| fail("scatter", e));
     drop(base);

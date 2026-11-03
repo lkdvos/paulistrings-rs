@@ -143,6 +143,7 @@ A device error mid-run leaves the sum holding the last completed layer's output.
 | `len(resident)` | `int` | terms on the device |
 | `.num_qubits` | `int` | the sum's qubit count |
 | `.device` | `int` | the CUDA device ordinal |
+| `.dtype` | `numpy.dtype` | the coefficient type, kept by `to_host` |
 | `.num_buckets` | `int` | the device partition's current bucket count, grow-only |
 
 ## `PropagationStats`

@@ -83,22 +83,18 @@ fn run_cells<const W: usize, C: Coefficient, P, PP>(
     // A device cell has no thread axis: one cell per layer, `--threads[0]` echoed into the row.
     #[cfg(feature = "cuda")]
     if let Some(spec) = &cfg.device {
-        if C::NAME != "c128" {
-            eprintln!("phase_breakdown: --device runs at --dtype c128 only");
-            std::process::exit(2);
-        }
         let policy = builtin_truncation(cfg.truncation);
         #[cfg(feature = "mpi")]
         if cfg.mpi {
             for &layer in &cfg.layers {
-                let cell = run_cell_mpi_gpu::<W>(layer, cfg.threads[0], spec, cfg, &policy);
+                let cell = run_cell_mpi_gpu::<W, C>(layer, cfg.threads[0], spec, cfg, &policy);
                 emit_cell(cfg, &cell, sidecar.as_mut());
             }
             return;
         }
         let devices = resolve_devices(spec, cfg);
         for &layer in &cfg.layers {
-            let cell = run_cell_gpu::<W>(layer, cfg.threads[0], &devices, cfg, &policy);
+            let cell = run_cell_gpu::<W, C>(layer, cfg.threads[0], &devices, cfg, &policy);
             emit_cell(cfg, &cell, sidecar.as_mut());
         }
         return;

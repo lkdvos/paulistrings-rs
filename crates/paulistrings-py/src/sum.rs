@@ -785,7 +785,6 @@ fn parse_device_mode(
     }
     #[cfg(feature = "cuda")]
     {
-        crate::gpu::check_device_dtype(&shown, sum.dtype())?;
         let devices = match comm {
             Some(_) => None,
             None => Some(crate::gpu::resolve_devices(&request, &shown, num_qubits)?),

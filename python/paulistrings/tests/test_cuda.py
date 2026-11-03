@@ -556,3 +556,42 @@ def test_device_list_errors():
         s.propagate(c, device=[0, 0], partition_row_blocks=[list(range(8))])
     with pytest.raises(ValueError, match="alternatives"):
         s.propagate(c, device=[0, 0], partition_row_seed=1, partition_row_blocks=[[0], [1]])
+
+
+# --------------------------------------------------------------------------
+# Coefficient dtypes
+
+DTYPES = [("float64", 1e-9), ("float32", 1e-4), ("complex128", 1e-9), ("complex64", 1e-4)]
+
+
+def _hermitian_observable(num_qubits):
+    """``_observable`` with its imaginary parts dropped: a Hermitian observable every dtype holds."""
+    s = _observable(num_qubits, terms=400)
+    return PauliSum.from_arrays(
+        s.x_array(), s.z_array(), s.coefficients_array().real, num_qubits=num_qubits
+    )
+
+
+@needs_cuda
+@pytest.mark.parametrize("dtype,tol", DTYPES)
+def test_device_runs_agree_with_the_host_in_every_dtype(dtype, tol):
+    s, c = _hermitian_observable(8), _circuit(8)
+    want = s.propagate(c, direction="heisenberg")
+    narrowed = s.astype(dtype)
+    got = narrowed.propagate(c, direction="heisenberg", device=0)
+    assert got.dtype == np.dtype(dtype)
+    _assert_terms_close(got.astype("complex128"), want, tol=tol)
+
+
+@needs_cuda
+@pytest.mark.parametrize("dtype,tol", DTYPES)
+def test_a_resident_sum_keeps_its_dtype(dtype, tol):
+    s, c = _hermitian_observable(8), _circuit(8)
+    want = s.propagate(c, direction="heisenberg")
+    resident = s.astype(dtype).to_device(0)
+    assert resident.dtype == np.dtype(dtype)
+    assert (dtype in repr(resident)) == (dtype != "complex128")
+    resident.propagate(c, direction="heisenberg")
+    got = resident.to_host()
+    assert got.dtype == np.dtype(dtype)
+    _assert_terms_close(got.astype("complex128"), want, tol=tol)

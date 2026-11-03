@@ -5,6 +5,7 @@ use super::exchange_block::{ExchangeBlock, PartnerPayload};
 use super::export::{export_layer, ExportScratch};
 use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
+use crate::coefficient::Coefficient;
 use crate::engine::bucketed::{
     apply_layer_bucketed, apply_layer_bucketed_with, ExtraRows, LayerKnobs, LayerScratch,
 };
@@ -28,8 +29,8 @@ static EXCHANGE_CHUNKS: Knob<usize> =
     });
 
 /// The rows this partition received, one block per remote delta, as an [`ExtraRows`] source for the coset loop.
-struct ReceivedRows<'a, const W: usize> {
-    blocks: Vec<Option<&'a ExchangeBlock<W>>>,
+struct ReceivedRows<'a, const W: usize, C: Coefficient = num_complex::Complex64> {
+    blocks: Vec<Option<&'a ExchangeBlock<W, C>>>,
     order: &'a CosetOrder,
     map: &'a ChunkMap,
     wait: &'a dyn ChunkWait,
@@ -41,11 +42,11 @@ struct ReceivedRows<'a, const W: usize> {
     chunk_wait_ns: std::sync::atomic::AtomicU64,
 }
 
-impl<'a, const W: usize> ReceivedRows<'a, W> {
+impl<'a, const W: usize, C: Coefficient> ReceivedRows<'a, W, C> {
     /// Pair each remote delta with its block by [`PartitionPlan::received_block_index`].
     fn new(
         plan: &PartitionPlan,
-        received: &'a [Option<PartnerPayload<W>>],
+        received: &'a [Option<PartnerPayload<W, C>>],
         order: &'a CosetOrder,
         map: &'a ChunkMap,
         wait: &'a dyn ChunkWait,
@@ -86,7 +87,7 @@ impl<'a, const W: usize> ReceivedRows<'a, W> {
     }
 }
 
-impl<const W: usize> ExtraRows<W> for ReceivedRows<'_, W> {
+impl<const W: usize, C: Coefficient> ExtraRows<W, C> for ReceivedRows<'_, W, C> {
     const NEEDS_BETA: bool = true;
 
     fn count(&self, beta: u32) -> usize {
@@ -98,7 +99,7 @@ impl<const W: usize> ExtraRows<W> for ReceivedRows<'_, W> {
         rows
     }
 
-    fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
+    fn append_into(&self, beta: u32, rest: &mut BucketColumns<W, C>) {
         timed!(let start = std::time::Instant::now());
         let position = self.order.position_of(beta);
         // A whole coset is inside one chunk, so this is one wait per task.
@@ -121,9 +122,9 @@ impl<const W: usize> ExtraRows<W> for ReceivedRows<'_, W> {
 
 /// One partition's reusable per-layer scratch.
 #[derive(Debug, Default)]
-pub(crate) struct PartitionState<const W: usize> {
-    pub layer: LayerScratch<W>,
-    pub export: ExportScratch<W>,
+pub(crate) struct PartitionState<const W: usize, C: Coefficient = num_complex::Complex64> {
+    pub layer: LayerScratch<W, C>,
+    pub export: ExportScratch<W, C>,
     pub chunks: ChunkMap,
 }
 
@@ -155,17 +156,17 @@ impl LayerExchangeCounts {
 }
 
 /// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`.
-pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, T, X>(
-    local: &mut PauliSum<W>,
-    prepared: &Prepared<W>,
+pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, C: Coefficient, T, X>(
+    local: &mut PauliSum<W, C>,
+    prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     #[cfg_attr(not(debug_assertions), allow(unused_variables))] rows: &PartitionRows<W>,
     policy: &T,
-    state: &mut PartitionState<W>,
+    state: &mut PartitionState<W, C>,
     transport: &X,
 ) -> LayerExchangeCounts
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
     X: Transport,
 {
     let size = transport.size();
@@ -197,7 +198,7 @@ where
         }
     }
     let retained;
-    let local_prepared: &Prepared<W> = match prepared {
+    let local_prepared: &Prepared<W, C> = match prepared {
         Prepared::Local(ptm) => {
             retained = Prepared::Local(ptm.retain_entries(&plan.local_entries));
             &retained

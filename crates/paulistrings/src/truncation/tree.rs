@@ -4,9 +4,9 @@ use super::builtin::{
     or_operand_error, And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
 };
 use super::TruncationPolicy;
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::PauliSum;
-use num_complex::Complex64;
 use std::sync::Arc;
 
 /// Any builtin policy or combinator as one runtime value, the form the device drivers take.
@@ -102,30 +102,30 @@ impl BuiltinTruncation {
     }
 }
 
-impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
-    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
+impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncation {
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
         match self {
             Self::Keep => true,
             Self::Coefficient(eps) => CoefficientThreshold(*eps).keep_term(x, z, c),
             Self::Weight(k) => WeightCutoff(*k).keep_term(x, z, c),
-            Self::TopN(n) => <TopN as TruncationPolicy<W>>::keep_term(&TopN(*n), x, z, c),
+            Self::TopN(n) => <TopN as TruncationPolicy<W, C>>::keep_term(&TopN(*n), x, z, c),
             Self::ApproxTopN(n) => {
-                <ApproxTopN as TruncationPolicy<W>>::keep_term(&ApproxTopN(*n), x, z, c)
+                <ApproxTopN as TruncationPolicy<W, C>>::keep_term(&ApproxTopN(*n), x, z, c)
             }
             Self::CollapseSample(s) => {
-                <CollapseSample as TruncationPolicy<W>>::keep_term(s, x, z, c)
+                <CollapseSample as TruncationPolicy<W, C>>::keep_term(s, x, z, c)
             }
             Self::And(a, b) => a.keep_term(x, z, c) && b.keep_term(x, z, c),
             Self::Or(a, b) => a.keep_term(x, z, c) || b.keep_term(x, z, c),
         }
     }
 
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         match self {
             Self::TopN(n) => TopN(*n).finalize_layer(sum),
             Self::ApproxTopN(n) => ApproxTopN(*n).finalize_layer(sum),
             Self::CollapseSample(s) => {
-                <CollapseSample as TruncationPolicy<W>>::finalize_layer(s, sum)
+                <CollapseSample as TruncationPolicy<W, C>>::finalize_layer(s, sum)
             }
             Self::And(a, b) => {
                 a.finalize_layer(sum);
@@ -140,28 +140,34 @@ impl<const W: usize> TruncationPolicy<W> for BuiltinTruncation {
     }
 
     /// Arm for arm [`finalize_layer`](TruncationPolicy::finalize_layer), each leaf by its own collective form.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
         match self {
-            Self::TopN(n) => <TopN as TruncationPolicy<W>>::finalize_layer_partitioned(
+            Self::TopN(n) => <TopN as TruncationPolicy<W, C>>::finalize_layer_partitioned(
                 &TopN(*n),
                 local,
                 collectives,
             ),
-            Self::ApproxTopN(n) => <ApproxTopN as TruncationPolicy<W>>::finalize_layer_partitioned(
-                &ApproxTopN(*n),
-                local,
-                collectives,
-            ),
+            Self::ApproxTopN(n) => {
+                <ApproxTopN as TruncationPolicy<W, C>>::finalize_layer_partitioned(
+                    &ApproxTopN(*n),
+                    local,
+                    collectives,
+                )
+            }
             Self::CollapseSample(s) => {
-                <CollapseSample as TruncationPolicy<W>>::finalize_layer_partitioned(
+                <CollapseSample as TruncationPolicy<W, C>>::finalize_layer_partitioned(
                     s,
                     local,
                     collectives,
                 )
             }
             Self::And(a, b) => {
-                <Self as TruncationPolicy<W>>::finalize_layer_partitioned(a, local, collectives);
-                <Self as TruncationPolicy<W>>::finalize_layer_partitioned(b, local, collectives);
+                <Self as TruncationPolicy<W, C>>::finalize_layer_partitioned(a, local, collectives);
+                <Self as TruncationPolicy<W, C>>::finalize_layer_partitioned(b, local, collectives);
             }
             Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => {}
         }

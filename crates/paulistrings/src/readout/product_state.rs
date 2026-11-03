@@ -1,6 +1,6 @@
 //! Product-state read-outs: [`ProductBasis`] and the [`PauliSum`] expectation value in one.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
 use crate::pauli_sum::PauliSum;
 
@@ -79,9 +79,9 @@ impl<const W: usize> ProductBasis<W> {
     }
 }
 
-impl<const W: usize> PauliSum<W> {
+impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     /// Expectation value `⟨ψ|O|ψ⟩` in the product state `basis`; complex since `O` need not be Hermitian.
-    pub fn expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
+    pub fn expectation_product(&self, basis: &ProductBasis<W>) -> C {
         self.sum_over_terms(|x, z, coeff| {
             // An equality on both key halves, not a subset test: an X factor on a Y-axis qubit must not match.
             let mut mismatch = 0u64;
@@ -93,7 +93,7 @@ impl<const W: usize> PauliSum<W> {
                 sign_bits += (support & basis.negative[w]).count_ones();
             }
             match (mismatch == 0, sign_bits & 1 == 0) {
-                (false, _) => Complex64::new(0.0, 0.0),
+                (false, _) => C::ZERO,
                 (true, true) => coeff,
                 (true, false) => -coeff,
             }

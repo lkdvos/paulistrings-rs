@@ -6,7 +6,7 @@
 
 use std::sync::Mutex;
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 use rayon::prelude::*;
 
 use super::coset::{CosetOrder, Gf2Span};
@@ -27,19 +27,17 @@ mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 
-const ZERO: Complex64 = Complex64::new(0.0, 0.0);
-
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
 /// A task's output cannot depend on which worker slot it drew: every write destination is cleared before use.
 #[derive(Debug, Default)]
-pub struct LayerScratch<const W: usize> {
+pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64> {
     /// The serial path's coset working set.
-    pub(super) task: CosetScratch<W>,
+    pub(super) task: CosetScratch<W, C>,
     /// The partitioned layer's coset order, kept here for its allocations; the coset loop itself enumerates cosets from the span.
     pub(super) order: CosetOrder,
     /// One coset working set per Rayon worker, indexed by `rayon::current_thread_index()`, so each mutex is uncontended.
-    pub(super) workers: Vec<Mutex<CosetScratch<W>>>,
+    pub(super) workers: Vec<Mutex<CosetScratch<W, C>>>,
     /// Layer-level wall-clock counters; per-coset busy time lives in each `CosetScratch`.
     #[cfg(feature = "phase-timing")]
     pub(crate) stats: PhaseStats,
@@ -47,7 +45,7 @@ pub struct LayerScratch<const W: usize> {
     pub(crate) trace: Option<PartitionTrace>,
 }
 
-impl<const W: usize> LayerScratch<W> {
+impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
     /// An empty scratch.
     pub fn new() -> Self {
         Self::default()
@@ -89,10 +87,10 @@ impl<const W: usize> LayerScratch<W> {
 }
 
 /// A prepared channel's delta set annotated with each entry's coset coordinate, computed once per layer.
-pub(super) enum DeltaPlan<'p, const W: usize> {
+pub(super) enum DeltaPlan<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
     /// Tabulated deltas; `coordinates[e]` pairs with `ptm.deltas()[e]`.
     Local {
-        ptm: &'p LocalPtm<W>,
+        ptm: &'p LocalPtm<W, C>,
         coordinates: Vec<u32>,
         /// Whether `deltas()[0]` is the identity delta, whose stream goes to the run's pre-sorted `id` columns.
         has_identity: bool,
@@ -103,7 +101,7 @@ pub(super) enum DeltaPlan<'p, const W: usize> {
     },
     /// Wide rotation: two implicit entries, the identity pass and the generator pass.
     Rotation {
-        rotation: &'p PreparedRotation<W>,
+        rotation: &'p PreparedRotation<W, C::Real>,
         coordinate_identity: u32,
         generator_coordinate: u32,
         /// Whether the generator pass emits here ([`LayerKnobs::generator_local`]); `generator_coordinate` is 0 when not.
@@ -138,8 +136,8 @@ impl Default for LayerKnobs<'_> {
     }
 }
 
-impl<'p, const W: usize> DeltaPlan<'p, W> {
-    pub(super) fn new(prepared: &'p Prepared<W>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
+impl<'p, const W: usize, C: Coefficient> DeltaPlan<'p, W, C> {
+    pub(super) fn new(prepared: &'p Prepared<W, C>, span: &Gf2Span, knobs: LayerKnobs<'_>) -> Self {
         match prepared {
             Prepared::Local(ptm) => {
                 let coordinates: Vec<u32> =
@@ -170,7 +168,7 @@ impl<'p, const W: usize> DeltaPlan<'p, W> {
 
 /// Rows received from other partitions, appended to an output bucket's rest stream before the sort so `keep_term` sees the complete sum; never the identity stream, which the merge requires strictly ascending.
 /// An implementation that can return rows must set `NEEDS_BETA = true`; under `false` every call site compiles away.
-pub(crate) trait ExtraRows<const W: usize> {
+pub(crate) trait ExtraRows<const W: usize, C: Coefficient = num_complex::Complex64> {
     /// Whether the engine recovers original bucket indices and calls this source at all.
     const NEEDS_BETA: bool = false;
 
@@ -181,7 +179,7 @@ pub(crate) trait ExtraRows<const W: usize> {
     }
 
     /// Append original bucket `beta`'s rows onto the run's rest columns.
-    fn append_into(&self, beta: u32, rest: &mut BucketColumns<W>) {
+    fn append_into(&self, beta: u32, rest: &mut BucketColumns<W, C>) {
         let _ = (beta, rest);
     }
 }
@@ -189,31 +187,31 @@ pub(crate) trait ExtraRows<const W: usize> {
 /// The unpartitioned engine's [`ExtraRows`]: no rows.
 pub(crate) struct NoExtra;
 
-impl<const W: usize> ExtraRows<W> for NoExtra {}
+impl<const W: usize, C: Coefficient> ExtraRows<W, C> for NoExtra {}
 
 /// Apply one prepared channel to a bucketed sum, folding `keep_term` into the merge; the caller runs `finalize_layer`.
-pub fn apply_layer_bucketed<const W: usize, T>(
-    sum: &mut PauliSum<W>,
-    prepared: &Prepared<W>,
+pub fn apply_layer_bucketed<const W: usize, C: Coefficient, T>(
+    sum: &mut PauliSum<W, C>,
+    prepared: &Prepared<W, C>,
     policy: &T,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
 ) where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     apply_layer_bucketed_with(sum, prepared, policy, scratch, &NoExtra, LayerKnobs::default())
 }
 
 /// [`apply_layer_bucketed`] with the partitioned engine's [`ExtraRows`] source and [`LayerKnobs`].
-pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
-    sum: &mut PauliSum<W>,
-    prepared: &Prepared<W>,
+pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
+    sum: &mut PauliSum<W, C>,
+    prepared: &Prepared<W, C>,
     policy: &T,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
     extra: &X,
     knobs: LayerKnobs<'_>,
 ) where
-    T: TruncationPolicy<W> + ?Sized,
-    X: ExtraRows<W> + Sync,
+    T: TruncationPolicy<W, C> + ?Sized,
+    X: ExtraRows<W, C> + Sync,
 {
     stamp!(stamp);
 
@@ -253,7 +251,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
             let plan = DeltaPlan::new(prepared, &span, knobs);
             lap!(stamp, scratch.stats.span_plan_ns);
             coset_loop(sum, &span, scratch, |members, betas, worker_scratch| {
-                fill_coset::<W, T, X>(members, &plan, policy, worker_scratch, extra, betas)
+                fill_coset::<W, C, T, X>(members, &plan, policy, worker_scratch, extra, betas)
             })
         }
     };
@@ -266,14 +264,14 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
 }
 
 /// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns; returns the output terms.
-fn coset_loop<const W: usize, F>(
-    sum: &mut PauliSum<W>,
+fn coset_loop<const W: usize, C: Coefficient, F>(
+    sum: &mut PauliSum<W, C>,
     span: &Gf2Span,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
     fill: F,
 ) -> usize
 where
-    F: Fn(&mut [BucketColumns<W>], &[u32], &mut CosetScratch<W>) + Sync,
+    F: Fn(&mut [BucketColumns<W, C>], &[u32], &mut CosetScratch<W, C>) + Sync,
 {
     let num_cosets = span.num_cosets();
     // Each coset reads and writes only its own buckets (engine/coset.rs).
@@ -303,15 +301,15 @@ where
 }
 
 /// Swap coset `coset`'s buckets into the task's member slots, fill them, and swap the outputs back; returns the coset's output terms.
-fn run_coset<const W: usize, F>(
+fn run_coset<const W: usize, C: Coefficient, F>(
     coset: u32,
     span: &Gf2Span,
-    buckets: &DisjointSlots<'_, BucketColumns<W>>,
-    scratch: &mut CosetScratch<W>,
+    buckets: &DisjointSlots<'_, BucketColumns<W, C>>,
+    scratch: &mut CosetScratch<W, C>,
     fill: &F,
 ) -> usize
 where
-    F: Fn(&mut [BucketColumns<W>], &[u32], &mut CosetScratch<W>),
+    F: Fn(&mut [BucketColumns<W, C>], &[u32], &mut CosetScratch<W, C>),
 {
     let representative = span.representative_at(coset);
     let mut members = std::mem::take(&mut scratch.members);
@@ -364,15 +362,18 @@ impl<'a, T> DisjointSlots<'a, T> {
 }
 
 /// In-place coefficient rescale for a key-preserving channel, with the general path's zero drop and `keep_term`.
-fn rescale_in_place<const W: usize, T>(sum: &mut PauliSum<W>, ptm: &LocalPtm<W>, policy: &T)
-where
-    T: TruncationPolicy<W> + ?Sized,
+fn rescale_in_place<const W: usize, C: Coefficient, T>(
+    sum: &mut PauliSum<W, C>,
+    ptm: &LocalPtm<W, C>,
+    policy: &T,
+) where
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let amplitude = &ptm.deltas()[0].amplitude;
     sum.update_per_bucket(|_| {
-        |x: &[u64; W], z: &[u64; W], c: Complex64| {
+        |x: &[u64; W], z: &[u64; W], c: C| {
             let coeff = c * amplitude[ptm.support_bits(x, z)];
-            (coeff != ZERO && policy.keep_term(x, z, coeff)).then_some(coeff)
+            (coeff != C::ZERO && policy.keep_term(x, z, coeff)).then_some(coeff)
         }
     });
 

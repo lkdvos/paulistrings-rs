@@ -19,6 +19,7 @@ pub(crate) mod trace;
 pub(crate) mod transport;
 
 use crate::circuit::Circuit;
+use crate::coefficient::Coefficient;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
@@ -117,16 +118,16 @@ impl Default for PropagateOptions {
 ///
 /// Through the [`log`] facade under the target `paulistrings::propagate`: `INFO` on entry and exit, `DEBUG` once per layer, named by [`Channel::debug_name`](crate::Channel::debug_name).
 /// Every driver writes the same lines, ending in the partitions they speak for (`1 partition` here).
-pub fn propagate<const W: usize, T>(
+pub fn propagate<const W: usize, C: Coefficient, T>(
     circuit: &Circuit<W>,
-    sum: PauliSum<W>,
+    sum: PauliSum<W, C>,
     policy: &T,
     direction: Direction,
-) -> PauliSum<W>
+) -> PauliSum<W, C>
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
-    let mut scratch = LayerScratch::<W>::new();
+    let mut scratch = LayerScratch::<W, C>::new();
     propagate_with(circuit, sum, policy, direction, &mut scratch, PropagateOptions::default())
 }
 
@@ -138,16 +139,16 @@ where
 /// # Panics
 ///
 /// As [`propagate`], and if `options` fail [`PropagateOptions::validate`].
-pub fn propagate_with<const W: usize, T>(
+pub fn propagate_with<const W: usize, C: Coefficient, T>(
     circuit: &Circuit<W>,
-    sum: PauliSum<W>,
+    sum: PauliSum<W, C>,
     policy: &T,
     direction: Direction,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
     options: PropagateOptions,
-) -> PauliSum<W>
+) -> PauliSum<W, C>
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     options.assert_valid();
     let num_channels = circuit.channels.len();

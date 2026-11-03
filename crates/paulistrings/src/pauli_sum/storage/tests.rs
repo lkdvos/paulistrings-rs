@@ -3,6 +3,7 @@ use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::{Gf2Hash, PartitionRows};
 use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
+use num_complex::Complex64;
 
 /// Low-weight keys, where a badly chosen hash would collapse into one bucket.
 fn rand_low_weight_sum<const W: usize>(

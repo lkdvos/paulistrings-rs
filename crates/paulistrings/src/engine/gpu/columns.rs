@@ -7,7 +7,7 @@ use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr};
 use super::error::GpuError;
 
 /// Term columns and bucket CSR on one device, grow-only.
-// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `Complex64`'s `repr(C)` bytes) and `fingerprint[i]`.
+// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `C`'s `repr(C)` bytes) and `fingerprint[i]`.
 // Bucket `β` owns terms `start[β]..start[β] + lengths[β]`; buckets need not be contiguous or in index order.
 pub(crate) struct DeviceColumns<const W: usize> {
     pub(crate) x: CudaSlice<u64>,

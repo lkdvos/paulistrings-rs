@@ -80,7 +80,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     ///
     /// If the group size is not a power of two.
     pub fn scatter_to_device(
-        sum: &PauliSum<W>,
+        sum: &PauliSum<W, C>,
         transport: X,
         device: u32,
     ) -> Result<Self, GpuError> {
@@ -101,7 +101,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     ///
     /// If the group size is not a power of two, if the rows do not name one partition per rank or are for a different qubit count than `sum`, as [`PartitionRows::cut`], or if `options.layer` fails [`GpuLayerOptions::validate`].
     pub fn scatter_to_device_with(
-        sum: &PauliSum<W>,
+        sum: &PauliSum<W, C>,
         transport: X,
         options: GpuScatterOptions<W>,
     ) -> Result<Self, GpuError> {
@@ -111,7 +111,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     }
 
     fn scatter_then(
-        sum: &PauliSum<W>,
+        sum: &PauliSum<W, C>,
         transport: X,
         (runtime, layer): (Result<Arc<PartitionRuntime>, GpuError>, GpuLayerOptions),
         rows: PartitionRows<W>,
@@ -200,7 +200,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     /// # Errors
     ///
     /// [`GpuError::Poisoned`] after a failed `propagate`, otherwise any rank's download error, agreed over the group.
-    pub fn gather(&self) -> Result<Option<PauliSum<W>>, GpuError> {
+    pub fn gather(&self) -> Result<Option<PauliSum<W, C>>, GpuError> {
         self.backend().check_poison()?;
         timed!(let started = Instant::now());
         let share = agree(self.transport(), self.local_to_host())?;
@@ -210,7 +210,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
     }
 
     /// This rank's share, downloaded: a valid [`PauliSum`] under the group's shared hash holding exactly the keys of partition [`rank`](Self::rank). Local.
-    pub fn local_to_host(&self) -> Result<PauliSum<W>, GpuError> {
+    pub fn local_to_host(&self) -> Result<PauliSum<W, C>, GpuError> {
         self.backend().sum().to_host()
     }
 
@@ -326,13 +326,13 @@ fn bootstrap<C>(
 #[cfg(feature = "mpi")]
 pub fn propagate_mpi_gpu<const W: usize>(
     circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
+    sum: &PauliSum<W, C>,
     policy: impl Into<BuiltinTruncation>,
     direction: Direction,
     options: PropagateOptions,
     comm: &impl Communicator,
     device: Option<u32>,
-) -> Result<Option<PauliSum<W>>, GpuError> {
+) -> Result<Option<PauliSum<W, C>>, GpuError> {
     let transport = MpiTransport::from_communicator(comm);
     let picked = match device {
         Some(ordinal) => Ok(ordinal),

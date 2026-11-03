@@ -2,6 +2,8 @@
 
 use num_complex::Complex64;
 
+use crate::coefficient::{Coefficient, REAL_TOLERANCE};
+
 use super::{Channel, OutputBuffer};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -13,8 +15,6 @@ pub(crate) const MAX_LOCAL_SUPPORT: usize = 2;
 /// `4^MAX_LOCAL_SUPPORT`, the number of local Pauli basis elements.
 pub(crate) const LOCAL_DIM: usize = 16;
 
-const ZERO: Complex64 = Complex64::new(0.0, 0.0);
-
 /// The argument that keeps [`Channel::prepare_for_layer`] out of reach: it is `pub` only to appear in that signature, and only this module can build one.
 pub struct PrepareToken(());
 
@@ -24,7 +24,7 @@ pub(crate) trait Prepare<const W: usize> {
     fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>>;
 }
 
-impl<const W: usize, C: Channel<W> + ?Sized> Prepare<W> for C {
+impl<const W: usize, Ch: Channel<W> + ?Sized> Prepare<W> for Ch {
     fn prepare(&self, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Prepared<W>> {
         self.prepare_for_layer(hash, adjoint, PrepareToken(()))
     }
@@ -32,7 +32,7 @@ impl<const W: usize, C: Channel<W> + ?Sized> Prepare<W> for C {
 
 /// One key delta, with the amplitude it carries for each input support pattern.
 #[derive(Clone, Debug)]
-pub(crate) struct DeltaEntry<const W: usize> {
+pub(crate) struct DeltaEntry<const W: usize, C = Complex64> {
     /// `δ = H·d`; entries may share one.
     pub(crate) bucket_delta: u32,
     /// `d` in local support coordinates: bit `2j` is the x-bit of support qubit `j`, bit `2j+1` its z-bit.
@@ -42,20 +42,20 @@ pub(crate) struct DeltaEntry<const W: usize> {
     /// Z-part of `d` as a full-width XOR mask.
     pub(crate) mask_z: [u64; W],
     /// `amplitude[s]` takes support pattern `s` to `s ^ local_delta`; exactly zero means no output.
-    pub(crate) amplitude: [Complex64; LOCAL_DIM],
+    pub(crate) amplitude: [C; LOCAL_DIM],
 }
 
-impl<const W: usize> DeltaEntry<W> {
+impl<const W: usize, C: Coefficient> DeltaEntry<W, C> {
     /// The output row for support pattern `s`, computed operation for operation as the gather does; `None` for a zero amplitude.
     pub(crate) fn emit(
         &self,
         s: usize,
         x: &[u64; W],
         z: &[u64; W],
-        c: Complex64,
-    ) -> Option<([u64; W], [u64; W], Complex64)> {
+        c: C,
+    ) -> Option<([u64; W], [u64; W], C)> {
         let a = self.amplitude[s];
-        if a == ZERO {
+        if a == C::ZERO {
             return None;
         }
         let mut key_x = *x;
@@ -76,16 +76,16 @@ impl<const W: usize> DeltaEntry<W> {
 /// A channel with support on at most [`MAX_LOCAL_SUPPORT`] qubits, as its local Pauli-transfer matrix grouped by key delta.
 /// `pub` in this private module only because [`Prepared`] carries it.
 #[derive(Clone, Debug)]
-pub struct LocalPtm<const W: usize> {
+pub struct LocalPtm<const W: usize, C = Complex64> {
     /// Support qubits, ascending; only the first `k` are meaningful.
     qubits: [u32; MAX_LOCAL_SUPPORT],
     /// Number of support qubits.
     k: u8,
     /// Ascending by `local_delta`, so the identity entry is first when present.
-    deltas: Vec<DeltaEntry<W>>,
+    deltas: Vec<DeltaEntry<W, C>>,
 }
 
-impl<const W: usize> LocalPtm<W> {
+impl<const W: usize, C: Coefficient> LocalPtm<W, C> {
     /// Number of support qubits.
     pub(crate) fn k(&self) -> usize {
         self.k as usize
@@ -98,20 +98,20 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// The delta entries, ascending by `local_delta`.
-    pub(crate) fn deltas(&self) -> &[DeltaEntry<W>] {
+    pub(crate) fn deltas(&self) -> &[DeltaEntry<W, C>] {
         &self.deltas
     }
 
     /// Whether entry `index` has a nonzero amplitude on every support pattern; `amplitude` is sized `LOCAL_DIM` but only `4^k` entries are populated.
     pub(crate) fn entry_is_dense(&self, index: usize) -> bool {
         let dim = 1usize << (2 * self.k());
-        self.deltas[index].amplitude[..dim].iter().all(|a| *a != ZERO)
+        self.deltas[index].amplitude[..dim].iter().all(|a| *a != C::ZERO)
     }
 
     /// Entries with a nonzero amplitude on some support pattern: the rows-per-term fanout a device block is sized by.
     #[cfg(any(feature = "cuda", test))]
     pub(crate) fn emitting_entries(&self) -> usize {
-        self.deltas.iter().filter(|d| d.amplitude.iter().any(|a| *a != ZERO)).count()
+        self.deltas.iter().filter(|d| d.amplitude.iter().any(|a| *a != C::ZERO)).count()
     }
 
     /// Whether the first entry is the identity delta.
@@ -157,7 +157,7 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// A copy keeping the entries flagged in `keep`, one flag per entry.
-    pub(crate) fn retain_entries(&self, keep: &[bool]) -> LocalPtm<W> {
+    pub(crate) fn retain_entries(&self, keep: &[bool]) -> LocalPtm<W, C> {
         debug_assert_eq!(keep.len(), self.deltas.len(), "retain_entries: one flag per delta entry",);
         LocalPtm {
             qubits: self.qubits,
@@ -172,6 +172,30 @@ impl<const W: usize> LocalPtm<W> {
         }
     }
 
+    /// This table with every amplitude converted to `T`; `None` when a real `T` meets an imaginary amplitude.
+    fn convert<T: Coefficient>(&self) -> Option<LocalPtm<W, T>> {
+        let deltas = self
+            .deltas
+            .iter()
+            .map(|d| {
+                let mut amplitude = [T::ZERO; LOCAL_DIM];
+                for (slot, &a) in amplitude.iter_mut().zip(&d.amplitude) {
+                    *slot = T::from_complex64(a.to_complex64(), REAL_TOLERANCE)?;
+                }
+                Some(DeltaEntry {
+                    bucket_delta: d.bucket_delta,
+                    local_delta: d.local_delta,
+                    mask_x: d.mask_x,
+                    mask_z: d.mask_z,
+                    amplitude,
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(LocalPtm { qubits: self.qubits, k: self.k, deltas })
+    }
+}
+
+impl<const W: usize> LocalPtm<W> {
     /// The support qubits of `mask` with no entries yet; `None` above [`MAX_LOCAL_SUPPORT`].
     fn on_support(mask: &[u64; W]) -> Option<Self> {
         let k: usize = mask.iter().map(|w| w.count_ones() as usize).sum();
@@ -197,13 +221,13 @@ impl<const W: usize> LocalPtm<W> {
         let mut has_delta = [false; LOCAL_DIM];
         for (s, row) in table.iter().enumerate().take(dim) {
             for (t, &amplitude) in row.iter().enumerate().take(dim) {
-                if amplitude != ZERO {
+                if amplitude != Complex64::ZERO {
                     has_delta[s ^ t] = true;
                 }
             }
         }
         for d in (0..dim).filter(|&d| has_delta[d]) {
-            let mut amplitude = [ZERO; LOCAL_DIM];
+            let mut amplitude = [Complex64::ZERO; LOCAL_DIM];
             for (s, slot) in amplitude.iter_mut().enumerate().take(dim) {
                 *slot = table[s][s ^ d];
             }
@@ -240,27 +264,27 @@ impl<const W: usize> LocalPtm<W> {
 /// A rotation with support wider than [`MAX_LOCAL_SUPPORT`], whose amplitudes are computed per term.
 /// `pub` in this private module only because [`Prepared`] carries it.
 #[derive(Clone, Debug)]
-pub struct PreparedRotation<const W: usize> {
+pub struct PreparedRotation<const W: usize, R = f64> {
     /// The generator `P`.
     pub(crate) generator: PauliString<W>,
     /// `cos(θ)`.
-    pub(crate) cos: f64,
+    pub(crate) cos: R,
     /// `sin(θ)`.
-    pub(crate) sin: f64,
+    pub(crate) sin: R,
     /// Bucket delta of the identity output, `H·0 = 0`.
     pub(crate) bucket_delta_identity: u32,
     /// Bucket delta of the `v ⊕ P` output, `H·P`.
     pub(crate) bucket_delta_generator: u32,
 }
 
-impl<const W: usize> PreparedRotation<W> {
+impl<const W: usize, R: Copy> PreparedRotation<W, R> {
     /// The generator-pass row, computed operation for operation as the gather does; `None` if the term commutes with the generator.
-    pub(crate) fn emit_generator(
+    pub(crate) fn emit_generator<C: Coefficient<Real = R>>(
         &self,
         x: &[u64; W],
         z: &[u64; W],
-        c: Complex64,
-    ) -> Option<([u64; W], [u64; W], Complex64)> {
+        c: C,
+    ) -> Option<([u64; W], [u64; W], C)> {
         let v = PauliString::<W> { x: *x, z: *z };
         if v.commutes_with(&self.generator) {
             return None;
@@ -268,7 +292,7 @@ impl<const W: usize> PreparedRotation<W> {
         let mut product = v;
         let phase = product.mul_assign(&self.generator);
         let total = Phase::I + phase;
-        Some((product.x, product.z, total.apply(c) * self.sin))
+        Some((product.x, product.z, c.mul_phase(total) * self.sin))
     }
 
     /// The generator as an XOR mask pair, the one non-identity key delta.
@@ -280,14 +304,14 @@ impl<const W: usize> PreparedRotation<W> {
 /// A channel prepared for one layer of the bucketed engine.
 /// `pub` in this private module only because the hidden [`Channel::prepare_for_layer`] returns it.
 #[derive(Clone, Debug)]
-pub enum Prepared<const W: usize> {
+pub enum Prepared<const W: usize, C: Coefficient = Complex64> {
     /// Support on at most `MAX_LOCAL_SUPPORT` qubits, tabulated.
-    Local(LocalPtm<W>),
+    Local(LocalPtm<W, C>),
     /// A `PauliRotation` with wider support.
-    Rotation(PreparedRotation<W>),
+    Rotation(PreparedRotation<W, C::Real>),
 }
 
-impl<const W: usize> Prepared<W> {
+impl<const W: usize, C: Coefficient> Prepared<W, C> {
     /// The distinct bucket deltas `h(D)`.
     pub(crate) fn bucket_deltas(&self) -> Vec<u32> {
         match self {
@@ -310,11 +334,35 @@ impl<const W: usize> Prepared<W> {
             Prepared::Rotation(rotation) => vec![rotation.generator_mask()],
         }
     }
+}
+
+/// A layer's channel whose transfer table has an imaginary amplitude, which a real coefficient type cannot carry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ImaginaryAmplitude;
+
+impl<const W: usize> Prepared<W> {
+    /// This form with amplitudes in the coefficient type `T`.
+    ///
+    /// # Errors
+    ///
+    /// [`ImaginaryAmplitude`] when `T` is real and an amplitude's imaginary part exceeds [`REAL_TOLERANCE`]; a rotation is always real, since its `i` meets an odd product phase.
+    pub(crate) fn convert<T: Coefficient>(&self) -> Result<Prepared<W, T>, ImaginaryAmplitude> {
+        Ok(match self {
+            Prepared::Local(ptm) => Prepared::Local(ptm.convert().ok_or(ImaginaryAmplitude)?),
+            Prepared::Rotation(r) => Prepared::Rotation(PreparedRotation {
+                generator: r.generator,
+                cos: T::real(r.cos),
+                sin: T::real(r.sin),
+                bucket_delta_identity: r.bucket_delta_identity,
+                bucket_delta_generator: r.bucket_delta_generator,
+            }),
+        })
+    }
 
     /// [`Prepared::Local`] probed from [`Channel::apply`]; `None` when the support exceeds [`MAX_LOCAL_SUPPORT`] or an output leaves it.
-    pub(crate) fn derive_local<C>(channel: &C, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Self>
+    pub(crate) fn derive_local<Ch>(channel: &Ch, hash: &Gf2Hash<W>, adjoint: bool) -> Option<Self>
     where
-        C: Channel<W> + ?Sized,
+        Ch: Channel<W> + ?Sized,
     {
         let mut ptm = LocalPtm::on_support(&channel.support())?;
         let table = probe_table(channel, &ptm, adjoint, false)?;
@@ -347,18 +395,18 @@ impl<const W: usize> Prepared<W> {
 }
 
 /// The local PTM `table[s][t]` probed from `channel`, or `None` if an output leaves the support; `background` sets every non-support input bit.
-fn probe_table<const W: usize, C>(
-    channel: &C,
+fn probe_table<const W: usize, Ch>(
+    channel: &Ch,
     ptm: &LocalPtm<W>,
     adjoint: bool,
     background: bool,
 ) -> Option<[[Complex64; LOCAL_DIM]; LOCAL_DIM]>
 where
-    C: Channel<W> + ?Sized,
+    Ch: Channel<W> + ?Sized,
 {
     let k = ptm.k as usize;
     let dim = 1usize << (2 * k);
-    let mut table = [[ZERO; LOCAL_DIM]; LOCAL_DIM];
+    let mut table = [[Complex64::ZERO; LOCAL_DIM]; LOCAL_DIM];
 
     let (support_x, support_z) = {
         let mut mx = [0u64; W];

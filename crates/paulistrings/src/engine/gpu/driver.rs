@@ -128,7 +128,7 @@ pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuEr
 
 /// Rank `rank` of a `size`-partition group: its share of `sum` under `rows` uploaded to `device`, under `layer`. **Collective** above one partition, through [`scatter_local`].
 pub(super) fn upload_share<const W: usize>(
-    sum: &PauliSum<W>,
+    sum: &PauliSum<W, C>,
     rows: &PartitionRows<W>,
     (rank, size): (u32, u32),
     device: u32,
@@ -152,13 +152,13 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     /// # Errors
     ///
     /// [`GpuError::Topology`] if the one-device placement does not resolve, and any device error of the upload.
-    pub fn from_host(sum: &PauliSum<W>, ordinal: u32) -> Result<Self, GpuError> {
+    pub fn from_host(sum: &PauliSum<W, C>, ordinal: u32) -> Result<Self, GpuError> {
         Self::one_device(sum, ordinal, &[])
     }
 
     /// [`Self::from_host`] with extra NVRTC options, `test_support`'s collision hook.
     pub(crate) fn one_device(
-        sum: &PauliSum<W>,
+        sum: &PauliSum<W, C>,
         ordinal: u32,
         extra_options: &[String],
     ) -> Result<Self, GpuError> {
@@ -172,7 +172,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     /// # Errors
     ///
     /// [`GpuError::Topology`] if the placement does not resolve, and any device error of the uploads.
-    pub fn scatter_to_devices(sum: &PauliSum<W>, devices: &[u32]) -> Result<Self, GpuError> {
+    pub fn scatter_to_devices(sum: &PauliSum<W, C>, devices: &[u32]) -> Result<Self, GpuError> {
         Self::scatter_to_devices_with(sum, GpuScatterOptions::new(devices)?)
     }
 
@@ -186,7 +186,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     ///
     /// If the rows do not name the runtime's partition count or the sum's qubit count, or if `options.layer` fails [`GpuLayerOptions::validate`].
     pub fn scatter_to_devices_with(
-        sum: &PauliSum<W>,
+        sum: &PauliSum<W, C>,
         options: GpuScatterOptions<W>,
     ) -> Result<Self, GpuError> {
         let GpuScatterOptions { devices, rows, layer } = options;
@@ -196,7 +196,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     }
 
     fn upload(
-        sum: &PauliSum<W>,
+        sum: &PauliSum<W, C>,
         rows: PartitionRows<W>,
         runtime: Arc<PartitionRuntime>,
         options: (GpuLayerOptions, &[String]),
@@ -296,7 +296,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     /// # Errors
     ///
     /// [`GpuError::Poisoned`] after a failed call, otherwise any download error.
-    pub fn gather(&self) -> Result<PauliSum<W>, GpuError> {
+    pub fn gather(&self) -> Result<PauliSum<W, C>, GpuError> {
         let partitions = self.backends();
         partitions[0].check_poison()?;
         timed!(let started = Instant::now());
@@ -352,11 +352,11 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 /// One-shot convenience over a one-partition [`GpuPartitionedSum`]; a caller stepping repeatedly should hold the resident sum instead.
 pub fn propagate_gpu<const W: usize>(
     circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
+    sum: &PauliSum<W, C>,
     policy: impl Into<BuiltinTruncation>,
     direction: Direction,
     device: u32,
-) -> Result<PauliSum<W>, GpuError> {
+) -> Result<PauliSum<W, C>, GpuError> {
     let mut resident = GpuPartitionedSum::from_host(sum, device)?;
     resident.propagate(circuit, policy, direction)?;
     resident.gather()
@@ -371,11 +371,11 @@ pub fn propagate_gpu<const W: usize>(
 /// [`GpuError::Topology`] if `config` does not resolve, then as [`GpuPartitionedSum::propagate`].
 pub fn propagate_gpu_partitioned<const W: usize>(
     circuit: &Circuit<W>,
-    sum: &PauliSum<W>,
+    sum: &PauliSum<W, C>,
     policy: impl Into<BuiltinTruncation>,
     direction: Direction,
     config: &PartitionConfig,
-) -> Result<PauliSum<W>, GpuError> {
+) -> Result<PauliSum<W, C>, GpuError> {
     let options = GpuScatterOptions {
         devices: PartitionRuntime::new(config).map_err(GpuError::Topology)?,
         rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),

@@ -1,5 +1,6 @@
 use super::*;
 use crate::engine::coset::{CosetOrder, Gf2Span};
+use num_complex::Complex64;
 
 use proptest::prelude::*;
 

@@ -1,6 +1,6 @@
 //! [`DevicePrepared`], one prepared channel in the layout `kernels/prelude.cuh`'s `Table` reads.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
 use super::fingerprint::FingerprintRows;
 use crate::channel::prepared::{Prepared, LOCAL_DIM};
@@ -57,7 +57,7 @@ pub(crate) struct DevicePrepared<const W: usize> {
 impl<const W: usize> DevicePrepared<W> {
     /// `remote` names the entries whose rows arrive from a partner instead of a local bucket, in the plan's order.
     pub(crate) fn new(
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         hash: &Gf2Hash<W>,
         fingerprints: &FingerprintRows<W>,
         remote: &[RemoteDelta],
@@ -86,7 +86,7 @@ impl<const W: usize> DevicePrepared<W> {
                     for s in 0..LOCAL_DIM {
                         amplitude[(e * LOCAL_DIM + s) * 2] = d.amplitude[s].re;
                         amplitude[(e * LOCAL_DIM + s) * 2 + 1] = d.amplitude[s].im;
-                        if d.amplitude[s] != Complex64::new(0.0, 0.0) {
+                        if d.amplitude[s] != C::ZERO {
                             nonzero_patterns[e] |= 1 << s;
                             if s < dim {
                                 rows += 1;

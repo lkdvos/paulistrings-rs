@@ -155,7 +155,7 @@ impl<const W: usize> DevicePartition<W> {
     }
 }
 
-impl<const W: usize> PartitionStorage<W> for DevicePartition<W> {
+impl<const W: usize> PartitionStorage<W, C> for DevicePartition<W> {
     fn len(&self) -> usize {
         self.sum.as_ref().map_or(0, GpuSum::len)
     }

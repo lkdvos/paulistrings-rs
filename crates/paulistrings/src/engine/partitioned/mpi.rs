@@ -669,14 +669,14 @@ pub fn default_config() -> PartitionConfig {
 /// If the group size is not a power of two, if the placement cannot be resolved, or as [`DistributedSum::propagate_with`].
 pub fn propagate_mpi<const W: usize, T>(
     circuit: &Circuit<W>,
-    sum: PauliSum<W>,
+    sum: PauliSum<W, C>,
     policy: &T,
     direction: Direction,
     options: PropagateOptions,
     comm: &impl Communicator,
-) -> Option<PauliSum<W>>
+) -> Option<PauliSum<W, C>>
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let transport = MpiTransport::from_communicator(comm);
     let mut split = MpiSum::<W>::scatter(sum, transport, &default_config())

@@ -1,4 +1,5 @@
 use super::*;
+use num_complex::Complex64;
 
 // ---- the per-run sort kernel's contract ----
 //
@@ -164,18 +165,18 @@ fn sort_fixtures<const W: usize>(
 #[test]
 fn sort_by_radix_honors_the_kernel_contract() {
     for (label, x, z, c) in sort_fixtures::<1>(64) {
-        assert_sort_contract(sort_by_radix::<1>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_radix::<1, Complex64>, &x, &z, &c, &label);
     }
     for (label, x, z, c) in sort_fixtures::<2>(128) {
-        assert_sort_contract(sort_by_radix::<2>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_radix::<2, Complex64>, &x, &z, &c, &label);
     }
     for (label, x, z, c) in sort_fixtures::<2>(65) {
-        assert_sort_contract(sort_by_radix::<2>, &x, &z, &c, &label);
+        assert_sort_contract(sort_by_radix::<2, Complex64>, &x, &z, &c, &label);
     }
     // Narrow qubit counts saturate the window shift at 0.
     for q in [3usize, 8, 17, 33] {
         for (label, x, z, c) in sort_fixtures::<1>(q) {
-            assert_sort_contract(sort_by_radix::<1>, &x, &z, &c, &label);
+            assert_sort_contract(sort_by_radix::<1, Complex64>, &x, &z, &c, &label);
         }
     }
 }
@@ -200,15 +201,15 @@ fn the_two_sort_kernels_reduce_to_the_same_sum() {
     }
     for (label, x, z, c) in sort_fixtures::<1>(64) {
         assert_eq!(
-            reduced(sort_by_radix::<1>, &x, &z, &c),
-            reduced(sort_by_comparison::<1>, &x, &z, &c),
+            reduced(sort_by_radix::<1, Complex64>, &x, &z, &c),
+            reduced(sort_by_comparison::<1, Complex64>, &x, &z, &c),
             "{label}",
         );
     }
     for (label, x, z, c) in sort_fixtures::<2>(128) {
         assert_eq!(
-            reduced(sort_by_radix::<2>, &x, &z, &c),
-            reduced(sort_by_comparison::<2>, &x, &z, &c),
+            reduced(sort_by_radix::<2, Complex64>, &x, &z, &c),
+            reduced(sort_by_comparison::<2, Complex64>, &x, &z, &c),
             "{label}",
         );
     }

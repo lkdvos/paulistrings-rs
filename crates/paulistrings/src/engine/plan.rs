@@ -3,6 +3,7 @@
 //! The partition rows are linear, so a key delta `d` moves every term by the same `part(d)`: remoteness is a property of the delta alone, every partition reaches the same verdict without communicating, and the partner set is symmetric.
 
 use crate::channel::prepared::Prepared;
+use crate::coefficient::Coefficient;
 use crate::pauli_sum::hash::PartitionRows;
 
 /// One delta of a prepared channel that crosses a partition boundary.
@@ -31,9 +32,9 @@ pub(crate) struct PartitionPlan {
 
 impl PartitionPlan {
     /// Classify `prepared`'s deltas under `rows`, as seen from partition `rank`, keeping the allocations across layers.
-    pub(crate) fn rebuild<const W: usize>(
+    pub(crate) fn rebuild<const W: usize, C: Coefficient>(
         &mut self,
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         rows: &PartitionRows<W>,
         rank: u32,
     ) {

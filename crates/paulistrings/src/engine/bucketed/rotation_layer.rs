@@ -2,11 +2,10 @@
 //!
 //! Contracts: the result agrees with the general coset fill to floating-point tolerance, every output passes `keep_term` exactly as there, and on the Clifford arm the identity residues `|a₀| ≤ ε·|a₁|` are dropped where the general path keeps them.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
-use super::coset_fill::{nonzero, CosetScratch, GatherRun};
+use super::coset_fill::{CosetScratch, GatherRun};
 use super::partner_order::PartnerOrder;
-use super::ZERO;
 use crate::channel::prepared::{LocalPtm, LOCAL_DIM};
 use crate::engine::merge::merge_identity_and_rest;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
@@ -18,22 +17,22 @@ use crate::engine::timing::{lap, stamp, tally};
 ///
 /// On a pattern the generator entry skips, the identity amplitude is exactly one; the patterns it reaches are closed under `⊕ g`, so a partner never lands on a string that keeps its coefficient.
 #[derive(Clone, Debug)]
-pub(super) struct RotationLayer<'p, const W: usize> {
-    ptm: &'p LocalPtm<W>,
+pub(super) struct RotationLayer<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
+    ptm: &'p LocalPtm<W, C>,
     /// `(mask_x, mask_z)` of `g`.
     mask: ([u64; W], [u64; W]),
     /// `a₀[s]`, the identity entry's amplitude.
-    identity: [Complex64; LOCAL_DIM],
+    identity: [C; LOCAL_DIM],
     /// `a₁[s]`, the amplitude taking pattern `s` to `s ⊕ g`.
-    partner: [Complex64; LOCAL_DIM],
+    partner: [C; LOCAL_DIM],
     /// Whether every anticommuting pattern has `|a₀| ≤ ε·|a₁|`, so strings move instead of splitting.
     clifford: bool,
     order: PartnerOrder<W>,
 }
 
-impl<'p, const W: usize> RotationLayer<'p, W> {
+impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
     /// The rotation shape of `ptm`, or `None` if it has another.
-    pub(super) fn of(ptm: &'p LocalPtm<W>) -> Option<Self> {
+    pub(super) fn of(ptm: &'p LocalPtm<W, C>) -> Option<Self> {
         let [identity, generator] = ptm.deltas() else { return None };
         if identity.local_delta != 0 {
             return None;
@@ -43,16 +42,16 @@ impl<'p, const W: usize> RotationLayer<'p, W> {
         let mut clifford = true;
         for s in 0..dim {
             let (a0, a1) = (identity.amplitude[s], generator.amplitude[s]);
-            if a1 == ZERO {
-                if a0 != Complex64::new(1.0, 0.0) {
+            if a1 == C::ZERO {
+                if a0 != C::ONE {
                     return None;
                 }
             } else {
-                if generator.amplitude[s ^ delta] == ZERO {
+                if generator.amplitude[s ^ delta] == C::ZERO {
                     return None;
                 }
                 // `cos θ` evaluated at a quarter turn is a rounding residue of `sin θ`, not an amplitude.
-                clifford &= a0.norm() <= f64::EPSILON * a1.norm();
+                clifford &= a0.norm_sqr() <= f64::EPSILON * f64::EPSILON * a1.norm_sqr();
             }
         }
         let mask = generator.mask();
@@ -67,7 +66,7 @@ impl<'p, const W: usize> RotationLayer<'p, W> {
     }
 
     /// Append each anticommuting string's partner `(k ⊕ g, c·a₁)` to `partners`, then scale the bucket by `a₀` in place, or on the Clifford arm drop the moved strings.
-    fn scan(&self, bucket: &mut BucketColumns<W>, partners: &mut BucketColumns<W>) {
+    fn scan(&self, bucket: &mut BucketColumns<W, C>, partners: &mut BucketColumns<W, C>) {
         let len = bucket.len();
         // One slot past the exact bound, for `append_if`'s discarded write.
         partners.x.reserve(len + 1);
@@ -80,7 +79,7 @@ impl<'p, const W: usize> RotationLayer<'p, W> {
             let (key_x, key_z, c) = (x[row], z[row], coeff[row]);
             let pattern = self.ptm.support_bits(&key_x, &key_z);
             let amplitude = self.partner[pattern];
-            let anticommutes = nonzero(amplitude);
+            let anticommutes = amplitude.is_nonzero();
             let partner_x = core::array::from_fn(|w| key_x[w] ^ mask_x[w]);
             let partner_z = core::array::from_fn(|w| key_z[w] ^ mask_z[w]);
             // SAFETY: reserved `len + 1` above, and at most `len` rows are published.
@@ -106,13 +105,13 @@ impl<'p, const W: usize> RotationLayer<'p, W> {
 }
 
 /// Apply `layer` to one coset, one bucket or the pair `{β, β ⊕ h(g)}`, each partner run merging into the other member.
-pub(super) fn fill_rotation_coset<const W: usize, T>(
-    members: &mut [BucketColumns<W>],
-    layer: &RotationLayer<'_, W>,
+pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
+    members: &mut [BucketColumns<W, C>],
+    layer: &RotationLayer<'_, W, C>,
     policy: &T,
-    scratch: &mut CosetScratch<W>,
+    scratch: &mut CosetScratch<W, C>,
 ) where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let size = members.len();
     debug_assert!(size == 1 || size == 2);
@@ -154,14 +153,14 @@ pub(super) fn fill_rotation_coset<const W: usize, T>(
 /// Merge the strictly ascending `partners` into the strictly ascending `bucket`, summing equal keys bucket-first and keeping each output iff it is nonzero and `keep_term` passes; returns whether it ran in place.
 ///
 /// In place needs spare capacity for every partner that is a new key: with room for every partner the hits go uncounted and the merge starts at that bound, else they are counted; without room the merge runs into `merged`, which is swapped in, as the general path does.
-fn merge_partners<const W: usize, T>(
-    bucket: &mut BucketColumns<W>,
-    partners: ColumnsRef<'_, W>,
+fn merge_partners<const W: usize, C: Coefficient, T>(
+    bucket: &mut BucketColumns<W, C>,
+    partners: ColumnsRef<'_, W, C>,
     policy: &T,
-    merged: &mut BucketColumns<W>,
+    merged: &mut BucketColumns<W, C>,
 ) -> bool
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let bound = bucket.len() + partners.coeff.len();
     let spare = bucket.x.capacity().min(bucket.z.capacity()).min(bucket.coeff.capacity());
@@ -179,7 +178,10 @@ where
 }
 
 /// Keys `partners` shares with `bucket`, both strictly ascending.
-fn count_hits<const W: usize>(bucket: ColumnsRef<'_, W>, partners: ColumnsRef<'_, W>) -> usize {
+fn count_hits<const W: usize, C: Coefficient>(
+    bucket: ColumnsRef<'_, W, C>,
+    partners: ColumnsRef<'_, W, C>,
+) -> usize {
     let (len, extra) = (bucket.x.len(), partners.x.len());
     let (mut i, mut j, mut hits) = (0usize, 0usize, 0usize);
     while i < len && j < extra {
@@ -193,13 +195,13 @@ fn count_hits<const W: usize>(bucket: ColumnsRef<'_, W>, partners: ColumnsRef<'_
 }
 
 /// [`merge_partners`] in the bucket's own buffer: written from the back of `total`, at least the length before drops, then shifted to the front over the slots hits and drops left.
-fn merge_backward_in_place<const W: usize, T>(
-    bucket: &mut BucketColumns<W>,
-    partners: ColumnsRef<'_, W>,
+fn merge_backward_in_place<const W: usize, C: Coefficient, T>(
+    bucket: &mut BucketColumns<W, C>,
+    partners: ColumnsRef<'_, W, C>,
     policy: &T,
     total: usize,
 ) where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let ColumnsRef { x: p_x, z: p_z, coeff: p_c } = partners;
     let (len, extra) = (bucket.len(), p_c.len());
@@ -216,8 +218,8 @@ fn merge_backward_in_place<const W: usize, T>(
     let (mut i, mut j, mut w) = (len, extra, total);
     // SAFETY: every read is below `i ≤ len`, the initialized prefix; every write is at `w - 1 ≥ i` and below `total ≤ capacity`.
     unsafe {
-        let emit = |w: &mut usize, key_x: [u64; W], key_z: [u64; W], sum: Complex64| {
-            if sum != ZERO && policy.keep_term(&key_x, &key_z, sum) {
+        let emit = |w: &mut usize, key_x: [u64; W], key_z: [u64; W], sum: C| {
+            if sum != C::ZERO && policy.keep_term(&key_x, &key_z, sum) {
                 *w -= 1;
                 x.add(*w).write(key_x);
                 z.add(*w).write(key_z);
@@ -251,7 +253,7 @@ fn merge_backward_in_place<const W: usize, T>(
         while i > 0 {
             i -= 1;
             let (key_x, key_z, sum) = (*x.add(i), *z.add(i), *c.add(i));
-            if sum != ZERO && policy.keep_term(&key_x, &key_z, sum) {
+            if sum != C::ZERO && policy.keep_term(&key_x, &key_z, sum) {
                 w -= 1;
                 if w != i {
                     x.add(w).write(key_x);

@@ -1,4 +1,5 @@
 use super::*;
+use num_complex::Complex64;
 use proptest::prelude::*;
 
 /// At `ε = 0` a magnitude whose square underflows is dropped: `(1e-100)²` survives, `(1e-200)²` rounds to `0.0`.

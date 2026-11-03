@@ -1,4 +1,10 @@
-use super::coset_fill::{gather_local_input_major, gather_local_output_major, nonzero, GatherRun};
+use num_complex::Complex64;
+const ZERO: Complex64 = Complex64::new(0.0, 0.0);
+use crate::coefficient::Coefficient;
+fn nonzero(value: Complex64) -> bool {
+    value.is_nonzero()
+}
+use super::coset_fill::{gather_local_input_major, gather_local_output_major, GatherRun};
 use super::*;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
@@ -427,7 +433,7 @@ fn local_gather_orders_agree_to_fp_tolerance() {
             assert_eq!(src.len(), run.identity.len(), "dense id must be 1:1");
             let identity = ColumnsRef { x: &src.x, z: &src.z, coeff: &run.identity.coeff };
             let mut merged = BucketColumns::default();
-            merge_identity_and_rest::<1, AlwaysKeep>(
+            merge_identity_and_rest::<1, Complex64, AlwaysKeep>(
                 identity,
                 run.rest.view(),
                 &mut merged,

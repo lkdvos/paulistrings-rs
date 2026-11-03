@@ -7,6 +7,7 @@
 
 mod channel;
 mod circuit;
+mod coefficient;
 mod collectives;
 mod engine;
 mod pauli_string;
@@ -21,6 +22,7 @@ mod truncation;
 
 pub use channel::{support_mask, Channel, OutputBuffer, PauliRotation, PtmChannel};
 pub use circuit::{Circuit, KeyShift};
+pub use coefficient::Coefficient;
 pub use collectives::Collectives;
 pub use engine::bucketed::LayerScratch;
 #[cfg(feature = "cuda")]

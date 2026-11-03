@@ -1,6 +1,7 @@
 //! [`PartnerOrder`], which puts a rotation's partner run in key order in linear time.
 
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
+use crate::coefficient::Coefficient;
 use crate::pauli_sum::storage::BucketColumns;
 
 /// Set bits a two-qubit key delta can have.
@@ -40,10 +41,10 @@ impl<const W: usize> PartnerOrder<W> {
     }
 
     /// Write `run`, whose keys are `k ⊕ g` for distinct `k` in key order, into `out` in key order; `divergence` is scratch.
-    pub(super) fn order(
+    pub(super) fn order<C: Coefficient>(
         &self,
-        run: &BucketColumns<W>,
-        out: &mut BucketColumns<W>,
+        run: &BucketColumns<W, C>,
+        out: &mut BucketColumns<W, C>,
         divergence: &mut Vec<u32>,
     ) {
         out.clear();
@@ -60,7 +61,11 @@ impl<const W: usize> PartnerOrder<W> {
 }
 
 /// The significance rank of the first bit at which rows `a` and `b` differ.
-fn first_difference<const W: usize>(run: &BucketColumns<W>, a: usize, b: usize) -> u32 {
+fn first_difference<const W: usize, C: Coefficient>(
+    run: &BucketColumns<W, C>,
+    a: usize,
+    b: usize,
+) -> u32 {
     for w in 0..W {
         let diff = run.x[a][w] ^ run.x[b][w];
         if diff != 0 {
@@ -77,14 +82,14 @@ fn first_difference<const W: usize>(run: &BucketColumns<W>, a: usize, b: usize) 
 }
 
 /// One [`PartnerOrder::order`] call; `divergence[i]` is the first differing bit of rows `i - 1` and `i`.
-struct Placer<'a, const W: usize> {
-    run: &'a BucketColumns<W>,
-    out: &'a mut BucketColumns<W>,
+struct Placer<'a, const W: usize, C: Coefficient = num_complex::Complex64> {
+    run: &'a BucketColumns<W, C>,
+    out: &'a mut BucketColumns<W, C>,
     divergence: &'a [u32],
     levels: &'a [u32],
 }
 
-impl<const W: usize> Placer<'_, W> {
+impl<const W: usize, C: Coefficient> Placer<'_, W, C> {
     fn copy(&mut self, low: usize, high: usize) {
         self.out.x.extend_from_slice(&self.run.x[low..high]);
         self.out.z.extend_from_slice(&self.run.z[low..high]);

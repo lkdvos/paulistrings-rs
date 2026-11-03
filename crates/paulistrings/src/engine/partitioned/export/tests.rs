@@ -1,3 +1,5 @@
+use num_complex::Complex64;
+const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 use super::*;
 use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;

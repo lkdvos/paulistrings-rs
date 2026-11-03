@@ -393,3 +393,52 @@ fn a_reused_scratch_gives_the_same_export() {
         assert_eq!(a, b, "a reused scratch changed the payload");
     }
 }
+
+/// The split point balances the scan work of `start..end`, not its positions, and always leaves both halves non-empty.
+#[test]
+fn the_fill_splits_at_half_the_scan_work() {
+    let uniform = [0usize, 10, 20, 30, 40];
+    assert_eq!(split_at_half_work(&uniform, 0, 4), 2);
+    assert_eq!(split_at_half_work(&uniform, 1, 4), 3);
+    // One heavy position: the split falls just after it.
+    let heavy = [0usize, 0, 0, 100, 100, 104, 108];
+    assert_eq!(split_at_half_work(&heavy, 0, 6), 3);
+    // All work in the last position, or none at all: still a split with both halves non-empty.
+    assert_eq!(split_at_half_work(&[0usize, 0, 0, 0, 50], 0, 4), 3);
+    assert_eq!(split_at_half_work(&[0usize, 0, 0], 0, 2), 1);
+}
+
+/// Splitting the fill down to single positions gives the same payload as filling each block on one thread.
+#[test]
+fn a_fully_split_fill_equals_an_unsplit_one() {
+    let input = rand_sum::<1>(3000, 8, 0x9C6);
+    for (name, channel) in &differential_channels_w1() {
+        for &pbits in &[1u8, 2] {
+            let rows = PartitionRows::<1>::from_seed(8, pbits, 0x6666);
+            let whole = input.clone().with_hash(Gf2Hash::<1>::new(8, 5, 0xAB));
+            let prepared = channel.prepare(whole.hash(), false).expect("prepare");
+            let size = rows.num_partitions() as u32;
+            for rank in 0..size {
+                let local = whole.filter_partition(&rows, rank);
+                let plan = PartitionPlan::new(&prepared, &rows, rank);
+                let order = order_for(&plan, local.num_buckets());
+                let export = |min_terms| {
+                    let mut scratch = ExportScratch::default();
+                    export_layer_with(
+                        &local,
+                        &prepared,
+                        &plan,
+                        size,
+                        &order,
+                        &mut scratch,
+                        min_terms,
+                    )
+                };
+                let (split, split_counts) = export(0);
+                let (whole_block, whole_counts) = export(usize::MAX);
+                assert_eq!(split_counts, whole_counts, "{name} p={pbits} rank={rank}");
+                assert_eq!(split, whole_block, "{name} p={pbits} rank={rank}");
+            }
+        }
+    }
+}

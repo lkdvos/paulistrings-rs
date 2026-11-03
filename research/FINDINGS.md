@@ -232,6 +232,18 @@ A rotation whose generator crosses partitions runs on `fill_received_rotation_bu
 Genoa code A/B, P = 2 in process (jobs 7398796–7398798, 5 pairs): `heavyhex_step` under random rows at `coeff:2^-14` **−9.7% / −12.5%** wall at 96 / 48 threads (merge −55%, sort −21%, gather +52% as it now holds the scale and the received append), 24-qubit `tfim_step` at `2^-16` **−5.5% / −6.5%**, all 5/5; VmHWM within ±1%.
 The synthetic all-hit `rotation_remote` at 1e6 × 40 reps is +2.2% at 48 threads (5/5, merge +13%) and inconsistent at 96, against a +4% merge shift on the untouched `rotation_local`; untouched `cnot` no consistent change.
 
+### Export fill balanced on scanned terms
+
+The fill split a block's destination positions on emitted rows, but bucket bits can decide the emit test for whole buckets: on `heavyhex_step` at `coeff:2.5e-5` under random rows, 60.5% of the scanned terms sat in buckets that export nothing, and the fill's leaves were busy 25% of its wall at 16 threads per partition.
+It now splits at half the scanned terms and skips zero-count positions.
+Icelake code A/B against `68952e43`, 5 pairs each, every pair negative: in-process P=2 at 64 threads wall **−45.4%** (7.23 → 3.95 s), export −75.2% (4.06 → 1.00 s); two MPI ranks on one node wall **−42.9%** (7.06 → 4.06 s), export −77.1% (jobs 7399740, 7399742).
+Rejected: a smaller row threshold (4096 → 512, no change on ccqlin038), freshly allocated node-local payloads instead of the transport's handed-over ones (fill unchanged), and a pass 1 that loads only the column deciding the emit test (`rx` reads `z`, `rzz` reads `x`): export −5.8% (5/5) at no consistent wall change (job 7399741).
+Pass 1 now streams at ~30 of ccqlin038's 39 GB/s socket read ceiling; fusing it into the fill needs a sum-sized staging buffer and was not built.
+Across genoa nodes, one rank per socket at 48 threads, 5/5 pairs each: 4 ranks on 2 nodes wall **−51.2%** (4.86 → 2.37 s), export 2.72 → 0.67 s; 8 ranks on 4 nodes wall **−46.9%** (3.34 → 1.77 s), export 1.82 → 0.59 s (jobs 7399800–1, measured at the reverted column-only commit).
+There the merge's busy time also falls 41–48% (5/5) though its code is unchanged; unattributed, plausibly the inbound transfer overlapping the merge less once partners send earlier.
+Against `main` after §Remote rotations run on the in-place rotation kernel (`d97db49b`), 4 genoa ranks on 2 nodes: wall **−47.5%** (4.57 → 2.40 s), export 2.63 → 0.73 s, 5/5 (job 7400053).
+Rejected: sending each chunk as soon as it is filled (branch `stream-sends`, `19f29c19`), wall **+26.9% / +31.5%** at 4 / 8 genoa ranks against this fill (5/5 each, jobs 7400054–5), export +84–87% against an exchange wait −12–20%; the export's extra cost is unattributed.
+
 ## GPU spike
 
 Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.

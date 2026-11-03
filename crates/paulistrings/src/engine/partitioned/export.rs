@@ -14,8 +14,8 @@ use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
 
-/// Rows below which a block's fill stays on one thread.
-const FILL_PARALLEL_MIN_ROWS: usize = 4096;
+/// Scanned input terms below which a block's fill stays on one thread.
+const FILL_PARALLEL_MIN_TERMS: usize = 16384;
 
 /// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
 #[derive(Debug, Default)]
@@ -26,6 +26,8 @@ pub(crate) struct ExportScratch<const W: usize, C: Coefficient = num_complex::Co
     block_counts: Vec<u32>,
     /// `source_of[position] = order.bucket_at(position) ^ bucket_delta`.
     source_of: Vec<u32>,
+    /// One block's prefix sums of input terms its fill scans, by destination position; a position that exports nothing scans nothing.
+    work_prefix: Vec<usize>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W, C>>,
 }
@@ -61,6 +63,19 @@ pub(crate) fn export_layer<const W: usize, C: Coefficient>(
     size: u32,
     order: &CosetOrder,
     scratch: &mut ExportScratch<W, C>,
+) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
+    export_layer_with(local, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
+}
+
+/// [`export_layer`] with the fill's leaf size in scanned input terms.
+fn export_layer_with<const W: usize, C: Coefficient>(
+    local: &PauliSum<W, C>,
+    prepared: &Prepared<W, C>,
+    plan: &PartitionPlan,
+    size: u32,
+    order: &CosetOrder,
+    scratch: &mut ExportScratch<W, C>,
+    min_terms: usize,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
     let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
@@ -115,12 +130,20 @@ pub(crate) fn export_layer<const W: usize, C: Coefficient>(
     scratch.block_counts.resize(num_buckets, 0);
     scratch.source_of.clear();
     scratch.source_of.resize(num_buckets, 0);
+    scratch.work_prefix.clear();
+    scratch.work_prefix.resize(num_buckets + 1, 0);
     let mut blocks_used = vec![0usize; size as usize];
     for (i, remote) in plan.remote.iter().enumerate() {
+        let mut work = 0usize;
         for position in 0..num_buckets {
             let source = order.bucket_at(position as u32) ^ remote.bucket_delta;
+            let count = scratch.counts[source as usize * num_remote + i];
             scratch.source_of[position] = source;
-            scratch.block_counts[position] = scratch.counts[source as usize * num_remote + i];
+            scratch.block_counts[position] = count;
+            if count != 0 {
+                work += local.bucket_len(source as usize);
+            }
+            scratch.work_prefix[position + 1] = work;
         }
         let partner = remote.partner as usize;
         let payload = send[partner].get_or_insert_with(|| scratch.pool.pop().unwrap_or_default());
@@ -136,7 +159,15 @@ pub(crate) fn export_layer<const W: usize, C: Coefficient>(
             let ExchangeBlock { ref offsets, ref mut x, ref mut z, ref mut coeff, .. } = *block;
             let columns =
                 ColumnsMut { x: &mut x[..rows], z: &mut z[..rows], coeff: &mut coeff[..rows] };
-            fill_range(local, &emitters[i], offsets, &scratch.source_of, 0, num_buckets, columns);
+            let fill = Fill {
+                local,
+                emitter: &emitters[i],
+                offsets,
+                source_of: &scratch.source_of,
+                work_prefix: &scratch.work_prefix,
+                min_terms,
+            };
+            fill.range(0, num_buckets, columns);
         }
         counts.rows_sent[partner] += rows as u64;
         counts.bytes_sent[partner] += block.bytes() as u64;
@@ -199,47 +230,63 @@ fn count_bucket<const W: usize, C: Coefficient>(
     }
 }
 
-/// Fill destination positions `start..end` of one block; the halves of a split are disjoint, so the contents are independent of the thread count.
-fn fill_range<const W: usize, C: Coefficient>(
-    local: &PauliSum<W, C>,
-    emitter: &RowEmitter<'_, W, C>,
-    offsets: &[u32],
-    source_of: &[u32],
-    start: usize,
-    end: usize,
-    columns: ColumnsMut<'_, W, C>,
-) {
-    debug_assert_eq!(columns.len(), (offsets[end] - offsets[start]) as usize);
-    if end - start > 1 && columns.len() > FILL_PARALLEL_MIN_ROWS {
-        let middle = start + (end - start) / 2;
-        let (head, tail) = columns.split_at((offsets[middle] - offsets[start]) as usize);
-        rayon::join(
-            || fill_range(local, emitter, offsets, source_of, start, middle, head),
-            || fill_range(local, emitter, offsets, source_of, middle, end, tail),
-        );
-        return;
-    }
-    let ColumnsMut { x, z, coeff } = columns;
-    let mut written = 0usize;
-    for &source in &source_of[start..end] {
-        let (bucket_x, bucket_z, bucket_coeff) = local.bucket(source as usize);
-        for term in 0..bucket_coeff.len() {
-            if let Some((out_x, out_z, out_coeff)) =
-                emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term])
-            {
-                x[written] = out_x;
-                z[written] = out_z;
-                coeff[written] = out_coeff;
-                written += 1;
+/// One block's pass-2 inputs, shared by every task of its fill.
+struct Fill<'a, 'p, const W: usize, C: Coefficient> {
+    local: &'a PauliSum<W, C>,
+    emitter: &'a RowEmitter<'p, W, C>,
+    offsets: &'a [u32],
+    source_of: &'a [u32],
+    work_prefix: &'a [usize],
+    /// Scanned input terms below which a range stays on one thread.
+    min_terms: usize,
+}
+
+impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
+    /// Fill destination positions `start..end`; the halves of a split are disjoint, so the contents are independent of the thread count.
+    ///
+    /// The split balances scanned input terms rather than emitted rows, since bucket bits can decide the emit test for whole buckets and leave most of the scan where few rows land.
+    fn range(&self, start: usize, end: usize, columns: ColumnsMut<'_, W, C>) {
+        let offsets = self.offsets;
+        debug_assert_eq!(columns.len(), (offsets[end] - offsets[start]) as usize);
+        if end - start > 1 && self.work_prefix[end] - self.work_prefix[start] > self.min_terms {
+            let middle = split_at_half_work(self.work_prefix, start, end);
+            let (head, tail) = columns.split_at((offsets[middle] - offsets[start]) as usize);
+            rayon::join(|| self.range(start, middle, head), || self.range(middle, end, tail));
+            return;
+        }
+        let ColumnsMut { x, z, coeff } = columns;
+        let mut written = 0usize;
+        for position in start..end {
+            if offsets[position] == offsets[position + 1] {
+                continue;
+            }
+            let (bucket_x, bucket_z, bucket_coeff) =
+                self.local.bucket(self.source_of[position] as usize);
+            for term in 0..bucket_coeff.len() {
+                if let Some((out_x, out_z, out_coeff)) =
+                    self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term])
+                {
+                    x[written] = out_x;
+                    z[written] = out_z;
+                    coeff[written] = out_coeff;
+                    written += 1;
+                }
             }
         }
+        debug_assert_eq!(
+            written,
+            x.len(),
+            "export: pass 2 filled {written} rows where pass 1 counted {}",
+            x.len(),
+        );
     }
-    debug_assert_eq!(
-        written,
-        x.len(),
-        "export: pass 2 filled {written} rows where pass 1 counted {}",
-        x.len(),
-    );
+}
+
+/// The position in `start + 1..end` where the scan work of `start..end`, read from its prefix sums, first reaches half.
+fn split_at_half_work(work_prefix: &[usize], start: usize, end: usize) -> usize {
+    let target = work_prefix[start] + (work_prefix[end] - work_prefix[start]) / 2;
+    let middle = start + 1 + work_prefix[start + 1..end].partition_point(|&work| work < target);
+    middle.min(end - 1)
 }
 
 /// Every exported row belongs to the partner it is addressed to.

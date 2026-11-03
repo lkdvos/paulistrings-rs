@@ -76,6 +76,18 @@ pub(crate) fn device_comm_unavailable_error() -> PyErr {
     ))
 }
 
+/// The device backend holds `complex128` sums only; a `TypeError` for any other dtype, `shown` naming the call.
+#[cfg(feature = "cuda")]
+pub(crate) fn check_device_dtype(shown: &str, dtype: crate::dtype::Dtype) -> PyResult<()> {
+    if dtype == crate::dtype::Dtype::C128 {
+        return Ok(());
+    }
+    Err(PyTypeError::new_err(format!(
+        "{shown}: CUDA devices run complex128 sums only, not {}; convert with astype(\"complex128\") first",
+        dtype.name()
+    )))
+}
+
 #[cfg(feature = "cuda")]
 mod cuda {
     use super::DeviceRequest;
@@ -83,8 +95,9 @@ mod cuda {
     use crate::sum::{
         check_num_qubits, parse_direction, propagate_options, PauliSum, PropagationStats,
     };
-    use crate::sum::{PauliSumImpl, PropagateFailure};
+    use crate::sum::{PauliSumImpl, PropagateFailure, WidthSum};
     use crate::truncation_spec::PyTruncation;
+    use num_complex::Complex64;
     use paulistrings::gpu::{device_count, GpuError, GpuPartitionedSum};
     use paulistrings::max_hash_bits;
     use paulistrings::BuiltinTruncation;
@@ -202,8 +215,8 @@ mod cuda {
 
     impl GpuPauliSumImpl {
         /// Upload `sum` with its trace enabled once; every call drains it.
-        pub(crate) fn upload(sum: &PauliSumImpl, device: u32) -> Result<Self, GpuError> {
-            Ok(for_each_width_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
+        pub(crate) fn upload(sum: &WidthSum<Complex64>, device: u32) -> Result<Self, GpuError> {
+            Ok(for_each_width_convert!(WidthSum => GpuPauliSumImpl, sum, |s| {
                 let mut resident = GpuPartitionedSum::from_host(s, device)?;
                 resident.enable_trace();
                 resident
@@ -211,9 +224,9 @@ mod cuda {
         }
 
         pub(crate) fn download(&self) -> Result<PauliSumImpl, GpuError> {
-            Ok(for_each_width_convert!(GpuPauliSumImpl => PauliSumImpl, self, |s| {
+            Ok(PauliSumImpl::C128(for_each_width_convert!(GpuPauliSumImpl => WidthSum, self, |s| {
                 s.gather()?
-            }))
+            })))
         }
 
         pub(crate) fn len(&self) -> usize {
@@ -394,6 +407,10 @@ pub(crate) fn to_device(
     let ordinal = ordinal(device)?;
     #[cfg(feature = "cuda")]
     {
+        check_device_dtype(&format!("to_device({device})"), sum.dtype())?;
+        let crate::sum::PauliSumImpl::C128(sum) = sum else {
+            unreachable!("check_device_dtype admits complex128 only")
+        };
         let ordinal = cuda::resolve_device(ordinal, &format!("device={device}"))?;
         let inner =
             py.allow_threads(|| cuda::GpuPauliSumImpl::upload(sum, ordinal)).map_err(gpu_error)?;

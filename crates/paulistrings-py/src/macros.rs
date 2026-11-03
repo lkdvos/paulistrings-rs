@@ -1,7 +1,8 @@
-//! Width-dispatch macros for the `{W1, W2, W4, W8, W16}` monomorphization enums (`PauliSumImpl`, `CircuitImpl`, `GpuPauliSumImpl`). See `sum.rs` / `circuit.rs`.
+//! Dispatch macros for the monomorphization enums: the dtype enums `{F64, F32, C128, C64}` (`PauliSumImpl`, `SplitImpl`) over the width enums `{W1, W2, W4, W8, W16}` (`WidthSum`, `WidthSplit`, `CircuitImpl`, `GpuPauliSumImpl`).
+//! A call dispatches the dtype first and the width inside it, so each macro stays single-axis.
 //! Deliberately narrow (single dispatch, same-enum pairs, cross-enum pairs, num_qubits-keyed construction) rather than one maximally general macro, for call-site readability.
 
-/// Dispatch a single width-monomorphized enum value across `Self::{W1..W16}`. Resolves `Self` lexically at the expansion site, so it works inside any `impl` block over `PauliSumImpl`/`CircuitImpl`.
+/// Dispatch a single width-monomorphized enum value across `Self::{W1..W16}`. Resolves `Self` lexically at the expansion site, so it works inside any `impl` block over `WidthSum`/`CircuitImpl`.
 macro_rules! for_each_width {
     ($self:expr, |$bound:ident| $body:expr) => {
         match $self {
@@ -58,7 +59,7 @@ macro_rules! for_each_width_pair_rewrap {
     };
 }
 
-/// Cross-enum width dispatch for the propagate entry points: pairs a `$enum` value (`PauliSumImpl`, `GpuPauliSumImpl`) with the `CircuitImpl` of the same width and binds the active width to a local `const $w: usize` for a `$body` that names the width.
+/// Cross-enum width dispatch for the propagate entry points: pairs a `$enum` value (`WidthSum`, `WidthSplit`, `GpuPauliSumImpl`) with the `CircuitImpl` of the same width and binds the active width to a local `const $w: usize` for a `$body` that names the width.
 /// `$wrap` is bound to the matching `$enum` variant's constructor, for a body whose result is itself width-carrying; an in-place body ignores it.
 /// The `else` arm handles the width-mismatch case, unreachable in practice but surfaced as an error rather than a panic, so the caller supplies the `return Err(...)`.
 macro_rules! for_each_width_propagate {
@@ -94,7 +95,7 @@ macro_rules! for_each_width_propagate {
     };
 }
 
-/// Single dispatch from one width enum into the same variant of another (`PauliSumImpl` <-> `GpuPauliSumImpl`, or onto itself); a `?` in `$body` returns from the enclosing function.
+/// Single dispatch from one width enum into the same variant of another (`WidthSum` <-> `GpuPauliSumImpl`, or onto itself); a `?` in `$body` returns from the enclosing function.
 macro_rules! for_each_width_convert {
     ($from:ident => $to:ident, $value:expr, |$s:ident| $body:expr) => {
         match $value {
@@ -133,6 +134,83 @@ macro_rules! for_num_qubits {
                 Some(Self::W16($body))
             }
             _ => None,
+        }
+    };
+}
+
+/// Dispatch a dtype enum value across `Self::{F64, F32, C128, C64}`, binding the width enum it wraps.
+macro_rules! for_each_dtype {
+    ($self:expr, |$bound:ident| $body:expr) => {
+        match $self {
+            Self::F64($bound) => $body,
+            Self::F32($bound) => $body,
+            Self::C128($bound) => $body,
+            Self::C64($bound) => $body,
+        }
+    };
+}
+
+/// Single dispatch from one dtype enum into the same variant of another (`PauliSumImpl` <-> `SplitImpl`, or onto itself); a `?` in `$body` returns from the enclosing function.
+macro_rules! for_each_dtype_convert {
+    ($from:ident => $to:ident, $value:expr, |$s:ident| $body:expr) => {
+        match $value {
+            $from::F64($s) => $to::F64($body),
+            $from::F32($s) => $to::F32($body),
+            $from::C128($s) => $to::C128($body),
+            $from::C64($s) => $to::C64($body),
+        }
+    };
+}
+
+/// [`for_each_dtype`] over a pair of the same dtype enum, binding `$wrap` to the variant's constructor; `None` on a dtype mismatch, which a caller that converted both operands to one dtype never sees.
+macro_rules! for_each_dtype_pair {
+    (($a:expr, $b:expr), |$x:ident, $y:ident, $wrap:ident| $body:expr) => {
+        match ($a, $b) {
+            (Self::F64($x), Self::F64($y)) => {
+                let $wrap = Self::F64;
+                Some($body)
+            }
+            (Self::F32($x), Self::F32($y)) => {
+                let $wrap = Self::F32;
+                Some($body)
+            }
+            (Self::C128($x), Self::C128($y)) => {
+                let $wrap = Self::C128;
+                Some($body)
+            }
+            (Self::C64($x), Self::C64($y)) => {
+                let $wrap = Self::C64;
+                Some($body)
+            }
+            _ => None,
+        }
+    };
+}
+
+/// Construct a `$enum` at a runtime [`crate::dtype::Dtype`]: `$body` sees the coefficient type as a local alias `$c` and the matching variant's constructor as `$wrap`, mirroring [`for_num_qubits`].
+macro_rules! for_dtype {
+    ($enum:ident, $dtype:expr, |$c:ident, $wrap:ident| $body:expr) => {
+        match $dtype {
+            crate::dtype::Dtype::F64 => {
+                type $c = f64;
+                let $wrap = $enum::F64;
+                $body
+            }
+            crate::dtype::Dtype::F32 => {
+                type $c = f32;
+                let $wrap = $enum::F32;
+                $body
+            }
+            crate::dtype::Dtype::C128 => {
+                type $c = num_complex::Complex64;
+                let $wrap = $enum::C128;
+                $body
+            }
+            crate::dtype::Dtype::C64 => {
+                type $c = num_complex::Complex32;
+                let $wrap = $enum::C64;
+                $body
+            }
         }
     };
 }

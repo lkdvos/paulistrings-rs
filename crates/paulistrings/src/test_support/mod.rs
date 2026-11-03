@@ -42,17 +42,26 @@ pub const TIMER_READ_OVERHEAD_NS: u64 = 25;
 
 const ZERO: num_complex::Complex64 = num_complex::Complex64::new(0.0, 0.0);
 
-/// Returns early from the calling test when no CUDA device is available, so a device test is
-/// never `#[ignore]`d — it just does nothing on a box without a GPU.
+/// Returns early from the calling test when no CUDA device is available, so a device test is never `#[ignore]`d — it just does nothing on a box without a GPU.
+/// Otherwise it holds a guard on [`DEVICE_TESTS`] for the rest of the test: shared by default, `require_cuda!(exclusive)` for a test whose wall bounds and wire timeouts must not compete with other device tests for the driver.
 #[cfg(feature = "cuda")]
 #[macro_export]
 macro_rules! require_cuda {
-    () => {
+    () => { $crate::require_cuda!(@read) };
+    (exclusive) => { $crate::require_cuda!(@write) };
+    (@$lock:ident) => {
         if !$crate::gpu::cuda_available() {
             return;
         }
+        let _device_tests = $crate::test_support::DEVICE_TESTS
+            .$lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
     };
 }
+
+/// Orders the device tests of one test binary; see [`require_cuda`].
+#[cfg(feature = "cuda")]
+pub static DEVICE_TESTS: std::sync::RwLock<()> = std::sync::RwLock::new(());
 
 /// `transport` with its largest message capped at `bytes`, so a test reaches the chunked exchange.
 #[cfg(feature = "mpi")]

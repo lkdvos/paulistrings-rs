@@ -5,7 +5,7 @@ use crate::test_support::rand_sum;
 /// A group of more than one rank without a way to start NCCL (no `mpi` feature, or every rank on device 0) fails the scatter on every rank.
 #[test]
 fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
-    crate::require_cuda!();
+    crate::require_cuda!(exclusive);
     let input = rand_sum::<1>(100, 8, 0xD19);
     for size in [2u32, 4] {
         let group =
@@ -35,7 +35,7 @@ fn a_group_that_cannot_start_nccl_fails_the_scatter_on_every_rank() {
 /// An error a previous call left recorded is returned by the next call, which runs no layer, and the call after that runs normally.
 #[test]
 fn a_stale_error_is_returned_by_the_next_call() {
-    crate::require_cuda!();
+    crate::require_cuda!(exclusive);
     let input = rand_sum::<1>(100, 8, 0x57A1);
     let circuit = crate::test_support::random_circuit::<1>(8, 4, 0x57A2, true);
     let transport = InProcessTransport::group(1).pop().expect("one rank");
@@ -202,7 +202,7 @@ mod protocol {
     /// The protocol over the peer wire against `propagate` at 1, 2 and 4 ranks in both directions, and with the sender-side merge off.
     #[test]
     fn ranks_match_propagate() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let dense = random_circuit::<1>(8, 12, 0xD15, true);
         let input = rand_sum::<1>(400, 8, 0xD16);
         let trotter = trotter_circuit::<2>(24, 0.01);
@@ -253,7 +253,7 @@ mod protocol {
     /// The receive cut into chunks over the peer wire agrees with `propagate`: one group per rank per chunk, so an uncapped run posts one per remote layer and a cap of 128 rows at least 3 on some layer.
     #[test]
     fn a_capped_receive_moves_in_chunk_groups_and_agrees() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let input = rand_sum::<1>(1_500, 10, 0xC4B1);
         let circuit = su4_chain::<1>(10);
         for direction in [Direction::Forward, Direction::Heisenberg] {
@@ -287,7 +287,7 @@ mod protocol {
     /// Ranks that disagree on their own receive cap still agree on the chunk count: the group takes the largest any rank asked for.
     #[test]
     fn a_capped_receive_agrees_the_largest_of_different_per_rank_caps() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let circuit = su4_chain::<1>(10);
         let input = rand_sum::<1>(1_500, 10, 0xC4B5);
         for (size, caps) in [(2u32, vec![usize::MAX, 128]), (4, vec![usize::MAX, 512, 256, 128])] {
@@ -307,7 +307,7 @@ mod protocol {
     /// A rank failing after its second chunk moved still posts every later chunk's group, so its peers' receives complete: the culprit returns its error and every peer names it, with no wire timing out.
     #[test]
     fn a_mid_receive_failure_drains_its_groups_and_is_agreed_over_the_group() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let input = rand_sum::<1>(1_500, 10, 0xC4B3);
         let circuit = su4_chain::<1>(10);
         for size in [2u32, 4] {
@@ -332,7 +332,7 @@ mod protocol {
     /// A failure before the exchange takes the empty pairing: every rank fails, the culprit with its own error and every peer naming it at its layer.
     #[test]
     fn a_failure_before_the_exchange_is_agreed_over_the_group() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let dense = random_circuit::<1>(8, 6, 0xD18, true);
         let input = rand_sum::<1>(300, 8, 0xD19);
         for size in [2u32, 4] {
@@ -357,7 +357,7 @@ mod protocol {
     /// A rank whose receive growth fails votes no: nobody moves a row, it returns the out-of-memory error, and every peer names it.
     #[test]
     fn a_receive_oom_votes_no_and_is_agreed_over_the_group() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let dense = random_circuit::<1>(8, 6, 0xD1A, true);
         let input = rand_sum::<1>(300, 8, 0xD1B);
         for size in [2u32, 4] {
@@ -382,7 +382,7 @@ mod protocol {
     /// One source bucket of `n` rows crossing from rank 1 to rank 0 at one bucket: `MAX_BUCKET_LEN` rows fit, one more makes the receiver, rank 0, vote no and be named first.
     #[test]
     fn an_oversize_received_segment_votes_no_and_names_the_receiver() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let mut c = Circuit::<1>::new(64);
         c.push(zz_rotation::<1>(0, 63, 0.3));
         let one_segment = |n: usize| {
@@ -427,7 +427,7 @@ mod protocol {
     /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.
     #[test]
     fn a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let dense = random_circuit::<1>(8, 6, 0xD1C, true);
         let input = rand_sum::<1>(300, 8, 0xD1D);
         for size in [2u32, 4] {
@@ -470,7 +470,7 @@ mod protocol {
     /// A rank whose wire is already dead votes no instead of failing after a yes: nothing is posted, it returns the wire's error and its peers name it.
     #[test]
     fn a_dead_wire_votes_no() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let dense = random_circuit::<1>(8, 6, 0xD1E, true);
         let input = rand_sum::<1>(300, 8, 0xD1F);
         let (group, tally) = wired(2);
@@ -546,7 +546,7 @@ mod protocol {
     /// Every rank issues the host's calls with each remote layer's `exchange_layer` replaced by the skeleton `exchange` and one `allreduce_sum_u64` vote, and nothing extra on a local layer.
     #[test]
     fn every_remote_layer_adds_one_vote_and_a_local_layer_nothing() {
-        crate::require_cuda!();
+        crate::require_cuda!(exclusive);
         let circuit = trotter_circuit::<1>(24, 0.1);
         let input = rand_sum_real::<1>(700, 24, 0xC0C0);
         for size in [2u32, 4] {

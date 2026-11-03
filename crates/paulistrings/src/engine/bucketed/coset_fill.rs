@@ -2,6 +2,7 @@
 
 use num_complex::Complex64;
 
+use super::rotation_layer::RotationScratch;
 use super::{DeltaPlan, ExtraRows, ZERO};
 use crate::channel::prepared::LocalPtm;
 use crate::engine::merge::{merge_identity_and_rest, SortKernel, SortScratch};
@@ -27,6 +28,8 @@ pub(in crate::engine) struct CosetScratch<const W: usize> {
     pub(super) members: Vec<BucketColumns<W>>,
     /// The coset's bucket indices, member `j` at index `j`.
     pub(super) betas: Vec<u32>,
+    /// The rotation layer's working set.
+    pub(super) rotation: RotationScratch<W>,
     /// This slot's busy-time counters.
     #[cfg(feature = "phase-timing")]
     pub(super) stats: CosetStats,
@@ -69,7 +72,7 @@ impl<const W: usize> GatherRun<W> {
     /// # Safety
     ///
     /// `len < capacity` on each of the three columns, which [`GatherRun::reset`] guarantees.
-    unsafe fn append_if(
+    pub(super) unsafe fn append_if(
         columns: &mut BucketColumns<W>,
         keep: bool,
         x: [u64; W],

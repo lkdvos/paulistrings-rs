@@ -206,6 +206,10 @@ The probe runs each `(layer, threads)` cell twice inside a dedicated Rayon pool:
 `trotter` additionally self-caps its input at `TROTTER_MAX_N` regardless of `--n` (64 distinct generators under no truncation grow combinatorially rather than closing).
 The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × test_support::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
 
+### The rotation layer
+
+A layer whose table is a rotation's (`engine/bucketed/rotation_layer.rs`) reports its scan as `gather_ns`, its partner reorder as `sort_ns` and its merge-join as `merge_ns`; `rows_id` counts the scanned strings, `rows_gathered` those plus the partners and `rows_sorted` the partners, so the byte model below prices it as the general path; `swap_ns`, `size_ns` and `clear_ns` stay `0`.
+
 ### The partition axis
 
 `--partitions <csv>` (default `1`) sweeps partition counts alongside `--layers` and `--threads`.
@@ -262,6 +266,23 @@ target/release/examples/phase_breakdown --device 0 --n 4000000 --reps 5 --layers
 - `rows_gathered` and `rows_sorted` are both the layer's pre-dedup record count and `rows_id` is `0`: every record is gathered and sorted on the device. `cosets` is the arena batch count and `runs` the block (position) count.
 - The first cell of a process pays the NVRTC compile inside `upload_ns` (seconds); a later cell's upload is the copy alone.
 - The denominator: `scripts/bandwidth.sh --device N` appends an `=== gpu<N> <name> ===` section from `membench --device N` (feature `cuda`), the same contract (d) lines with `threads=gpu<N>`.
+
+### Rotation sparsity
+
+`--rotation-sparsity FILE` replaces the timed cells with a count of how much each gate changes the sum's storage, the input to judging an in-place rotation kernel.
+
+```bash
+target/release/examples/phase_breakdown --layers heavyhex_step --reps 20 \
+  --truncation coeff:3.0517578125e-05 --threads 16 --rotation-sparsity gates.jsonl
+```
+
+- Each layer's circuit runs once from its base sum, gate by gate at `--threads[0]` under `PropagateOptions::default()`, the cell's truncation and `Direction::Forward`; there is no warm-up call, so `heavyhex_step` with `--reps 20` is steps 0 to 19 from `Z` on qubit 63, where a timed cell's call is steps `reps` to `2·reps − 1`.
+- Before each gate the probe rebuckets as the one-partition driver does (`test_support::rebucket`), clones the sum, applies the gate through `propagate_with`, and diffs the two with `test_support::structural_diff`, which asserts they share one bucket hash.
+- The run panics unless its final term count equals that of one `propagate_with` call over the whole circuit.
+- `--sparsity-steps <csv>` diffs only the gates of the listed 0-based steps and applies every other gate without a clone, so a late regime costs one run plus the sampled steps.
+- `FILE` gets one JSON line per gate: `gate`, `step` (the gate index over the step's gate count, one gate per step outside the Trotter layers), `kind` (`debug_name:<support weight>q`, so `PauliRotation:1q` is `rx` and `PauliRotation:2q` is `ZZ`), `disjoint` (the gate's support misses every qubit a string of the sum acts on), `bits`, `terms`, `terms_after`, `changed`, `inserted`, `deleted`, `shift` (all `StructuralDiff`'s), `words` and `vmrss_kb`.
+- The stdout summary groups gates by kind over the run and by step and kind, with term-weighted fractions: `anti = (changed + deleted) / terms`, `ins` and `del` over `terms`, `shift` over `terms_after`, `ins/anti` the share of anticommuting strings whose partner was a new key that survived truncation, `active` the gates that changed anything, `disjoint` the gates off the occupied qubits, `p50`/`p90` of the active gates' per-gate shift fraction, and `skip` the terms in at disjoint gates over all terms in.
+- The clone doubles the sum's memory; `vmrss_kb` and the per-step stderr line track it.
 
 ## Flamegraphs
 

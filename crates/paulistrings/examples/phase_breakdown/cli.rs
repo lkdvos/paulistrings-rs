@@ -35,6 +35,11 @@ Options:
                            tfim_step and heavyhex_step)
   --format table|json      Output format (default: table)
   --json-out FILE          Also append one JSON line per cell to FILE
+  --rotation-sparsity FILE Instead of timing, step each layer's circuit gate by gate at
+                           --threads[0], append one structural-diff JSON line per gate to
+                           FILE and print the per-kind and per-step summary; one partition
+  --sparsity-steps <csv>   Diff only the gates of these steps (0-based), applying the rest
+                           without a clone (default: every step)
   -h, --help               Print this message";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +248,10 @@ pub(crate) struct Config {
     pub(crate) format: Format,
     /// Sidecar file that gets one JSON line appended per cell, regardless of `--format`.
     pub(crate) json_out: Option<String>,
+    /// `--rotation-sparsity`: the per-gate sidecar of the structural-diff mode, which replaces the timed cells.
+    pub(crate) rotation_sparsity: Option<String>,
+    /// `--sparsity-steps`: the steps whose gates `--rotation-sparsity` diffs, `None` for all.
+    pub(crate) sparsity_steps: Option<Vec<usize>>,
 }
 
 /// `--device`: explicit ordinals, or every visible device (`auto`; under `--mpi`, the rank's local device).
@@ -318,6 +327,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     let mut truncation = TruncSpec::Keep;
     let mut format = Format::Table;
     let mut json_out: Option<String> = None;
+    let mut rotation_sparsity: Option<String> = None;
+    let mut sparsity_steps: Option<Vec<usize>> = None;
     let mut partitions: Vec<usize> = vec![1];
     let mut partition_cpus = PartitionCpus::Auto;
     let mut bind_memory = true;
@@ -376,6 +387,10 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--gpu-partitions" => gpu_partitions = parse_usize(value, "--gpu-partitions")?,
             "--format" => format = parse_format(value)?,
             "--json-out" => json_out = Some(value.clone()),
+            "--rotation-sparsity" => rotation_sparsity = Some(value.clone()),
+            "--sparsity-steps" => {
+                sparsity_steps = Some(parse_csv_usize(value, "--sparsity-steps")?);
+            }
             other => return Err(format!("unknown flag '{other}' (see --help)")),
         }
         i += 2;
@@ -522,6 +537,16 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             ));
         }
     }
+    if rotation_sparsity.is_some() && (partitions != vec![1] || mpi || device.is_some()) {
+        return Err(
+            "--rotation-sparsity steps one host partition, so it takes no --partitions, --mpi or \
+             --device"
+                .to_string(),
+        );
+    }
+    if sparsity_steps.is_some() && rotation_sparsity.is_none() {
+        return Err("--sparsity-steps needs --rotation-sparsity".to_string());
+    }
     Ok(Config {
         n,
         qubits,
@@ -541,6 +566,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         truncation,
         format,
         json_out,
+        rotation_sparsity,
+        sparsity_steps,
     })
 }
 

@@ -6,6 +6,18 @@ use super::*;
 use crate::channel::PtmChannel;
 use crate::pauli_string::PauliString;
 
+/// `circuit` as one single-channel circuit per channel, in application order, so a caller can step a sum gate by gate.
+pub fn single_channel_circuits<const W: usize>(
+    circuit: crate::Circuit<W>,
+) -> Vec<crate::Circuit<W>> {
+    let num_qubits = circuit.num_qubits;
+    circuit
+        .channels
+        .into_iter()
+        .map(|channel| crate::Circuit { num_qubits, channels: vec![channel] })
+        .collect()
+}
+
 /// The `sqrt(SWAP)` 4×4 unitary on `(a, b)`, as a matrix for [`PtmChannel::unitary_2q`](crate::PtmChannel::unitary_2q).
 /// The canonical sparse-but-wide two-qubit fixture: its delta set spans more than one bucket bit, yet its PTM is far from dense (steady-state fanout 3.65 vs. a dense PTM's 14.94), exercising multi-delta behaviour without [`haar_su4_matrix`]'s all-sixteen-entries cost.
 pub fn sqrt_swap_matrix() -> [[Complex64; 4]; 4] {

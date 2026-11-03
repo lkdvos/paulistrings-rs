@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-6ae8e832.js";
+            window.path_to_searchindex_js = "searchindex-2295b1e0.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -341,8 +341,9 @@ observable = PauliSum.from_strings({"I" * q + "Z" + "I" * (n - q - 1): 1.0 for q
 circuit = Circuit(n)
 for q in range(n):
     circuit.h(q)
-local = observable.propagate(circuit, truncation.approx_topn(1000), direction="heisenberg", comm=comm, result="local")
-value = comm.allreduce(local.expectation("x+"))
+split = observable.partition(comm=comm)
+split.propagate(circuit, truncation.approx_topn(1000), direction="heisenberg")
+value = split.expectation("x+")
 if comm.Get_rank() == 0:
     print(f"paulistrings {paulistrings.__version__}: {comm.Get_size()} ranks, &lt;+|sum X|+&gt; = {value.real:g} (expect {n})")
 </code></pre>
@@ -1400,13 +1401,32 @@ On a single-node box <code>"auto"</code> also falls back to the unpartitioned pa
 <code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
 <p><code>PropagationStats.partition</code> holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
 An unpartitioned run reports one partition.
-<code>local[k]</code> says whether layer <code>k</code> exchanged at all, which is the figure the cost/benefit split above turns on.</p>
+<code>local[k]</code> says whether the rows keep layer <code>k</code> local, which is the figure the cost/benefit split above turns on; a layer that is not local can still send no row when none of its terms takes a crossing shift.</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 print(stats.partition.rows_exported)   # rows sent across a boundary, per layer
-print(stats.partition.local)           # True where a layer exchanged nothing
+print(stats.partition.local)           # True where the rows keep a layer local
 </code></pre>
 <p>The other fields are under <a href="#partitionstats"><code>PartitionStats</code></a>.</p>
+<h2 id="switching-rows-mid-circuit"><a class="header" href="#switching-rows-mid-circuit">Switching rows mid-circuit</a></h2>
+<p>Which layers exchange is fixed by the partition rows and the circuit alone, before any run: a gate moves terms between partitions exactly when the rows give one of its key shifts a nonzero label.
+<code>paulistrings.hashes.remote_layers(rows, circuit.deltas())</code> computes that per channel, so different rows can be compared on each segment of a circuit.
+<code>PauliSum.partition</code> keeps the sum split between segments, and <code>repartition</code> moves every term to the rows chosen for the next one in a single exchange, which pays when it saves more per-layer exchanges than one full redistribution costs:</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">from paulistrings import hashes
+
+segments = [circuit[:40], circuit[40:]]
+candidates = [hashes.dense(n, 1, seed) for seed in range(16)]
+best = [min(candidates, key=lambda rows: hashes.remote_layers(rows, segment.deltas()).sum()) for segment in segments]
+
+split = observable.partition(partitions=2, partition_rows=best[0])
+split.propagate(segments[0], policy, direction="heisenberg")
+split.repartition(partition_rows=best[1])
+split.rehash(rows=hashes.dense(n, 4, seed=3))   # optional: new bucket rows, nothing exchanged
+split.propagate(segments[1], policy, direction="heisenberg")
+value = split.expectation("z+")
+</code></pre>
+<p>The same calls run over MPI ranks with <code>observable.partition(comm=comm)</code>; see <a href="#keeping-the-sum-split">MPI</a>.</p>
 <h2 id="what-changes-under-partitioning"><a class="header" href="#what-changes-under-partitioning">What changes under partitioning</a></h2>
 <p><strong><code>RAYON_NUM_THREADS</code> is ignored.</strong>
 The partitioned engine builds one pool per partition from the placement, not from Rayon’s global pool.
@@ -1489,31 +1509,28 @@ A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term 
 <p><code>partition_row_exclude=</code> keeps the random draw but forbids chosen coordinates, as a dict of <code>"x"</code> and <code>"z"</code> qubit lists:</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">everything = list(range(observable.num_qubits))
-evolved = observable.propagate(circuit, policy, comm=comm, result="local", partition_row_exclude={"z": everything})
+evolved = observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
 </code></pre>
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
 Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <p>A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only <code>partition_row_blocks=</code> cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.</p>
-<h2 id="resultgather-versus-resultlocal"><a class="header" href="#resultgather-versus-resultlocal">result=“gather” versus result=“local”</a></h2>
-<div class="table-wrapper">
-<table>
-<thead>
-<tr><th><code>result</code></th><th>what each rank gets back</th></tr>
-</thead>
-<tbody>
-<tr><td><code>"gather"</code> (default)</td><td>rank 0 the whole evolved sum; every other rank an <strong>empty</strong> <code>PauliSum</code> of the same <code>num_qubits</code>, so downstream code still type-checks</td></tr>
-<tr><td><code>"local"</code></td><td>this rank’s own share</td></tr>
-</tbody>
-</table>
-</div>
-<p>The shares are disjoint and cover the result, so reductions over <code>comm</code> are exact:</p>
+<h2 id="keeping-the-sum-split"><a class="header" href="#keeping-the-sum-split">Keeping the sum split</a></h2>
+<p><code>propagate(comm=...)</code> returns the whole evolved sum on rank 0 and an <strong>empty</strong> <code>PauliSum</code> of the same <code>num_qubits</code> on every other rank, which materializes everything on one rank.
+To keep the sum split between calls, read a scalar without gathering, or change the rows mid-circuit, split it once with <code>PauliSum.partition(comm=...)</code>:</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">local = observable.propagate(circuit, policy, comm=comm, result="local")
-terms = comm.allreduce(len(local))
-value = comm.allreduce(local.expectation("z+"))
+<pre><code class="language-python">split = observable.partition(comm=comm, partition_row_seed=7)
+split.propagate(circuit[:40], policy, direction="heisenberg")
+split.repartition(partition_row_blocks=blocks)       # one exchange between all ranks
+split.rehash(rows=paulistrings.hashes.sparse(n, 4, 3, seed=1))   # bucket rows, no exchange
+split.propagate(circuit[40:], policy, direction="heisenberg")
+value = split.expectation("z+")                       # the same on every rank
+evolved = split.gather()                              # rank 0 only, if the whole sum is needed
 </code></pre>
-<p>Prefer <code>"local"</code> when the answer is a scalar: gathering materializes the whole sum on rank 0, and that rank transiently holds one extra rank’s copy on top of it.</p>
+<p>A <code>PartitionedPauliSum</code> takes the same row keywords as <code>propagate</code>; <code>len()</code>, <code>expectation</code>, <code>gather</code>, <code>propagate</code>, <code>repartition</code> and <code>rehash</code> are collective, so every rank makes the same calls with the same arguments, while <code>local()</code>, <code>repr()</code> and the properties read this rank alone.
+<code>paulistrings.hashes.remote_layers(rows, circuit.deltas())</code> says which gates a choice of rows makes exchange, so a run can pick the rows for each segment of a circuit before running it; see <a href="#switching-rows-mid-circuit">NUMA partitions</a>.</p>
+<p><code>result="local"</code>, which returned each rank’s share as a plain <code>PauliSum</code>, is deprecated in favour of <code>PauliSum.partition(comm=...)</code>.
+Such a share fed back into a <code>propagate(comm=...)</code> split by other rows would lose the terms that now belong to another rank, so that call raises a <code>ValueError</code> instead.</p>
 <h2 id="launching"><a class="header" href="#launching">Launching</a></h2>
 <p>One rank per NUMA domain, bound to it — that is the placement the in-process engine would have made with explicit CPU lists, done by the launcher instead:</p>
 <pre><code class="language-bash">mpirun -n 4 --map-by ppr:1:numa --bind-to numa python script.py
@@ -2740,7 +2757,7 @@ S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 <li>The last block is kept whole.</li>
 <li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
 <li><code>ole.rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
-<li>Both estimators are numpy over <code>A.to_arrays()</code>; under <code>comm=</code> each rank reads its <code>result="local"</code> share and <code>comm.allreduce</code> sums the values.</li>
+<li>Both estimators are numpy over <code>A.to_arrays()</code>; under MPI each rank reads its share of a <code>PauliSum.partition(comm=...)</code> split (<code>.local()</code>) and <code>comm.allreduce</code> sums the values.</li>
 <li><code>collapse_sample</code> draws the same string whatever the thread count.</li>
 </ul>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
@@ -4414,11 +4431,12 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.hash_rows()</code></td><td>the bucket hash’s GF(2) rows, a <code>bool</code> array of shape <code>(min(2 * num_qubits, 31), 2 * num_qubits)</code>, x-bits first; see <a href="#paulistringshashes"><code>paulistrings.hashes</code></a></td></tr>
 <tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>
 <tr><td><code>.with_hash(rows=None, seed=None)</code></td><td>a copy bucketed by another hash: the given rows lead, dense rows drawn from <code>seed</code> (default: this sum’s) fill the rest; dependent rows are a <code>RuntimeWarning</code></td></tr>
+<tr><td><code>.partition(partitions=None, ..., comm=None)</code></td><td>a <a href="#partitionedpaulisum"><code>PartitionedPauliSum</code></a> that stays split between calls, over NUMA partitions or MPI ranks, so its partition and bucket rows can change mid-circuit</td></tr>
 <tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
 <tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.z_array()</code></td><td>Z-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
-<tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; a <code>result="local"</code> share gives this rank’s terms</td></tr>
+<tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; <code>PartitionedPauliSum.local()</code> gives a rank’s own terms</td></tr>
 <tr><td><code>str(sum)</code>, <code>repr(sum)</code></td><td><code>coefficient*label</code> for the first few terms, <code>+</code>-joined, <code>... (N more terms)</code> past that; <code>0</code> for the empty sum</td></tr>
 </tbody>
 </table>
@@ -4526,6 +4544,7 @@ See <a href="#noise-channels">Noise channels</a> for a worked example.</p>
 <tr><td><code>a + b</code></td><td>new circuit: <code>a</code>’s channels then <code>b</code>’s; neither operand is modified</td></tr>
 <tr><td><code>circuit.adjoint()</code></td><td>new circuit: reversed channel order, each gate replaced by its dagger</td></tr>
 <tr><td><code>circuit.gates</code></td><td>the channel list as a list of task-JSON schema-v1 gate dicts</td></tr>
+<tr><td><code>circuit.deltas()</code></td><td>each channel’s nonzero key shifts, one <code>bool</code> array of shape <code>(k, 2 * num_qubits)</code> per channel (x-bits first, <code>None</code> for a channel the partitioned engine declines); <a href="#paulistringshashes"><code>hashes.remote_layers</code></a> turns them into the layers a choice of partition rows makes exchange</td></tr>
 </tbody>
 </table>
 </div>
@@ -4583,7 +4602,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
 <tr><td><code>partition_rows</code></td><td><code>bool array | None</code></td><td><code>None</code></td><td>the rows outright, shape <code>(log2(P), 2 * num_qubits)</code>, x-bits first, as <code>PauliSum.hash_rows()</code> lays them out and <a href="#paulistringshashes"><code>paulistrings.hashes</code></a> builds them</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
-<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere, <code>"local"</code> returns each rank’s own disjoint share, a plain <code>PauliSum</code> (<code>to_arrays()</code> reads it into numpy)</td></tr>
+<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere; <code>"local"</code>, each rank’s own share as a plain <code>PauliSum</code>, is deprecated in favour of <a href="#partitionedpaulisum"><code>PauliSum.partition</code></a></td></tr>
 <tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
 </tbody>
 </table>
@@ -4640,11 +4659,36 @@ See <a href="#cuda-devices">CUDA devices</a>.</p>
 hashes.sparse(num_qubits, rows, weight, seed, exclude=None) -&gt; bool array
 hashes.projection(num_qubits, rows, seed, exclude=None) -&gt; bool array
 hashes.rank(matrix) -&gt; int
+hashes.remote_layers(rows, deltas) -&gt; bool array (channels,)
 </code></pre>
 <p>Pure-NumPy builders of the GF(2) row matrices <code>PauliSum.with_hash(rows=)</code> and <code>propagate(partition_rows=)</code> take, laid out as <code>PauliSum.hash_rows()</code> returns them: column <code>c &lt; num_qubits</code> is the x-bit of qubit <code>c</code>, column <code>num_qubits + c</code> its z-bit.
 <code>dense</code> sets each coordinate with probability 1/2; <code>sparse</code> reads exactly <code>weight</code> coordinates per row; <code>projection</code> reads one coordinate per row, distinct until they run out.
 Each draws from <code>numpy.random.default_rng(seed)</code> and keeps its rows linearly independent as far as the family reaches, redrawing a dependent candidate: <code>dense</code> and <code>projection</code> up to the readable coordinate count, <code>sparse</code> with an even <code>weight</code> one short of it (such rows span only the even-weight subspace), <code>rank</code> says what was reached.
 <code>exclude={"x": qubits, "z": qubits}</code> keeps those qubits’ x- and z-bits out of every row, as <code>partition_row_exclude</code> does for the seeded draw.</p>
+<h2 id="partitionedpaulisum"><a class="header" href="#partitionedpaulisum"><code>PartitionedPauliSum</code></a></h2>
+<pre><code class="language-text">sum.partition(partitions=None, pin_memory=True, partition_row_seed=None, partition_row_blocks=None,
+              partition_row_exclude=None, partition_rows=None, comm=None) -&gt; PartitionedPauliSum
+</code></pre>
+<p>A sum kept split between calls, over this process’s NUMA partitions (<code>partitions=</code>, default <code>"auto"</code>, where one partition is a one-pool split) or over the ranks of an MPI group (<code>comm=</code>); the row keywords pick the initial partition rows, as for <code>propagate</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>member</th><th></th></tr>
+</thead>
+<tbody>
+<tr><td><code>.propagate(circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128)</code></td><td>in place; <code>.propagate_with_stats(...)</code> returns a <code>PropagationStats</code></td></tr>
+<tr><td><code>.repartition(*, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None)</code></td><td>move every term to the partition the new rows name, in one exchange, without gathering</td></tr>
+<tr><td><code>.rehash(rows=None, seed=None)</code></td><td>rebucket every partition by another hash, as <code>PauliSum.with_hash</code>; nothing is exchanged</td></tr>
+<tr><td><code>.expectation(state="x+")</code>, <code>len()</code></td><td>of the whole sum, the same on every rank</td></tr>
+<tr><td><code>.gather()</code></td><td>the whole sum, on rank 0 under MPI (empty elsewhere)</td></tr>
+<tr><td><code>.local()</code></td><td>this process’s terms: the whole sum in one process, this rank’s share under MPI</td></tr>
+<tr><td><code>.partition_rows()</code>, <code>.hash_rows()</code>, <code>.hash_seed</code>, <code>.num_buckets</code>, <code>.num_partitions</code>, <code>.rank</code>, <code>.num_qubits</code></td><td>the current rows and placement; <code>rank</code> is <code>None</code> in one process</td></tr>
+</tbody>
+</table>
+</div>
+<p>Under MPI every member that reads or changes the whole sum is collective; <code>local()</code>, <code>repr()</code> and the properties are not.
+Exact <code>truncation.topn</code> raises <code>NotImplementedError</code>, as for any partitioned run.</p>
+<p><code>Circuit.deltas()</code> lists each channel’s nonzero key shifts as <code>(k, 2 * num_qubits)</code> boolean arrays, and <code>paulistrings.hashes.remote_layers(rows, deltas)</code> marks the channels a choice of partition rows makes exchange: exactly the layers <code>PartitionStats.local</code> reports as not local.</p>
 <h2 id="gpupaulisum"><a class="header" href="#gpupaulisum"><code>GpuPauliSum</code></a></h2>
 <pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum
 

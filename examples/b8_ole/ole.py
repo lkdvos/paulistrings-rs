@@ -166,7 +166,7 @@ def truncated_series(hist, delta: float, order_2m: int) -> float:
 
 
 # Estimators on a propagated `A`, with `V = prod_{q in sites} exp(-i delta G_q)` and `G_q` the single-qubit `X` (`axis="x"`) or `Z`.
-# With `comm`, `A` is a `result="local"` share and the per-rank values are summed.
+# With `comm`, `A` is this rank's share (`PartitionedPauliSum.local()`) and the per-rank values are summed.
 
 _BYTE_POPCOUNT = np.array([bin(b).count("1") for b in range(256)], dtype=np.uint8)
 _PAIR_CHUNK = 1 << 22

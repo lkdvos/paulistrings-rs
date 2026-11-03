@@ -27,7 +27,7 @@ S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 - The last block is kept whole.
 - The diagonal estimator `Σ b_P² cos(2δ)^{n_P} / Σ b²` is the resummed moment series of the paper's Eq. (C34).
 - `ole.rotated_overlap` gives the exact echo of the same `A`, off-diagonal terms included.
-- Both estimators are numpy over `A.to_arrays()`; under `comm=` each rank reads its `result="local"` share and `comm.allreduce` sums the values.
+- Both estimators are numpy over `A.to_arrays()`; under MPI each rank reads its share of a `PauliSum.partition(comm=...)` split (`.local()`) and `comm.allreduce` sums the values.
 - `collapse_sample` draws the same string whatever the thread count.
 
 ## Cost

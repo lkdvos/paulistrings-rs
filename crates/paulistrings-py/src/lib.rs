@@ -16,6 +16,7 @@ mod gpu;
 #[cfg(feature = "mpi")]
 mod mpi;
 mod noise;
+mod partitioned;
 mod pauli_string;
 mod sum;
 mod truncation;
@@ -108,6 +109,7 @@ fn _paulistrings(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_class::<pauli_string::PauliString>()?;
     m.add_class::<sum::PauliSum>()?;
+    m.add_class::<partitioned::PartitionedPauliSum>()?;
     m.add_class::<sum::PropagationStats>()?;
     m.add_class::<sum::PartitionStats>()?;
     #[cfg(feature = "cuda")]

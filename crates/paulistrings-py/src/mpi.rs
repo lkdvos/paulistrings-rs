@@ -4,6 +4,7 @@
 //! The adoption is collective (happens with the GIL held, before `allow_threads`, after every check that could raise), and the duplicate must not outlive `MPI_Finalize` — [`MpiRun`] drops both the transport and the `DistributedSum` before returning.
 //! The layer loop runs inside `rayon::ThreadPool::install`, so MPI calls come off a pool worker: this needs at least `MPI_THREAD_SERIALIZED`, which [`transport_from_comm`] enforces.
 
+use crate::sum::PropagateFailure;
 use crate::truncation_spec::{collapse_count, collapses_since};
 use paulistrings::mpi::{default_config, MpiError, MpiSum, MpiTransport};
 use paulistrings::BuiltinTruncation;
@@ -149,10 +150,12 @@ impl MpiRun {
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<MpiOutcome<W>, TopologyError> {
+    ) -> Result<MpiOutcome<W>, PropagateFailure> {
         let Self { transport, rows, gather } = self;
+        check_input_placement(sum, &rows, &transport)?;
         let scatter_options = ScatterOptions {
-            runtime: PartitionRuntime::new(&default_config())?,
+            runtime: PartitionRuntime::new(&default_config())
+                .map_err(PropagateFailure::Topology)?,
             rows: ScatterRows::Policy(rows),
         };
         let mut split = MpiSum::<W>::scatter_with(sum.clone(), transport, scatter_options);
@@ -173,8 +176,61 @@ impl MpiRun {
     }
 }
 
+/// Refuse an input that is neither replicated nor already on the ranks `rows` name, which the scatter would silently thin out. **Collective**: one all-reduce of `2 · size` words.
+///
+/// A `comm=` call takes the same sum on every rank and keeps each rank's own terms; a `result="local"` share passed back in is still accepted when every term already sits on its rank, the deprecated chaining.
+fn check_input_placement<const W: usize>(
+    sum: &CorePauliSum<W>,
+    rows: &PartitionRowPolicy,
+    transport: &MpiTransport,
+) -> Result<(), PropagateFailure> {
+    let (rank, size) = (transport.rank() as usize, transport.size() as usize);
+    if size == 1 {
+        return Ok(());
+    }
+    let split = rows.rows::<W>(sum.num_qubits(), size.trailing_zeros() as u8, sum.hash().seed());
+    let mut words = vec![0u64; 2 * size];
+    words[rank] = key_fingerprint(sum);
+    words[size + rank] =
+        sum.iter().filter(|(x, z, _)| split.partition_of(x, z) as usize != rank).count() as u64;
+    transport.allreduce_sum_u64(&mut words);
+    let replicated = words[..size].iter().all(|&fingerprint| fingerprint == words[0]);
+    let placed = words[size..].iter().all(|&foreign| foreign == 0);
+    if replicated || placed {
+        Ok(())
+    } else {
+        Err(PropagateFailure::MisplacedShares)
+    }
+}
+
+/// An order-independent fold of `sum`'s keys, equal on ranks that hold the same terms.
+fn key_fingerprint<const W: usize>(sum: &CorePauliSum<W>) -> u64 {
+    let mut fold = sum.len() as u64;
+    for (x, z, _) in sum.iter() {
+        let mut word: u64 = 0xcbf2_9ce4_8422_2325;
+        for part in x.iter().chain(z) {
+            word = (word ^ part).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        fold ^= word;
+    }
+    fold
+}
+
+/// `sum` split over `transport`'s group by `rows`, this rank's share on the one-partition runtime of [`default_config`]. **Collective.**
+pub(crate) fn scatter<const W: usize>(
+    sum: CorePauliSum<W>,
+    transport: MpiTransport,
+    rows: PartitionRowPolicy,
+) -> Result<MpiSum<W>, TopologyError> {
+    let options = ScatterOptions {
+        runtime: PartitionRuntime::new(&default_config())?,
+        rows: ScatterRows::Policy(rows),
+    };
+    Ok(MpiSum::<W>::scatter_with(sum, transport, options))
+}
+
 /// The call's collapses as rank 0 counted them, all-reduced so every rank reports the same number; `None` without a sampler, and then no collective either.
-fn agreed_collapses(
+pub(crate) fn agreed_collapses(
     policy: &BuiltinTruncation,
     before: Option<u64>,
     coll: &dyn Collectives,

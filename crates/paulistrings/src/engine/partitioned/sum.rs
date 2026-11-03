@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use num_complex::Complex64;
 
-use super::distributed::{PartitionRowPolicy, ScatterOptions, ScatterRows};
+use super::distributed::{repartition_share, PartitionRowPolicy, ScatterOptions, ScatterRows};
 #[cfg(feature = "phase-timing")]
 use super::driver::DriverLaps;
 use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
@@ -18,7 +18,7 @@ use crate::engine::stats::PartitionPhaseStats;
 use crate::engine::timing::timed;
 use crate::engine::trace::PartitionTrace;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
-use crate::pauli_sum::hash::PartitionRows;
+use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::readout::product_state::ProductBasis;
 use crate::truncation::TruncationPolicy;
@@ -221,6 +221,47 @@ impl<const W: usize> PartitionedSum<W> {
             trace: None,
             #[cfg(feature = "phase-timing")]
             laps: DriverLaps::new(started.elapsed().as_nanos() as u64),
+        }
+    }
+
+    /// Move every term to the partition `rows` assigns it and split by `rows` from here on, keeping the bucket hash; each partition exchanges with every other once, with no gather.
+    ///
+    /// # Panics
+    ///
+    /// If `rows` does not name this split's partition count, or as [`repartition_share`].
+    pub fn repartition(&mut self, rows: PartitionRows<W>) {
+        let shares: Vec<PauliSum<W>> = self
+            .parts
+            .iter_mut()
+            .map(|part| std::mem::replace(&mut part.sum, PauliSum::empty(rows.num_qubits())))
+            .collect();
+        let moved = {
+            let rows = &rows;
+            self.runtime.map_partitions(shares, |_, share, transport| {
+                repartition_share(share, rows, transport)
+            })
+        };
+        for (part, sum) in self.parts.iter_mut().zip(moved) {
+            part.sum = sum;
+        }
+        self.rows = rows;
+    }
+
+    /// Rebucket every partition by `hash`, at its bucket count, each inside its own pool so its memory stays on its node; no term changes partition.
+    ///
+    /// # Panics
+    ///
+    /// As [`PauliSum::with_hash`].
+    pub fn rehash_buckets(&mut self, hash: Gf2Hash<W>) {
+        let shares: Vec<PauliSum<W>> = self
+            .parts
+            .iter_mut()
+            .map(|part| std::mem::replace(&mut part.sum, PauliSum::empty(self.rows.num_qubits())))
+            .collect();
+        let rehashed =
+            self.runtime.map_partitions(shares, |_, share, _| share.with_hash(hash.clone()));
+        for (part, sum) in self.parts.iter_mut().zip(rehashed) {
+            part.sum = sum;
         }
     }
 

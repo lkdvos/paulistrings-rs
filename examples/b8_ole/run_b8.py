@@ -102,17 +102,21 @@ def main(argv=None) -> int:
     if args.exact_overlap:
         exclude["x"] = sites
     kwargs = {}
-    if comm is not None:
-        kwargs.update(comm=comm, result="local", partition_row_exclude=exclude)
-    elif args.partitions is not None:
+    if comm is None and args.partitions is not None:
         kwargs["partitions"] = args.partitions if args.partitions == "auto" else int(args.partitions)
         kwargs["partition_row_exclude"] = exclude
 
     for seed in _seeds(args.seeds):
         t0 = time.perf_counter()
-        result, stats = obs.propagate_with_stats(
-            circuit, build_policy(args, seed), direction="heisenberg", **kwargs
-        )
+        if comm is not None:
+            # Each rank keeps its own share; the estimators below read it and sum over `comm`.
+            split = obs.partition(comm=comm, partition_row_exclude=exclude)
+            stats = split.propagate_with_stats(circuit, build_policy(args, seed), direction="heisenberg")
+            result = split.local()
+        else:
+            result, stats = obs.propagate_with_stats(
+                circuit, build_policy(args, seed), direction="heisenberg", **kwargs
+            )
         t_prop = time.perf_counter() - t0
         hist = ole.anticommute_histogram(result, sites, "x", comm=comm)
         record = {

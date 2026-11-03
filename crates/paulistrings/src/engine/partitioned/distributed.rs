@@ -14,6 +14,7 @@ use crate::circuit::Circuit;
 use crate::engine::backend::{HostPartition, PartitionBackend, PartitionStorage};
 use crate::engine::timing::timed;
 use crate::engine::trace::PartitionTrace;
+use crate::engine::transport::ByteParts;
 use crate::engine::transport::Transport;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
 use crate::pauli_string::qubit_mask;
@@ -412,6 +413,33 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         }
     }
 
+    /// Move every term to the rank `rows` assigns it and split by `rows` from here on, keeping the bucket hash. **Collective**: every rank passes the same `rows`, which is checked.
+    ///
+    /// # Panics
+    ///
+    /// If the ranks disagree about `rows` or the bucket hash, or as [`repartition_share`].
+    pub fn repartition(&mut self, rows: PartitionRows<W>) {
+        let empty = PauliSum::empty(self.num_qubits());
+        let share = std::mem::replace(&mut self.local.sum, empty);
+        let transport = &self.transport;
+        let moved = self.runtime.install(|| repartition_share(share, &rows, transport));
+        self.local.sum = moved;
+        self.rows = rows;
+    }
+
+    /// Rebucket this rank's share by `hash`, at its bucket count, which every rank must pass alike (checked); no term changes rank. **Collective.**
+    ///
+    /// # Panics
+    ///
+    /// If the ranks disagree about the rows of `hash`, or as [`PauliSum::with_hash`].
+    pub fn rehash_buckets(&mut self, hash: Gf2Hash<W>) {
+        let empty = PauliSum::empty(self.num_qubits());
+        let share = std::mem::replace(&mut self.local.sum, empty);
+        let rehashed = self.runtime.install(|| share.with_hash(hash));
+        self.transport.check_consistency(identity_fingerprint(&self.rows, rehashed.hash()));
+        self.local.sum = rehashed;
+    }
+
     /// Panic unless this rank's share is well-formed and holds only its own keys; `O(terms)`, local only.
     pub fn assert_invariants(&self) {
         #[cfg(any(test, debug_assertions))]
@@ -451,6 +479,93 @@ pub(crate) fn gather_share<const W: usize, X: Transport>(
             .collect();
         PauliSum::merge_partitions(parts)
     })
+}
+
+/// Move `share`, this rank's terms under any earlier split, so that every rank holds exactly the terms `rows` assigns it: one all-to-all exchange. **Collective.**
+///
+/// This is how a share chained between distributed calls (`result="local"` in Python) changes partition rows without losing terms, since a scatter only filters a share and drops what belongs elsewhere.
+/// Every rank's share must carry the same bucket hash rows; bucket counts may differ and are raised to the group's largest.
+///
+/// # Panics
+///
+/// If the ranks disagree about `rows` or the bucket hash rows, if the group size is not a power of two, or if `rows` does not name one partition per rank.
+pub fn repartition_share<const W: usize, X: Transport>(
+    mut share: PauliSum<W>,
+    rows: &PartitionRows<W>,
+    transport: &X,
+) -> PauliSum<W> {
+    let size = transport.size() as usize;
+    rows.assert_splits(share.num_qubits(), 1usize << group_bits(transport.size()));
+    transport.check_consistency(identity_fingerprint(rows, share.hash()));
+    let bits = transport.allreduce_max_u8(share.hash().bits());
+    while share.hash().bits() < bits {
+        share.refine();
+    }
+    let rank = transport.rank() as usize;
+    let hash = share.hash().clone();
+    let num_qubits = share.num_qubits();
+    let mut send: Vec<Option<ByteParts>> =
+        encode_split(&share, rows).into_iter().map(Some).collect();
+    drop(share);
+    let mut own = send[rank].take();
+    // Every rank sends to every other, an empty payload included, so a transport inferring its partners from the `Some` slots sees a symmetric exchange.
+    let mut received = transport.exchange(send, &mut Vec::new());
+    let parts: Vec<PauliSum<W>> = (0..size)
+        .map(|from| {
+            let payload = if from == rank {
+                own.take().expect("this rank's own payload").0
+            } else {
+                received[from]
+                    .take()
+                    .unwrap_or_else(|| panic!("repartition: rank {from} sent nothing"))
+                    .0
+            };
+            decode_rank(&payload, hash.clone(), num_qubits, from)
+        })
+        .collect();
+    PauliSum::merge_partitions(parts)
+}
+
+/// `share` cut by the partition `rows` assigns each term, one payload per partition in the gather's wire form (bucket lengths, then the x, z and coefficient columns), keeping every bucket's order.
+/// One sequential pass straight into the wire columns, so the split never holds a bucket structure per partition and bucket.
+fn encode_split<const W: usize>(share: &PauliSum<W>, rows: &PartitionRows<W>) -> Vec<ByteParts> {
+    let partitions = rows.num_partitions();
+    let buckets = share.num_buckets();
+    let mut lens: Vec<Vec<u64>> = vec![Vec::with_capacity(buckets); partitions];
+    let mut x: Vec<Vec<[u64; W]>> = vec![Vec::new(); partitions];
+    let mut z: Vec<Vec<[u64; W]>> = vec![Vec::new(); partitions];
+    let mut coeff: Vec<Vec<Complex64>> = vec![Vec::new(); partitions];
+    for b in 0..buckets {
+        let (bucket_x, bucket_z, bucket_coeff) = share.bucket(b);
+        let before: Vec<usize> = coeff.iter().map(Vec::len).collect();
+        for ((key_x, key_z), &c) in bucket_x.iter().zip(bucket_z).zip(bucket_coeff) {
+            let to = rows.partition_of(key_x, key_z) as usize;
+            x[to].push(*key_x);
+            z[to].push(*key_z);
+            coeff[to].push(c);
+        }
+        for (to, lens) in lens.iter_mut().enumerate() {
+            lens.push((coeff[to].len() - before[to]) as u64);
+        }
+    }
+    lens.into_iter()
+        .zip(x)
+        .zip(z)
+        .zip(coeff)
+        .map(|(((lens, x), z), coeff)| {
+            ByteParts(vec![
+                bytemuck::cast_slice(&lens).to_vec(),
+                bytemuck::cast_slice(x.as_flattened()).to_vec(),
+                bytemuck::cast_slice(z.as_flattened()).to_vec(),
+                bytemuck::cast_slice(&coeff).to_vec(),
+            ])
+        })
+        .collect()
+}
+
+/// What every rank must agree on before terms move by `rows`: the partition rows and the bucket hash's rows.
+fn identity_fingerprint<const W: usize>(rows: &PartitionRows<W>, bucket_hash: &Gf2Hash<W>) -> u64 {
+    rows_identity(rows.rows()) ^ rows_identity(bucket_hash.rows()).rotate_left(1)
 }
 
 /// GF(2) rows as one word, folded word by word, so equal rows give equal words whoever produced them.

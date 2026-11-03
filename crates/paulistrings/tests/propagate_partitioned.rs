@@ -16,7 +16,9 @@ use paulistrings::test_support::{
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{propagate_partitioned, PartitionConfig, Placement};
+use paulistrings::{
+    propagate_partitioned, Gf2Hash, PartitionConfig, PartitionRows, PartitionedSum, Placement,
+};
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-11;
@@ -392,5 +394,37 @@ fn partner_panic_does_not_hang() {
     match rx.recv_timeout(Duration::from_secs(120)) {
         Ok(panicked) => assert!(panicked, "the run should have panicked, not returned"),
         Err(_) => panic!("a dead partition left the group hanging"),
+    }
+}
+
+/// An in-process split repartitioned by other rows, with its buckets rehashed, continues exactly as the unpartitioned run.
+#[test]
+fn repartitioning_and_rehashing_mid_run_match_propagate() {
+    let n = 8;
+    let circuit = trotter_circuit::<1>(n, THETA);
+    let sum = rand_sum::<1>(300, n, 0x9A27);
+    let half = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
+    let want = propagate(&circuit, half.clone(), &KeepAll, Direction::Forward);
+    for partitions in [2usize, 4] {
+        let bits = partitions.trailing_zeros() as u8;
+        let mut split = PartitionedSum::scatter(sum.clone(), &config(partitions))
+            .expect("an unpinned placement resolves");
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
+        let new_rows = PartitionRows::from_seed(n, bits, 0xFEED);
+        split.repartition(new_rows.clone());
+        let hash = Gf2Hash::from_rows(n, 3, 3, vec![[0b1], [0b10]], vec![[0], [0]]);
+        split.rehash_buckets(hash.clone());
+        assert_eq!(split.rows(), &new_rows);
+        for r in 0..partitions {
+            let part = split.partition(r);
+            assert_eq!(part.hash().rows(), hash.rows());
+            assert!(
+                part.iter().all(|(x, z, _)| new_rows.partition_of(x, z) == r as u32),
+                "partition {r} holds foreign keys"
+            );
+        }
+        assert_terms_close(&split.gather(), &half, TOL, &format!("midway partitions={partitions}"));
+        split.propagate(&circuit, &KeepAll, Direction::Forward);
+        assert_terms_close(&split.gather(), &want, TOL, &format!("partitions={partitions}"));
     }
 }

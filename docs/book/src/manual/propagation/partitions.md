@@ -44,16 +44,40 @@ On a single-node box `"auto"` also falls back to the unpartitioned path, and an 
 
 `PropagationStats.partition` holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
 An unpartitioned run reports one partition.
-`local[k]` says whether layer `k` exchanged at all, which is the figure the cost/benefit split above turns on.
+`local[k]` says whether the rows keep layer `k` local, which is the figure the cost/benefit split above turns on; a layer that is not local can still send no row when none of its terms takes a crossing shift.
 
 <!-- doctest: skip -->
 ```python
 _, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 print(stats.partition.rows_exported)   # rows sent across a boundary, per layer
-print(stats.partition.local)           # True where a layer exchanged nothing
+print(stats.partition.local)           # True where the rows keep a layer local
 ```
 
 The other fields are under [`PartitionStats`](../../library/propagate.md#partitionstats).
+
+## Switching rows mid-circuit {#switching-rows-mid-circuit}
+
+Which layers exchange is fixed by the partition rows and the circuit alone, before any run: a gate moves terms between partitions exactly when the rows give one of its key shifts a nonzero label.
+`paulistrings.hashes.remote_layers(rows, circuit.deltas())` computes that per channel, so different rows can be compared on each segment of a circuit.
+`PauliSum.partition` keeps the sum split between segments, and `repartition` moves every term to the rows chosen for the next one in a single exchange, which pays when it saves more per-layer exchanges than one full redistribution costs:
+
+<!-- doctest: skip -->
+```python
+from paulistrings import hashes
+
+segments = [circuit[:40], circuit[40:]]
+candidates = [hashes.dense(n, 1, seed) for seed in range(16)]
+best = [min(candidates, key=lambda rows: hashes.remote_layers(rows, segment.deltas()).sum()) for segment in segments]
+
+split = observable.partition(partitions=2, partition_rows=best[0])
+split.propagate(segments[0], policy, direction="heisenberg")
+split.repartition(partition_rows=best[1])
+split.rehash(rows=hashes.dense(n, 4, seed=3))   # optional: new bucket rows, nothing exchanged
+split.propagate(segments[1], policy, direction="heisenberg")
+value = split.expectation("z+")
+```
+
+The same calls run over MPI ranks with `observable.partition(comm=comm)`; see [MPI](mpi.md#keeping-the-sum-split).
 
 ## What changes under partitioning
 

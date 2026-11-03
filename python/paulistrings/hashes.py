@@ -10,7 +10,7 @@ every row, as ``partition_row_exclude`` does for the seeded draw.
 
 import numpy as np
 
-__all__ = ["dense", "sparse", "projection", "rank"]
+__all__ = ["dense", "sparse", "projection", "rank", "remote_layers"]
 
 # Candidates tried for one row before the last is taken as drawn.
 _REDRAW_ATTEMPTS = 4096
@@ -109,4 +109,17 @@ def projection(num_qubits, rows, seed, exclude=None):
     for i in range(rows):
         if order.size:
             out[i, order[i % order.size]] = True
+    return out
+
+
+def remote_layers(rows, deltas):
+    """Per channel, whether partition ``rows`` make it exchange terms: some shift in ``deltas`` (``Circuit.deltas()``) gets a nonzero label.
+
+    ``None`` entries, channels the partitioned engine declines, are ``True``.
+    """
+    rows = np.asarray(rows, dtype=bool).astype(np.uint8)
+    out = np.ones(len(deltas), dtype=bool)
+    for i, shifts in enumerate(deltas):
+        if shifts is not None:
+            out[i] = bool(((np.asarray(shifts, dtype=np.uint8) @ rows.T) & 1).any())
     return out

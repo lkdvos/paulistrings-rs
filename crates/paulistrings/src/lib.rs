@@ -20,7 +20,7 @@ pub mod test_support;
 mod truncation;
 
 pub use channel::{support_mask, Channel, OutputBuffer, PauliRotation, PtmChannel};
-pub use circuit::Circuit;
+pub use circuit::{Circuit, KeyShift};
 pub use collectives::Collectives;
 pub use engine::bucketed::LayerScratch;
 #[cfg(feature = "cuda")]
@@ -28,8 +28,9 @@ pub use engine::gpu;
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;
 pub use engine::partitioned::{
-    numa_nodes, propagate_partitioned, CpuSet, DistributedSum, PartitionConfig, PartitionRowPolicy,
-    PartitionRuntime, PartitionedSum, Placement, ScatterOptions, ScatterRows, TopologyError,
+    numa_nodes, propagate_partitioned, repartition_share, CpuSet, DistributedSum, PartitionConfig,
+    PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement, ScatterOptions, ScatterRows,
+    TopologyError,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PartitionPhaseStats;

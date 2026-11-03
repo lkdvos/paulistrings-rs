@@ -352,3 +352,12 @@ Levers: merging positions into one block, or a shorter sort for short runs.
 
 The GPU wins at every measured size: `cnot` 2.3× at 1e4, 7.5× at 1e5, 12.4× at 1e6 against in-process `propagate_with`.
 Unexplained: in-process `propagate` ran 1.6–2.9× slower than the probe on the same cell.
+
+### In-place rotation layer: faster rotation steps at 5–8% more peak memory
+
+At saturation (`heavyhex_step` at `coeff:2^-15`, 24-qubit `tfim_step` at `2^-16`) an active rotation gate changes 20–70% of the strings, most partners are new keys, and a bucket's first change falls at its front, so the in-place merge rewrites nearly every bucket it touches, within L2.
+Genoa code A/B against `6723e31e` (jobs 7396289–7396291, 5 pairs, every rotation cell 5/5): `heavyhex_step` −16.9% / −8.0% at 16 / 48 threads, `tfim_step` −5.1% / −5.7%, `rotation_zz` −9.6% / −6.5%, `rotation_local` −8.9% / −5.5%, untouched `cnot` no consistent change; VmHWM +4.6–6.4%.
+The VmHWM cost is held capacity, not fragmentation (same ordering under `MALLOC_MMAP_THRESHOLD_=16384`): a bucket merged in place keeps its high-water capacity, while the general path's buffers circulate through scratch (#51).
+Rejected: a coefficient store only for anticommuting strings (+15%, mispredicts), merging without counting hits (+12–15%), reserving `len + partners` (VmHWM +15%), and growing a short bucket by exactly its new keys (VmHWM +20–26%, the TFIM gain lost).
+`PartnerOrder` against the stable `sort_by`: 15% faster on `heavyhex_step` at 8 threads, 10% slower on `rotation_zz` at one.
+Skipping the hit count when a bucket has room for every partner, and closing the hits' gap with the final shift, took `merge_ns` −22% to −28% on `heavyhex_step` and `tfim_step` and −4% to −12% on the all-hit `rotation_zz` and `rotation_local`; wall −9.1% / −1.5% (16 / 48 threads, the second not consistent) on `heavyhex_step` and −16.6% / −13.4% on `tfim_step`, VmHWM +0.3–1.6% (jobs 7396538–7396540 against `d7bbc753`; untouched `cnot` +2.2% at 16 threads, so wall effects under ~3% there are layout).

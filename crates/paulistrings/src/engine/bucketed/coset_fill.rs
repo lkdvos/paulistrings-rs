@@ -27,6 +27,9 @@ pub(in crate::engine) struct CosetScratch<const W: usize> {
     pub(super) members: Vec<BucketColumns<W>>,
     /// The coset's bucket indices, member `j` at index `j`.
     pub(super) betas: Vec<u32>,
+    /// The rotation layer's merges done in place, and through `old[0]`.
+    #[cfg(test)]
+    pub(super) rotation_merges: (usize, usize),
     /// This slot's busy-time counters.
     #[cfg(feature = "phase-timing")]
     pub(super) stats: CosetStats,
@@ -69,7 +72,7 @@ impl<const W: usize> GatherRun<W> {
     /// # Safety
     ///
     /// `len < capacity` on each of the three columns, which [`GatherRun::reset`] guarantees.
-    unsafe fn append_if(
+    pub(super) unsafe fn append_if(
         columns: &mut BucketColumns<W>,
         keep: bool,
         x: [u64; W],

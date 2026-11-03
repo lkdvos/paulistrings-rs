@@ -2,6 +2,7 @@
 //!
 //! A coset task swaps its bucket columns into worker scratch and writes its outputs back into the emptied columns, so the layer runs in place.
 //! Identity-delta rows keep their keys, so a run's identity stream inherits the source bucket's order and is never sorted; every other row, received rows included, joins the rest stream.
+//! A table shaped like a rotation skips both streams and runs `rotation_layer` on each bucket in place.
 
 use std::sync::Mutex;
 
@@ -14,12 +15,15 @@ use super::trace::PartitionTrace;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
+use rotation_layer::{fill_rotation_coset, RotationLayer};
 
 #[cfg(feature = "phase-timing")]
 use super::stats::{PartitionPhaseStats, PhaseStats};
 use super::timing::{lap, stamp};
 
 mod coset_fill;
+mod partner_order;
+mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 
@@ -214,13 +218,17 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
     stamp!(stamp);
 
     // A partitioned layer's local table can look key-preserving while received rows still need merging.
-    if let Prepared::Local(ptm) = prepared {
-        if !X::NEEDS_BETA && ptm.is_key_preserving() {
-            rescale_in_place(sum, ptm, policy);
-            lap!(stamp, scratch.stats.rescale_ns);
-            return;
+    let rotation = match prepared {
+        Prepared::Local(ptm) if !X::NEEDS_BETA => {
+            if ptm.is_key_preserving() {
+                rescale_in_place(sum, ptm, policy);
+                lap!(stamp, scratch.stats.rescale_ns);
+                return;
+            }
+            RotationLayer::of(ptm)
         }
-    }
+        _ => None,
+    };
 
     let own_deltas;
     let deltas: &[u32] = match knobs.bucket_deltas {
@@ -231,17 +239,48 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
         }
     };
     let span = Gf2Span::new(deltas, sum.hash().bits());
-    let plan = DeltaPlan::new(prepared, &span, knobs);
-    let num_cosets = span.num_cosets();
-    lap!(stamp, scratch.stats.span_plan_ns);
-
     debug_assert!(knobs.order.is_none_or(|order| order.dimension() == span.dimension()));
 
+    let len = match rotation {
+        Some(layer) => {
+            debug_assert!(knobs.order.is_none());
+            lap!(stamp, scratch.stats.span_plan_ns);
+            coset_loop(sum, &span, scratch, |members, _, worker_scratch| {
+                fill_rotation_coset(members, &layer, policy, worker_scratch)
+            })
+        }
+        None => {
+            let plan = DeltaPlan::new(prepared, &span, knobs);
+            lap!(stamp, scratch.stats.span_plan_ns);
+            coset_loop(sum, &span, scratch, |members, betas, worker_scratch| {
+                fill_coset::<W, T, X>(members, &plan, policy, worker_scratch, extra, betas)
+            })
+        }
+    };
+    lap!(stamp, scratch.stats.coset_loop_ns);
+    sum.set_len_after_layer(len);
+    lap!(stamp, scratch.stats.recount_ns);
+
+    #[cfg(debug_assertions)]
+    sum.assert_invariants();
+}
+
+/// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns; returns the output terms.
+fn coset_loop<const W: usize, F>(
+    sum: &mut PauliSum<W>,
+    span: &Gf2Span,
+    scratch: &mut LayerScratch<W>,
+    fill: F,
+) -> usize
+where
+    F: Fn(&mut [BucketColumns<W>], &[u32], &mut CosetScratch<W>) + Sync,
+{
+    let num_cosets = span.num_cosets();
     // Each coset reads and writes only its own buckets (engine/coset.rs).
-    let len = if num_cosets < MIN_COSETS_FOR_PARALLEL {
+    if num_cosets < MIN_COSETS_FOR_PARALLEL {
         let buckets = DisjointSlots::new(sum.buckets_mut());
         (0..num_cosets as u32)
-            .map(|coset| run_coset(coset, &span, &buckets, &plan, policy, &mut scratch.task, extra))
+            .map(|coset| run_coset(coset, span, &buckets, &mut scratch.task, &fill))
             .sum()
     } else {
         let pool = rayon::current_num_threads().max(1);
@@ -257,31 +296,22 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, T, X>(
                 let worker = rayon::current_thread_index()
                     .expect("the coset loop runs on a Rayon pool worker");
                 let mut worker_scratch = workers[worker].lock().unwrap();
-                run_coset(coset, &span, &buckets, &plan, policy, &mut worker_scratch, extra)
+                run_coset(coset, span, &buckets, &mut worker_scratch, &fill)
             })
             .sum()
-    };
-    lap!(stamp, scratch.stats.coset_loop_ns);
-    sum.set_len_after_layer(len);
-    lap!(stamp, scratch.stats.recount_ns);
-
-    #[cfg(debug_assertions)]
-    sum.assert_invariants();
+    }
 }
 
 /// Swap coset `coset`'s buckets into the task's member slots, fill them, and swap the outputs back; returns the coset's output terms.
-fn run_coset<const W: usize, T, X>(
+fn run_coset<const W: usize, F>(
     coset: u32,
     span: &Gf2Span,
     buckets: &DisjointSlots<'_, BucketColumns<W>>,
-    plan: &DeltaPlan<'_, W>,
-    policy: &T,
     scratch: &mut CosetScratch<W>,
-    extra: &X,
+    fill: &F,
 ) -> usize
 where
-    T: TruncationPolicy<W> + ?Sized,
-    X: ExtraRows<W>,
+    F: Fn(&mut [BucketColumns<W>], &[u32], &mut CosetScratch<W>),
 {
     let representative = span.representative_at(coset);
     let mut members = std::mem::take(&mut scratch.members);
@@ -293,7 +323,7 @@ where
         // SAFETY: the cosets partition the buckets, so no other task reaches bucket `beta`.
         std::mem::swap(slot, unsafe { buckets.get(beta as usize) });
     }
-    fill_coset::<W, T, X>(&mut members, plan, policy, scratch, extra, &betas);
+    fill(&mut members, &betas, scratch);
     let mut len = 0;
     for (slot, &beta) in members.iter_mut().zip(&betas) {
         len += slot.len();

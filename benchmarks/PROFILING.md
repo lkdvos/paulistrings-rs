@@ -206,6 +206,10 @@ The probe runs each `(layer, threads)` cell twice inside a dedicated Rayon pool:
 `trotter` additionally self-caps its input at `TROTTER_MAX_N` regardless of `--n` (64 distinct generators under no truncation grow combinatorially rather than closing).
 The probe also prints its own timer-overhead estimate (`PhaseStats::timer_reads() × test_support::TIMER_READ_OVERHEAD_NS`) so you can see when the measurement pollutes itself.
 
+### The rotation layer
+
+A layer whose table is a rotation's (`engine/bucketed/rotation_layer.rs`) reports its scan as `gather_ns`, its partner reorder as `sort_ns` and its merge-join as `merge_ns`; `rows_id` counts the scanned strings, `rows_gathered` those plus the partners and `rows_sorted` the partners, so the byte model below prices it as the general path; `swap_ns`, `size_ns` and `clear_ns` stay `0`.
+
 ### The partition axis
 
 `--partitions <csv>` (default `1`) sweeps partition counts alongside `--layers` and `--threads`.

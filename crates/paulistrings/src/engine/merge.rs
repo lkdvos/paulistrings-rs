@@ -21,6 +21,13 @@ pub(crate) struct SortScratch<const W: usize> {
     staging_coefficient: Vec<Complex64>,
 }
 
+impl<const W: usize> SortScratch<W> {
+    /// The permutation buffer, lent to a caller that sorts no run while holding it.
+    pub(crate) fn indices(&mut self) -> &mut Vec<u32> {
+        &mut self.permutation
+    }
+}
+
 /// Sort the columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams.
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore

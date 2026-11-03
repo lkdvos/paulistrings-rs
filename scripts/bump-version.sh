@@ -17,6 +17,8 @@ fi
 
 sed -i -E "0,/^version = /s/^version = \".*\"/version = \"$version\"/" Cargo.toml
 sed -i -E "0,/^version = /s/^version = \".*\"/version = \"$version\"/" pyproject.toml
+# The workspace's own requirement on the core crate must admit the new version, which a minor bump on 0.x does not.
+sed -i -E "s/^(paulistrings = \{ path = \"crates\/paulistrings\", version = )\".*\"/\1\"$version\"/" Cargo.toml
 
 echo "bumped Cargo.toml and pyproject.toml to $version"
 git diff --stat -- Cargo.toml pyproject.toml

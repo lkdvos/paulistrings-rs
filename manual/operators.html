@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -355,7 +355,7 @@ $$</p>
 For the Ising chain, $h_k = -J$ on the bonds and $h_k = -h$ on the fields, so the angles are $-2J,\delta t$ and $-2h,\delta t$.</p>
 <h3 id="symplectic-arrays"><a class="header" href="#symplectic-arrays">Symplectic arrays</a></h3>
 <p><code>x_array()</code> and <code>z_array()</code> return the $x$- and $z$-parts of all $N$ terms as <code>uint64</code> arrays of shape <code>(N, width)</code>, with site $j$ in bit <code>j % 64</code> of column <code>j // 64</code>.
-<code>coefficients_array()</code> returns the $c_i$ as a <code>complex128</code> array of length $N$.
+<code>coefficients_array()</code> returns the $c_i$ as an array of length $N$ in the sum’s <a href="#dtypes">dtype</a>, <code>complex128</code> by default.
 All three are copies, and all three list the terms in the same canonical order: partition-bucket index, then lexicographic order of $(\boldsymbol{p}_x, \boldsymbol{p}_z)$.
 This order is neither insertion order nor label order, and <code>propagate</code> can change it, so rows are paired only within one snapshot.
 <code>to_arrays()</code> returns all three at once, and <code>PauliSum.from_arrays</code> is the inverse: duplicate rows are summed, arrays narrower than the sum’s width are zero-padded, and a bit set at or beyond site $L$ raises <code>ValueError</code>.</p>
@@ -399,6 +399,20 @@ print(hamiltonian.overlap(hamiltonian).real, np.sum(np.abs(c) ** 2))
 4.0 4.0
 </code></pre>
 <p><code>PauliSum(L)</code> is the empty sum on $L$ qubits, the zero operator, and prints as <code>0</code>.</p>
+<h3 id="dtypes"><a class="header" href="#dtypes">Coefficient types</a></h3>
+<p>Coefficients are <code>complex128</code> unless a constructor’s <code>dtype=</code> says otherwise; <code>float64</code>, <code>float32</code> and <code>complex64</code> are the alternatives, and <code>astype</code> converts:</p>
+<pre><code class="language-python">real = PauliSum.from_strings(labels, coefficients, dtype="float64")
+print(real.dtype, real.expectation("z+"), hamiltonian.astype("float32").dtype)
+</code></pre>
+<pre><code class="language-text">float64 -3.0 float32
+</code></pre>
+<p>A real dtype is exact for a Hermitian observable under channels that preserve Hermiticity: by the expansion above its coefficients are real, and stay real.
+Every factory in <code>gates</code> and <code>noise</code> builds such a channel.
+A real sum raises <code>ValueError</code> before propagating through any other channel, and on a coefficient, scale factor or <code>astype</code> that would need an imaginary part.
+Readouts follow the dtype: <code>expectation</code>, <code>overlap</code> and <code>identity_coefficient</code> return a <code>float</code> for a real sum, and the arrays carry the sum’s dtype.
+<code>+</code>, <code>-</code>, <code>+=</code> and <code>-=</code> between two dtypes give NumPy’s promotion of the pair.</p>
+<p>A term costs <code>16 × width</code> bytes of key plus 16 (<code>complex128</code>), 8 (<code>float64</code>, <code>complex64</code>) or 4 (<code>float32</code>) bytes of coefficient.
+Single precision resolves about seven significant digits, so its rounding accumulates over layers and a coefficient threshold below about <code>1e-7</code> of the largest coefficient is below its resolution.</p>
 <h2 id="saving-and-loading"><a class="header" href="#saving-and-loading">Saving and loading</a></h2>
 <p>A sum is saved as a <code>.npz</code> archive holding the three columns, <code>num_qubits</code>, and a format tag:</p>
 <pre><code class="language-python">from paulistrings import io as psio

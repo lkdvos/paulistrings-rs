@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -204,7 +204,7 @@ print(evolved.expectation("0+1r").real) # |0&gt;|+&gt;|1&gt;|+i&gt; per qubit
 0.0
 0.25
 </code></pre>
-<p>The return type is Python <code>complex</code>; take <code>.real</code> for a Hermitian observable, and treat a non-negligible imaginary part as a sign the sum is not Hermitian rather than as noise to discard.
+<p>The return type is Python <code>complex</code> (<code>float</code> for a <a href="operators.html#dtypes">real-dtype</a> sum); take <code>.real</code> for a Hermitian observable, and treat a non-negligible imaginary part as a sign the sum is not Hermitian rather than as noise to discard.
 A label of the wrong length, or a character outside the alphabet, is a <code>ValueError</code> that restates the rule.</p>
 <p>The pass is cheap next to the propagation that produced the sum, and the state is the thing that is cheap to vary: one propagation, any number of product states.
 The observable is not: the propagated object <em>is</em> the observable, so a second observable is a second propagation, not a second pass.

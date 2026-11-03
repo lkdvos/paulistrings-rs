@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -298,6 +298,7 @@ Each draws from <code>numpy.random.default_rng(seed)</code> and keeps its rows l
 <tr><td><code>.gather()</code></td><td>the whole sum, on rank 0 under MPI (empty elsewhere)</td></tr>
 <tr><td><code>.local()</code></td><td>this process’s terms: the whole sum in one process, this rank’s share under MPI</td></tr>
 <tr><td><code>.partition_rows()</code>, <code>.hash_rows()</code>, <code>.hash_seed</code>, <code>.num_buckets</code>, <code>.num_partitions</code>, <code>.rank</code>, <code>.num_qubits</code></td><td>the current rows and placement; <code>rank</code> is <code>None</code> in one process</td></tr>
+<tr><td><code>.dtype</code></td><td>the coefficient type of the sum it was split from, which <code>gather()</code> and <code>local()</code> keep</td></tr>
 </tbody>
 </table>
 </div>
@@ -326,6 +327,7 @@ A device error mid-run leaves the sum holding the last completed layer’s outpu
 <tr><td><code>len(resident)</code></td><td><code>int</code></td><td>terms on the device</td></tr>
 <tr><td><code>.num_qubits</code></td><td><code>int</code></td><td>the sum’s qubit count</td></tr>
 <tr><td><code>.device</code></td><td><code>int</code></td><td>the CUDA device ordinal</td></tr>
+<tr><td><code>.dtype</code></td><td><code>numpy.dtype</code></td><td>the coefficient type, kept by <code>to_host</code></td></tr>
 <tr><td><code>.num_buckets</code></td><td><code>int</code></td><td>the device partition’s current bucket count, grow-only</td></tr>
 </tbody>
 </table>

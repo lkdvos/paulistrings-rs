@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::fmt;
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>num_complex::Complex64;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">crate</span>::coefficient::Coefficient;
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::pauli_string::PauliString;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::PauliSum;
@@ -215,13 +215,13 @@
 <a href=#215 id=215 data-nosnippet>215</a>    }
 <a href=#216 id=216 data-nosnippet>216</a>}
 <a href=#217 id=217 data-nosnippet>217</a>
-<a href=#218 id=218 data-nosnippet>218</a><span class="kw">impl</span>&lt;<span class="kw">const </span>W: usize&gt; PauliSum&lt;W&gt; {
+<a href=#218 id=218 data-nosnippet>218</a><span class="kw">impl</span>&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt; PauliSum&lt;W, C&gt; {
 <a href=#219 id=219 data-nosnippet>219</a>    <span class="doccomment">/// Expectation value `⟨ψ|O|ψ⟩` in a stabilizer state; complex since `O` need not be Hermitian.
 <a href=#220 id=220 data-nosnippet>220</a>    ///
 <a href=#221 id=221 data-nosnippet>221</a>    /// # Panics
 <a href=#222 id=222 data-nosnippet>222</a>    ///
 <a href=#223 id=223 data-nosnippet>223</a>    /// Panics if `state.num_qubits()` differs from [`Self::num_qubits`].
-<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">pub fn </span>expectation_stabilizer(<span class="kw-2">&amp;</span><span class="self">self</span>, state: <span class="kw-2">&amp;</span>StabilizerState&lt;W&gt;) -&gt; Complex64 {
+<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">pub fn </span>expectation_stabilizer(<span class="kw-2">&amp;</span><span class="self">self</span>, state: <span class="kw-2">&amp;</span>StabilizerState&lt;W&gt;) -&gt; C {
 <a href=#225 id=225 data-nosnippet>225</a>        <span class="macro">assert_eq!</span>(
 <a href=#226 id=226 data-nosnippet>226</a>            <span class="self">self</span>.num_qubits(),
 <a href=#227 id=227 data-nosnippet>227</a>            state.num_qubits(),
@@ -230,7 +230,7 @@
 <a href=#230 id=230 data-nosnippet>230</a>            state.num_qubits(),
 <a href=#231 id=231 data-nosnippet>231</a>        );
 <a href=#232 id=232 data-nosnippet>232</a>        <span class="self">self</span>.sum_over_terms(|x, z, coeff| <span class="kw">match </span>state.sign_of(<span class="kw-2">&amp;</span>PauliString::&lt;W&gt; { x: <span class="kw-2">*</span>x, z: <span class="kw-2">*</span>z }) {
-<a href=#233 id=233 data-nosnippet>233</a>            <span class="prelude-val">None </span>=&gt; Complex64::new(<span class="number">0.0</span>, <span class="number">0.0</span>),
+<a href=#233 id=233 data-nosnippet>233</a>            <span class="prelude-val">None </span>=&gt; C::ZERO,
 <a href=#234 id=234 data-nosnippet>234</a>            <span class="prelude-val">Some</span>(<span class="bool-val">false</span>) =&gt; coeff,
 <a href=#235 id=235 data-nosnippet>235</a>            <span class="prelude-val">Some</span>(<span class="bool-val">true</span>) =&gt; -coeff,
 <a href=#236 id=236 data-nosnippet>236</a>        })

@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -612,7 +612,7 @@ $$</p>
 For the Ising chain, $h_k = -J$ on the bonds and $h_k = -h$ on the fields, so the angles are $-2J,\delta t$ and $-2h,\delta t$.</p>
 <h3 id="symplectic-arrays"><a class="header" href="#symplectic-arrays">Symplectic arrays</a></h3>
 <p><code>x_array()</code> and <code>z_array()</code> return the $x$- and $z$-parts of all $N$ terms as <code>uint64</code> arrays of shape <code>(N, width)</code>, with site $j$ in bit <code>j % 64</code> of column <code>j // 64</code>.
-<code>coefficients_array()</code> returns the $c_i$ as a <code>complex128</code> array of length $N$.
+<code>coefficients_array()</code> returns the $c_i$ as an array of length $N$ in the sum’s <a href="#dtypes">dtype</a>, <code>complex128</code> by default.
 All three are copies, and all three list the terms in the same canonical order: partition-bucket index, then lexicographic order of $(\boldsymbol{p}_x, \boldsymbol{p}_z)$.
 This order is neither insertion order nor label order, and <code>propagate</code> can change it, so rows are paired only within one snapshot.
 <code>to_arrays()</code> returns all three at once, and <code>PauliSum.from_arrays</code> is the inverse: duplicate rows are summed, arrays narrower than the sum’s width are zero-padded, and a bit set at or beyond site $L$ raises <code>ValueError</code>.</p>
@@ -656,6 +656,20 @@ print(hamiltonian.overlap(hamiltonian).real, np.sum(np.abs(c) ** 2))
 4.0 4.0
 </code></pre>
 <p><code>PauliSum(L)</code> is the empty sum on $L$ qubits, the zero operator, and prints as <code>0</code>.</p>
+<h3 id="dtypes"><a class="header" href="#dtypes">Coefficient types</a></h3>
+<p>Coefficients are <code>complex128</code> unless a constructor’s <code>dtype=</code> says otherwise; <code>float64</code>, <code>float32</code> and <code>complex64</code> are the alternatives, and <code>astype</code> converts:</p>
+<pre><code class="language-python">real = PauliSum.from_strings(labels, coefficients, dtype="float64")
+print(real.dtype, real.expectation("z+"), hamiltonian.astype("float32").dtype)
+</code></pre>
+<pre><code class="language-text">float64 -3.0 float32
+</code></pre>
+<p>A real dtype is exact for a Hermitian observable under channels that preserve Hermiticity: by the expansion above its coefficients are real, and stay real.
+Every factory in <code>gates</code> and <code>noise</code> builds such a channel.
+A real sum raises <code>ValueError</code> before propagating through any other channel, and on a coefficient, scale factor or <code>astype</code> that would need an imaginary part.
+Readouts follow the dtype: <code>expectation</code>, <code>overlap</code> and <code>identity_coefficient</code> return a <code>float</code> for a real sum, and the arrays carry the sum’s dtype.
+<code>+</code>, <code>-</code>, <code>+=</code> and <code>-=</code> between two dtypes give NumPy’s promotion of the pair.</p>
+<p>A term costs <code>16 × width</code> bytes of key plus 16 (<code>complex128</code>), 8 (<code>float64</code>, <code>complex64</code>) or 4 (<code>float32</code>) bytes of coefficient.
+Single precision resolves about seven significant digits, so its rounding accumulates over layers and a coefficient threshold below about <code>1e-7</code> of the largest coefficient is below its resolution.</p>
 <h2 id="saving-and-loading"><a class="header" href="#saving-and-loading">Saving and loading</a></h2>
 <p>A sum is saved as a <code>.npz</code> archive holding the three columns, <code>num_qubits</code>, and a format tag:</p>
 <pre><code class="language-python">from paulistrings import io as psio
@@ -1237,7 +1251,7 @@ The lists run in <strong>application</strong> order, which under <code>direction
 <code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, one partition for an unpartitioned run (<a href="#numa-partitions">NUMA partitions</a>, <a href="#mpi-ranks">MPI ranks</a>).
 The full field list is in the <a href="#propagationstats">Library</a>.</p>
 <h2 id="estimate-the-memory-a-run-needs"><a class="header" href="#estimate-the-memory-a-run-needs">Estimate the memory a run needs</a></h2>
-<p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient.
+<p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient, 8 bytes less for a <code>float64</code> or <code>complex64</code> sum and 12 less for <code>float32</code> (<a href="#dtypes">coefficient types</a>).
 <code>PauliSum.width</code> is the compile-time word tier the qubit count picked — 1 word up to 64 qubits, 2 up to 128, then 4, 8, 16 — so a 127-qubit sum is 48 B/term and a 1024-qubit sum 272 B/term.</p>
 <p><code>stats.peak_terms</code> is the peak <em>resident</em> term count between layers, so <code>peak_terms × (16 × width + 16)</code> is the sum’s own high-water mark:</p>
 <pre><code class="language-python">print(stats.peak_terms, evolved.width, stats.peak_terms * (16 * evolved.width + 16))
@@ -1663,7 +1677,8 @@ for _ in range(steps):
     values.append(resident.to_host().expectation("z+"))
 </code></pre>
 <p><code>GpuPauliSum.propagate</code> and <code>propagate_with_stats</code> take <code>policy</code>, <code>direction</code>, <code>target_bucket_len</code> and <code>min_buckets</code> with the meanings above; <code>len()</code>, <code>num_qubits</code>, <code>device</code> and <code>num_buckets</code> read the resident sum without a download.
-A device error mid-run leaves the resident sum holding the last completed layer’s output, and a later call resumes from it.</p>
+A device error mid-run leaves the resident sum holding the last completed layer’s output, and a later call resumes from it.
+Devices hold every <a href="#dtypes">dtype</a>; <code>GpuPauliSum.dtype</code> is the uploaded sum’s, and <code>to_host</code> keeps it.</p>
 <h3 id="multi-device"><a class="header" href="#multi-device">Several devices</a></h3>
 <p>A list places one partition on each entry, split by GF(2) partition rows and exchanged between layers as in a <a href="#numa-partitions">partitioned run</a>:</p>
 <!-- doctest: skip -->
@@ -1766,7 +1781,7 @@ print(evolved.expectation("0+1r").real) # |0&gt;|+&gt;|1&gt;|+i&gt; per qubit
 0.0
 0.25
 </code></pre>
-<p>The return type is Python <code>complex</code>; take <code>.real</code> for a Hermitian observable, and treat a non-negligible imaginary part as a sign the sum is not Hermitian rather than as noise to discard.
+<p>The return type is Python <code>complex</code> (<code>float</code> for a <a href="#dtypes">real-dtype</a> sum); take <code>.real</code> for a Hermitian observable, and treat a non-negligible imaginary part as a sign the sum is not Hermitian rather than as noise to discard.
 A label of the wrong length, or a character outside the alphabet, is a <code>ValueError</code> that restates the rule.</p>
 <p>The pass is cheap next to the propagation that produced the sum, and the state is the thing that is cheap to vary: one propagation, any number of product states.
 The observable is not: the propagated object <em>is</em> the observable, so a second observable is a second propagation, not a second pass.
@@ -4393,14 +4408,16 @@ This is what lets a sum be built directly out of strings, e.g. <code>p("XYZ") * 
 <tr><th>Signature</th><th>Builds</th></tr>
 </thead>
 <tbody>
-<tr><td><code>PauliSum(num_qubits)</code></td><td>the empty sum</td></tr>
-<tr><td><code>PauliSum.from_strings(terms, *, num_qubits=None)</code></td><td>from a <code>{pauli_string: coefficient}</code> dict; each key is <code>num_qubits</code> characters of <code>I/X/Y/Z</code>, index <code>i</code> addresses qubit <code>i</code></td></tr>
-<tr><td><code>PauliSum.from_strings(labels, coefficients, *, num_qubits=None)</code></td><td>the same, from two equal-length sequences instead of a dict; a label repeated in <code>labels</code> accumulates rather than raising</td></tr>
-<tr><td><code>PauliSum.from_arrays(x, z, coefficients, num_qubits)</code></td><td>from raw symplectic arrays — the inverse of <code>to_arrays</code></td></tr>
+<tr><td><code>PauliSum(num_qubits, *, dtype=None)</code></td><td>the empty sum</td></tr>
+<tr><td><code>PauliSum.from_strings(terms, *, num_qubits=None, dtype=None)</code></td><td>from a <code>{pauli_string: coefficient}</code> dict; each key is <code>num_qubits</code> characters of <code>I/X/Y/Z</code>, index <code>i</code> addresses qubit <code>i</code></td></tr>
+<tr><td><code>PauliSum.from_strings(labels, coefficients, *, num_qubits=None, dtype=None)</code></td><td>the same, from two equal-length sequences instead of a dict; a label repeated in <code>labels</code> accumulates rather than raising</td></tr>
+<tr><td><code>PauliSum.from_arrays(x, z, coefficients, num_qubits, *, dtype=None)</code></td><td>from raw symplectic arrays — the inverse of <code>to_arrays</code></td></tr>
 </tbody>
 </table>
 </div>
-<p><code>num_qubits</code> is inferred from the first label’s length when omitted from either <code>from_strings</code> form; an empty <code>terms</code>/<code>labels</code> with no explicit <code>num_qubits</code> is a <code>ValueError</code>, since there is nothing to infer it from.
+<p><code>dtype</code> is the <a href="#dtypes">coefficient type</a> in any spelling <code>numpy.dtype</code> accepts: <code>float64</code>, <code>float32</code>, <code>complex128</code> (the default for <code>None</code>) or <code>complex64</code>, anything else a <code>TypeError</code>.
+A real dtype raises <code>ValueError</code> on a coefficient with a nonzero imaginary part.
+<code>num_qubits</code> is inferred from the first label’s length when omitted from either <code>from_strings</code> form; an empty <code>terms</code>/<code>labels</code> with no explicit <code>num_qubits</code> is a <code>ValueError</code>, since there is nothing to infer it from.
 <code>from_strings</code> and <code>from_arrays</code> both use the crate’s Hermitian convention: a coefficient multiplies the literal Pauli string, and <code>Y</code> carries no phase of its own.
 Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are dropped.</p>
 <p><code>from_arrays</code> parameters:</p>
@@ -4411,7 +4428,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 </thead>
 <tbody>
 <tr><td><code>x</code>, <code>z</code></td><td><code>uint64</code> array, shape <code>(n_terms, w)</code></td><td>symplectic key words, <code>1 &lt;= w &lt;= </code> the compile-time width tier <code>num_qubits</code> picks; narrower than the tier is zero-padded</td></tr>
-<tr><td><code>coefficients</code></td><td>1-D array, length <code>n_terms</code></td><td><code>complex128</code> or a real-float dtype</td></tr>
+<tr><td><code>coefficients</code></td><td>1-D array, length <code>n_terms</code></td><td><code>float64</code>, <code>float32</code>, <code>complex128</code> or <code>complex64</code>, converted to the sum’s <code>dtype</code></td></tr>
 <tr><td><code>num_qubits</code></td><td><code>int</code></td><td>a set bit at or beyond this qubit is a <code>ValueError</code></td></tr>
 </tbody>
 </table>
@@ -4424,6 +4441,8 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 </thead>
 <tbody>
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
+<tr><td><code>.dtype</code></td><td>coefficient type, a <code>numpy.dtype</code></td></tr>
+<tr><td><code>.astype(dtype)</code></td><td>a copy at another coefficient type; <code>ValueError</code> when going real would drop a nonzero imaginary part</td></tr>
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
 <tr><td><code>.num_buckets</code></td><td>current bucket count, as the last <code>propagate</code> left it</td></tr>
@@ -4432,8 +4451,8 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>
 <tr><td><code>.with_hash(rows=None, seed=None)</code></td><td>a copy bucketed by another hash: the given rows lead, dense rows drawn from <code>seed</code> (default: this sum’s) fill the rest; dependent rows are a <code>RuntimeWarning</code></td></tr>
 <tr><td><code>.partition(partitions=None, ..., comm=None)</code></td><td>a <a href="#partitionedpaulisum"><code>PartitionedPauliSum</code></a> that stays split between calls, over NUMA partitions or MPI ranks, so its partition and bucket rows can change mid-circuit</td></tr>
-<tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
-<tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
+<tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>float</code> for a real dtype, <code>complex</code> otherwise</td></tr>
+<tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D NumPy array of the sum’s dtype</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.z_array()</code></td><td>Z-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; <code>PartitionedPauliSum.local()</code> gives a rank’s own terms</td></tr>
@@ -4450,13 +4469,14 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><th>Call</th><th>Returns</th></tr>
 </thead>
 <tbody>
-<tr><td><code>a + b</code>, <code>a - b</code></td><td>a new sum, coefficients combined on matching strings and the rest kept</td></tr>
-<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge, in place</td></tr>
-<tr><td><code>a * c</code>, <code>c * a</code>, <code>a *= c</code></td><td>every coefficient scaled by a complex or real <code>c</code></td></tr>
+<tr><td><code>a + b</code>, <code>a - b</code></td><td>a new sum, coefficients combined on matching strings and the rest kept, at NumPy’s promotion of the two dtypes</td></tr>
+<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge and dtype, in place</td></tr>
+<tr><td><code>a * c</code>, <code>c * a</code>, <code>a *= c</code></td><td>every coefficient scaled by a complex or real <code>c</code>, at <code>a</code>’s dtype</td></tr>
 </tbody>
 </table>
 </div>
 <p>Both operands of <code>+</code>/<code>-</code> must have the same <code>num_qubits</code>; anything else is a <code>ValueError</code>.
+A real-dtype <code>a</code> raises <code>ValueError</code> on a <code>c</code> with a nonzero imaginary part.
 Terms whose coefficients cancel exactly are dropped, as is every term when <code>c</code> is exactly zero.
 <code>*</code> is scalar-only: multiplying two sums is a full operator product, which this library does not implement.</p>
 <h2 id="saving-loading-importing"><a class="header" href="#saving-loading-importing">Saving, loading, importing</a></h2>
@@ -4683,6 +4703,7 @@ Each draws from <code>numpy.random.default_rng(seed)</code> and keeps its rows l
 <tr><td><code>.gather()</code></td><td>the whole sum, on rank 0 under MPI (empty elsewhere)</td></tr>
 <tr><td><code>.local()</code></td><td>this process’s terms: the whole sum in one process, this rank’s share under MPI</td></tr>
 <tr><td><code>.partition_rows()</code>, <code>.hash_rows()</code>, <code>.hash_seed</code>, <code>.num_buckets</code>, <code>.num_partitions</code>, <code>.rank</code>, <code>.num_qubits</code></td><td>the current rows and placement; <code>rank</code> is <code>None</code> in one process</td></tr>
+<tr><td><code>.dtype</code></td><td>the coefficient type of the sum it was split from, which <code>gather()</code> and <code>local()</code> keep</td></tr>
 </tbody>
 </table>
 </div>
@@ -4711,6 +4732,7 @@ A device error mid-run leaves the sum holding the last completed layer’s outpu
 <tr><td><code>len(resident)</code></td><td><code>int</code></td><td>terms on the device</td></tr>
 <tr><td><code>.num_qubits</code></td><td><code>int</code></td><td>the sum’s qubit count</td></tr>
 <tr><td><code>.device</code></td><td><code>int</code></td><td>the CUDA device ordinal</td></tr>
+<tr><td><code>.dtype</code></td><td><code>numpy.dtype</code></td><td>the coefficient type, kept by <code>to_host</code></td></tr>
 <tr><td><code>.num_buckets</code></td><td><code>int</code></td><td>the device partition’s current bucket count, grow-only</td></tr>
 </tbody>
 </table>
@@ -4850,7 +4872,7 @@ Build the circuit in the order you want applied under <code>"forward"</code>; th
 </tbody>
 </table>
 </div>
-<p>Cost is one masked pass over the terms either way. Returns a Python <code>complex</code>; take <code>.real</code> for a Hermitian operator.</p>
+<p>Cost is one masked pass over the terms either way. Returns a Python <code>float</code> for a real-dtype sum and a <code>complex</code> otherwise; take <code>.real</code> of the latter for a Hermitian operator.</p>
 <h2 id="expectation_stabilizergenerators"><a class="header" href="#expectation_stabilizergenerators"><code>expectation_stabilizer(generators)</code></a></h2>
 <p>Expectation value in a stabilizer state given by its generators.</p>
 <p><code>generators</code> is a list of exactly <code>num_qubits</code> signed Pauli strings — <code>"+XX"</code>, <code>"-ZZ"</code>, or bare <code>"ZIZ"</code> for <code>+</code> — same alphabet and qubit indexing as <code>from_strings</code>.

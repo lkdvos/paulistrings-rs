@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -243,7 +243,8 @@ for _ in range(steps):
     values.append(resident.to_host().expectation("z+"))
 </code></pre>
 <p><code>GpuPauliSum.propagate</code> and <code>propagate_with_stats</code> take <code>policy</code>, <code>direction</code>, <code>target_bucket_len</code> and <code>min_buckets</code> with the meanings above; <code>len()</code>, <code>num_qubits</code>, <code>device</code> and <code>num_buckets</code> read the resident sum without a download.
-A device error mid-run leaves the resident sum holding the last completed layer’s output, and a later call resumes from it.</p>
+A device error mid-run leaves the resident sum holding the last completed layer’s output, and a later call resumes from it.
+Devices hold every <a href="../operators.html#dtypes">dtype</a>; <code>GpuPauliSum.dtype</code> is the uploaded sum’s, and <code>to_host</code> keeps it.</p>
 <h3 id="multi-device"><a class="header" href="#multi-device">Several devices</a></h3>
 <p>A list places one partition on each entry, split by GF(2) partition rows and exchanged between layers as in a <a href="partitions.html">partitioned run</a>:</p>
 <!-- doctest: skip -->

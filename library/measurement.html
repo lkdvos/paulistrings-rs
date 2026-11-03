@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -196,7 +196,7 @@
 </tbody>
 </table>
 </div>
-<p>Cost is one masked pass over the terms either way. Returns a Python <code>complex</code>; take <code>.real</code> for a Hermitian operator.</p>
+<p>Cost is one masked pass over the terms either way. Returns a Python <code>float</code> for a real-dtype sum and a <code>complex</code> otherwise; take <code>.real</code> of the latter for a Hermitian operator.</p>
 <h2 id="expectation_stabilizergenerators"><a class="header" href="#expectation_stabilizergenerators"><code>expectation_stabilizer(generators)</code></a></h2>
 <p>Expectation value in a stabilizer state given by its generators.</p>
 <p><code>generators</code> is a list of exactly <code>num_qubits</code> signed Pauli strings — <code>"+XX"</code>, <code>"-ZZ"</code>, or bare <code>"ZIZ"</code> for <code>+</code> — same alphabet and qubit indexing as <code>from_strings</code>.

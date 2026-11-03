@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -190,14 +190,16 @@
 <tr><th>Signature</th><th>Builds</th></tr>
 </thead>
 <tbody>
-<tr><td><code>PauliSum(num_qubits)</code></td><td>the empty sum</td></tr>
-<tr><td><code>PauliSum.from_strings(terms, *, num_qubits=None)</code></td><td>from a <code>{pauli_string: coefficient}</code> dict; each key is <code>num_qubits</code> characters of <code>I/X/Y/Z</code>, index <code>i</code> addresses qubit <code>i</code></td></tr>
-<tr><td><code>PauliSum.from_strings(labels, coefficients, *, num_qubits=None)</code></td><td>the same, from two equal-length sequences instead of a dict; a label repeated in <code>labels</code> accumulates rather than raising</td></tr>
-<tr><td><code>PauliSum.from_arrays(x, z, coefficients, num_qubits)</code></td><td>from raw symplectic arrays — the inverse of <code>to_arrays</code></td></tr>
+<tr><td><code>PauliSum(num_qubits, *, dtype=None)</code></td><td>the empty sum</td></tr>
+<tr><td><code>PauliSum.from_strings(terms, *, num_qubits=None, dtype=None)</code></td><td>from a <code>{pauli_string: coefficient}</code> dict; each key is <code>num_qubits</code> characters of <code>I/X/Y/Z</code>, index <code>i</code> addresses qubit <code>i</code></td></tr>
+<tr><td><code>PauliSum.from_strings(labels, coefficients, *, num_qubits=None, dtype=None)</code></td><td>the same, from two equal-length sequences instead of a dict; a label repeated in <code>labels</code> accumulates rather than raising</td></tr>
+<tr><td><code>PauliSum.from_arrays(x, z, coefficients, num_qubits, *, dtype=None)</code></td><td>from raw symplectic arrays — the inverse of <code>to_arrays</code></td></tr>
 </tbody>
 </table>
 </div>
-<p><code>num_qubits</code> is inferred from the first label’s length when omitted from either <code>from_strings</code> form; an empty <code>terms</code>/<code>labels</code> with no explicit <code>num_qubits</code> is a <code>ValueError</code>, since there is nothing to infer it from.
+<p><code>dtype</code> is the <a href="../manual/operators.html#dtypes">coefficient type</a> in any spelling <code>numpy.dtype</code> accepts: <code>float64</code>, <code>float32</code>, <code>complex128</code> (the default for <code>None</code>) or <code>complex64</code>, anything else a <code>TypeError</code>.
+A real dtype raises <code>ValueError</code> on a coefficient with a nonzero imaginary part.
+<code>num_qubits</code> is inferred from the first label’s length when omitted from either <code>from_strings</code> form; an empty <code>terms</code>/<code>labels</code> with no explicit <code>num_qubits</code> is a <code>ValueError</code>, since there is nothing to infer it from.
 <code>from_strings</code> and <code>from_arrays</code> both use the crate’s Hermitian convention: a coefficient multiplies the literal Pauli string, and <code>Y</code> carries no phase of its own.
 Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are dropped.</p>
 <p><code>from_arrays</code> parameters:</p>
@@ -208,7 +210,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 </thead>
 <tbody>
 <tr><td><code>x</code>, <code>z</code></td><td><code>uint64</code> array, shape <code>(n_terms, w)</code></td><td>symplectic key words, <code>1 &lt;= w &lt;= </code> the compile-time width tier <code>num_qubits</code> picks; narrower than the tier is zero-padded</td></tr>
-<tr><td><code>coefficients</code></td><td>1-D array, length <code>n_terms</code></td><td><code>complex128</code> or a real-float dtype</td></tr>
+<tr><td><code>coefficients</code></td><td>1-D array, length <code>n_terms</code></td><td><code>float64</code>, <code>float32</code>, <code>complex128</code> or <code>complex64</code>, converted to the sum’s <code>dtype</code></td></tr>
 <tr><td><code>num_qubits</code></td><td><code>int</code></td><td>a set bit at or beyond this qubit is a <code>ValueError</code></td></tr>
 </tbody>
 </table>
@@ -221,6 +223,8 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 </thead>
 <tbody>
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
+<tr><td><code>.dtype</code></td><td>coefficient type, a <code>numpy.dtype</code></td></tr>
+<tr><td><code>.astype(dtype)</code></td><td>a copy at another coefficient type; <code>ValueError</code> when going real would drop a nonzero imaginary part</td></tr>
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>
 <tr><td><code>.num_buckets</code></td><td>current bucket count, as the last <code>propagate</code> left it</td></tr>
@@ -229,8 +233,8 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><td><code>.bucket_lengths()</code></td><td>terms per bucket, a <code>uint64</code> array in bucket order</td></tr>
 <tr><td><code>.with_hash(rows=None, seed=None)</code></td><td>a copy bucketed by another hash: the given rows lead, dense rows drawn from <code>seed</code> (default: this sum’s) fill the rest; dependent rows are a <code>RuntimeWarning</code></td></tr>
 <tr><td><code>.partition(partitions=None, ..., comm=None)</code></td><td>a <a href="propagate.html#partitionedpaulisum"><code>PartitionedPauliSum</code></a> that stays split between calls, over NUMA partitions or MPI ranks, so its partition and bucket rows can change mid-circuit</td></tr>
-<tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>complex</code></td></tr>
-<tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D <code>complex128</code> NumPy array</td></tr>
+<tr><td><code>.coefficients()</code></td><td>coefficient column as a list of Python <code>float</code> for a real dtype, <code>complex</code> otherwise</td></tr>
+<tr><td><code>.coefficients_array()</code></td><td>coefficient column as a 1-D NumPy array of the sum’s dtype</td></tr>
 <tr><td><code>.x_array()</code></td><td>X-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.z_array()</code></td><td>Z-part column, 2-D <code>uint64</code> array, shape <code>(len, width)</code></td></tr>
 <tr><td><code>.to_arrays()</code></td><td><code>(x_array(), z_array(), coefficients_array())</code> from one snapshot, the inverse of <code>from_arrays</code>; <code>PartitionedPauliSum.local()</code> gives a rank’s own terms</td></tr>
@@ -247,13 +251,14 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tr><th>Call</th><th>Returns</th></tr>
 </thead>
 <tbody>
-<tr><td><code>a + b</code>, <code>a - b</code></td><td>a new sum, coefficients combined on matching strings and the rest kept</td></tr>
-<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge, in place</td></tr>
-<tr><td><code>a * c</code>, <code>c * a</code>, <code>a *= c</code></td><td>every coefficient scaled by a complex or real <code>c</code></td></tr>
+<tr><td><code>a + b</code>, <code>a - b</code></td><td>a new sum, coefficients combined on matching strings and the rest kept, at NumPy’s promotion of the two dtypes</td></tr>
+<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge and dtype, in place</td></tr>
+<tr><td><code>a * c</code>, <code>c * a</code>, <code>a *= c</code></td><td>every coefficient scaled by a complex or real <code>c</code>, at <code>a</code>’s dtype</td></tr>
 </tbody>
 </table>
 </div>
 <p>Both operands of <code>+</code>/<code>-</code> must have the same <code>num_qubits</code>; anything else is a <code>ValueError</code>.
+A real-dtype <code>a</code> raises <code>ValueError</code> on a <code>c</code> with a nonzero imaginary part.
 Terms whose coefficients cancel exactly are dropped, as is every term when <code>c</code> is exactly zero.
 <code>*</code> is scalar-only: multiplying two sums is a full operator product, which this library does not implement.</p>
 <h2 id="saving-loading-importing"><a class="header" href="#saving-loading-importing">Saving, loading, importing</a></h2>

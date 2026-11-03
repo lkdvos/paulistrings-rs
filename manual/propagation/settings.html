@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-2295b1e0.js";
+            window.path_to_searchindex_js = "../../searchindex-81ed9822.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -216,7 +216,7 @@ The lists run in <strong>application</strong> order, which under <code>direction
 <code>nanos</code> is wall-clock time per layer; for a partitioned or distributed run it is the maximum over partitions, and <code>stats.partition</code> holds the per-partition detail, one partition for an unpartitioned run (<a href="partitions.html">NUMA partitions</a>, <a href="mpi.html">MPI ranks</a>).
 The full field list is in the <a href="../../library/propagate.html#propagationstats">Library</a>.</p>
 <h2 id="estimate-the-memory-a-run-needs"><a class="header" href="#estimate-the-memory-a-run-needs">Estimate the memory a run needs</a></h2>
-<p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient.
+<p>A term costs <code>16 × width + 16</code> bytes: two <code>uint64</code> key words per <code>width</code> word (the x and z columns) plus a <code>complex128</code> coefficient, 8 bytes less for a <code>float64</code> or <code>complex64</code> sum and 12 less for <code>float32</code> (<a href="../operators.html#dtypes">coefficient types</a>).
 <code>PauliSum.width</code> is the compile-time word tier the qubit count picked — 1 word up to 64 qubits, 2 up to 128, then 4, 8, 16 — so a 127-qubit sum is 48 B/term and a 1024-qubit sum 272 B/term.</p>
 <p><code>stats.peak_terms</code> is the peak <em>resident</em> term count between layers, so <code>peak_terms × (16 × width + 16)</code> is the sum’s own high-water mark:</p>
 <pre><code class="language-python">print(stats.peak_terms, evolved.width, stats.peak_terms * (16 * evolved.width + 16))

@@ -88,7 +88,7 @@ fn random_truncated_circuits_agree_with_the_sorted_engine_w2() {
     random_circuits_agree::<2>(90);
 }
 
-/// Kicked Ising with a wide rotation and a Clifford mixed in, under a threshold that cuts every layer: the fused kernel's pass-1 truncation boundary.
+/// Kicked Ising with a wide rotation and a Clifford mixed in, under a threshold that cuts every layer.
 fn rotation_clifford_circuit<const W: usize>(num_qubits: usize, steps: usize) -> Circuit<W> {
     use crate::test_support::zz_rotation;
     use crate::{PauliRotation, PauliString, PtmChannel};
@@ -132,4 +132,38 @@ fn truncated_rotation_and_clifford_circuits_agree_with_the_sorted_engine_w1() {
 #[test]
 fn truncated_rotation_and_clifford_circuits_agree_with_the_sorted_engine_w2() {
     truncated_rotations_agree::<2>(70);
+}
+
+/// Cliffords on qubits most terms leave idle, so each table keeps most keys in place and appends the few that move.
+fn cliffords_moving_few_keys_agree<const W: usize>(num_qubits: usize) {
+    use crate::{BuildAccumulator, PauliString, PtmChannel};
+    let mut accumulator = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
+    for (k, (x, z, c)) in rand_sum::<W>(3000, num_qubits, 23).iter().enumerate() {
+        let mut string = PauliString::<W> { x: *x, z: *z };
+        if k % 10 != 0 {
+            string.x[0] &= !0b11;
+            string.z[0] &= !0b11;
+        }
+        accumulator.add_term(string, c);
+    }
+    let sum = accumulator.finalize();
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    circuit.push(PtmChannel::cnot(0, 1));
+    circuit.push(PtmChannel::hadamard(0));
+    circuit.push(PtmChannel::phase_gate(1));
+    let want = sorted_reference(&circuit, &sum, &KeepAll, Direction::Heisenberg);
+    for options in SIZINGS {
+        let got = hashed(&circuit, &sum, &KeepAll, Direction::Heisenberg, options);
+        assert_terms_close(&got, &want, 1e-12, &format!("{options:?}"));
+    }
+}
+
+#[test]
+fn cliffords_moving_few_keys_agree_with_the_sorted_engine_w1() {
+    cliffords_moving_few_keys_agree::<1>(12);
+}
+
+#[test]
+fn cliffords_moving_few_keys_agree_with_the_sorted_engine_w2() {
+    cliffords_moving_few_keys_agree::<2>(90);
 }

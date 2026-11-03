@@ -217,13 +217,12 @@ fn run_hashed<const W: usize, P: TruncationPolicy<W>>(
     let wall_ns = started.elapsed().as_nanos() as u64;
     let cpu_ns = cpu_ns() - cpu;
     let times = scratch.take_times();
-    let busy = (times.walk_ns + times.remove_ns + times.append_ns).max(1) as f64;
+    let busy = (times.walk_ns + times.settle_ns).max(1) as f64;
     let detail = format!(
-        "walk {:.0}% remove {:.0}% append {:.0}% | appended/term-layer {:.2} | {:.0} B/term",
+        "walk {:.0}% settle {:.0}% | appended/term-layer {:.2} | {:.0} B/term",
         100.0 * times.walk_ns as f64 / busy,
-        100.0 * times.remove_ns as f64 / busy,
-        100.0 * times.append_ns as f64 / busy,
-        times.appended as f64 / (terms_in.max(1) * cfg.reps) as f64,
+        100.0 * times.settle_ns as f64 / busy,
+        times.appended as f64 / (if is_trotter(layer) { sum.len() } else { terms_in * cfg.reps }).max(1) as f64,
         sum.bytes() as f64 / sum.len().max(1) as f64,
     );
     let cell = Cell {

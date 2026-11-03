@@ -3,7 +3,7 @@
 //! A layer walks each coset's entries in position order; the first present member of a closed key group ([`GroupPlan`]) the walk reaches reads the group, applies its block, writes its present members in place and queues its absent ones.
 //! A done bit per position marks the members already written, so each group is read once, with its input coefficients.
 //! Truncated entries are removed after the walk and queued ones appended after that, so every position stays valid while it runs; truncation is exact because a group's outputs are final when written.
-//! A monomial PTM (a Clifford) maps distinct keys to distinct keys, so it relabels every entry with no lookup and re-indexes; a diagonal one only rescales.
+//! A monomial PTM (a Clifford) maps distinct keys to distinct keys, so it relabels with no lookup: an entry that keeps its key is rescaled in place, one that moves is removed and queued, and its new key is free once the removals are done; a diagonal one only rescales.
 
 
 use std::sync::Mutex;
@@ -28,10 +28,8 @@ const ZERO: Complex64 = Complex64::new(0.0, 0.0);
 pub struct PassTimes {
     /// The walk, or the relabelling of a monomial layer.
     pub walk_ns: u64,
-    /// Removal of the truncated entries.
-    pub remove_ns: u64,
-    /// Appending the new keys, or re-indexing after a relabelling.
-    pub append_ns: u64,
+    /// Removing the marked entries and appending the queued ones.
+    pub settle_ns: u64,
     /// Keys appended, summed over layers.
     pub appended: u64,
 }
@@ -43,7 +41,6 @@ struct CosetWork<const W: usize> {
     done: Vec<Vec<u64>>,
     dead: Vec<Vec<u64>>,
     pending: Vec<Vec<Entry<W>>>,
-    staying: Vec<Vec<Entry<W>>>,
     betas: Vec<u32>,
     times: PassTimes,
 }
@@ -67,8 +64,7 @@ impl<const W: usize> HashScratch<W> {
         for worker in &self.workers {
             let times = std::mem::take(&mut worker.lock().unwrap().times);
             total.walk_ns += times.walk_ns;
-            total.remove_ns += times.remove_ns;
-            total.append_ns += times.append_ns;
+            total.settle_ns += times.settle_ns;
             total.appended += times.appended;
         }
         total
@@ -133,7 +129,7 @@ fn run_coset<const W: usize, T>(
     T: TruncationPolicy<W> + ?Sized,
 {
     let representative = span.representative_at(coset);
-    let CosetWork { tables, done, dead, pending, staying, betas, times } = work;
+    let CosetWork { tables, done, dead, pending, betas, times } = work;
     betas.clear();
     betas.extend((0..span.coset_size() as u32).map(|j| span.member(representative, j)));
     let m = betas.len();
@@ -141,27 +137,13 @@ fn run_coset<const W: usize, T>(
     done.resize_with(m, Vec::new);
     dead.resize_with(m, Vec::new);
     pending.resize_with(m, Vec::new);
-    staying.resize_with(m, Vec::new);
     swap(tables, betas, buckets);
 
     let start = Instant::now();
-    if let Plan::Monomial { plan, sigma, factor } = plan {
-        relabel(tables, staying, pending, plan, sigma, factor, policy);
-        let walked = Instant::now();
-        for b in 0..m {
-            times.appended += pending[b].len() as u64;
-            let mut entries = std::mem::take(&mut staying[b]);
-            entries.append(&mut pending[b]);
-            tables[b].set_entries(entries);
-        }
-        times.walk_ns += (walked - start).as_nanos() as u64;
-        times.append_ns += walked.elapsed().as_nanos() as u64;
-        swap(tables, betas, buckets);
-        return;
-    }
     clear_bits(tables, dead);
     match plan {
         Plan::Diagonal { plan, factor } => rescale(tables, dead, plan, factor, policy),
+        Plan::Monomial { plan, sigma, factor } => relabel(tables, dead, pending, plan, sigma, factor, policy),
         Plan::Local(plan) => {
             clear_bits(tables, done);
             walk_local(tables, done, dead, pending, plan, policy);
@@ -170,25 +152,39 @@ fn run_coset<const W: usize, T>(
             clear_bits(tables, done);
             walk_rotation(tables, done, dead, pending, rotation, *generator_coordinate, policy);
         }
-        Plan::Monomial { .. } => unreachable!(),
     }
     let walked = Instant::now();
-    for (table, dead) in tables.iter_mut().zip(dead.iter_mut()) {
-        table.remove_marked(dead);
+    for b in 0..m {
+        times.appended += pending[b].len() as u64;
+        settle(&mut tables[b], &mut dead[b], &mut pending[b]);
     }
-    let removed = Instant::now();
-    for (table, pending) in tables.iter_mut().zip(pending.iter_mut()) {
-        times.appended += pending.len() as u64;
+    times.walk_ns += (walked - start).as_nanos() as u64;
+    times.settle_ns += walked.elapsed().as_nanos() as u64;
+    swap(tables, betas, buckets);
+}
+
+/// Remove the entries marked in `dead`, left cleared, and append the absent keys in `pending`, left empty.
+/// When that touches more entries than stay, compacting and re-indexing is cheaper than removing and appending one by one.
+fn settle<const W: usize>(table: &mut Table<W>, dead: &mut [u64], pending: &mut Vec<Entry<W>>) {
+    let removed: usize = dead.iter().map(|word| word.count_ones() as usize).sum();
+    let staying = table.len() - removed;
+    if removed + pending.len() > staying {
+        let mut entries = table.take_entries();
+        let mut position = 0;
+        entries.retain(|_| {
+            position += 1;
+            !is_set(dead, position - 1)
+        });
+        dead.fill(0);
+        entries.append(pending);
+        table.set_entries(entries);
+    } else {
+        table.remove_marked(dead);
         table.reserve(pending.len());
         for e in pending.drain(..) {
             table.push_unique(e);
         }
     }
-    let appended = Instant::now();
-    times.walk_ns += (walked - start).as_nanos() as u64;
-    times.remove_ns += (removed - walked).as_nanos() as u64;
-    times.append_ns += (appended - removed).as_nanos() as u64;
-    swap(tables, betas, buckets);
 }
 
 fn swap<const W: usize>(
@@ -248,10 +244,10 @@ fn rescale<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     }
 }
 
-/// Split each table's entries into those that keep their key, rescaled in `staying`, and those that move, relabelled into `pending` of their new table.
+/// Rescale the entries that keep their key, and mark the others dead, queueing them relabelled in `pending` of their new table.
 fn relabel<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     tables: &mut [Table<W>],
-    staying: &mut [Vec<Entry<W>>],
+    dead: &mut [Vec<u64>],
     pending: &mut [Vec<Entry<W>>],
     plan: &GroupPlan<'_, W>,
     sigma: &[u8; LOCAL_DIM],
@@ -259,23 +255,24 @@ fn relabel<const W: usize, T: TruncationPolicy<W> + ?Sized>(
     policy: &T,
 ) {
     for b in 0..tables.len() {
-        let mut entries = tables[b].take_entries();
-        entries.retain_mut(|e| {
-            let p = plan.ptm.support_bits(&e.x, &e.z);
+        for (position, (x, z, c)) in tables[b].coefficients_mut().enumerate() {
+            let p = plan.ptm.support_bits(x, z);
             let q = sigma[p] as usize;
-            let c = e.c * factor[p];
+            let scaled = *c * factor[p];
             if q == p {
-                e.c = c;
-                return kept(&e.x, &e.z, c, policy);
+                *c = scaled;
+                if !kept(x, z, scaled, policy) {
+                    set(&mut dead[b], position);
+                }
+                continue;
             }
-            let (j, mut moved) = plan.shifted(b, &e.x, &e.z, p ^ q);
-            moved.c = c;
-            if kept(&moved.x, &moved.z, c, policy) {
+            set(&mut dead[b], position);
+            let (j, mut moved) = plan.shifted(b, x, z, p ^ q);
+            moved.c = scaled;
+            if kept(&moved.x, &moved.z, scaled, policy) {
                 pending[j].push(moved);
             }
-            false
-        });
-        staying[b] = entries;
+        }
     }
 }
 

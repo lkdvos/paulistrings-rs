@@ -329,8 +329,9 @@ A four-rank hang on workergpu047 is attributed to that node; every job step is b
 
 Idea: keep the GF(2) buckets but update each in place through a hash index (`hash-kernel` feature, `propagate_hashed`): a bucket is a dense entry list plus a linear-probing index of positions.
 A layer walks entries in order; the first member of each closed key group it reaches reads the group, writes present members in place and queues absent ones, a done bit per position standing in for a leader scan; truncated entries are removed afterwards by descending swap-remove, then the queued keys appended.
-A monomial PTM (any Clifford) relabels every entry with no lookup and re-indexes, since distinct keys stay distinct; a diagonal one is a column rescale.
-Against the v0.2.0 sorted engine (in-place rotation layer) on ccqlin038 (Skylake 6244, shared, `W = 2`, 1e6 terms, ns per term·layer, sorted / hashed at 1 thread; 16 threads): `cnot` 31.4 / **18.7**; 3.89 / **2.60**, mixed Cliffords 25.6 / **20.1**; 4.71 / **2.90**, a weight-4 rotation 31.1 / **18.5**; 2.68 / 2.62, `rotation_zz` 24.8 / **21.8**; 3.84 / **2.51**, `su4` 275 / **55**; 120 / **4.7**, `gu2q` 106 / 90; 18.0 / 15.8, depolarizing **5.4** / 7.1; **1.28** / 1.49, kicked Ising grown to 4.4e5 terms **1462** / 1660; 232 / 222; unmeasured on a quiet node.
+A monomial PTM (any Clifford) relabels with no lookup, since distinct keys stay distinct: entries that keep their key are rescaled in place, the others removed and appended; a diagonal one is a column rescale.
+A table is compacted and re-indexed instead when a layer removes and appends more entries than stay; re-indexing every table after each Clifford cost a kicked Ising run with Clifford `ZZ` layers 20% (1652 → 1328), never re-indexing costs `cnot` 34%.
+Against the v0.2.0 sorted engine (in-place rotation layer) on ccqlin038 (Skylake 6244, shared, `W = 2`, 1e6 terms, ns per term·layer, sorted / hashed at 1 thread; 16 threads): `cnot` 31.4 / **18.7**; 3.89 / **2.60**, mixed Cliffords 25.6 / **20.1**; 4.71 / **2.90**, a weight-4 rotation 31.1 / **18.5**; 2.68 / 2.62, `rotation_zz` 24.8 / **21.8**; 3.84 / **2.51**, `su4` 275 / **55**; 120 / **4.7**, `gu2q` 106 / 90; 18.0 / 15.8, depolarizing **5.4** / 7.1; **1.28** / 1.49, kicked Ising grown to 4.4e5 terms 1473 / **1329**; 212 / **173**; unmeasured on a quiet node.
 Buckets of 256–4096 terms are flat and one table is 2× slower single-threaded (job 7393814).
 Rejected, each against the sorted engine on worker6037 (job 7393814) or ccqlin038:
 slot-indexed tables (`hashbrown`, then a custom SSE2 table with walk prefetch), whose walks skip empty slots: depolarizing 3–4× slower;
@@ -339,7 +340,7 @@ an orbit kernel with a separate leader scan: `cnot` 2.4× slower than sorted;
 a fused two-pass kernel for rotations and Cliffords (the exact form of PauliPropagation.jl's `fused=true`): ties sorted per gate, mixed Cliffords +10–17%, superseded by the indexed walk;
 streaming the coset in before the walk: helps only `su4` (−15–20%);
 appending absent keys during the walk instead of after the removals: `cnot` 41.7 → 53.8, the index holding old and new keys at once.
-Open: the append pass on growing runs (36% of a kicked-Ising layer, where the sorted engine now wins single-threaded) and the depolarizing gap.
+Open: the depolarizing gap.
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
 

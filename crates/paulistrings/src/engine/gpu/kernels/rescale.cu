@@ -1,11 +1,11 @@
 // k_rescale: the key-preserving fast path, `rescale_in_place` in engine/bucketed.rs: c' = c * amplitude[s], dropping exact zeros and rows `keep_term` rejects, order-preserving, one warp per bucket into the same start offsets.
 
 extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __restrict__ z,
-                                     const double* __restrict__ c, const u64* __restrict__ g,
+                                     const real_t* __restrict__ c, const u64* __restrict__ g,
                                      const u32* __restrict__ in_start, const u32* __restrict__ in_len, u32 B,
-                                     u32 support_size, u32 qubit_0, u32 qubit_1, const double* __restrict__ amplitude,
+                                     u32 support_size, u32 qubit_0, u32 qubit_1, const real_t* __restrict__ amplitude,
                                      const __grid_constant__ KeepProg keep,
-                                     u64* __restrict__ ox, u64* __restrict__ oz, double* __restrict__ oc,
+                                     u64* __restrict__ ox, u64* __restrict__ oz, real_t* __restrict__ oc,
                                      u64* __restrict__ og, u32* __restrict__ out_start, u32* __restrict__ out_len) {
     const u32 lane = lane_id();
     const u32 beta = blockIdx.x * (blockDim.x / WARP) + warp_id();
@@ -16,16 +16,13 @@ extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __res
         const u32 r = r0 + lane;
         bool ok = false;
         Key k;
-        double pr = 0.0, pi = 0.0;
+        Coeff product = coeff_zero();
         if (r < len) {
             const size_t src = (size_t)start + r;
             k = load_key(x, z, src);
             const u32 s = support_bits(k, support_size, qubit_0, qubit_1);
-            const double cr = c[2 * src], ci = c[2 * src + 1];
-            const double ar = amplitude[s * 2], ai = amplitude[s * 2 + 1];
-            pr = cr * ar - ci * ai;
-            pi = cr * ai + ci * ar;
-            ok = (pr != 0.0 || pi != 0.0) && keep_eval(keep, [&]() -> Key { return k; }, pr, pi);
+            product = coeff_mul(coeff_load(c, src), coeff_load(amplitude, s));
+            ok = !coeff_is_zero(product) && keep_eval(keep, [&]() -> Key { return k; }, product);
         }
         const u32 bal = __ballot_sync(~0u, ok);
         if (ok) {
@@ -35,8 +32,7 @@ extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __res
                 ox[dst * W + w] = k.x[w];
                 oz[dst * W + w] = k.z[w];
             }
-            oc[2 * dst] = pr;
-            oc[2 * dst + 1] = pi;
+            coeff_store(oc, dst, product);
             og[dst] = g[(size_t)start + r];
         }
         run += __popc(bal);

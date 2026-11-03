@@ -9,10 +9,10 @@ extern "C" __global__ void k_export_counts(const u32* __restrict__ cnt, const u3
 }
 
 extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* __restrict__ z,
-                                         const double* __restrict__ c, const u32* __restrict__ in_start,
+                                         const real_t* __restrict__ c, const u32* __restrict__ in_start,
                                          const u32* __restrict__ in_len, const u32* __restrict__ bucket_at,
                                          TABLE_ARGS, u32 bucket_delta, u32 e, u32 B, const u32* __restrict__ offsets,
-                                         u64* __restrict__ ox, u64* __restrict__ oz, double* __restrict__ oc) {
+                                         u64* __restrict__ ox, u64* __restrict__ oz, real_t* __restrict__ oc) {
     MAKE_TABLE(T);
     const u32 lane = lane_id();
     const u32 p = blockIdx.x * (blockDim.x / WARP) + warp_id();
@@ -24,12 +24,12 @@ extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* _
         const u32 r = r0 + lane;
         bool ok = false;
         Key k;
-        double pr = 0.0, pi = 0.0;
+        Coeff product = coeff_zero();
         if (r < len) {
             const size_t src = (size_t)start + r;
             k = load_key(x, z, src);
             ok = entry_emits(T, k, e);
-            if (ok) entry_product(T, k, e, c[2 * src], c[2 * src + 1], pr, pi);
+            if (ok) product = entry_product(T, k, e, coeff_load(c, src));
         }
         const u32 bal = __ballot_sync(~0u, ok);
         if (ok) {
@@ -39,8 +39,7 @@ extern "C" __global__ void k_export_fill(const u64* __restrict__ x, const u64* _
                 ox[d * W + i] = k.x[i] ^ mask[(e * 2) * W + i];
                 oz[d * W + i] = k.z[i] ^ mask[(e * 2 + 1) * W + i];
             }
-            oc[2 * d] = pr;
-            oc[2 * d + 1] = pi;
+            coeff_store(oc, d, product);
         }
         w += __popc(bal);
     }
@@ -73,10 +72,10 @@ extern "C" __global__ void k_premerge_split(const u32* __restrict__ rows_per_pos
 
 // Block j's share of every position in the batch, from the batch-relative arena to dst0 + loff[j * n + i] - loff[j * n]; one warp per position.
 extern "C" __global__ void k_premerge_copy(const u64* __restrict__ ax, const u64* __restrict__ az,
-                                           const double* __restrict__ ac, const u32* __restrict__ seg_start,
+                                           const real_t* __restrict__ ac, const u32* __restrict__ seg_start,
                                            const u32* __restrict__ lens, const u32* __restrict__ loff, u32 j, u32 p0,
                                            u32 n, u32 dst0, u64* __restrict__ ox, u64* __restrict__ oz,
-                                           double* __restrict__ oc) {
+                                           real_t* __restrict__ oc) {
     const u32 lane = lane_id();
     const u32 i = blockIdx.x * (blockDim.x / WARP) + warp_id();
     if (i >= n) return;
@@ -92,7 +91,6 @@ extern "C" __global__ void k_premerge_copy(const u64* __restrict__ ax, const u64
             ox[d * W + w] = ax[s * W + w];
             oz[d * W + w] = az[s * W + w];
         }
-        oc[2 * d] = ac[2 * s];
-        oc[2 * d + 1] = ac[2 * s + 1];
+        coeff_store(oc, d, coeff_load(ac, s));
     }
 }

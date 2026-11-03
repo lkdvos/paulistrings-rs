@@ -9,6 +9,7 @@ use super::layer::{
 use super::sum::{GpuSum, GPU_MAX_BITS};
 use super::truncation::{layer_pass_leaves, KeepProgram};
 use crate::channel::prepared::Prepared;
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
@@ -21,6 +22,7 @@ use crate::engine::transport::Transport;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
+use num_complex::Complex64;
 
 /// Faults a test arms on one device partition, each firing once (`test_support::set_fault_plan`).
 #[cfg(any(test, feature = "test-utils"))]
@@ -45,9 +47,9 @@ pub struct FaultPlan {
 /// `keep` is the per-term half of the run's policy, lowered once per call.
 // `pub` only because it is the backend parameter of the `pub` device driver aliases, like `HostPartition`.
 #[doc(hidden)]
-pub struct DevicePartition<const W: usize> {
-    sum: Option<GpuSum<W>>,
-    scratch: Option<LayerScratch<W>>,
+pub struct DevicePartition<const W: usize, C: Coefficient = Complex64> {
+    sum: Option<GpuSum<W, C>>,
+    scratch: Option<LayerScratch<W, C>>,
     hash: Gf2Hash<W>,
     pub(crate) keep: KeepProgram,
     error: Option<GpuError>,
@@ -64,8 +66,8 @@ pub struct DevicePartition<const W: usize> {
     pub(crate) fail_at_layer: Option<usize>,
 }
 
-impl<const W: usize> DevicePartition<W> {
-    pub(crate) fn new(sum: GpuSum<W>, options: GpuLayerOptions) -> Result<Self, GpuError> {
+impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
+    pub(crate) fn new(sum: GpuSum<W, C>, options: GpuLayerOptions) -> Result<Self, GpuError> {
         let scratch = LayerScratch::new(&sum, options)?;
         Ok(Self {
             hash: sum.hash().clone(),
@@ -82,11 +84,11 @@ impl<const W: usize> DevicePartition<W> {
         })
     }
 
-    pub(crate) fn sum(&self) -> &GpuSum<W> {
+    pub(crate) fn sum(&self) -> &GpuSum<W, C> {
         self.sum.as_ref().expect("DevicePartition: detached")
     }
 
-    pub(crate) fn scratch_mut(&mut self) -> &mut LayerScratch<W> {
+    pub(crate) fn scratch_mut(&mut self) -> &mut LayerScratch<W, C> {
         self.scratch.as_mut().expect("DevicePartition: detached")
     }
 
@@ -155,7 +157,7 @@ impl<const W: usize> DevicePartition<W> {
     }
 }
 
-impl<const W: usize> PartitionStorage<W, C> for DevicePartition<W> {
+impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<W, C> {
     fn len(&self) -> usize {
         self.sum.as_ref().map_or(0, GpuSum::len)
     }
@@ -176,7 +178,7 @@ impl<const W: usize> PartitionStorage<W, C> for DevicePartition<W> {
     /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
     fn proposed_bits(
         &self,
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         target_bucket_len: usize,
         min_buckets: usize,
     ) -> u8 {
@@ -222,10 +224,12 @@ impl<const W: usize> PartitionStorage<W, C> for DevicePartition<W> {
     }
 }
 
-impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<W> {
+impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
+    for DevicePartition<W, C>
+{
     fn apply_layer<X: Transport>(
         &mut self,
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         plan: &PartitionPlan,
         _rows: &PartitionRows<W>,
         _policy: &BuiltinTruncation,
@@ -249,7 +253,7 @@ impl<const W: usize> PartitionBackend<W, BuiltinTruncation> for DevicePartition<
         if self.error.is_some() {
             // A failed partition still pairs its partners' exchange with empty blocks, or the group hangs on it.
             if plan.has_remote() {
-                super::export::pair_empty_exchange::<W, X>(
+                super::export::pair_empty_exchange::<W, C, X>(
                     transport,
                     plan,
                     bits,
@@ -331,8 +335,8 @@ fn failed_counts(plan: &PartitionPlan, size: u32) -> LayerExchangeCounts {
 
 /// The rest of one device layer's [`PhaseStats`], its kernel times and laps having landed directly: the driving thread's wall over the fused path, and the host counters a device layer stands in for (`benchmarks/PROFILING.md` contract (a)).
 #[cfg(feature = "phase-timing")]
-fn fold_layer_stats<const W: usize>(
-    scratch: &mut LayerScratch<W>,
+fn fold_layer_stats<const W: usize, C: Coefficient>(
+    scratch: &mut LayerScratch<W, C>,
     before: &PhaseStats,
     wall_ns: u64,
     bits: u8,

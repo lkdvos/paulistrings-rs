@@ -3,6 +3,7 @@
 //! Two remote deltas to one partner can emit one key only into one receiver position, so the merge is position-local; it sums equal keys and drops an exact-zero sum but truncates nothing, since only the receiver sees a key's complete sum.
 //! The merged rows are split over the partner's blocks without exceeding any block's unmerged count, so the wire format and the receive path are unchanged.
 
+use crate::coefficient::Coefficient;
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
@@ -63,11 +64,11 @@ impl PremergeScratch {
 pub(super) const SCAN_LIMIT: usize = 1 << 24;
 
 /// Per partner, the remote entries the sender-side merge applies to, empty where it does not: at least two entries that can emit one key (`DevicePrepared::entries_can_collide`) and every source bucket inside the tag's offset field.
-pub(super) fn premerge_groups<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
+pub(super) fn premerge_groups<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     plan: &PartitionPlan,
-    scratch: &mut LayerScratch<W>,
+    scratch: &mut LayerScratch<W, C>,
     size: u32,
 ) -> Result<Vec<Vec<usize>>, GpuError> {
     let mut groups = vec![Vec::new(); size as usize];
@@ -94,12 +95,12 @@ pub(super) fn premerge_groups<const W: usize>(
 }
 
 /// The fused layer over one partner's sub-table, each position's rows split back over its `blocks` within their unmerged counts so every segment still fits the receiver's tag; `None`, having written nothing, when a position exceeds the fused kernel's cap.
-pub(super) fn premerge_partner<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
+pub(super) fn premerge_partner<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     entries: &[usize],
-    scratch: &mut LayerScratch<W>,
-    blocks: &mut [DeviceBlock<W>],
+    scratch: &mut LayerScratch<W, C>,
+    blocks: &mut [DeviceBlock<W, C>],
 ) -> Result<Option<u64>, GpuError> {
     let stream: Arc<CudaStream> = sum.stream.clone();
     let kernels = sum.kernels.clone();
@@ -179,7 +180,7 @@ pub(super) fn premerge_partner<const W: usize>(
         return Ok(None);
     }
     let (func, _, smem) = fused_variant(&kernels, W, most, sub.dense);
-    let (batches, max_batch_rows) = arena_batches::<W>(
+    let (batches, max_batch_rows) = arena_batches::<W, C>(
         &scratch.export.premerge.start_host,
         scratch.options.arena_bytes,
         record_cap,
@@ -187,7 +188,7 @@ pub(super) fn premerge_partner<const W: usize>(
     );
     let mut arena = match scratch.arena.take() {
         Some(a) => a,
-        None => DeviceColumns::<W>::with_capacity(&stream, ordinal, max_batch_rows, 1)?,
+        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, max_batch_rows, 1)?,
     };
     arena.len = 0;
     arena.buckets = 0;
@@ -229,11 +230,11 @@ pub(super) fn premerge_partner<const W: usize>(
 
 /// Panic unless every block holds at most its unmerged rows at every position, so the merge never outputs more rows than its input and every segment still fits the receiver's tag; downloads the counts, so a debug build alone runs it.
 #[cfg(debug_assertions)]
-fn debug_assert_merged_within_unmerged<const W: usize>(
-    sum: &GpuSum<W>,
-    sub: &DevicePrepared<W>,
-    scratch: &LayerScratch<W>,
-    blocks: &[DeviceBlock<W>],
+fn debug_assert_merged_within_unmerged<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    sub: &DevicePrepared<W, C>,
+    scratch: &LayerScratch<W, C>,
+    blocks: &[DeviceBlock<W, C>],
 ) -> Result<(), GpuError> {
     let stream = &sum.stream;
     let buckets = sum.hash.num_buckets();
@@ -269,15 +270,15 @@ fn debug_assert_merged_within_unmerged<const W: usize>(
 
 /// The merge's batch loop: the fused layer into the arena, the split and its scan, the block offsets, and the copy of every block's share.
 #[allow(clippy::too_many_arguments)]
-fn premerge_batches<const W: usize>(
-    sum: &GpuSum<W>,
-    sub: &DevicePrepared<W>,
-    scratch: &mut LayerScratch<W>,
-    arena: &mut DeviceColumns<W>,
+fn premerge_batches<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    sub: &DevicePrepared<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+    arena: &mut DeviceColumns<W, C>,
     batches: &[(usize, usize)],
     kernel: (&cudarc::driver::CudaFunction, u32),
     running: &mut [u32],
-    blocks: &mut [DeviceBlock<W>],
+    blocks: &mut [DeviceBlock<W, C>],
 ) -> Result<(), GpuError> {
     let stream = &sum.stream;
     let kernels = &sum.kernels;
@@ -379,7 +380,7 @@ fn premerge_batches<const W: usize>(
                     (x, z, coefficient): (
             &mut CudaSlice<u64>,
             &mut CudaSlice<u64>,
-            &mut CudaSlice<f64>,
+            &mut CudaSlice<u8>,
         )|
          -> Result<(), GpuError> {
             let j32 = j as u32;

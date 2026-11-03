@@ -1,7 +1,7 @@
 // k_count: cnt[beta * E + e] = rows of bucket beta that entry e emits, one warp per bucket.
 // k_rows: rows[p] = sum over local entries of cnt[(bucket_at[p] ^ bucket_delta[e]) * E + e] plus, per received entry, the length of segment p of its block.
 
-#define TABLE_ARGS u32 mode, u32 E, u32 support_size, u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin, const double* __restrict__ amplitude, const u64* __restrict__ mask, const u32* __restrict__ nonzero_patterns
+#define TABLE_ARGS u32 mode, u32 E, u32 support_size, u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin, const real_t* __restrict__ amplitude, const u64* __restrict__ mask, const u32* __restrict__ nonzero_patterns
 #define MAKE_TABLE(T) Table T; T.mode = mode; T.entries = E; T.support_size = support_size; T.qubit_0 = qubit_0; T.qubit_1 = qubit_1; T.rotation_cos = rotation_cos; T.rotation_sin = rotation_sin; T.amplitude = amplitude; T.mask = mask; T.nonzero_patterns = nonzero_patterns
 
 extern "C" __global__ void k_count(const u64* __restrict__ x, const u64* __restrict__ z,

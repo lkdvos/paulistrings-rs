@@ -1,5 +1,6 @@
 //! Launching the fused layer kernel: position batches that fit the arena, the kernel variant, and the launch itself.
 
+use crate::coefficient::Coefficient;
 use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
 
 use super::TableBuffers;
@@ -11,14 +12,14 @@ use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 
 /// Contiguous position ranges whose pre-dedup rows (`seg`, `b + 1` CSR offsets) fit an arena of `arena_bytes`, each starting a new range at every position of the ascending `starts`, and the largest range's rows.
-pub(in crate::engine::gpu) fn arena_batches<const W: usize>(
+pub(in crate::engine::gpu) fn arena_batches<const W: usize, C: Coefficient>(
     segment_start: &[u32],
     arena_bytes: usize,
     record_cap: usize,
     starts: &[usize],
 ) -> (Vec<(usize, usize)>, usize) {
     let b = segment_start.len() - 1;
-    let cap_rows = (arena_bytes / DeviceColumns::<W>::BYTES_PER_TERM).max(record_cap);
+    let cap_rows = (arena_bytes / DeviceColumns::<W, C>::BYTES_PER_TERM).max(record_cap);
     let mut batches: Vec<(usize, usize)> = Vec::new();
     let mut starts = starts.iter().copied().peekable();
     let mut p0 = 0usize;
@@ -52,7 +53,7 @@ pub(in crate::engine::gpu) fn fused_variant(
     let variant = &kernels.layer[(record_capacity / threads).trailing_zeros() as usize];
     debug_assert_eq!(variant.items * threads, record_capacity);
     let func = if dense { &variant.segscan } else { &variant.serial };
-    (func, record_capacity, layer_shared_bytes(record_capacity, w))
+    (func, record_capacity, layer_shared_bytes(record_capacity, w, kernels.coefficient))
 }
 
 /// The table-side buffers one fused-layer launch reads: the counts and segment starts sized for `table`'s upload.
@@ -68,29 +69,29 @@ pub(in crate::engine::gpu) struct FusedReceived<'a> {
     pub(in crate::engine::gpu) base: &'a CudaSlice<u32>,
     pub(in crate::engine::gpu) x: &'a CudaSlice<u64>,
     pub(in crate::engine::gpu) z: &'a CudaSlice<u64>,
-    pub(in crate::engine::gpu) coefficient: &'a CudaSlice<f64>,
+    pub(in crate::engine::gpu) coefficient: &'a CudaSlice<u8>,
     pub(in crate::engine::gpu) fingerprint: &'a CudaSlice<u64>,
 }
 
 /// What a fused-layer launch writes: the loose arena, rows per position, and the fallback counters.
-pub(in crate::engine::gpu) struct FusedOut<'a, const W: usize> {
-    pub(in crate::engine::gpu) arena: &'a mut DeviceColumns<W>,
+pub(in crate::engine::gpu) struct FusedOut<'a, const W: usize, C: Coefficient> {
+    pub(in crate::engine::gpu) arena: &'a mut DeviceColumns<W, C>,
     pub(in crate::engine::gpu) rows_per_position: &'a mut CudaSlice<u32>,
     pub(in crate::engine::gpu) fallback: &'a mut CudaSlice<u32>,
 }
 
 /// The fused layer over positions `p0..p0 + num_blocks` with `kernel = (function, shared bytes)` from [`fused_variant`].
 #[allow(clippy::too_many_arguments)]
-pub(in crate::engine::gpu) fn launch_fused<const W: usize>(
-    sum: &GpuSum<W>,
-    table: &DevicePrepared<W>,
+pub(in crate::engine::gpu) fn launch_fused<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    table: &DevicePrepared<W, C>,
     fused: &FusedTable<'_>,
     received: &FusedReceived<'_>,
     bucket_at: &CudaSlice<u32>,
     keep: &KeepProgram,
     kernel: (&CudaFunction, u32),
     (p0, num_blocks): (u32, u32),
-    out: FusedOut<'_, W>,
+    out: FusedOut<'_, W, C>,
 ) -> Result<(), GpuError> {
     let (func, smem) = kernel;
     let e32 = table.entries as u32;

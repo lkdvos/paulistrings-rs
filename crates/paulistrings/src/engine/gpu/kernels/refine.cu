@@ -44,11 +44,11 @@ extern "C" __global__ void k_refine_count(const u64* __restrict__ x, const u64* 
 }
 
 extern "C" __global__ void k_refine_scatter(const u64* __restrict__ x, const u64* __restrict__ z,
-                                            const double* __restrict__ c, const u64* __restrict__ g,
+                                            const real_t* __restrict__ c, const u64* __restrict__ g,
                                             const u32* __restrict__ in_start, const u32* __restrict__ in_len,
                                             const u64* __restrict__ hash_rows, u32 b_old, u32 bits_old, u32 delta,
                                             const u32* __restrict__ new_start, u64* __restrict__ ox,
-                                            u64* __restrict__ oz, double* __restrict__ oc, u64* __restrict__ og) {
+                                            u64* __restrict__ oz, real_t* __restrict__ oc, u64* __restrict__ og) {
     __shared__ u64 srows[2 * REFINE_MAX_DELTA * W];
     load_new_rows(srows, hash_rows, bits_old, delta);
     const u32 lane = lane_id();
@@ -80,8 +80,7 @@ extern "C" __global__ void k_refine_scatter(const u64* __restrict__ x, const u64
                     ox[dst * W + w] = k.x[w];
                     oz[dst * W + w] = k.z[w];
                 }
-                oc[2 * dst] = c[2 * src];
-                oc[2 * dst + 1] = c[2 * src + 1];
+                coeff_store(oc, dst, coeff_load(c, src));
                 og[dst] = g[src];
             }
             run[s] += __popc(bal);

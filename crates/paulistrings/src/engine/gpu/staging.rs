@@ -81,13 +81,13 @@ impl<T: Copy> Drop for PinnedBuffer<T> {
 }
 
 /// The three staged columns of one download.
-pub(crate) struct HostStaging {
+pub(crate) struct HostStaging<C: Copy> {
     pub(crate) x: PinnedBuffer<u64>,
     pub(crate) z: PinnedBuffer<u64>,
-    pub(crate) coeff: PinnedBuffer<f64>,
+    pub(crate) coeff: PinnedBuffer<C>,
 }
 
-impl HostStaging {
+impl<C: Copy> HostStaging<C> {
     pub(crate) fn new(context: &Arc<CudaContext>) -> Self {
         Self {
             x: PinnedBuffer::new(context.clone()),
@@ -100,6 +100,6 @@ impl HostStaging {
     pub(crate) fn ensure(&mut self, terms: usize, w: usize) -> Result<(), GpuError> {
         self.x.ensure(terms * w)?;
         self.z.ensure(terms * w)?;
-        self.coeff.ensure(2 * terms)
+        self.coeff.ensure(terms)
     }
 }

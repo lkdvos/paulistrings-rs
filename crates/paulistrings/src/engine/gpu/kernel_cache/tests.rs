@@ -115,20 +115,26 @@ fn a_second_compile_with_the_same_inputs_hits_the_cache() {
     if !libnvrtc_present() {
         return;
     }
-    use super::super::module::{compile_ptx, NVRTC_COMPILES};
+    use super::super::module::{compile_ptx, CoefficientLayout, NVRTC_COMPILES};
+    let c128 = CoefficientLayout::of::<num_complex::Complex64>();
 
     let own = ["-DPAULISTRINGS_CACHE_E2E=1".to_string()];
     let dir = TempDir::new("e2e-hit");
     let cache = Some(dir.path());
     let compiles = || NVRTC_COMPILES.with(std::cell::Cell::get);
     let before = compiles();
-    compile_ptx(2, "compute_80", &own, cache).expect("first compile");
+    compile_ptx(2, c128, "compute_80", &own, cache).expect("first compile");
     assert_eq!(compiles(), before + 1, "first call always compiles");
-    compile_ptx(2, "compute_80", &own, cache).expect("second compile");
+    compile_ptx(2, c128, "compute_80", &own, cache).expect("second compile");
     assert_eq!(compiles(), before + 1, "second call hits the cache");
     let other = [own[0].clone(), "-DFINGERPRINT_BITS=8".to_string()];
-    compile_ptx(2, "compute_80", &other, cache).expect("different options");
+    compile_ptx(2, c128, "compute_80", &other, cache).expect("different options");
     assert_eq!(compiles(), before + 2, "different options miss");
-    compile_ptx(2, "compute_80", &own, None).expect("uncached compile");
+    compile_ptx(2, c128, "compute_80", &own, None).expect("uncached compile");
     assert_eq!(compiles(), before + 3, "no cache never hits");
+    let f32_layout = CoefficientLayout::of::<f32>();
+    compile_ptx(2, f32_layout, "compute_80", &own, cache).expect("another coefficient type");
+    assert_eq!(compiles(), before + 4, "another coefficient type misses");
+    compile_ptx(2, f32_layout, "compute_80", &own, cache).expect("its second compile");
+    assert_eq!(compiles(), before + 4, "and then hits its own entry");
 }

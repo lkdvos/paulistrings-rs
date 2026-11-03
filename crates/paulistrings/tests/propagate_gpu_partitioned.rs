@@ -2,6 +2,7 @@
 //! Every case returns early without a device.
 //! `PAULISTRINGS_GPU_TEST_DEVICES` (a csv of ordinals, default `0`) naming more than one device places the `P == devices.len()` configurations one partition per device; every other `P` stays virtual on the first.
 
+use num_complex::{Complex32, Complex64};
 use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
@@ -12,8 +13,8 @@ use paulistrings::test_support::{
 };
 use paulistrings::test_support::{count_remote_deltas, set_fault_plan, FaultPlan};
 use paulistrings::{
-    propagate, propagate_with, Circuit, Direction, LayerScratch, PartitionRows, PauliSum,
-    PropagateOptions, TruncationPolicy,
+    propagate, propagate_with, Circuit, Coefficient, Direction, LayerScratch, PartitionRows,
+    PauliSum, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
@@ -51,7 +52,10 @@ fn config(partitions: usize) -> PartitionConfig {
 }
 
 /// A split of `sum` over `p` partitions.
-fn split_of<const W: usize>(sum: &PauliSum<W>, p: usize) -> GpuPartitionedSum<W> {
+fn split_of<const W: usize, C: Coefficient>(
+    sum: &PauliSum<W, C>,
+    p: usize,
+) -> GpuPartitionedSum<W, C> {
     let options = GpuScatterOptions {
         devices: PartitionRuntime::new(&config(p)).expect("placement"),
         rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(ROW_SEED))),
@@ -891,4 +895,75 @@ fn approx_top_n_keeps_exactly_n_across_device_partitions() {
             }
         }
     }
+}
+
+/// `f64` and `Complex64` are exact up to summation order; `f32` and `Complex32` round every product.
+fn tolerance<C: Coefficient>() -> f64 {
+    if C::NAME == "f64" || C::NAME == "c128" {
+        1e-12
+    } else {
+        2e-5
+    }
+}
+
+/// `circuit` on `sum` narrowed to `C`, split over `p` partitions under `options`, gathered and widened back to `Complex64`.
+fn run_as<const W: usize, C: Coefficient>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    direction: Direction,
+    p: usize,
+    options: GpuLayerOptions,
+) -> PauliSum<W> {
+    let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
+    let mut split = split_of(&narrowed, p);
+    split.set_layer_options(options);
+    split.propagate(circuit, KeepAll, direction).expect("device propagate");
+    split.gather().expect("gather").cast::<Complex64>(0.0).expect("widening never fails")
+}
+
+/// Remote layers in every coefficient type, whose exchange moves `size_of::<C>()` bytes of coefficient a row: plain, sender-merged and chunked receives all agree with the host `Complex64` run.
+fn every_type_agrees_across_partitions<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    name: &str,
+) {
+    let plain = GpuLayerOptions { premerge: false, ..GpuLayerOptions::default() };
+    let chunked = GpuLayerOptions {
+        records_per_block: 8,
+        exchange_bytes: 2048,
+        ..GpuLayerOptions::default()
+    };
+    let shapes =
+        [("plain", plain), ("premerged", GpuLayerOptions::default()), ("chunked", chunked)];
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let want = propagate(circuit, sum.clone(), &KeepAll, direction);
+        for p in [2usize, 4] {
+            for (shape, options) in shapes {
+                let what = |c: &str| format!("{name} {c} P={p} {shape} {direction:?}");
+                let got = run_as::<W, f64>(circuit, sum, direction, p, options);
+                assert_terms_close(&got, &want, tolerance::<f64>(), &what("f64"));
+                let got = run_as::<W, f32>(circuit, sum, direction, p, options);
+                assert_terms_close(&got, &want, tolerance::<f32>(), &what("f32"));
+                let got = run_as::<W, Complex64>(circuit, sum, direction, p, options);
+                assert_terms_close(&got, &want, tolerance::<Complex64>(), &what("c128"));
+                let got = run_as::<W, Complex32>(circuit, sum, direction, p, options);
+                assert_terms_close(&got, &want, tolerance::<Complex32>(), &what("c64"));
+            }
+        }
+    }
+}
+
+#[test]
+fn every_coefficient_type_agrees_across_partitions_w1() {
+    require_cuda!();
+    let sum = rand_sum_real::<1>(1_500, 8, 0xC0E3);
+    every_type_agrees_across_partitions(&su4_chain::<1>(8), &sum, "su4 chain");
+    every_type_agrees_across_partitions(&random_circuit::<1>(8, 30, 0xC0E4, true), &sum, "dense");
+}
+
+#[test]
+fn every_coefficient_type_agrees_across_partitions_w2() {
+    require_cuda!();
+    let sum = rand_sum_real::<2>(1_500, 100, 0xC0E5);
+    every_type_agrees_across_partitions(&su4_chain::<2>(100), &sum, "su4 chain");
 }

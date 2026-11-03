@@ -245,7 +245,7 @@ mod protocol {
         GpuLayerOptions {
             records_per_block: 8,
             exchange_bytes: rows
-                .saturating_mul(super::super::super::export::received_row_bytes::<1>()),
+                .saturating_mul(super::super::super::export::received_row_bytes::<1, Complex64>()),
             ..GpuLayerOptions::default()
         }
     }
@@ -610,7 +610,7 @@ mod protocol {
     }
 }
 
-impl<const W: usize, X: Transport> DistributedSum<W, X, DevicePartition<W>> {
+impl<const W: usize, X: Transport> DistributedSum<W, X, Complex64, DevicePartition<W>> {
     /// [`scatter_to_device_with`](Self::scatter_to_device_with) exchanging over `wire`, this rank's of an in-process group, instead of NCCL (test hook).
     pub(crate) fn scatter_with_wire(
         sum: &PauliSum<W>,

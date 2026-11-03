@@ -12,6 +12,7 @@ use super::sum::GpuSum;
 use super::truncation::KeepProgram;
 use super::wire::PeerWire;
 use crate::circuit::Circuit;
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::backend::PartitionStorage;
 use crate::engine::driver::DECLINED_PREPARATION;
@@ -25,6 +26,7 @@ use crate::engine::{Direction, PropagateOptions};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::BuiltinTruncation;
+use num_complex::Complex64;
 
 use crate::engine::LOG_TARGET;
 
@@ -36,11 +38,17 @@ use crate::engine::LOG_TARGET;
 ///
 /// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form.
 ///
+/// `C` is the per-term [`Coefficient`], `Complex64` by default; the device stores it natively, so a real `f32` sum moves 4 bytes of coefficient a term.
+///
 /// A device error mid-run leaves a one-partition sum holding the last completed layer's output, and a later call resumes from it; above one partition the split is **poisoned** instead (see [`propagate_with`](Self::propagate_with)).
-pub type GpuPartitionedSum<const W: usize> = PartitionedSum<W, DevicePartition<W>>;
+pub type GpuPartitionedSum<const W: usize, C = Complex64> =
+    PartitionedSum<W, C, DevicePartition<W, C>>;
 
-/// The policy's per-term program, after checking that it lowers, that every channel prepares, and that an exact `TopN` runs only at `single_partition`.
-pub(super) fn lower_for_run<const W: usize>(
+/// What a real coefficient type on a circuit failing [`Circuit::preserves_hermiticity`] returns, as [`GpuError::Unsupported`]: the host's `assert_coefficient_type` panic as an error.
+const NOT_HERMITICITY_PRESERVING: &str = "a real coefficient type needs every channel to preserve Hermiticity (a real transfer table); use a complex coefficient type";
+
+/// The policy's per-term program, after checking that it lowers, that every channel prepares, that a real `C` meets only Hermiticity-preserving channels, and that an exact `TopN` runs only at `single_partition`.
+pub(super) fn lower_for_run<const W: usize, C: Coefficient>(
     circuit: &Circuit<W>,
     policy: &BuiltinTruncation,
     direction: Direction,
@@ -57,6 +65,9 @@ pub(super) fn lower_for_run<const W: usize>(
     let adjoint = matches!(direction, Direction::Heisenberg);
     if circuit.channels.iter().any(|ch| ch.prepare(hash, adjoint).is_none()) {
         return Err(GpuError::Unsupported(DECLINED_PREPARATION));
+    }
+    if C::IS_REAL && !circuit.preserves_hermiticity() {
+        return Err(GpuError::Unsupported(NOT_HERMITICITY_PRESERVING));
     }
     Ok(keep)
 }
@@ -127,14 +138,14 @@ pub(super) fn device_runtime(device: u32) -> Result<Arc<PartitionRuntime>, GpuEr
 }
 
 /// Rank `rank` of a `size`-partition group: its share of `sum` under `rows` uploaded to `device`, under `layer`. **Collective** above one partition, through [`scatter_local`].
-pub(super) fn upload_share<const W: usize>(
+pub(super) fn upload_share<const W: usize, C: Coefficient>(
     sum: &PauliSum<W, C>,
     rows: &PartitionRows<W>,
     (rank, size): (u32, u32),
     device: u32,
     collectives: &dyn Collectives,
     (layer, extra_options): (GpuLayerOptions, &[String]),
-) -> Result<DevicePartition<W>, GpuError> {
+) -> Result<DevicePartition<W, C>, GpuError> {
     let device_sum = if size == 1 {
         GpuSum::from_host_with_options(sum, device, extra_options)?
     } else {
@@ -146,7 +157,7 @@ pub(super) fn upload_share<const W: usize>(
     Ok(partition)
 }
 
-impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
+impl<const W: usize, C: Coefficient> PartitionedSum<W, C, DevicePartition<W, C>> {
     /// Upload `sum` whole to device `ordinal`, as a one-partition split.
     ///
     /// # Errors
@@ -213,7 +224,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
             })
             .collect::<Result<_, _>>()?;
         let started = Instant::now();
-        let partitions: Vec<Result<DevicePartition<W>, GpuError>> = {
+        let partitions: Vec<Result<DevicePartition<W, C>, GpuError>> = {
             let (rows, devices) = (&rows, &devices);
             let wires = PeerWire::group(size as u32);
             runtime.map_partitions(wires, |rank, wire, transport| {
@@ -251,6 +262,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
     ///
     /// # Errors
     ///
+    /// [`GpuError::Unsupported`] before any layer if a real `C` meets a circuit failing [`Circuit::preserves_hermiticity`].
     /// [`GpuError::Unsupported`] before any layer if the policy's per-term part lowers to more than 15 nodes, if a channel's preparation declines (its support exceeds `MAX_LOCAL_SUPPORT`, two qubits, which only [`PauliRotation`](crate::PauliRotation) may, or it writes outside its declared support), or if the policy holds an exact `TopN` and the split has more than one partition.
     /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry.
     /// A device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
@@ -271,7 +283,8 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
         let partitions = self.backends_mut();
         partitions[0].check_poison()?;
         let single = partitions.len() == 1;
-        let keep = lower_for_run(circuit, &policy, direction, partitions[0].hash(), single)?;
+        let keep =
+            lower_for_run::<W, C>(circuit, &policy, direction, partitions[0].hash(), single)?;
         for partition in partitions.iter_mut() {
             partition.take_error()?;
             partition.keep = keep;
@@ -350,7 +363,7 @@ impl<const W: usize> PartitionedSum<W, DevicePartition<W>> {
 /// Propagate `sum` through `circuit` on device `device` and return the result on the host.
 ///
 /// One-shot convenience over a one-partition [`GpuPartitionedSum`]; a caller stepping repeatedly should hold the resident sum instead.
-pub fn propagate_gpu<const W: usize>(
+pub fn propagate_gpu<const W: usize, C: Coefficient>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W, C>,
     policy: impl Into<BuiltinTruncation>,
@@ -369,7 +382,7 @@ pub fn propagate_gpu<const W: usize>(
 /// # Errors
 ///
 /// [`GpuError::Topology`] if `config` does not resolve, then as [`GpuPartitionedSum::propagate`].
-pub fn propagate_gpu_partitioned<const W: usize>(
+pub fn propagate_gpu_partitioned<const W: usize, C: Coefficient>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W, C>,
     policy: impl Into<BuiltinTruncation>,

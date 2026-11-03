@@ -36,7 +36,7 @@ fn a_layer_pass_issues_the_hosts_collectives() {
     for (tree, want) in cases {
         let device = one_rank();
         let mut part = part(&input, &tree);
-        PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
+        PartitionBackend::<1, Complex64, T>::finalize_layer(&mut part, &tree, &device);
         part.take_error().expect("device layer pass");
         let mut want_sum = input.clone();
         <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut want_sum);
@@ -65,7 +65,7 @@ fn a_lone_partition_runs_exact_topn_with_no_collective() {
     for tree in cases {
         let device = one_rank();
         let mut part = part(&input, &tree);
-        PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &device);
+        PartitionBackend::<1, Complex64, T>::finalize_layer(&mut part, &tree, &device);
         part.take_error().expect("device layer pass");
         assert_eq!(reductions(&device), 0, "{tree:?}: exact TopN has no collective form");
         let mut want_sum = input.clone();
@@ -91,7 +91,7 @@ fn a_group_member_rejects_exact_topn() {
     let tree = T::TopN(100);
     let mut part = part(&input, &tree);
     part.group_size = 2;
-    PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &one_rank());
+    PartitionBackend::<1, Complex64, T>::finalize_layer(&mut part, &tree, &one_rank());
     assert!(matches!(part.take_error(), Err(GpuError::Unsupported(_))));
 }
 
@@ -104,7 +104,7 @@ fn a_failed_partition_still_enters_the_reduction() {
     let mut part = part(&input, &tree);
     part.error = Some(GpuError::Unsupported("injected"));
     let group = one_rank();
-    PartitionBackend::<1, T>::finalize_layer(&mut part, &tree, &group);
+    PartitionBackend::<1, Complex64, T>::finalize_layer(&mut part, &tree, &group);
     assert_eq!(reductions(&group), 2);
     assert!(matches!(part.take_error(), Err(GpuError::Unsupported("injected"))));
     assert_eq!(part.len(), input.len(), "a failed partition keeps its terms");

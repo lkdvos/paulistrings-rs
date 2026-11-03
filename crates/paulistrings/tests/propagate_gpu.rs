@@ -1,18 +1,19 @@
 //! The CUDA backend against the host `propagate`: same keys and term count, coefficients to tolerance.
 //! Every case returns early without a device.
 
+use num_complex::{Complex32, Complex64};
 use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, cancellation_channel,
-    cancellation_sum, differential_channels_w1, differential_channels_w2,
-    from_host_with_nvrtc_options, haar_su4_matrix, heavy_cut, or, propagate_discarding, rand_sum,
-    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, with_hash, zz_rotation,
-    KeepAll, ShiftX, Xs64,
+    cancellation_sum, coefficient_tolerance, differential_channels_w1, differential_channels_w2,
+    from_host_with_nvrtc_options, haar_su4_matrix, heavy_cut, non_hermitian_circuit, or,
+    propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts, spread_magnitudes,
+    trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
 };
 use paulistrings::{
-    propagate, propagate_with, Circuit, DeviceLayerRecord, Direction, Gf2Hash, LayerScratch,
-    PartitionLayerRecord, PauliString, PauliSum, PropagateOptions, TruncationPolicy,
+    propagate, propagate_with, Circuit, Coefficient, DeviceLayerRecord, Direction, Gf2Hash,
+    LayerScratch, PartitionLayerRecord, PauliString, PauliSum, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, Or, TopN, WeightCutoff,
@@ -682,4 +683,105 @@ fn a_declined_preparation_is_unsupported_as_on_the_host() {
         "{r:?}"
     );
     assert_eq!(dev.len(), input.len());
+}
+
+/// `circuit` on `sum` narrowed to `C` on the device under `policy`, widened back to `Complex64`.
+fn device_as<const W: usize, C: Coefficient>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &BuiltinTruncation,
+    direction: Direction,
+) -> PauliSum<W> {
+    let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
+    let mut dev = GpuPartitionedSum::<W, C>::from_host(&narrowed, 0).expect("upload");
+    dev.propagate(circuit, policy.clone(), direction).expect("device propagate");
+    dev.gather().expect("download").cast::<Complex64>(0.0).expect("widening never fails")
+}
+
+/// The device run in every coefficient type against the host `Complex64` run, both directions.
+fn every_type_agrees<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: impl Into<BuiltinTruncation>,
+    name: &str,
+) {
+    let policy: BuiltinTruncation = policy.into();
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), &policy, direction);
+        let check = |got: PauliSum<W>, tol: f64, c: &str| {
+            let what = format!("{name} {c} {direction:?}");
+            assert_runs_agree(policy.clone(), discarded, &got, &want, tol, &what);
+        };
+        check(
+            device_as::<W, f64>(circuit, sum, &policy, direction),
+            coefficient_tolerance::<f64>(),
+            "f64",
+        );
+        check(
+            device_as::<W, f32>(circuit, sum, &policy, direction),
+            coefficient_tolerance::<f32>(),
+            "f32",
+        );
+        let c128 = device_as::<W, Complex64>(circuit, sum, &policy, direction);
+        check(c128, coefficient_tolerance::<Complex64>(), "c128");
+        let c64 = device_as::<W, Complex32>(circuit, sum, &policy, direction);
+        check(c64, coefficient_tolerance::<Complex32>(), "c64");
+    }
+}
+
+#[test]
+fn every_coefficient_type_agrees_untruncated() {
+    require_cuda!();
+    for seed in 0..3 {
+        let circuit = random_circuit::<1>(6, 40, 0xC0E1 + seed, true);
+        let input = rand_sum_real::<1>(300, 6, seed);
+        every_type_agrees(&circuit, &input, KeepAll, &format!("dense W=1 seed {seed}"));
+    }
+    let input = rand_sum_real::<2>(2000, 70, 0xC0E2);
+    every_type_agrees(&random_circuit::<2>(70, 20, 0x9BB1, true), &input, KeepAll, "dense W=2");
+    every_type_agrees(&random_circuit::<2>(70, 30, 0x9BB2, false), &input, KeepAll, "sparse W=2");
+    let input = rand_sum_real::<1>(50, 8, 7);
+    every_type_agrees(&trotter_circuit::<1>(8, 0.3), &input, KeepAll, "trotter");
+}
+
+/// The per-term filter and both layer passes on `|c|²` in every type.
+#[test]
+fn every_coefficient_type_agrees_under_truncation() {
+    require_cuda!();
+    let input = spread_magnitudes(&rand_sum_real::<1>(500, 10, 0x4405), 40, 0x4405);
+    let circuit = random_circuit::<1>(10, 16, 0x5559, true);
+    // Three quarters of the untruncated output, so the layer passes cut.
+    let n = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward).len() * 3 / 4;
+    assert!(n > input.len(), "the fixture must grow");
+    every_type_agrees(&circuit, &input, CoefficientThreshold(1e-3), "threshold");
+    every_type_agrees(&circuit, &input, ApproxTopN(n), "approx top-n");
+    every_type_agrees(&circuit, &input, TopN(n), "top-n");
+}
+
+/// A real device sum of type `C` refuses `circuit` before any layer, keeping `input`.
+fn refuses<C: Coefficient>(circuit: &Circuit<1>, input: &PauliSum<1>) {
+    let narrowed = input.cast::<C>(0.0).unwrap();
+    let mut dev = GpuPartitionedSum::<1, C>::from_host(&narrowed, 0).expect("upload");
+    let r = dev.propagate(circuit, KeepAll, Direction::Forward);
+    assert!(
+        matches!(&r, Err(GpuError::Unsupported(m)) if m.contains("needs every channel to preserve Hermiticity")),
+        "{}: {r:?}",
+        C::NAME
+    );
+    let back = dev.gather().expect("download").cast::<Complex64>(0.0).unwrap();
+    assert_terms_close(&back, input, coefficient_tolerance::<C>(), C::NAME);
+}
+
+/// A real device sum refuses a channel that does not preserve Hermiticity before any layer runs, as the host panics; a complex one carries it.
+#[test]
+fn a_real_device_sum_refuses_a_non_hermitian_channel() {
+    require_cuda!();
+    let circuit = non_hermitian_circuit();
+    let input = rand_sum_real::<1>(100, 4, 0x1A);
+    refuses::<f64>(&circuit, &input);
+    refuses::<f32>(&circuit, &input);
+    let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
+    let policy = BuiltinTruncation::Keep;
+    let got = device_as::<1, Complex32>(&circuit, &input, &policy, Direction::Forward);
+    assert_terms_close(&got, &want, coefficient_tolerance::<Complex32>(), "c64");
 }

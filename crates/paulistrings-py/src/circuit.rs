@@ -27,6 +27,11 @@ impl CircuitImpl {
         for_each_width!(self, |c| c.len())
     }
 
+    /// Whether a real-dtype sum can propagate through the circuit; see [`CoreCircuit::preserves_hermiticity`].
+    pub fn preserves_hermiticity(&self) -> bool {
+        for_each_width!(self, |c| c.preserves_hermiticity())
+    }
+
     /// Each channel's nonzero key shifts as coordinate flags (x-bits then z-bits), `None` for a channel the partitioned engine declines.
     pub fn deltas(&self) -> Vec<Option<Vec<Vec<bool>>>> {
         for_each_width!(self, |c| {

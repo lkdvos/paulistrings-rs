@@ -47,6 +47,98 @@ constexpr u32 TAG_OFFSET_BITS = log2_exact(MAX_BUCKET_LEN);
 #error "KEEP_NODES and the OP_* codes must be defined"
 #endif
 
+// The coefficient type (`Coefficient` in coefficient.rs), -D options from module.rs: COEFF_SINGLE picks float over double for `real_t`, COEFF_COMPLEX adds an imaginary part.
+// A column holds COEFF_PARTS scalars per row, a `C`'s `repr(C)` bytes; the helpers below are the host's operations, operation for operation.
+#if !defined(COEFF_SINGLE) || !defined(COEFF_COMPLEX)
+#error "COEFF_SINGLE and COEFF_COMPLEX must be defined"
+#endif
+#if COEFF_SINGLE
+typedef float real_t;
+#else
+typedef double real_t;
+#endif
+#if COEFF_COMPLEX
+#define COEFF_PARTS 2
+#else
+#define COEFF_PARTS 1
+#endif
+
+// `part[0]` the real part, `part[1]` the imaginary part of a complex type; the loops over parts unroll.
+struct Coeff {
+    real_t part[COEFF_PARTS];
+};
+
+#define FOR_PARTS(j) _Pragma("unroll") for (int j = 0; j < COEFF_PARTS; ++j)
+
+__device__ __forceinline__ Coeff coeff_zero() {
+    Coeff v;
+    FOR_PARTS(j) v.part[j] = 0;
+    return v;
+}
+
+__device__ __forceinline__ Coeff coeff_load(const real_t* c, size_t i) {
+    Coeff v;
+    FOR_PARTS(j) v.part[j] = c[COEFF_PARTS * i + j];
+    return v;
+}
+
+__device__ __forceinline__ void coeff_store(real_t* c, size_t i, Coeff v) {
+    FOR_PARTS(j) c[COEFF_PARTS * i + j] = v.part[j];
+}
+
+__device__ __forceinline__ Coeff coeff_add(Coeff a, Coeff b) {
+    FOR_PARTS(j) a.part[j] += b.part[j];
+    return a;
+}
+
+__device__ __forceinline__ Coeff coeff_scale(Coeff c, real_t s) {
+    FOR_PARTS(j) c.part[j] = c.part[j] * s;
+    return c;
+}
+
+__device__ __forceinline__ bool coeff_is_zero(Coeff c) {
+    bool zero = true;
+    FOR_PARTS(j) zero = zero && c.part[j] == 0;
+    return zero;
+}
+
+// `Coefficient::norm_sqr`: |c|^2 in double, the parts widened first.
+__device__ __forceinline__ double coeff_norm_sqr(Coeff c) {
+    double m = 0;
+    FOR_PARTS(j) m += (double)c.part[j] * (double)c.part[j];
+    return m;
+}
+
+__device__ __forceinline__ Coeff coeff_shfl_up(Coeff v, u32 offset) {
+    FOR_PARTS(j) v.part[j] = __shfl_up_sync(~0u, v.part[j], offset);
+    return v;
+}
+
+// `c * a`, num_complex's `Mul` for a complex type.
+__device__ __forceinline__ Coeff coeff_mul(Coeff c, Coeff a) {
+    Coeff p;
+#if COEFF_COMPLEX
+    p.part[0] = c.part[0] * a.part[0] - c.part[1] * a.part[1];
+    p.part[1] = c.part[0] * a.part[1] + c.part[1] * a.part[0];
+#else
+    p.part[0] = c.part[0] * a.part[0];
+#endif
+    return p;
+}
+
+// `Coefficient::mul_phase` by i^ph, a sign and a swap of the parts; a real type only ever sees an even ph.
+__device__ __forceinline__ Coeff coeff_mul_phase(Coeff c, u32 ph) {
+    Coeff t;
+#if COEFF_COMPLEX
+    const real_t re = c.part[0], im = c.part[1];
+    t.part[0] = ph == 0 ? re : ph == 1 ? -im : ph == 2 ? -re : im;
+    t.part[1] = ph == 0 ? im : ph == 1 ? re : ph == 2 ? -im : -re;
+#else
+    t.part[0] = (ph & 2u) ? -c.part[0] : c.part[0];
+#endif
+    return t;
+}
+
 struct KeepProg {
     u32 len;
     u32 op[KEEP_NODES];
@@ -58,16 +150,16 @@ struct Key {
     u64 z[W];
 };
 
-// One prepared channel as the kernels see it; `amplitude` holds 16 entries of LOCAL_DIM complex amplitudes as f64 pairs.
+// One prepared channel as the kernels see it; `amplitude` holds 16 entries of LOCAL_DIM coefficients, COEFF_PARTS scalars each.
 struct Table {
     u32 mode;
     u32 entries;
     u32 support_size;
     u32 qubit_0;
     u32 qubit_1;
-    double rotation_cos;
-    double rotation_sin;
-    const double* amplitude;
+    real_t rotation_cos;
+    real_t rotation_sin;
+    const real_t* amplitude;
     const u64* mask;
     const u32* nonzero_patterns;
 };
@@ -181,41 +273,21 @@ __device__ __forceinline__ bool entry_emits(const Table& T, const Key& k, u32 e)
 }
 
 // The row entry e emits for (k, c): bitwise `DeltaEntry::emit` for a local table, `PreparedRotation::emit_generator` and the identity pass of the rotation arm otherwise.
-__device__ __forceinline__ void entry_product(const Table& T, const Key& k, u32 e, double cr, double ci, double& pr, double& pi) {
+__device__ __forceinline__ Coeff entry_product(const Table& T, const Key& k, u32 e, Coeff c) {
     if (T.mode == MODE_LOCAL) {
         const u32 s = support_bits(k, T.support_size, T.qubit_0, T.qubit_1);
-        const double ar = T.amplitude[(e * LOCAL_DIM + s) * 2], ai = T.amplitude[(e * LOCAL_DIM + s) * 2 + 1];
-        pr = cr * ar - ci * ai;
-        pi = cr * ai + ci * ar;
-        return;
+        return coeff_mul(c, coeff_load(T.amplitude, e * LOCAL_DIM + s));
     }
-    if (e == 0) {
-        if (anticommutes_generator(T, k)) {
-            pr = cr * T.rotation_cos;
-            pi = ci * T.rotation_cos;
-        } else {
-            pr = cr;
-            pi = ci;
-        }
-        return;
-    }
+    if (e == 0) return anticommutes_generator(T, k) ? coeff_scale(c, T.rotation_cos) : c;
     const u32 ph = (1u + product_phase_generator(T, k)) & 3u;
-    double tr, ti;
-    switch (ph) {
-        case 0: tr = cr; ti = ci; break;
-        case 1: tr = -ci; ti = cr; break;
-        case 2: tr = -cr; ti = -ci; break;
-        default: tr = ci; ti = -cr; break;
-    }
-    pr = tr * T.rotation_sin;
-    pi = ti * T.rotation_sin;
+    return coeff_scale(coeff_mul_phase(c, ph), T.rotation_sin);
 }
 
 // `TruncationPolicy::keep_term` of the lowered tree on the summed coefficient; `key()` is called at most once, and only by a weight node.
 template <class KeyFn>
-__device__ __forceinline__ bool keep_eval(const KeepProg& P, KeyFn key, double cr, double ci) {
+__device__ __forceinline__ bool keep_eval(const KeepProg& P, KeyFn key, Coeff c) {
     if (P.len == 1 && P.op[0] == OP_KEEP) return true;
-    const double m = cr * cr + ci * ci;
+    const double m = coeff_norm_sqr(c);
     u32 st = 0;
     int wgt = -1;
     for (u32 i = 0; i < P.len; ++i) {

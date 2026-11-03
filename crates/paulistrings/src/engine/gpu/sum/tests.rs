@@ -209,7 +209,8 @@ fn to_host_re_sorts_a_bucket_out_of_lex_order() {
     let s = dev.stream.clone();
     s.memcpy_htod(&rev(bx), &mut dev.columns.x.slice_mut(2 * r0..2 * (r0 + l))).unwrap();
     s.memcpy_htod(&rev(bz), &mut dev.columns.z.slice_mut(2 * r0..2 * (r0 + l))).unwrap();
-    s.memcpy_htod(&c, &mut dev.columns.coeff.slice_mut(2 * r0..2 * (r0 + l))).unwrap();
+    let coeff = bytemuck::cast_slice::<f64, u8>(&c);
+    s.memcpy_htod(coeff, &mut dev.columns.coeff.slice_mut(16 * r0..16 * (r0 + l))).unwrap();
     let fingerprints = FingerprintRows::<2>::new(sum.hash().seed());
     let g: Vec<u64> = (0..l).rev().map(|i| fingerprints.fingerprint(&bx[i], &bz[i])).collect();
     s.memcpy_htod(&g, &mut dev.columns.fingerprint.slice_mut(r0..r0 + l)).unwrap();

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::PauliSum;
@@ -215,13 +215,13 @@ impl<const W: usize> StabilizerState<W> {
     }
 }
 
-impl<const W: usize> PauliSum<W> {
+impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     /// Expectation value `⟨ψ|O|ψ⟩` in a stabilizer state; complex since `O` need not be Hermitian.
     ///
     /// # Panics
     ///
     /// Panics if `state.num_qubits()` differs from [`Self::num_qubits`].
-    pub fn expectation_stabilizer(&self, state: &StabilizerState<W>) -> Complex64 {
+    pub fn expectation_stabilizer(&self, state: &StabilizerState<W>) -> C {
         assert_eq!(
             self.num_qubits(),
             state.num_qubits(),
@@ -230,7 +230,7 @@ impl<const W: usize> PauliSum<W> {
             state.num_qubits(),
         );
         self.sum_over_terms(|x, z, coeff| match state.sign_of(&PauliString::<W> { x: *x, z: *z }) {
-            None => Complex64::new(0.0, 0.0),
+            None => C::ZERO,
             Some(false) => coeff,
             Some(true) => -coeff,
         })

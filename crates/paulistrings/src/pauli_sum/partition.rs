@@ -1,18 +1,18 @@
 //! Scatter and gather of a [`PauliSum`] across the partitions of the partitioned engine.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
 use super::hash::{Gf2Hash, PartitionRows};
 use super::storage::{keys_are_disjoint, map_buckets, merge_sorted, BucketColumns, PauliSum};
 
 /// Copy the terms of one bucket whose partition rank is `rank`.
 // Not reserved up front: research/FINDINGS.md §Reserving a safe upper bound in the merge.
-fn filter_bucket<const W: usize>(
-    columns: &BucketColumns<W>,
+fn filter_bucket<const W: usize, C: Coefficient>(
+    columns: &BucketColumns<W, C>,
     rows: &PartitionRows<W>,
     rank: u32,
-) -> BucketColumns<W> {
-    let mut out = BucketColumns::<W>::new();
+) -> BucketColumns<W, C> {
+    let mut out = BucketColumns::<W, C>::new();
     for i in 0..columns.len() {
         if rows.partition_of(&columns.x[i], &columns.z[i]) == rank {
             out.push(columns.x[i], columns.z[i], columns.coeff[i]);
@@ -22,9 +22,11 @@ fn filter_bucket<const W: usize>(
 }
 
 /// Merge key-disjoint sorted runs into one by pairwise rounds; the caller is already parallel over buckets.
-fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> BucketColumns<W> {
+fn merge_disjoint_runs<const W: usize, C: Coefficient>(
+    mut runs: Vec<BucketColumns<W, C>>,
+) -> BucketColumns<W, C> {
     while runs.len() > 1 {
-        let mut next: Vec<BucketColumns<W>> = Vec::with_capacity(runs.len().div_ceil(2));
+        let mut next: Vec<BucketColumns<W, C>> = Vec::with_capacity(runs.len().div_ceil(2));
         let mut remaining = runs.into_iter();
         while let Some(a) = remaining.next() {
             match remaining.next() {
@@ -37,7 +39,7 @@ fn merge_disjoint_runs<const W: usize>(mut runs: Vec<BucketColumns<W>>) -> Bucke
     runs.pop().unwrap_or_default()
 }
 
-impl<const W: usize> PauliSum<W> {
+impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     /// Coarsen until the bucket count is `1 << bits`; panics if that would grow it.
     pub(crate) fn coarsen_to(&mut self, bits: u8) {
         assert!(
@@ -88,7 +90,7 @@ impl<const W: usize> PauliSum<W> {
         let num_parts = parts.len();
         let len: usize = parts.iter().map(|p| p.len).sum();
 
-        let mut runs: Vec<Vec<BucketColumns<W>>> =
+        let mut runs: Vec<Vec<BucketColumns<W, C>>> =
             (0..num_buckets).map(|_| Vec::with_capacity(num_parts)).collect();
         for p in parts {
             for (b, columns) in p.buckets.into_iter().enumerate() {
@@ -106,7 +108,7 @@ impl<const W: usize> PauliSum<W> {
         lens: &[usize],
         x: Vec<[u64; W]>,
         z: Vec<[u64; W]>,
-        coeff: Vec<Complex64>,
+        coeff: Vec<C>,
         hash: Gf2Hash<W>,
         num_qubits: usize,
     ) -> Self {
@@ -150,7 +152,7 @@ impl<const W: usize> PauliSum<W> {
     /// Wrap per-bucket columns that already satisfy the invariant, one entry per bucket of `hash`.
     #[cfg(feature = "cuda")]
     pub(crate) fn from_buckets(
-        buckets: Vec<BucketColumns<W>>,
+        buckets: Vec<BucketColumns<W, C>>,
         hash: Gf2Hash<W>,
         num_qubits: usize,
     ) -> Self {

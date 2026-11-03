@@ -2,7 +2,7 @@
 //!
 //! Both sorts leave a run ascending in lex `(x, z)` with duplicates allowed, as a permutation of its rows; equal-key order is unspecified, so they agree only to floating-point tolerance.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
 use crate::channel::prepared::LocalPtm;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
@@ -10,7 +10,7 @@ use crate::truncation::TruncationPolicy;
 
 /// Worker-persistent scratch for the per-run sorts.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SortScratch<const W: usize> {
+pub(crate) struct SortScratch<const W: usize, C: Coefficient = num_complex::Complex64> {
     permutation: Vec<u32>,
     /// The radix kernel's `(surrogate << 32) | row index` records.
     packed: Vec<u64>,
@@ -18,10 +18,10 @@ pub(crate) struct SortScratch<const W: usize> {
     spare: Vec<u64>,
     staging_x: Vec<[u64; W]>,
     staging_z: Vec<[u64; W]>,
-    staging_coefficient: Vec<Complex64>,
+    staging_coefficient: Vec<C>,
 }
 
-impl<const W: usize> SortScratch<W> {
+impl<const W: usize, C: Coefficient> SortScratch<W, C> {
     /// The permutation buffer, lent to a caller that sorts no run while holding it.
     pub(crate) fn indices(&mut self) -> &mut Vec<u32> {
         &mut self.permutation
@@ -31,9 +31,9 @@ impl<const W: usize> SortScratch<W> {
 /// Sort the columns in place by the key `(x, z)` alone, by comparison through a permutation.
 // Must stay the adaptive stable `sort_by`, whose run detection merges the run's presorted delta streams.
 // Not `sort_unstable_by`: research/FINDINGS.md §The `engine/merge.rs` `#[inline]` folklore
-fn sort_by_comparison<const W: usize>(
-    columns: &mut BucketColumns<W>,
-    scratch: &mut SortScratch<W>,
+fn sort_by_comparison<const W: usize, C: Coefficient>(
+    columns: &mut BucketColumns<W, C>,
+    scratch: &mut SortScratch<W, C>,
 ) {
     let BucketColumns { x, z, coeff: c } = columns;
     let len = x.len();
@@ -82,10 +82,10 @@ impl SortKernel {
     }
 
     /// Sort `columns` in place by the key `(x, z)` alone.
-    pub(crate) fn sort<const W: usize>(
+    pub(crate) fn sort<const W: usize, C: Coefficient>(
         self,
-        columns: &mut BucketColumns<W>,
-        scratch: &mut SortScratch<W>,
+        columns: &mut BucketColumns<W, C>,
+        scratch: &mut SortScratch<W, C>,
     ) {
         match self {
             Self::Comparison => sort_by_comparison(columns, scratch),
@@ -104,8 +104,8 @@ const RADIX_MAX_REST_ROWS_PER_KEY: f64 = 2.0;
 const RADIX_MIN_DISJOINT_STREAMS: usize = 3;
 
 /// Mean rest rows per output key that gets any, the radix gate's second arm; ask it of the channel's own PTM, never a restricted one.
-pub(crate) fn rest_rows_per_key<const W: usize>(ptm: &LocalPtm<W>) -> f64 {
-    let zero = Complex64::new(0.0, 0.0);
+pub(crate) fn rest_rows_per_key<const W: usize, C: Coefficient>(ptm: &LocalPtm<W, C>) -> f64 {
+    let zero = C::ZERO;
     let rest_start = usize::from(ptm.has_identity());
     let dim = 1usize << (2 * ptm.k());
     let (mut rows, mut keys) = (0u32, 0u32);
@@ -165,7 +165,10 @@ fn discriminating_window<const W: usize>(
 
 /// Sort the columns in place by the key `(x, z)` alone, by radix on a 16-bit surrogate of the first disagreeing key word.
 // Every row shares the bits above the window, so the surrogate is monotone in the key and only leaves ties, which the fixup orders on the full key.
-fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut SortScratch<W>) {
+fn sort_by_radix<const W: usize, C: Coefficient>(
+    columns: &mut BucketColumns<W, C>,
+    scratch: &mut SortScratch<W, C>,
+) {
     let BucketColumns { x, z, coeff: c } = columns;
     let len = x.len();
     debug_assert_eq!(len, z.len());
@@ -244,10 +247,14 @@ fn sort_by_radix<const W: usize>(columns: &mut BucketColumns<W>, scratch: &mut S
 // Three loops, so neither stream's bound is tested in the main walk: research/FINDINGS.md §Branch misprediction: merge loop split and branchless gather filter.
 // Not segment copies: research/FINDINGS.md §Segment-copy merge
 // Not a branchless walk: research/FINDINGS.md §Branchless `merge2_into`
-pub(crate) fn merge_identity_and_rest<const W: usize, T: TruncationPolicy<W> + ?Sized>(
-    identity: ColumnsRef<'_, W>,
-    rest: ColumnsRef<'_, W>,
-    out: &mut BucketColumns<W>,
+pub(crate) fn merge_identity_and_rest<
+    const W: usize,
+    C: Coefficient,
+    T: TruncationPolicy<W, C> + ?Sized,
+>(
+    identity: ColumnsRef<'_, W, C>,
+    rest: ColumnsRef<'_, W, C>,
+    out: &mut BucketColumns<W, C>,
     policy: &T,
 ) {
     let ColumnsRef { x: a_x, z: a_z, coeff: a_c } = identity;
@@ -303,14 +310,14 @@ pub(crate) fn merge_identity_and_rest<const W: usize, T: TruncationPolicy<W> + ?
 
 /// Push one reduced key unless its sum is exactly zero or `keep_term` drops it.
 #[inline(always)]
-fn emit_if_kept<const W: usize, T: TruncationPolicy<W> + ?Sized>(
-    out: &mut BucketColumns<W>,
+fn emit_if_kept<const W: usize, C: Coefficient, T: TruncationPolicy<W, C> + ?Sized>(
+    out: &mut BucketColumns<W, C>,
     policy: &T,
     key_x: [u64; W],
     key_z: [u64; W],
-    sum: Complex64,
+    sum: C,
 ) {
-    if sum != Complex64::new(0.0, 0.0) && policy.keep_term(&key_x, &key_z, sum) {
+    if sum != C::ZERO && policy.keep_term(&key_x, &key_z, sum) {
         out.x.push(key_x);
         out.z.push(key_z);
         out.coeff.push(sum);

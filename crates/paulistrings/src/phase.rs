@@ -5,7 +5,7 @@ use std::ops::{Add, AddAssign};
 
 /// A phase factor `i^k` with `k ∈ {0, 1, 2, 3}`; `+` multiplies phases.
 ///
-/// [`crate::PauliString::mul_assign`] returns one, and [`Phase::apply`] folds it into a coefficient.
+/// [`crate::PauliString::mul_assign`] returns one, and [`Coefficient::mul_phase`](crate::Coefficient::mul_phase) folds it into a coefficient.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[repr(transparent)]
 pub struct Phase(u8);
@@ -40,18 +40,6 @@ impl Phase {
             1 => Complex64::new(0.0, 1.0),
             2 => Complex64::new(-1.0, 0.0),
             3 => Complex64::new(0.0, -1.0),
-            _ => unreachable!(),
-        }
-    }
-
-    /// Multiply `c` by `i^k` by a sign/swap of its parts, without a float multiply.
-    #[inline]
-    pub fn apply(self, c: Complex64) -> Complex64 {
-        match self.0 {
-            0 => c,
-            1 => Complex64::new(-c.im, c.re),
-            2 => Complex64::new(-c.re, -c.im),
-            3 => Complex64::new(c.im, -c.re),
             _ => unreachable!(),
         }
     }

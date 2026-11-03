@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::coefficient::Coefficient;
 use num_complex::Complex64;
+use std::marker::PhantomData;
 
 #[cfg(feature = "phase-timing")]
 use super::driver::DriverLaps;
@@ -100,7 +102,11 @@ pub enum ScatterRows<const W: usize> {
 
 impl<const W: usize> ScatterRows<W> {
     /// The rows for `2^bits` partitions of `sum`.
-    pub(crate) fn resolve(self, sum: &PauliSum<W>, bits: u8) -> PartitionRows<W> {
+    pub(crate) fn resolve<C: Coefficient>(
+        self,
+        sum: &PauliSum<W, C>,
+        bits: u8,
+    ) -> PartitionRows<W> {
         match self {
             Self::Policy(policy) => policy.rows(sum.num_qubits(), bits, sum.hash().seed()),
             Self::Explicit(rows) => rows,
@@ -123,8 +129,14 @@ pub(crate) fn group_bits(size: u32) -> u8 {
 /// The input is replicated: every rank scatters the same sum and keeps its own partition.
 /// [`gather`](Self::gather) returns `Some` on rank 0 only, and a [`PartitionTrace`] holds this rank's counts only.
 /// `B` is where the partition lives: host memory, or a CUDA device under the `cuda` feature (`gpu::GpuDistributedSum`).
-pub struct DistributedSum<const W: usize, X: Transport, B = HostPartition<W>> {
+pub struct DistributedSum<
+    const W: usize,
+    X: Transport,
+    C: Coefficient = Complex64,
+    B = HostPartition<W, C>,
+> {
     local: B,
+    coefficient: PhantomData<fn() -> C>,
     rows: PartitionRows<W>,
     runtime: Arc<PartitionRuntime>,
     transport: X,
@@ -133,7 +145,7 @@ pub struct DistributedSum<const W: usize, X: Transport, B = HostPartition<W>> {
     laps: DriverLaps,
 }
 
-impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
+impl<const W: usize, C: Coefficient, X: Transport, B> DistributedSum<W, X, C, B> {
     /// This rank's index in the group.
     pub fn rank(&self) -> u32 {
         self.transport.rank()
@@ -184,6 +196,7 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         let _ = scatter_ns;
         Self {
             local,
+            coefficient: PhantomData,
             rows,
             runtime,
             transport,
@@ -222,8 +235,8 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: TruncationPolicy<W> + ?Sized,
-        B: PartitionBackend<W, T>,
+        T: TruncationPolicy<W, C> + ?Sized,
+        B: PartitionBackend<W, C, T>,
     {
         let runtime = &*self.runtime;
         let transport = &self.transport;
@@ -262,7 +275,9 @@ impl<const W: usize, X: Transport, B> DistributedSum<W, X, B> {
     }
 }
 
-impl<const W: usize, X: Transport, B: PartitionStorage<W>> DistributedSum<W, X, B> {
+impl<const W: usize, C: Coefficient, X: Transport, B: PartitionStorage<W, C>>
+    DistributedSum<W, X, C, B>
+{
     /// Terms in the whole sum. **Collective.**
     pub fn len(&self) -> usize {
         let mut total = [self.local.len() as u64];
@@ -286,7 +301,7 @@ impl<const W: usize, X: Transport, B: PartitionStorage<W>> DistributedSum<W, X, 
     }
 }
 
-impl<const W: usize, X: Transport> DistributedSum<W, X> {
+impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
     /// Split the replicated `sum` across `transport`'s group by the default rows ([`PartitionRowPolicy::Seeded`] at the sum's own hash seed), keeping this rank's share on the one-partition runtime `config` describes.
     ///
     /// # Errors
@@ -297,7 +312,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     ///
     /// If `config` asks for more than one partition, or if the group size is not a power of two.
     pub fn scatter(
-        sum: PauliSum<W>,
+        sum: PauliSum<W, C>,
         transport: X,
         config: &PartitionConfig,
     ) -> Result<Self, TopologyError> {
@@ -316,7 +331,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     ///
     /// If the runtime has more than one partition, if the group size is not a power of two, if the rows do not name one partition per rank or are for a different qubit count than `sum`, or as [`PartitionRows::cut`].
     /// In debug builds, if the rows are not independent of the sum's hash rows.
-    pub fn scatter_with(sum: PauliSum<W>, transport: X, options: ScatterOptions<W>) -> Self {
+    pub fn scatter_with(sum: PauliSum<W, C>, transport: X, options: ScatterOptions<W>) -> Self {
         let ScatterOptions { runtime, rows } = options;
         let rows = rows.resolve(&sum, group_bits(transport.size()));
         assert_eq!(
@@ -351,6 +366,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 
         Self {
             local: HostPartition::new(local),
+            coefficient: PhantomData,
             rows,
             runtime,
             transport,
@@ -363,7 +379,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     /// [`propagate_with`](Self::propagate_with) under [`PropagateOptions::default()`].
     pub fn propagate<T>(&mut self, circuit: &Circuit<W>, policy: &T, direction: Direction)
     where
-        T: TruncationPolicy<W> + ?Sized,
+        T: TruncationPolicy<W, C> + ?Sized,
     {
         self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
@@ -383,13 +399,13 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: TruncationPolicy<W> + ?Sized,
+        T: TruncationPolicy<W, C> + ?Sized,
     {
         self.propagate_on_backend(circuit, policy, direction, options);
     }
 
     /// Collect the whole sum on rank 0, `None` elsewhere, leaving `self` intact. **Collective.**
-    pub fn gather(&self) -> Option<PauliSum<W>> {
+    pub fn gather(&self) -> Option<PauliSum<W, C>> {
         timed!(let started = Instant::now());
         let out = gather_share(&self.local.sum, &self.transport);
         timed!(self.lap_gather(started.elapsed().as_nanos() as u64));
@@ -397,7 +413,7 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
     }
 
     /// This rank's share, a valid [`PauliSum`] under the group's shared hash.
-    pub fn local(&self) -> &PauliSum<W> {
+    pub fn local(&self) -> &PauliSum<W, C> {
         &self.local.sum
     }
 
@@ -454,10 +470,10 @@ impl<const W: usize, X: Transport> DistributedSum<W, X> {
 }
 
 /// [`DistributedSum::gather`] over any rank's host share. **Collective.**
-pub(crate) fn gather_share<const W: usize, X: Transport>(
-    local: &PauliSum<W>,
+pub(crate) fn gather_share<const W: usize, C: Coefficient, X: Transport>(
+    local: &PauliSum<W, C>,
     transport: &X,
-) -> Option<PauliSum<W>> {
+) -> Option<PauliSum<W, C>> {
     let lens: Vec<u64> = (0..local.num_buckets()).map(|b| local.bucket_len(b) as u64).collect();
     let (x, z, coeff) = local.to_arrays();
     let parts: Vec<&[u8]> = vec![
@@ -472,7 +488,7 @@ pub(crate) fn gather_share<const W: usize, X: Transport>(
     all.map(|all| {
         let hash = local.hash().clone();
         let num_qubits = local.num_qubits();
-        let parts: Vec<PauliSum<W>> = all
+        let parts: Vec<PauliSum<W, C>> = all
             .into_iter()
             .enumerate()
             .map(|(rank, parts)| decode_rank(&parts, hash.clone(), num_qubits, rank))
@@ -489,11 +505,11 @@ pub(crate) fn gather_share<const W: usize, X: Transport>(
 /// # Panics
 ///
 /// If the ranks disagree about `rows` or the bucket hash rows, if the group size is not a power of two, or if `rows` does not name one partition per rank.
-pub fn repartition_share<const W: usize, X: Transport>(
-    mut share: PauliSum<W>,
+pub fn repartition_share<const W: usize, C: Coefficient, X: Transport>(
+    mut share: PauliSum<W, C>,
     rows: &PartitionRows<W>,
     transport: &X,
-) -> PauliSum<W> {
+) -> PauliSum<W, C> {
     let size = transport.size() as usize;
     rows.assert_splits(share.num_qubits(), 1usize << group_bits(transport.size()));
     transport.check_consistency(identity_fingerprint(rows, share.hash()));
@@ -510,7 +526,7 @@ pub fn repartition_share<const W: usize, X: Transport>(
     let mut own = send[rank].take();
     // Every rank sends to every other, an empty payload included, so a transport inferring its partners from the `Some` slots sees a symmetric exchange.
     let mut received = transport.exchange(send, &mut Vec::new());
-    let parts: Vec<PauliSum<W>> = (0..size)
+    let parts: Vec<PauliSum<W, C>> = (0..size)
         .map(|from| {
             let payload = if from == rank {
                 own.take().expect("this rank's own payload").0
@@ -528,13 +544,16 @@ pub fn repartition_share<const W: usize, X: Transport>(
 
 /// `share` cut by the partition `rows` assigns each term, one payload per partition in the gather's wire form (bucket lengths, then the x, z and coefficient columns), keeping every bucket's order.
 /// One sequential pass straight into the wire columns, so the split never holds a bucket structure per partition and bucket.
-fn encode_split<const W: usize>(share: &PauliSum<W>, rows: &PartitionRows<W>) -> Vec<ByteParts> {
+fn encode_split<const W: usize, C: Coefficient>(
+    share: &PauliSum<W, C>,
+    rows: &PartitionRows<W>,
+) -> Vec<ByteParts> {
     let partitions = rows.num_partitions();
     let buckets = share.num_buckets();
     let mut lens: Vec<Vec<u64>> = vec![Vec::with_capacity(buckets); partitions];
     let mut x: Vec<Vec<[u64; W]>> = vec![Vec::new(); partitions];
     let mut z: Vec<Vec<[u64; W]>> = vec![Vec::new(); partitions];
-    let mut coeff: Vec<Vec<Complex64>> = vec![Vec::new(); partitions];
+    let mut coeff: Vec<Vec<C>> = vec![Vec::new(); partitions];
     for b in 0..buckets {
         let (bucket_x, bucket_z, bucket_coeff) = share.bucket(b);
         let before: Vec<usize> = coeff.iter().map(Vec::len).collect();
@@ -635,12 +654,12 @@ fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u6
 }
 
 /// Rebuild one rank's share from the [`GATHER_PARTS`] parts it shipped; panics on contradictory lengths.
-fn decode_rank<const W: usize>(
+fn decode_rank<const W: usize, C: Coefficient>(
     parts: &[Vec<u8>],
     hash: crate::pauli_sum::hash::Gf2Hash<W>,
     num_qubits: usize,
     rank: usize,
-) -> PauliSum<W> {
+) -> PauliSum<W, C> {
     assert_eq!(
         parts.len(),
         GATHER_PARTS,
@@ -653,7 +672,7 @@ fn decode_rank<const W: usize>(
     let terms: usize = lens.iter().sum();
     let x = decode_rows::<W>(&parts[1], terms, "x column");
     let z = decode_rows::<W>(&parts[2], terms, "z column");
-    let coeff = decode_column::<Complex64>(&parts[3], terms, "coeff column");
+    let coeff = decode_column::<C>(&parts[3], terms, "coeff column");
     PauliSum::from_bucket_columns(&lens, x, z, coeff, hash, num_qubits)
 }
 

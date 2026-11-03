@@ -6,9 +6,9 @@ mod tree;
 pub use builtin::{And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff};
 pub use tree::BuiltinTruncation;
 
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::PauliSum;
-use num_complex::Complex64;
 
 /// A truncation strategy: a per-term filter, a per-layer pass, or both.
 ///
@@ -16,16 +16,18 @@ use num_complex::Complex64;
 ///
 /// Above one partition every partition sees a disjoint slice of the layer, so a layer pass must be collective: a policy whose `finalizes_layer()` is `true` runs partitioned only if it overrides [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) and [`supports_partitioned`](Self::supports_partitioned).
 /// Every built-in does except exact [`TopN`], which is not yet supported partitioned; [`ApproxTopN`] is the partitioned alternative.
-pub trait TruncationPolicy<const W: usize>: Send + Sync {
+pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex64>:
+    Send + Sync
+{
     /// Per-term filter, run inside the merge on every output, so it must be cheap.
     ///
     /// `c` is the coefficient summed over every contribution to the key `(x, z)`.
-    fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], _c: Complex64) -> bool {
+    fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], _c: C) -> bool {
         true
     }
 
     /// Pass over the whole sum after each layer; [`PauliSum::retain`] is the easy way to write a filter here.
-    fn finalize_layer(&self, _sum: &mut PauliSum<W>) {}
+    fn finalize_layer(&self, _sum: &mut PauliSum<W, C>) {}
 
     /// Whether [`finalize_layer`](Self::finalize_layer) does anything, a hint that lets the engine skip it.
     ///
@@ -42,7 +44,11 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
     /// # Panics
     ///
     /// Above one partition, if the policy reports [`finalizes_layer()`](Self::finalizes_layer) and has not overridden this method.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
         if collectives.size() == 1 {
             self.finalize_layer(local);
             return;
@@ -66,9 +72,11 @@ pub trait TruncationPolicy<const W: usize>: Send + Sync {
 }
 
 /// Panics unless `policy` can run on `partitions` partitions.
-pub(crate) fn assert_supports_partitions<const W: usize, T>(policy: &T, partitions: usize)
-where
-    T: TruncationPolicy<W> + ?Sized,
+pub(crate) fn assert_supports_partitions<const W: usize, C: Coefficient, T>(
+    policy: &T,
+    partitions: usize,
+) where
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     assert!(
         partitions == 1 || policy.supports_partitioned(),

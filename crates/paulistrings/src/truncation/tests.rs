@@ -322,10 +322,12 @@ fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
 /// The run-time check every partitioned driver makes before its first layer.
 #[test]
 fn assert_supports_partitions_rejects_exact_top_n_above_one_partition() {
-    assert_supports_partitions::<1, _>(&TopN(10), 1);
-    assert_supports_partitions::<1, _>(&ApproxTopN(10), 4);
-    let panic = std::panic::catch_unwind(|| assert_supports_partitions::<1, _>(&TopN(10), 2))
-        .expect_err("TopN on two partitions must panic");
+    assert_supports_partitions::<1, num_complex::Complex64, _>(&TopN(10), 1);
+    assert_supports_partitions::<1, num_complex::Complex64, _>(&ApproxTopN(10), 4);
+    let panic = std::panic::catch_unwind(|| {
+        assert_supports_partitions::<1, num_complex::Complex64, _>(&TopN(10), 2)
+    })
+    .expect_err("TopN on two partitions must panic");
     let message = panic.downcast_ref::<String>().expect("a formatted message");
     assert!(message.contains("not yet supported") && message.contains("ApproxTopN"), "{message}");
 }

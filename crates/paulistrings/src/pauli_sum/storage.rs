@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 use rayon::prelude::*;
 
 use super::hash::{Gf2Hash, INDEX_BITS};
@@ -59,13 +59,13 @@ pub const DEFAULT_MIN_BUCKETS: usize = 128;
 
 /// One bucket's columns, whose capacity is retained across layers.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct BucketColumns<const W: usize> {
+pub(crate) struct BucketColumns<const W: usize, C: Coefficient = num_complex::Complex64> {
     pub(crate) x: Vec<[u64; W]>,
     pub(crate) z: Vec<[u64; W]>,
-    pub(crate) coeff: Vec<Complex64>,
+    pub(crate) coeff: Vec<C>,
 }
 
-impl<const W: usize> BucketColumns<W> {
+impl<const W: usize, C: Coefficient> BucketColumns<W, C> {
     pub(super) fn new() -> Self {
         Self::with_capacity(0)
     }
@@ -88,7 +88,7 @@ impl<const W: usize> BucketColumns<W> {
         self.coeff.clear();
     }
 
-    pub(crate) fn push(&mut self, x: [u64; W], z: [u64; W], c: Complex64) {
+    pub(crate) fn push(&mut self, x: [u64; W], z: [u64; W], c: C) {
         self.x.push(x);
         self.z.push(z);
         self.coeff.push(c);
@@ -100,33 +100,33 @@ impl<const W: usize> BucketColumns<W> {
         self.coeff.extend_from_slice(&other.coeff[start..]);
     }
 
-    pub(crate) fn view(&self) -> ColumnsRef<'_, W> {
+    pub(crate) fn view(&self) -> ColumnsRef<'_, W, C> {
         ColumnsRef { x: &self.x, z: &self.z, coeff: &self.coeff }
     }
 }
 
 /// Borrowed `(x, z, coeff)` columns of equal length, which need not come from one [`BucketColumns`].
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ColumnsRef<'a, const W: usize> {
+pub(crate) struct ColumnsRef<'a, const W: usize, C: Coefficient = num_complex::Complex64> {
     pub(crate) x: &'a [[u64; W]],
     pub(crate) z: &'a [[u64; W]],
-    pub(crate) coeff: &'a [Complex64],
+    pub(crate) coeff: &'a [C],
 }
 
 /// Mutable `(x, z, coeff)` columns of equal length, which need not come from one [`BucketColumns`].
 #[derive(Debug)]
-pub(crate) struct ColumnsMut<'a, const W: usize> {
+pub(crate) struct ColumnsMut<'a, const W: usize, C: Coefficient = num_complex::Complex64> {
     pub(crate) x: &'a mut [[u64; W]],
     pub(crate) z: &'a mut [[u64; W]],
-    pub(crate) coeff: &'a mut [Complex64],
+    pub(crate) coeff: &'a mut [C],
 }
 
-impl<'a, const W: usize> ColumnsMut<'a, W> {
+impl<'a, const W: usize, C: Coefficient> ColumnsMut<'a, W, C> {
     pub(crate) fn len(&self) -> usize {
         self.coeff.len()
     }
 
-    pub(crate) fn split_at(self, at: usize) -> (ColumnsMut<'a, W>, ColumnsMut<'a, W>) {
+    pub(crate) fn split_at(self, at: usize) -> (ColumnsMut<'a, W, C>, ColumnsMut<'a, W, C>) {
         let (x_head, x_tail) = self.x.split_at_mut(at);
         let (z_head, z_tail) = self.z.split_at_mut(at);
         let (coeff_head, coeff_tail) = self.coeff.split_at_mut(at);
@@ -138,13 +138,13 @@ impl<'a, const W: usize> ColumnsMut<'a, W> {
 }
 
 /// `f` over every item, on the Rayon pool once the sum holds `PARALLEL_MIN_TERMS` terms.
-pub(super) fn map_buckets<C, T>(
+pub(super) fn map_buckets<Items, T>(
     num_terms: usize,
-    items: C,
-    f: impl Fn(<C as IntoParallelIterator>::Item) -> T + Sync + Send,
+    items: Items,
+    f: impl Fn(<Items as IntoParallelIterator>::Item) -> T + Sync + Send,
 ) -> Vec<T>
 where
-    C: IntoParallelIterator + IntoIterator<Item = <C as IntoParallelIterator>::Item>,
+    Items: IntoParallelIterator + IntoIterator<Item = <Items as IntoParallelIterator>::Item>,
     T: Send,
 {
     if num_terms < PARALLEL_MIN_TERMS {
@@ -155,11 +155,11 @@ where
 }
 
 /// Split off the terms whose hash row `new_bit` is set, returning them in order and keeping the rest in place.
-fn refine_bucket<const W: usize>(
-    columns: &mut BucketColumns<W>,
+fn refine_bucket<const W: usize, C: Coefficient>(
+    columns: &mut BucketColumns<W, C>,
     hash: &Gf2Hash<W>,
     new_bit: u8,
-) -> BucketColumns<W> {
+) -> BucketColumns<W, C> {
     let mut upper_half = BucketColumns::new();
     let mut keep = 0usize;
     for i in 0..columns.len() {
@@ -179,11 +179,11 @@ fn refine_bucket<const W: usize>(
 }
 
 /// Merge two sorted runs; `on_equal` combines a shared key's coefficients, `None` dropping the key.
-pub(super) fn merge_sorted<const W: usize>(
-    a: &BucketColumns<W>,
-    b: &BucketColumns<W>,
-    mut on_equal: impl FnMut(Complex64, Complex64) -> Option<Complex64>,
-) -> BucketColumns<W> {
+pub(super) fn merge_sorted<const W: usize, C: Coefficient>(
+    a: &BucketColumns<W, C>,
+    b: &BucketColumns<W, C>,
+    mut on_equal: impl FnMut(C, C) -> Option<C>,
+) -> BucketColumns<W, C> {
     let mut out = BucketColumns::with_capacity(a.len() + b.len());
     let (mut i, mut j) = (0usize, 0usize);
     while i < a.len() && j < b.len() {
@@ -211,7 +211,7 @@ pub(super) fn merge_sorted<const W: usize>(
 }
 
 /// The `on_equal` of [`merge_sorted`] for runs whose keys are disjoint.
-pub(super) fn keys_are_disjoint(_: Complex64, _: Complex64) -> Option<Complex64> {
+pub(super) fn keys_are_disjoint<C: Coefficient>(_: C, _: C) -> Option<C> {
     debug_assert!(false, "PauliSum: duplicate key across merged runs");
     None
 }
@@ -221,15 +221,15 @@ pub(super) fn keys_are_disjoint(_: Complex64, _: Complex64) -> Option<Complex64>
 /// Terms come in canonical order: bucket index ascending, then lexicographic `(x, z)` within a bucket, with no repeated key.
 /// A sum of at most 1024 terms built by [`crate::BuildAccumulator`] has one bucket and so is plain lex-sorted; a larger one interleaves buckets, so compare sums by key ([`Self::get`]), not by position.
 #[derive(Debug)]
-pub struct PauliSum<const W: usize> {
-    pub(super) buckets: Vec<BucketColumns<W>>,
+pub struct PauliSum<const W: usize, C: Coefficient = num_complex::Complex64> {
+    pub(super) buckets: Vec<BucketColumns<W, C>>,
     pub(super) hash: Gf2Hash<W>,
     pub(super) num_qubits: usize,
     pub(super) len: usize,
 }
 
 /// Bucket by bucket on the Rayon pool, so the copy's pages are first-touched by the workers that will stream them rather than all on the caller's NUMA node.
-impl<const W: usize> Clone for PauliSum<W> {
+impl<const W: usize, C: Coefficient> Clone for PauliSum<W, C> {
     fn clone(&self) -> Self {
         Self {
             buckets: map_buckets(self.len, &self.buckets, BucketColumns::clone),
@@ -240,12 +240,12 @@ impl<const W: usize> Clone for PauliSum<W> {
     }
 }
 
-impl<const W: usize> PauliSum<W> {
+impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     /// Partition terms the caller has sorted ascending in `(x, z)` with no repeated key; unsorted input silently breaks the bucket invariant.
     pub(crate) fn from_key_sorted(
         x: &[[u64; W]],
         z: &[[u64; W]],
-        coeff: &[Complex64],
+        coeff: &[C],
         hash: Gf2Hash<W>,
         num_qubits: usize,
     ) -> Self {
@@ -259,7 +259,7 @@ impl<const W: usize> PauliSum<W> {
             counts[b as usize] += 1;
         }
 
-        let mut buckets: Vec<BucketColumns<W>> =
+        let mut buckets: Vec<BucketColumns<W, C>> =
             counts.iter().map(|&c| BucketColumns::with_capacity(c)).collect();
 
         for i in 0..n {
@@ -300,7 +300,7 @@ impl<const W: usize> PauliSum<W> {
         let targets: Vec<Vec<u32>> = map_buckets(self.len, &self.buckets, |columns| {
             (0..columns.len()).map(|i| hash.bucket_of(&columns.x[i], &columns.z[i])).collect()
         });
-        let mut scattered: Vec<Vec<(PauliString<W>, Complex64)>> =
+        let mut scattered: Vec<Vec<(PauliString<W>, C)>> =
             (0..hash.num_buckets()).map(|_| Vec::new()).collect();
         for (columns, targets) in self.buckets.iter().zip(&targets) {
             for (i, &b) in targets.iter().enumerate() {
@@ -376,7 +376,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Borrow bucket `b`'s columns as `(x, z, coeff)`.
-    pub(crate) fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn bucket(&self, b: usize) -> (&[[u64; W]], &[[u64; W]], &[C]) {
         let columns = &self.buckets[b];
         (&columns.x, &columns.z, &columns.coeff)
     }
@@ -421,12 +421,12 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// The buckets' columns, for read-outs that scan them.
-    pub(crate) fn buckets(&self) -> &[BucketColumns<W>] {
+    pub(crate) fn buckets(&self) -> &[BucketColumns<W, C>] {
         &self.buckets
     }
 
     /// Mutable access to the buckets, for layers that are applied in place.
-    pub(crate) fn buckets_mut(&mut self) -> &mut [BucketColumns<W>] {
+    pub(crate) fn buckets_mut(&mut self) -> &mut [BucketColumns<W, C>] {
         &mut self.buckets
     }
 
@@ -442,7 +442,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Iterate every term in canonical order, which is not globally key-sorted.
-    pub fn iter(&self) -> impl Iterator<Item = (&[u64; W], &[u64; W], Complex64)> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = (&[u64; W], &[u64; W], C)> + '_ {
         self.buckets.iter().flat_map(|columns| {
             columns
                 .x
@@ -454,7 +454,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Copy every term out as three parallel columns, in canonical order.
-    pub fn to_arrays(&self) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<Complex64>) {
+    pub fn to_arrays(&self) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<C>) {
         let mut x = Vec::with_capacity(self.len);
         let mut z = Vec::with_capacity(self.len);
         let mut coeff = Vec::with_capacity(self.len);
@@ -467,7 +467,7 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Coefficient of the term with key `(x, z)`, or `None` if absent.
-    pub fn get(&self, x: &[u64; W], z: &[u64; W]) -> Option<Complex64> {
+    pub fn get(&self, x: &[u64; W], z: &[u64; W]) -> Option<C> {
         let columns = &self.buckets[self.hash.bucket_of(x, z) as usize];
         let mut low = 0usize;
         let mut high = columns.len();
@@ -483,13 +483,33 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
-    pub fn identity_coefficient(&self) -> Complex64 {
+    pub fn identity_coefficient(&self) -> C {
         let zero_key = [0u64; W];
-        self.get(&zero_key, &zero_key).unwrap_or(Complex64::new(0.0, 0.0))
+        self.get(&zero_key, &zero_key).unwrap_or(C::ZERO)
+    }
+
+    /// A copy with every coefficient converted to `T`, partitioned as `self`; `None` when a real `T` meets a coefficient whose imaginary part exceeds `tolerance`.
+    pub fn cast<T: Coefficient>(&self, tolerance: f64) -> Option<PauliSum<W, T>> {
+        let buckets = map_buckets(self.len, &self.buckets, |columns| {
+            let coeff = columns
+                .coeff
+                .iter()
+                .map(|&c| T::from_complex64(c.to_complex64(), tolerance))
+                .collect::<Option<Vec<T>>>()?;
+            Some(BucketColumns { x: columns.x.clone(), z: columns.z.clone(), coeff })
+        })
+        .into_iter()
+        .collect::<Option<Vec<_>>>()?;
+        Some(PauliSum {
+            buckets,
+            hash: self.hash.clone(),
+            num_qubits: self.num_qubits,
+            len: self.len,
+        })
     }
 
     /// Multiply every coefficient by `c` in place.
-    pub fn scale(&mut self, c: Complex64) {
+    pub fn scale(&mut self, c: C) {
         self.buckets.par_iter_mut().for_each(|columns| {
             for coeff in columns.coeff.iter_mut() {
                 *coeff *= c;
@@ -498,25 +518,25 @@ impl<const W: usize> PauliSum<W> {
     }
 
     /// Keep only the terms for which `f(x, z, coeff)` is `true`; `f` may run on several threads at once.
-    pub fn retain(&mut self, f: impl Fn(&[u64; W], &[u64; W], Complex64) -> bool + Sync) {
+    pub fn retain(&mut self, f: impl Fn(&[u64; W], &[u64; W], C) -> bool + Sync) {
         self.retain_per_bucket(|_| &f);
     }
 
     /// [`retain`](Self::retain) with one filter per bucket, `filter_for(b)`, run over bucket `b` in order.
     pub(crate) fn retain_per_bucket<F>(&mut self, filter_for: impl Fn(usize) -> F + Sync)
     where
-        F: FnMut(&[u64; W], &[u64; W], Complex64) -> bool,
+        F: FnMut(&[u64; W], &[u64; W], C) -> bool,
     {
         self.update_per_bucket(|b| {
             let mut keep = filter_for(b);
-            move |x: &[u64; W], z: &[u64; W], c: Complex64| keep(x, z, c).then_some(c)
+            move |x: &[u64; W], z: &[u64; W], c: C| keep(x, z, c).then_some(c)
         });
     }
 
     /// [`retain_per_bucket`](Self::retain_per_bucket) that also rewrites each kept coefficient: `update_for(b)` maps a term to its new coefficient, or to `None` to drop it.
     pub(crate) fn update_per_bucket<F>(&mut self, update_for: impl Fn(usize) -> F + Sync)
     where
-        F: FnMut(&[u64; W], &[u64; W], Complex64) -> Option<Complex64>,
+        F: FnMut(&[u64; W], &[u64; W], C) -> Option<C>,
     {
         self.buckets.par_iter_mut().enumerate().for_each(|(b, columns)| {
             let mut update = update_for(b);
@@ -544,7 +564,7 @@ impl<const W: usize> PauliSum<W> {
     /// # Panics
     ///
     /// Panics if the two sums disagree about `num_qubits`.
-    pub fn overlap(&self, other: &Self) -> Complex64 {
+    pub fn overlap(&self, other: &Self) -> C {
         assert_eq!(
             self.num_qubits, other.num_qubits,
             "PauliSum::overlap: num_qubits mismatch ({} vs {})",
@@ -555,7 +575,7 @@ impl<const W: usize> PauliSum<W> {
             .par_iter()
             .zip(rhs.buckets.par_iter())
             .map(|(a, b)| {
-                let mut partial = Complex64::new(0.0, 0.0);
+                let mut partial = C::ZERO;
                 let (mut i, mut j) = (0usize, 0usize);
                 while i < a.len() && j < b.len() {
                     match (&a.x[i], &a.z[i]).cmp(&(&b.x[j], &b.z[j])) {
@@ -572,7 +592,7 @@ impl<const W: usize> PauliSum<W> {
             })
             .collect::<Vec<_>>()
             .into_iter()
-            .fold(Complex64::new(0.0, 0.0), |a, b| a + b)
+            .fold(C::ZERO, |a, b| a + b)
     }
 
     /// Sum of two sums, partitioned as `self`; terms summing to exactly zero are dropped.
@@ -587,8 +607,8 @@ impl<const W: usize> PauliSum<W> {
             self.num_qubits, other.num_qubits,
         );
         let rhs = other.align_to(&self.hash);
-        let zero = Complex64::new(0.0, 0.0);
-        let buckets: Vec<BucketColumns<W>> = self
+        let zero = C::ZERO;
+        let buckets: Vec<BucketColumns<W, C>> = self
             .buckets
             .par_iter()
             .zip(rhs.buckets.par_iter())

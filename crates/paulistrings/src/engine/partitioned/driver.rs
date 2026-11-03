@@ -1,5 +1,6 @@
 //! The call frame around `run_layers` shared by every partitioned driver, the scatter, and the [`propagate_partitioned`] front door.
 
+use crate::coefficient::Coefficient;
 #[cfg(feature = "phase-timing")]
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -24,21 +25,25 @@ use super::sum::PartitionedSum;
 pub(super) use crate::engine::LOG_TARGET;
 
 impl<B> PartitionWork<B> {
-    pub(super) fn take<const W: usize>(local: &mut B, layers: usize, tracing: bool) -> Self
+    pub(super) fn take<const W: usize, C: Coefficient>(
+        local: &mut B,
+        layers: usize,
+        tracing: bool,
+    ) -> Self
     where
-        B: PartitionStorage<W>,
+        B: PartitionStorage<W, C>,
     {
         Self { local: local.detach(), rows: Vec::with_capacity(if tracing { layers } else { 0 }) }
     }
 }
 
 /// One partition's share of `sum` at the agreed bucket count; collective, and run on the partition's own pool for first touch.
-pub(crate) fn scatter_local<const W: usize>(
-    sum: &PauliSum<W>,
+pub(crate) fn scatter_local<const W: usize, C: Coefficient>(
+    sum: &PauliSum<W, C>,
     rows: &PartitionRows<W>,
     rank: u32,
     collectives: &dyn Collectives,
-) -> PauliSum<W> {
+) -> PauliSum<W, C> {
     let mut local = sum.filter_partition(rows, rank);
     let want = desired_bits(local.len(), DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
     let want = collectives.allreduce_max_u8(want);
@@ -91,14 +96,16 @@ pub(super) struct LayerRun<'a, const W: usize, T: ?Sized> {
     tracing: bool,
 }
 
-impl<const W: usize, T: TruncationPolicy<W> + ?Sized> LayerRun<'_, W, T> {
+impl<const W: usize, T: ?Sized> LayerRun<'_, W, T> {
     /// Partition `rank`'s [`run_layers`].
-    pub(super) fn run<X: Transport, B: PartitionBackend<W, T>>(
+    pub(super) fn run<C: Coefficient, X: Transport, B: PartitionBackend<W, C, T>>(
         &self,
         rank: usize,
         work: &mut PartitionWork<B>,
         transport: &X,
-    ) {
+    ) where
+        T: TruncationPolicy<W, C>,
+    {
         let context =
             PartitionContext { rows: self.rows, rank, size: self.size, tracing: self.tracing };
         run_layers(
@@ -128,9 +135,9 @@ pub(super) struct DriverFrame<'a, const W: usize, B> {
     pub(super) size: usize,
 }
 
-impl<const W: usize, B: PartitionStorage<W>> DriverFrame<'_, W, B> {
+impl<const W: usize, B> DriverFrame<'_, W, B> {
     /// The prologue and epilogue every partitioned driver shares around `run`, which drives the partitions' layers and returns their work in rank order; `agree` runs after the entry line, before any layer.
-    pub(super) fn propagate<T>(
+    pub(super) fn propagate<C: Coefficient, T>(
         self,
         circuit: &Circuit<W>,
         policy: &T,
@@ -139,8 +146,8 @@ impl<const W: usize, B: PartitionStorage<W>> DriverFrame<'_, W, B> {
         agree: impl FnOnce(),
         run: impl FnOnce(Vec<PartitionWork<B>>, &LayerRun<'_, W, T>) -> Vec<PartitionWork<B>>,
     ) where
-        T: TruncationPolicy<W> + ?Sized,
-        B: PartitionBackend<W, T>,
+        T: TruncationPolicy<W, C> + ?Sized,
+        B: PartitionBackend<W, C, T>,
     {
         options.assert_valid();
         let num_layers = circuit.channels.len();
@@ -198,16 +205,16 @@ impl<const W: usize, B: PartitionStorage<W>> DriverFrame<'_, W, B> {
 ///
 /// [`TopologyError`] if `config` cannot be resolved into slots or a pool cannot be built.
 /// Everything else is a panic, as in [`propagate`](crate::propagate) and [`PartitionedSum::propagate_with`].
-pub fn propagate_partitioned<const W: usize, T>(
+pub fn propagate_partitioned<const W: usize, C: Coefficient, T>(
     circuit: &Circuit<W>,
-    sum: PauliSum<W>,
+    sum: PauliSum<W, C>,
     policy: &T,
     direction: Direction,
     config: &PartitionConfig,
     options: PropagateOptions,
-) -> Result<PauliSum<W>, TopologyError>
+) -> Result<PauliSum<W, C>, TopologyError>
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let mut split = PartitionedSum::scatter(sum, config)?;
     split.propagate_with(circuit, policy, direction, options);

@@ -3,6 +3,7 @@ use super::*;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::test_support::{and, assert_same_terms, assert_terms_close, or, rand_sum_real, KeepAll};
 use crate::truncation::{And, Or};
+use num_complex::Complex64;
 
 /// Weights 0..3 on one word, and coefficients on both sides of 0.1 and 0.5.
 fn grid() -> Vec<([u64; 1], [u64; 1], Complex64)> {

@@ -1,6 +1,6 @@
 //! Python `PauliString` class with width-monomorphized backing storage.
 
-use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl};
+use crate::sum::{extract_complex, parse_pauli_key, PauliSum, PauliSumImpl, WidthSum};
 use num_complex::Complex64;
 use paulistrings::PauliString as CorePauliString;
 use pyo3::exceptions::PyValueError;
@@ -285,7 +285,11 @@ impl PauliString {
                 "PauliString * x: x must be a complex or real number (scalar scaling)",
             )
         })?;
-        Ok(PauliSum::plain(PauliSumImpl::from_single(&self.inner, self.num_qubits, factor)))
+        Ok(PauliSum::plain(PauliSumImpl::C128(WidthSum::from_single(
+            &self.inner,
+            self.num_qubits,
+            factor,
+        ))))
     }
 
     /// `scalar * self`, identical to `self * scalar`.

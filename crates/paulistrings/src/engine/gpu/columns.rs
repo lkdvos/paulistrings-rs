@@ -1,18 +1,21 @@
 //! Device-resident storage of one sum: flat structure-of-arrays term columns plus a per-bucket CSR.
 
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, DeviceRepr};
 
 use super::error::GpuError;
+use crate::coefficient::Coefficient;
+use num_complex::Complex64;
 
 /// Term columns and bucket CSR on one device, grow-only.
-// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, `coeff[2i..2i+2]` (a `Complex64`'s `repr(C)` bytes) and `fingerprint[i]`.
+// The kernels' layout: term `i` is `x[iW..(i+1)W]`, `z[iW..(i+1)W]`, a `C`'s `repr(C)` bytes at `coeff[i·size_of::<C>()..]` and `fingerprint[i]`.
 // Bucket `β` owns terms `start[β]..start[β] + lengths[β]`; buckets need not be contiguous or in index order.
-pub(crate) struct DeviceColumns<const W: usize> {
+pub(crate) struct DeviceColumns<const W: usize, C = Complex64> {
     pub(crate) x: CudaSlice<u64>,
     pub(crate) z: CudaSlice<u64>,
-    pub(crate) coeff: CudaSlice<f64>,
+    pub(crate) coeff: CudaSlice<u8>,
     pub(crate) fingerprint: CudaSlice<u64>,
     /// One entry per bucket plus one, so an exclusive scan of `lengths` can land here directly.
     pub(crate) start: CudaSlice<u32>,
@@ -25,6 +28,7 @@ pub(crate) struct DeviceColumns<const W: usize> {
     bucket_capacity: usize,
     stream: Arc<CudaStream>,
     ordinal: u32,
+    coefficient: PhantomData<C>,
 }
 
 /// `n` uninitialized elements; `bytes` is what an out-of-memory error reports.
@@ -68,9 +72,12 @@ pub(crate) fn grow<T: DeviceRepr>(
     grow_keep(stream, slice, n, 0, ordinal, (n * std::mem::size_of::<T>()) as u64)
 }
 
-impl<const W: usize> DeviceColumns<W> {
+impl<const W: usize, C: Coefficient> DeviceColumns<W, C> {
+    /// Device bytes of one coefficient in `coeff`.
+    pub(crate) const COEFFICIENT_BYTES: usize = std::mem::size_of::<C>();
+
     /// Resident device bytes per term: `x`, `z`, `coeff` and `fingerprint`.
-    pub(crate) const BYTES_PER_TERM: usize = 16 * W + 24;
+    pub(crate) const BYTES_PER_TERM: usize = 16 * W + 8 + Self::COEFFICIENT_BYTES;
 
     /// Empty columns with room for `terms` terms and `buckets` buckets.
     pub(crate) fn with_capacity(
@@ -83,7 +90,7 @@ impl<const W: usize> DeviceColumns<W> {
         Ok(Self {
             x: alloc(stream, terms * W, ordinal, bytes)?,
             z: alloc(stream, terms * W, ordinal, bytes)?,
-            coeff: alloc(stream, 2 * terms, ordinal, bytes)?,
+            coeff: alloc(stream, terms * Self::COEFFICIENT_BYTES, ordinal, bytes)?,
             fingerprint: alloc(stream, terms, ordinal, bytes)?,
             start: alloc(stream, buckets + 1, ordinal, bytes)?,
             lengths: alloc(stream, buckets, ordinal, bytes)?,
@@ -93,6 +100,7 @@ impl<const W: usize> DeviceColumns<W> {
             bucket_capacity: buckets,
             stream: stream.clone(),
             ordinal,
+            coefficient: PhantomData,
         })
     }
 
@@ -125,7 +133,8 @@ impl<const W: usize> DeviceColumns<W> {
         if grow_terms {
             grow_keep(stream, &mut self.x, terms * W, n * W, ordinal, bytes)?;
             grow_keep(stream, &mut self.z, terms * W, n * W, ordinal, bytes)?;
-            grow_keep(stream, &mut self.coeff, 2 * terms, 2 * n, ordinal, bytes)?;
+            let c = Self::COEFFICIENT_BYTES;
+            grow_keep(stream, &mut self.coeff, terms * c, n * c, ordinal, bytes)?;
             grow_keep(stream, &mut self.fingerprint, terms, n, ordinal, bytes)?;
             self.term_capacity = terms;
         }

@@ -2,7 +2,7 @@
 
 use std::mem::size_of;
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
 use crate::engine::transport::{ChunkMap, Payload};
 
@@ -24,17 +24,17 @@ pub(crate) struct BlockHeader {
 ///
 /// The columns are grow-only and may be longer than `header.rows`, which alone says how much is live: read through `columns` or `segment`, never `x.len()`.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct ExchangeBlock<const W: usize> {
+pub(crate) struct ExchangeBlock<const W: usize, C: Coefficient = num_complex::Complex64> {
     pub header: BlockHeader,
     /// CSR offsets by destination position, `num_buckets + 1` entries.
     pub offsets: Vec<u32>,
     pub x: Vec<[u64; W]>,
     pub z: Vec<[u64; W]>,
-    pub coeff: Vec<Complex64>,
+    pub coeff: Vec<C>,
 }
 
 /// Compares the live rows only, so a reused block equals the same block built fresh.
-impl<const W: usize> PartialEq for ExchangeBlock<W> {
+impl<const W: usize, C: Coefficient> PartialEq for ExchangeBlock<W, C> {
     fn eq(&self, other: &Self) -> bool {
         self.header == other.header
             && self.offsets == other.offsets
@@ -44,11 +44,11 @@ impl<const W: usize> PartialEq for ExchangeBlock<W> {
 
 /// Everything one partner receives from this partition for one layer: one block per remote delta, ascending by [`BlockHeader::entry`].
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct PartnerPayload<const W: usize> {
-    pub blocks: Vec<ExchangeBlock<W>>,
+pub(crate) struct PartnerPayload<const W: usize, C: Coefficient = num_complex::Complex64> {
+    pub blocks: Vec<ExchangeBlock<W, C>>,
 }
 
-impl<const W: usize> ExchangeBlock<W> {
+impl<const W: usize, C: Coefficient> ExchangeBlock<W, C> {
     /// `set_counts` on a fresh block.
     #[cfg(test)]
     pub fn with_counts(entry: u32, counts: &[u32]) -> Self {
@@ -76,18 +76,18 @@ impl<const W: usize> ExchangeBlock<W> {
         if self.coeff.len() < rows {
             self.x.resize(rows, [0u64; W]);
             self.z.resize(rows, [0u64; W]);
-            self.coeff.resize(rows, Complex64::new(0.0, 0.0));
+            self.coeff.resize(rows, C::ZERO);
         }
     }
 
     /// The live rows of the three columns.
-    pub(crate) fn columns(&self) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn columns(&self) -> (&[[u64; W]], &[[u64; W]], &[C]) {
         let rows = self.rows();
         (&self.x[..rows], &self.z[..rows], &self.coeff[..rows])
     }
 
     /// The rows destined for position `p`; output bucket `β′` reads `segment(order.position_of(β′))`.
-    pub(crate) fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[Complex64]) {
+    pub(crate) fn segment(&self, p: u32) -> (&[[u64; W]], &[[u64; W]], &[C]) {
         let lo = self.offsets[p as usize] as usize;
         let hi = self.offsets[p as usize + 1] as usize;
         (&self.x[lo..hi], &self.z[lo..hi], &self.coeff[lo..hi])
@@ -109,7 +109,7 @@ impl<const W: usize> ExchangeBlock<W> {
         size_of::<BlockHeader>()
             + self.offsets.len() * size_of::<u32>()
             + 2 * self.rows() * W * size_of::<u64>()
-            + self.rows() * size_of::<Complex64>()
+            + self.rows() * size_of::<C>()
     }
 }
 
@@ -164,7 +164,7 @@ pub(super) fn check_stride(len: usize, stride: usize, what: &str) {
     );
 }
 
-impl<const W: usize> Payload for PartnerPayload<W> {
+impl<const W: usize, C: Coefficient> Payload for PartnerPayload<W, C> {
     fn byte_parts(&self) -> Vec<&[u8]> {
         let mut parts = Vec::with_capacity(PARTS_PER_BLOCK * self.blocks.len());
         for block in &self.blocks {
@@ -189,7 +189,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
         let key_stride = W * size_of::<u64>();
         self.blocks.truncate(block_count);
         if self.blocks.len() < block_count {
-            self.blocks.resize_with(block_count, ExchangeBlock::<W>::default);
+            self.blocks.resize_with(block_count, ExchangeBlock::<W, C>::default);
         }
         let mut parts = Vec::with_capacity(lens.len());
         for (block, lens) in self.blocks.iter_mut().zip(lens.chunks_exact(PARTS_PER_BLOCK)) {
@@ -203,7 +203,7 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             check_stride(lens[1], size_of::<u32>(), "offsets");
             check_stride(lens[2], key_stride, "x column");
             check_stride(lens[3], key_stride, "z column");
-            check_stride(lens[4], size_of::<Complex64>(), "coeff column");
+            check_stride(lens[4], size_of::<C>(), "coeff column");
             assert_eq!(
                 lens[2], lens[3],
                 "partner payload: x column is {} bytes and z column {}",
@@ -211,10 +211,10 @@ impl<const W: usize> Payload for PartnerPayload<W> {
             );
             let rows = lens[2] / key_stride;
             assert_eq!(
-                lens[4] / size_of::<Complex64>(),
+                lens[4] / size_of::<C>(),
                 rows,
                 "partner payload: coeff column carries {} rows where the keys carry {rows}",
-                lens[4] / size_of::<Complex64>(),
+                lens[4] / size_of::<C>(),
             );
             block.offsets.clear();
             block.offsets.resize(lens[1] / size_of::<u32>(), 0);

@@ -14,12 +14,14 @@ pub(crate) fn print_cell_line(cell: &CellResult) {
         Some((rank, ranks)) => format!(" rank={rank}/{ranks} vmhwm_kb={}", cell.vmhwm_kb),
         None => String::new(),
     };
+    // Empty at the default `c128`, so those lines keep their format.
+    let dtype = if cell.dtype == "c128" { String::new() } else { format!(" dtype={}", cell.dtype) };
     let device = match &cell.device {
         Some(d) => format!(" device={}", device_csv(d)),
         None => String::new(),
     };
     println!(
-        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}{mpi}{device}",
+        "cell layer={} threads={} n={} layers={} wall_ms={:.3} trunc={} partitions={}{dtype}{mpi}{device}",
         cell.layer,
         cell.threads,
         cell.n,
@@ -207,6 +209,7 @@ pub(crate) fn json_line(cell: &CellResult) -> String {
     let mut row = json!({
         "layer": cell.layer,
         "truncation": cell.truncation,
+        "dtype": cell.dtype,
         "threads": cell.threads,
         "n": cell.n,
         "reps": cell.reps,

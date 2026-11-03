@@ -1,11 +1,11 @@
 //! The built-in truncation policies and combinators, and the helpers their partitioned and device forms share.
 
 use super::TruncationPolicy;
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::LOG_TARGET;
 use crate::pauli_sum::PauliSum;
 use crate::rng::Rng;
-use num_complex::Complex64;
 use rayon::prelude::*;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,8 +25,8 @@ pub struct CoefficientThreshold(
     pub f64,
 );
 
-impl<const W: usize> TruncationPolicy<W> for CoefficientThreshold {
-    fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: Complex64) -> bool {
+impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for CoefficientThreshold {
+    fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], c: C) -> bool {
         let eps = self.0;
         eps < 0.0 || c.norm_sqr() > eps * eps
     }
@@ -43,8 +43,8 @@ pub struct WeightCutoff(
     pub u32,
 );
 
-impl<const W: usize> TruncationPolicy<W> for WeightCutoff {
-    fn keep_term(&self, x: &[u64; W], z: &[u64; W], _c: Complex64) -> bool {
+impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for WeightCutoff {
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], _c: C) -> bool {
         let weight: u32 = (0..W).map(|i| (x[i] | z[i]).count_ones()).sum();
         weight <= self.0
     }
@@ -65,8 +65,8 @@ pub struct TopN(
     pub usize,
 );
 
-impl<const W: usize> TruncationPolicy<W> for TopN {
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for TopN {
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         let n = self.0;
         if sum.len() <= n {
             return;
@@ -125,7 +125,11 @@ impl<const W: usize> TruncationPolicy<W> for TopN {
     }
 
     /// Panics above one partition, where the `n`-th largest of a split sum has no collective form yet.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
         assert!(
             collectives.size() == 1,
             "TopN({}) on {} partitions: partitioned exact TopN is not yet supported; ApproxTopN \
@@ -151,8 +155,8 @@ fn bucket_quotas(boundary_counts: &[usize], quota: usize) -> Vec<usize> {
 }
 
 /// Keep every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`), in bucket order.
-pub(crate) fn retain_with_boundary_quota<const W: usize>(
-    sum: &mut PauliSum<W>,
+pub(crate) fn retain_with_boundary_quota<const W: usize, C: Coefficient>(
+    sum: &mut PauliSum<W, C>,
     classify: impl Fn(f64) -> core::cmp::Ordering + Sync,
     quota: usize,
 ) {
@@ -167,7 +171,7 @@ pub(crate) fn retain_with_boundary_quota<const W: usize>(
     sum.retain_per_bucket(|b| {
         let mut remaining = quotas[b];
         let classify = &classify;
-        move |_: &[u64; W], _: &[u64; W], c: Complex64| match classify(c.norm_sqr()) {
+        move |_: &[u64; W], _: &[u64; W], c: C| match classify(c.norm_sqr()) {
             Ordering::Greater => true,
             Ordering::Equal if remaining > 0 => {
                 remaining -= 1;
@@ -226,7 +230,9 @@ pub(crate) fn classify_octave(norm_sqr: f64, bin: usize) -> core::cmp::Ordering 
 }
 
 /// Population of each octave of `|c|²`, binned by the exponent bits `norm_sqr().to_bits() >> 52`.
-pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPROX_BINS] {
+pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(
+    sum: &PauliSum<W, C>,
+) -> [u32; APPROX_BINS] {
     debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
     let num_buckets = sum.num_buckets();
     let tasks = (rayon::current_num_threads() * 4).clamp(1, num_buckets);
@@ -253,9 +259,9 @@ pub(crate) fn octave_histogram<const W: usize>(sum: &PauliSum<W>) -> [u32; APPRO
 }
 
 /// The boundary octave [`ApproxTopN`] cuts at, from a histogram of the whole sum, local or all-reduced.
-pub(crate) fn octave_edge<C>(hist: &[C], total_len: usize, n: usize) -> EdgeDecision
+pub(crate) fn octave_edge<Count>(hist: &[Count], total_len: usize, n: usize) -> EdgeDecision
 where
-    C: Copy + Into<u64>,
+    Count: Copy + Into<u64>,
 {
     debug_assert_eq!(hist.len(), APPROX_BINS, "octave_edge: wrong histogram size");
     if total_len <= n {
@@ -277,8 +283,8 @@ where
 }
 
 /// Apply an [`EdgeDecision`] to one sum or partition, keeping `local_quota` boundary-octave terms.
-pub(crate) fn retain_at_edge<const W: usize>(
-    sum: &mut PauliSum<W>,
+pub(crate) fn retain_at_edge<const W: usize, C: Coefficient>(
+    sum: &mut PauliSum<W, C>,
     edge: EdgeDecision,
     local_quota: usize,
 ) {
@@ -307,8 +313,8 @@ pub(crate) fn local_boundary_quota(
     (quota as u64).saturating_sub(below).min(local_count as u64) as usize
 }
 
-impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for ApproxTopN {
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         let n = self.0;
         let total = sum.len();
         if total <= n {
@@ -328,7 +334,11 @@ impl<const W: usize> TruncationPolicy<W> for ApproxTopN {
     }
 
     /// One `allreduce_sum_u64` of `[len, histogram…]`, the single-partition edge walk, and at a boundary one more of the per-rank boundary counts for this rank's quota; no early exit, since that would desynchronize the group.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
         if collectives.size() == 1 {
             self.finalize_layer(local);
             return;
@@ -407,7 +417,7 @@ impl CollapseSample {
 }
 
 /// `Σ|c|²` of each bucket, in bucket order.
-pub(crate) fn bucket_norms<const W: usize>(sum: &PauliSum<W>) -> Vec<f64> {
+pub(crate) fn bucket_norms<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> Vec<f64> {
     (0..sum.num_buckets())
         .into_par_iter()
         .map(|b| sum.bucket(b).2.iter().map(|c| c.norm_sqr()).sum())
@@ -434,8 +444,8 @@ pub(crate) fn pick_slot(
 }
 
 /// Reduce `sum` to the single string at `target` of its cumulative weight, with coefficient `1`; `norms` is [`bucket_norms`] of `sum`.
-pub(crate) fn collapse_to_target<const W: usize>(
-    sum: &mut PauliSum<W>,
+pub(crate) fn collapse_to_target<const W: usize, C: Coefficient>(
+    sum: &mut PauliSum<W, C>,
     norms: &[f64],
     target: f64,
 ) {
@@ -445,7 +455,7 @@ pub(crate) fn collapse_to_target<const W: usize>(
         .expect("collapse_to_target: a positive bucket has a positive term");
     let (x, z) = (sum.bucket(b).0[pos], sum.bucket(b).1[pos]);
     sum.clear();
-    sum.buckets_mut()[b].push(x, z, Complex64::new(1.0, 0.0));
+    sum.buckets_mut()[b].push(x, z, C::ONE);
     sum.recount();
 }
 
@@ -459,8 +469,8 @@ impl PartialEq for CollapseSample {
     }
 }
 
-impl<const W: usize> TruncationPolicy<W> for CollapseSample {
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for CollapseSample {
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         let call = self.next_call();
         let len = sum.len();
         if len <= self.cache {
@@ -477,7 +487,11 @@ impl<const W: usize> TruncationPolicy<W> for CollapseSample {
     }
 
     /// Reduces `[len, pass]` (the pass from rank 0) and the per-partition `Σ|c|²`, then picks a partition by weight and a term within it, as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
         if collectives.size() == 1 {
             self.finalize_layer(local);
             return;
@@ -529,16 +543,16 @@ pub struct And<A, B>(
     pub B,
 );
 
-impl<const W: usize, A, B> TruncationPolicy<W> for And<A, B>
+impl<const W: usize, C: Coefficient, A, B> TruncationPolicy<W, C> for And<A, B>
 where
-    A: TruncationPolicy<W>,
-    B: TruncationPolicy<W>,
+    A: TruncationPolicy<W, C>,
+    B: TruncationPolicy<W, C>,
 {
-    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
         self.0.keep_term(x, z, c) && self.1.keep_term(x, z, c)
     }
 
-    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         self.0.finalize_layer(sum);
         self.1.finalize_layer(sum);
     }
@@ -547,7 +561,11 @@ where
         self.0.finalizes_layer() || self.1.finalizes_layer()
     }
 
-    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W>, collectives: &dyn Collectives) {
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+    ) {
         self.0.finalize_layer_partitioned(local, collectives);
         self.1.finalize_layer_partitioned(local, collectives);
     }
@@ -587,12 +605,12 @@ pub(crate) fn or_operand_error(first_has_pass: bool, second_has_pass: bool) -> O
     ))
 }
 
-impl<const W: usize, A, B> TruncationPolicy<W> for Or<A, B>
+impl<const W: usize, C: Coefficient, A, B> TruncationPolicy<W, C> for Or<A, B>
 where
-    A: TruncationPolicy<W>,
-    B: TruncationPolicy<W>,
+    A: TruncationPolicy<W, C>,
+    B: TruncationPolicy<W, C>,
 {
-    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: Complex64) -> bool {
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
     }
 

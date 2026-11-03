@@ -120,7 +120,7 @@ impl crate::engine::transport::Transport for LoggingTransport {
 #[derive(Clone, Copy, Debug)]
 pub struct KeepAll;
 
-impl<const W: usize> TruncationPolicy<W> for KeepAll {
+impl<const W: usize, C: crate::Coefficient> TruncationPolicy<W, C> for KeepAll {
     fn finalizes_layer(&self) -> bool {
         false
     }

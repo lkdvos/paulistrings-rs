@@ -3,6 +3,7 @@ use super::options::parse_bytes;
 use super::*;
 use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
+use crate::engine::gpu::module::CoefficientLayout;
 use crate::engine::gpu::GPU_MAX_BITS;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::hash::Gf2Hash;
@@ -87,7 +88,10 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
 
     // A Haar SU(4) row with a non-identity pattern emits 15 records: the one entry mapping it onto `I⊗I` is exactly zero.
     let su4 = PtmChannel::unitary_2q(0, 1, haar_su4_matrix());
-    let record_cap = crate::engine::gpu::module::kernel_set(0, 2).unwrap().layer_cap();
+    let record_cap =
+        crate::engine::gpu::module::kernel_set(0, 2, CoefficientLayout::of::<Complex64>())
+            .unwrap()
+            .layer_cap();
     let c = single_bucket_layer(record_cap / 15, true, &su4, options).unwrap();
     assert_eq!(
         (
@@ -134,15 +138,15 @@ fn arena_batches_start_anew_at_every_chunk_start() {
     let segment_start: Vec<u32> = (0..=8).map(|p| 10 * p).collect();
     let bytes = 30 * DeviceColumns::<1>::BYTES_PER_TERM;
     assert_eq!(
-        arena_batches::<1>(&segment_start, bytes, 1, &[]),
+        arena_batches::<1, Complex64>(&segment_start, bytes, 1, &[]),
         (vec![(0, 3), (3, 6), (6, 8)], 30)
     );
     assert_eq!(
-        arena_batches::<1>(&segment_start, bytes, 1, &[0, 4, 6]),
+        arena_batches::<1, Complex64>(&segment_start, bytes, 1, &[0, 4, 6]),
         (vec![(0, 3), (3, 4), (4, 6), (6, 8)], 30)
     );
     assert_eq!(
-        arena_batches::<1>(&segment_start, bytes, 1, &[0, 1, 2, 3, 4, 5, 6, 7]),
+        arena_batches::<1, Complex64>(&segment_start, bytes, 1, &[0, 1, 2, 3, 4, 5, 6, 7]),
         ((0..8).map(|p| (p, p + 1)).collect(), 10)
     );
 }

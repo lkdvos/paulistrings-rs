@@ -263,7 +263,7 @@ For the Ising chain, $h_k = -J$ on the bonds and $h_k = -h$ on the fields, so th
 ### Symplectic arrays {#symplectic-arrays}
 
 `x_array()` and `z_array()` return the $x$- and $z$-parts of all $N$ terms as `uint64` arrays of shape `(N, width)`, with site $j$ in bit `j % 64` of column `j // 64`.
-`coefficients_array()` returns the $c_i$ as a `complex128` array of length $N$.
+`coefficients_array()` returns the $c_i$ as an array of length $N$ in the sum's [dtype](#dtypes), `complex128` by default.
 All three are copies, and all three list the terms in the same canonical order: partition-bucket index, then lexicographic order of $(\boldsymbol{p}_x, \boldsymbol{p}_z)$.
 This order is neither insertion order nor label order, and `propagate` can change it, so rows are paired only within one snapshot.
 `to_arrays()` returns all three at once, and `PauliSum.from_arrays` is the inverse: duplicate rows are summed, arrays narrower than the sum's width are zero-padded, and a bit set at or beyond site $L$ raises `ValueError`.
@@ -324,6 +324,28 @@ print(hamiltonian.overlap(hamiltonian).real, np.sum(np.abs(c) ** 2))
 ```
 
 `PauliSum(L)` is the empty sum on $L$ qubits, the zero operator, and prints as `0`.
+
+### Coefficient types {#dtypes}
+
+Coefficients are `complex128` unless a constructor's `dtype=` says otherwise; `float64`, `float32` and `complex64` are the alternatives, and `astype` converts:
+
+```python
+real = PauliSum.from_strings(labels, coefficients, dtype="float64")
+print(real.dtype, real.expectation("z+"), hamiltonian.astype("float32").dtype)
+```
+
+```text
+float64 -3.0 float32
+```
+
+A real dtype is exact for a Hermitian observable under channels that preserve Hermiticity: by the expansion above its coefficients are real, and stay real.
+Every factory in `gates` and `noise` builds such a channel.
+A real sum raises `ValueError` before propagating through any other channel, and on a coefficient, scale factor or `astype` that would need an imaginary part.
+Readouts follow the dtype: `expectation`, `overlap` and `identity_coefficient` return a `float` for a real sum, and the arrays carry the sum's dtype.
+`+`, `-`, `+=` and `-=` between two dtypes give NumPy's promotion of the pair.
+
+A term costs `16 × width` bytes of key plus 16 (`complex128`), 8 (`float64`, `complex64`) or 4 (`float32`) bytes of coefficient.
+Single precision resolves about seven significant digits, so its rounding accumulates over layers and a coefficient threshold below about `1e-7` of the largest coefficient is below its resolution.
 
 ## Saving and loading {#saving-and-loading}
 

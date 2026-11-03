@@ -26,14 +26,6 @@ fn to_complex_matches_i_powers() {
 }
 
 #[test]
-fn apply_agrees_with_to_complex_times_c() {
-    let c = Complex64::new(2.0, 3.0);
-    for p in [Phase::ONE, Phase::I, Phase::MINUS_ONE, Phase::MINUS_I] {
-        assert_eq!(p.apply(c), p.to_complex() * c);
-    }
-}
-
-#[test]
 fn add_wraps_mod_4() {
     assert_eq!(Phase::I + Phase::I, Phase::MINUS_ONE);
     assert_eq!(Phase::MINUS_ONE + Phase::I, Phase::MINUS_I);

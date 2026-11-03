@@ -88,6 +88,7 @@ for _ in range(steps):
 
 `GpuPauliSum.propagate` and `propagate_with_stats` take `policy`, `direction`, `target_bucket_len` and `min_buckets` with the meanings above; `len()`, `num_qubits`, `device` and `num_buckets` read the resident sum without a download.
 A device error mid-run leaves the resident sum holding the last completed layer's output, and a later call resumes from it.
+Devices hold every [dtype](../operators.md#dtypes); `GpuPauliSum.dtype` is the uploaded sum's, and `to_host` keeps it.
 
 ### Several devices {#multi-device}
 

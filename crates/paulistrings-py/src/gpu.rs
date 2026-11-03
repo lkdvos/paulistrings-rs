@@ -80,11 +80,14 @@ pub(crate) fn device_comm_unavailable_error() -> PyErr {
 mod cuda {
     use super::DeviceRequest;
     use crate::circuit::CircuitImpl;
+    use crate::dtype::{Dtype, PyCoefficient};
     use crate::sum::{
-        check_num_qubits, parse_direction, propagate_options, PauliSum, PropagationStats,
+        check_dtype_carries, check_num_qubits, parse_direction, propagate_options, PauliSum,
+        PropagationStats,
     };
-    use crate::sum::{PauliSumImpl, PropagateFailure};
+    use crate::sum::{PauliSumImpl, PropagateFailure, WidthSum};
     use crate::truncation_spec::PyTruncation;
+    use num_complex::{Complex32, Complex64};
     use paulistrings::gpu::{device_count, GpuError, GpuPartitionedSum};
     use paulistrings::max_hash_bits;
     use paulistrings::BuiltinTruncation;
@@ -191,45 +194,100 @@ mod cuda {
         }
     }
 
-    /// Width-dispatch enum over the device-resident core sum, the device twin of `PauliSumImpl`.
-    pub(crate) enum GpuPauliSumImpl {
-        W1(GpuPartitionedSum<1>),
-        W2(GpuPartitionedSum<2>),
-        W4(GpuPartitionedSum<4>),
-        W8(GpuPartitionedSum<8>),
-        W16(GpuPartitionedSum<16>),
+    /// Width-dispatch enum over the device-resident core sum, the device twin of `WidthSum`.
+    pub(crate) enum GpuWidthSum<C: PyCoefficient> {
+        W1(GpuPartitionedSum<1, C>),
+        W2(GpuPartitionedSum<2, C>),
+        W4(GpuPartitionedSum<4, C>),
+        W8(GpuPartitionedSum<8, C>),
+        W16(GpuPartitionedSum<16, C>),
     }
 
-    impl GpuPauliSumImpl {
+    impl<C: PyCoefficient> GpuWidthSum<C> {
         /// Upload `sum` with its trace enabled once; every call drains it.
-        pub(crate) fn upload(sum: &PauliSumImpl, device: u32) -> Result<Self, GpuError> {
-            Ok(for_each_width_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
+        fn upload(sum: &WidthSum<C>, device: u32) -> Result<Self, GpuError> {
+            Ok(for_each_width_convert!(WidthSum => GpuWidthSum, sum, |s| {
                 let mut resident = GpuPartitionedSum::from_host(s, device)?;
                 resident.enable_trace();
                 resident
             }))
         }
 
-        pub(crate) fn download(&self) -> Result<PauliSumImpl, GpuError> {
-            Ok(for_each_width_convert!(GpuPauliSumImpl => PauliSumImpl, self, |s| {
-                s.gather()?
-            }))
+        fn download(&self) -> Result<WidthSum<C>, GpuError> {
+            Ok(for_each_width_convert!(GpuWidthSum => WidthSum, self, |s| s.gather()?))
         }
 
-        pub(crate) fn len(&self) -> usize {
-            for_each_width!(self, |s| s.len())
+        forward! {
+            for_each_width;
+            fn len(&self) -> usize;
+            fn num_qubits(&self) -> usize;
         }
 
-        pub(crate) fn num_qubits(&self) -> usize {
-            for_each_width!(self, |s| s.num_qubits())
-        }
-
-        pub(crate) fn device(&self) -> u32 {
+        fn device(&self) -> u32 {
             for_each_width!(self, |s| s.devices()[0])
         }
 
-        pub(crate) fn num_buckets(&self) -> usize {
+        fn num_buckets(&self) -> usize {
             for_each_width!(self, |s| 1usize << s.bits())
+        }
+
+        fn propagate(
+            &mut self,
+            circuit: &CircuitImpl,
+            policy: &BuiltinTruncation,
+            direction: Direction,
+            options: PropagateOptions,
+            traced: bool,
+        ) -> Result<Option<PartitionTrace>, PropagateFailure> {
+            for_each_width_propagate!(
+                Self,
+                self,
+                circuit,
+                |s, c, _W, _wrap| {
+                    let result = s.propagate_with(c, policy, direction, options);
+                    let trace = s.take_trace();
+                    result.map_err(PropagateFailure::Gpu)?;
+                    Ok(trace.filter(|_| traced))
+                },
+                else Err(PropagateFailure::WidthMismatch)
+            )
+        }
+    }
+
+    /// Dtype-dispatch enum over [`GpuWidthSum`], the device twin of `PauliSumImpl`.
+    pub(crate) enum GpuPauliSumImpl {
+        F64(GpuWidthSum<f64>),
+        F32(GpuWidthSum<f32>),
+        C128(GpuWidthSum<Complex64>),
+        C64(GpuWidthSum<Complex32>),
+    }
+
+    impl GpuPauliSumImpl {
+        pub(crate) fn upload(sum: &PauliSumImpl, device: u32) -> Result<Self, GpuError> {
+            Ok(for_each_dtype_convert!(PauliSumImpl => GpuPauliSumImpl, sum, |s| {
+                GpuWidthSum::upload(s, device)?
+            }))
+        }
+
+        pub(crate) fn download(&self) -> Result<PauliSumImpl, GpuError> {
+            Ok(for_each_dtype_convert!(GpuPauliSumImpl => PauliSumImpl, self, |s| s.download()?))
+        }
+
+        pub(crate) fn dtype(&self) -> Dtype {
+            match self {
+                Self::F64(_) => Dtype::F64,
+                Self::F32(_) => Dtype::F32,
+                Self::C128(_) => Dtype::C128,
+                Self::C64(_) => Dtype::C64,
+            }
+        }
+
+        forward! {
+            for_each_dtype;
+            pub(crate) fn len(&self) -> usize;
+            pub(crate) fn num_qubits(&self) -> usize;
+            pub(crate) fn device(&self) -> u32;
+            pub(crate) fn num_buckets(&self) -> usize;
         }
 
         /// Step the resident sum through `circuit`, returning this call's trace when `traced`.
@@ -242,19 +300,7 @@ mod cuda {
             options: PropagateOptions,
             traced: bool,
         ) -> Result<Option<PartitionTrace>, PropagateFailure> {
-            for_each_width_propagate!(
-                GpuPauliSumImpl,
-                self,
-                circuit,
-                |s, c, _W, _wrap| {
-                    let result =
-                        s.propagate_with(c, policy, direction, options);
-                    let trace = s.take_trace();
-                    result.map_err(PropagateFailure::Gpu)?;
-                    Ok(trace.filter(|_| traced))
-                },
-                else Err(PropagateFailure::WidthMismatch)
-            )
+            for_each_dtype!(self, |s| s.propagate(circuit, policy, direction, options, traced))
         }
     }
 
@@ -324,6 +370,12 @@ mod cuda {
             self.inner.len()
         }
 
+        /// The coefficient dtype, as `PauliSum.dtype`.
+        #[getter]
+        fn dtype<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArrayDescr> {
+            self.inner.dtype().numpy(py)
+        }
+
         #[getter]
         fn num_qubits(&self) -> usize {
             self.inner.num_qubits()
@@ -342,11 +394,16 @@ mod cuda {
         }
 
         fn __repr__(&self) -> String {
+            // `dtype=` only off the complex128 default, so a default sum's repr is unchanged.
+            let dtype = match self.inner.dtype() {
+                Dtype::C128 => String::new(),
+                other => format!(", dtype={}", other.name()),
+            };
             format!(
-                "GpuPauliSum(num_qubits={}, terms={}, device={})",
+                "GpuPauliSum(num_qubits={}, terms={}, device={}{dtype})",
                 self.inner.num_qubits(),
                 self.inner.len(),
-                self.inner.device()
+                self.inner.device(),
             )
         }
     }
@@ -367,6 +424,7 @@ mod cuda {
             let dir = parse_direction(direction)?;
             let options = propagate_options(target_bucket_len, min_buckets)?;
             check_num_qubits("GpuPauliSum", self.inner.num_qubits(), circuit)?;
+            check_dtype_carries("GpuPauliSum", self.inner.dtype(), circuit)?;
             let policy = PyTruncation::tree_of(policy);
             let inner = &mut self.inner;
             Ok(py.allow_threads(move || {

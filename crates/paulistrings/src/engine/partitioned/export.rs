@@ -3,7 +3,7 @@
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 use rayon::prelude::*;
 
 use super::exchange_block::{ExchangeBlock, PartnerPayload};
@@ -14,14 +14,12 @@ use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
 
-const ZERO: Complex64 = Complex64::new(0.0, 0.0);
-
 /// Rows below which a block's fill stays on one thread.
 const FILL_PARALLEL_MIN_ROWS: usize = 4096;
 
 /// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
 #[derive(Debug, Default)]
-pub(crate) struct ExportScratch<const W: usize> {
+pub(crate) struct ExportScratch<const W: usize, C: Coefficient = num_complex::Complex64> {
     /// Pass-1 counts, bucket-major: `counts[β * num_remote + i]`.
     counts: Vec<u32>,
     /// One block's counts by destination position.
@@ -29,28 +27,23 @@ pub(crate) struct ExportScratch<const W: usize> {
     /// `source_of[position] = order.bucket_at(position) ^ bucket_delta`.
     source_of: Vec<u32>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
-    pub(crate) pool: Vec<PartnerPayload<W>>,
+    pub(crate) pool: Vec<PartnerPayload<W, C>>,
 }
 
 /// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
-enum RowEmitter<'p, const W: usize> {
+enum RowEmitter<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
     Tabulated {
-        ptm: &'p LocalPtm<W>,
-        entry: &'p DeltaEntry<W>,
+        ptm: &'p LocalPtm<W, C>,
+        entry: &'p DeltaEntry<W, C>,
     },
     /// The identity pass of a rotation is never remote.
     Generator {
-        rotation: &'p PreparedRotation<W>,
+        rotation: &'p PreparedRotation<W, C::Real>,
     },
 }
 
-impl<const W: usize> RowEmitter<'_, W> {
-    fn emit(
-        &self,
-        x: &[u64; W],
-        z: &[u64; W],
-        coeff: Complex64,
-    ) -> Option<([u64; W], [u64; W], Complex64)> {
+impl<const W: usize, C: Coefficient> RowEmitter<'_, W, C> {
+    fn emit(&self, x: &[u64; W], z: &[u64; W], coeff: C) -> Option<([u64; W], [u64; W], C)> {
         match self {
             RowEmitter::Tabulated { ptm, entry } => entry.emit(ptm.support_bits(x, z), x, z, coeff),
             RowEmitter::Generator { rotation } => rotation.emit_generator(x, z, coeff),
@@ -61,23 +54,23 @@ impl<const W: usize> RowEmitter<'_, W> {
 /// This partition's outgoing payloads for one layer, one slot per partner rank.
 ///
 /// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
-pub(crate) fn export_layer<const W: usize>(
-    local: &PauliSum<W>,
-    prepared: &Prepared<W>,
+pub(crate) fn export_layer<const W: usize, C: Coefficient>(
+    local: &PauliSum<W, C>,
+    prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
     order: &CosetOrder,
-    scratch: &mut ExportScratch<W>,
-) -> (Vec<Option<PartnerPayload<W>>>, LayerExchangeCounts) {
+    scratch: &mut ExportScratch<W, C>,
+) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
     let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
-    let mut send: Vec<Option<PartnerPayload<W>>> = (0..size).map(|_| None).collect();
+    let mut send: Vec<Option<PartnerPayload<W, C>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
     if num_remote == 0 {
         return (send, counts);
     }
 
-    let emitters: Vec<RowEmitter<'_, W>> = plan
+    let emitters: Vec<RowEmitter<'_, W, C>> = plan
         .remote
         .iter()
         .map(|remote| match prepared {
@@ -134,7 +127,7 @@ pub(crate) fn export_layer<const W: usize>(
         let block_index = plan.sent_block_index(i);
         blocks_used[partner] = block_index + 1;
         if payload.blocks.len() <= block_index {
-            payload.blocks.resize_with(block_index + 1, ExchangeBlock::<W>::default);
+            payload.blocks.resize_with(block_index + 1, ExchangeBlock::<W, C>::default);
         }
         let block = &mut payload.blocks[block_index];
         block.set_counts(remote.entry as u32, &scratch.block_counts);
@@ -159,9 +152,9 @@ pub(crate) fn export_layer<const W: usize>(
 }
 
 /// Count one source bucket's exported rows, one slot per remote delta.
-fn count_bucket<const W: usize>(
-    local: &PauliSum<W>,
-    prepared: &Prepared<W>,
+fn count_bucket<const W: usize, C: Coefficient>(
+    local: &PauliSum<W, C>,
+    prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     dense: &[bool],
     bucket: usize,
@@ -186,7 +179,7 @@ fn count_bucket<const W: usize>(
             for term in 0..len {
                 let support = ptm.support_bits(&bucket_x[term], &bucket_z[term]);
                 for (i, remote) in plan.remote.iter().enumerate() {
-                    if !dense[i] && ptm.deltas()[remote.entry].amplitude[support] != ZERO {
+                    if !dense[i] && ptm.deltas()[remote.entry].amplitude[support] != C::ZERO {
                         out[i] += 1;
                     }
                 }
@@ -207,14 +200,14 @@ fn count_bucket<const W: usize>(
 }
 
 /// Fill destination positions `start..end` of one block; the halves of a split are disjoint, so the contents are independent of the thread count.
-fn fill_range<const W: usize>(
-    local: &PauliSum<W>,
-    emitter: &RowEmitter<'_, W>,
+fn fill_range<const W: usize, C: Coefficient>(
+    local: &PauliSum<W, C>,
+    emitter: &RowEmitter<'_, W, C>,
     offsets: &[u32],
     source_of: &[u32],
     start: usize,
     end: usize,
-    columns: ColumnsMut<'_, W>,
+    columns: ColumnsMut<'_, W, C>,
 ) {
     debug_assert_eq!(columns.len(), (offsets[end] - offsets[start]) as usize);
     if end - start > 1 && columns.len() > FILL_PARALLEL_MIN_ROWS {
@@ -251,8 +244,8 @@ fn fill_range<const W: usize>(
 
 /// Every exported row belongs to the partner it is addressed to.
 #[cfg(debug_assertions)]
-pub(super) fn debug_assert_exported_partitions<const W: usize>(
-    send: &[Option<PartnerPayload<W>>],
+pub(super) fn debug_assert_exported_partitions<const W: usize, C: Coefficient>(
+    send: &[Option<PartnerPayload<W, C>>],
     rows: &crate::pauli_sum::hash::PartitionRows<W>,
 ) {
     for (partner, payload) in send.iter().enumerate() {

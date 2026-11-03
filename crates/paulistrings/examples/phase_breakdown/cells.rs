@@ -7,6 +7,7 @@ use paulistrings::{
     PartitionRuntime, PartitionTrace, PartitionedSum, PhaseStats, PropagateOptions, ScatterOptions,
     ScatterRows, TruncationPolicy,
 };
+use paulistrings::{Coefficient, PauliSum};
 
 use crate::cli::{Config, Initial};
 use crate::rows::{choose_generator, choose_partition_rows, RowChoiceStats};
@@ -15,6 +16,8 @@ use crate::workloads::{build_base_sum, build_circuit, LayerKind};
 pub(crate) struct CellResult {
     pub(crate) layer: &'static str,
     pub(crate) truncation: String,
+    /// `--dtype`.
+    pub(crate) dtype: &'static str,
     pub(crate) threads: usize,
     pub(crate) n: usize,
     pub(crate) reps: usize,
@@ -113,6 +116,7 @@ impl CellResult {
         Self {
             layer: layer.name(),
             truncation: cfg.truncation.label(),
+            dtype: cfg.dtype,
             threads,
             n: 0,
             reps: cfg.reps,
@@ -168,16 +172,37 @@ pub(crate) fn note_generator(layer: LayerKind, gen_qubits: (usize, usize), group
     );
 }
 
-pub(crate) fn run_cell<const W: usize, P>(
+/// `sum` in the coefficient type `C`, keeping the real part for a real type; moved, not copied, when `C` is `Complex64`.
+pub(crate) fn narrow<const W: usize, C: Coefficient>(sum: PauliSum<W>) -> PauliSum<W, C> {
+    let mut slot = Some(sum);
+    if let Some(same) =
+        (&mut slot as &mut dyn std::any::Any).downcast_mut::<Option<PauliSum<W, C>>>()
+    {
+        return same.take().expect("filled above");
+    }
+    let narrowed = slot
+        .expect("not taken")
+        .cast(f64::INFINITY)
+        .expect("an infinite tolerance admits every coefficient");
+    // The freed input sits in the workers' malloc arenas, which the propagation does not reuse; returning it keeps VmHWM comparable across dtypes.
+    #[cfg(target_os = "linux")]
+    // SAFETY: `malloc_trim` only releases free heap memory.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+    narrowed
+}
+
+pub(crate) fn run_cell<const W: usize, C: Coefficient, P>(
     layer: LayerKind,
     threads: usize,
     cfg: &Config,
     policy: &P,
 ) -> CellResult
 where
-    P: TruncationPolicy<W>,
+    P: TruncationPolicy<W, C>,
 {
-    let base = build_base_sum::<W>(layer, cfg);
+    let base = narrow::<W, C>(build_base_sum::<W>(layer, cfg));
     let hash_seed = base.hash().seed();
     // Nothing is remote without partitions, so `rotation_local`/`rotation_remote` are `rotation_zz` here.
     let circuit = build_circuit::<W>(layer, cfg.qubits, cfg.reps, (0, 1));
@@ -187,7 +212,7 @@ where
         .expect("failed to build a rayon thread pool");
 
     let (n, wall_ns, stats) = pool.install(|| {
-        let mut state = (Some(base), LayerScratch::<W>::new());
+        let mut state = (Some(base), LayerScratch::<W, C>::new());
         let (n, wall_ns) = warm_up_then_time(
             &mut state,
             |(sum, scratch)| {
@@ -215,7 +240,7 @@ where
 }
 
 /// One partitioned cell: [`run_cell`] through `PartitionedSum`, scattered outside the timed region.
-pub(crate) fn run_cell_partitioned<const W: usize, P>(
+pub(crate) fn run_cell_partitioned<const W: usize, C: Coefficient, P>(
     layer: LayerKind,
     threads: usize,
     partitions: usize,
@@ -223,7 +248,7 @@ pub(crate) fn run_cell_partitioned<const W: usize, P>(
     policy: &P,
 ) -> CellResult
 where
-    P: TruncationPolicy<W>,
+    P: TruncationPolicy<W, C>,
 {
     let base = build_base_sum::<W>(layer, cfg);
 
@@ -258,7 +283,7 @@ where
     // The seed actually used, which `choose_partition_rows` may have re-drawn.
     let hash_seed = base.hash().seed();
     let mut split = PartitionedSum::scatter_with(
-        base,
+        narrow::<W, C>(base),
         ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
     );
     split.enable_trace();
@@ -313,14 +338,14 @@ pub(crate) fn world_rank() -> (u32, u32) {
 ///
 /// Collective: every rank runs the identical cell matrix in the identical order, and reports its own numbers.
 #[cfg(feature = "mpi")]
-pub(crate) fn run_cell_mpi<const W: usize, P>(
+pub(crate) fn run_cell_mpi<const W: usize, C: Coefficient, P>(
     layer: LayerKind,
     threads: usize,
     cfg: &Config,
     policy: &P,
 ) -> CellResult
 where
-    P: TruncationPolicy<W>,
+    P: TruncationPolicy<W, C>,
 {
     use paulistrings::mpi::{rsmpi, MpiTransport};
     use paulistrings::{Collectives, DistributedSum};
@@ -352,7 +377,7 @@ where
     let transport = MpiTransport::from_communicator(&world);
     let hash_seed = base.hash().seed();
     let scatter_options = ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) };
-    let mut split = DistributedSum::scatter_with(base, transport, scatter_options);
+    let mut split = DistributedSum::scatter_with(narrow::<W, C>(base), transport, scatter_options);
     split.enable_trace();
     // The barrier makes the timed call start together on every rank.
     let (n, wall_ns) = warm_up_then_time(

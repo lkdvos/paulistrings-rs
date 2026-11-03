@@ -1,497 +1,27 @@
-//! Python `PauliSum` class with width-monomorphized backing storage.
+//! Python `PauliSum` class over the dtype- and width-monomorphized storage of [`crate::storage`].
 
+use crate::dtype::{Dtype, PyCoefficient, Scalar};
+pub(crate) use crate::storage::{extract_complex, parse_pauli_key, PauliSumImpl, WidthSum};
 #[cfg(feature = "cuda")]
 use crate::truncation_spec::COLLAPSE_SAMPLE_DEVICE_MSG;
 use crate::truncation_spec::{collapse_count, collapses_since, PyTruncation, TOPN_PARTITIONED_MSG};
 use num_complex::Complex64;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
-use paulistrings::BuildAccumulator;
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayDescr, PyArrayMethods, PyReadonlyArray2};
+use paulistrings::max_hash_bits;
 use paulistrings::BuiltinTruncation;
-use paulistrings::PauliString;
-use paulistrings::{max_hash_bits, Gf2Hash};
 use paulistrings::{numa_nodes, CpuSet};
 use paulistrings::{
     propagate_with, Circuit as CoreCircuit, Direction, LayerScratch, PartitionConfig,
     PartitionRowPolicy, PartitionRuntime, PartitionTrace, PartitionedSum, PauliAxis,
     PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
-    ScatterRows, StabilizerState, TopologyError,
+    ScatterRows, TopologyError,
 };
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyComplex, PyDict};
+use pyo3::types::{PyAny, PyBool, PyDict};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// Width-dispatch enum. The Python boundary picks the smallest width that fits `num_qubits` and stores the appropriately monomorphized `PauliSum`.
-#[derive(Clone)]
-pub enum PauliSumImpl {
-    W1(CorePauliSum<1>),
-    W2(CorePauliSum<2>),
-    W4(CorePauliSum<4>),
-    W8(CorePauliSum<8>),
-    W16(CorePauliSum<16>),
-}
-
-impl PauliSumImpl {
-    /// Pick the smallest supported width for `num_qubits`. Returns `None` if `num_qubits` exceeds the largest monomorphized width (1024 qubits).
-    pub fn empty_for(num_qubits: usize) -> Option<Self> {
-        for_num_qubits!(num_qubits, |W| CorePauliSum::<W>::empty(num_qubits))
-    }
-
-    pub fn num_qubits(&self) -> usize {
-        for_each_width!(self, |s| s.num_qubits())
-    }
-
-    pub fn len(&self) -> usize {
-        for_each_width!(self, |s| s.len())
-    }
-
-    /// Current bucket count, `1 << hash().bits()`. Reflects whatever a prior `propagate` call left resident, not a request.
-    pub fn num_buckets(&self) -> usize {
-        for_each_width!(self, |s| s.num_buckets())
-    }
-
-    /// Uniform product state: the `+1` eigenstate of `axis` on every qubit.
-    pub fn expectation_uniform(&self, axis: PauliAxis) -> Complex64 {
-        for_each_width!(self, |s| s.expectation_product(&ProductBasis::uniform(axis)))
-    }
-
-    /// Per-qubit product state: entry `q` is qubit `q`'s `(axis, minus)`. Caller already checked one entry per qubit, so the resulting masks have no bit set past `num_qubits`.
-    pub fn expectation_labels(&self, axes: &[(PauliAxis, bool)]) -> Complex64 {
-        for_each_width!(self, |s| s
-            .expectation_product(&ProductBasis::from_axes(axes.iter().copied())))
-    }
-
-    /// Stabilizer state given by one signed Pauli generator per qubit. Parsed at the active width and validated by the core, so a malformed string or an invalid generator set surfaces as a `ValueError`.
-    pub fn expectation_stabilizer(&self, generators: &[String]) -> PyResult<Complex64> {
-        for_each_width!(self, |s| stabilizer_expectation(s, generators))
-    }
-
-    pub fn identity_coefficient(&self) -> Complex64 {
-        for_each_width!(self, |s| s.identity_coefficient())
-    }
-
-    /// The bucket hash's rows as coordinate flags: row `i`, column `c` is set when row `i` reads coordinate `c` (x-bits first, then z-bits).
-    pub fn hash_rows(&self) -> Vec<Vec<bool>> {
-        for_each_width!(self, |s| {
-            let (rows_x, rows_z) = s.hash().rows();
-            rows_x.iter().zip(rows_z).map(|(x, z)| coordinate_flags(x, z, s.num_qubits())).collect()
-        })
-    }
-
-    pub fn hash_rank_deficiency(&self) -> Option<String> {
-        for_each_width!(self, |s| s.hash().rank_deficiency())
-    }
-
-    /// The same terms bucketed by the flag-matrix `rows` completed with dense rows from `seed`, at the current bucket count.
-    pub fn with_hash_rows(&self, rows: &[Vec<bool>], seed: u64) -> Self {
-        for_each_width_convert!(PauliSumImpl => PauliSumImpl, self.clone(), |s| {
-            let hash = Gf2Hash::from_matrix(s.num_qubits(), s.hash().bits(), seed, rows);
-            s.with_hash(hash)
-        })
-    }
-
-    /// Why the rows `policy` names for `2^bits` partitions leave some partitions unreachable, if they do.
-    pub fn partition_rank_deficiency(
-        &self,
-        policy: &PartitionRowPolicy,
-        bits: u8,
-    ) -> Option<String> {
-        for_each_width!(self, |s| partition_shortfall(s, policy, bits))
-    }
-
-    pub fn hash_seed(&self) -> u64 {
-        for_each_width!(self, |s| s.hash().seed())
-    }
-
-    pub fn bucket_lengths(&self) -> Vec<usize> {
-        for_each_width!(self, |s| s.bucket_lengths())
-    }
-
-    /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
-    pub fn overlap(&self, other: &Self) -> Option<Complex64> {
-        for_each_width_pair!((self, other), |a, b| a.overlap(b))
-    }
-
-    /// `self + factor · other`, matching strings combined and the rest kept; `None` on a width mismatch.
-    /// Caller checks the qubit counts first: equal widths are not equal qubit counts, and the core's merge asserts on the latter.
-    pub fn add_scaled(&self, other: &Self, factor: Complex64) -> Option<Self> {
-        for_each_width_pair_rewrap!((self, other), |a, b, wrap| {
-            if factor == Complex64::new(1.0, 0.0) {
-                wrap(a.add(b))
-            } else {
-                let mut scaled = b.clone();
-                scaled.scale(factor);
-                wrap(a.add(&scaled))
-            }
-        })
-    }
-
-    /// Multiply every coefficient by `factor`, in place.
-    pub fn scale(&mut self, factor: Complex64) {
-        for_each_width!(self, |s| s.scale(factor))
-    }
-
-    /// First `k` terms in canonical order, decoded to `(label, coefficient)` — `O(k)`, not `O(len())`, so `__repr__`/`__str__` stay cheap on a huge sum.
-    pub fn preview(&self, k: usize) -> Vec<(String, Complex64)> {
-        fn preview_of<const W: usize>(
-            s: &CorePauliSum<W>,
-            num_qubits: usize,
-            k: usize,
-        ) -> Vec<(String, Complex64)> {
-            s.iter()
-                .take(k)
-                .map(|(x, z, c)| {
-                    let key = PauliString::<W> { x: *x, z: *z };
-                    (crate::pauli_string::label_of(&key, num_qubits), c)
-                })
-                .collect()
-        }
-        let num_qubits = self.num_qubits();
-        for_each_width!(self, |s| preview_of(s, num_qubits, k))
-    }
-
-    /// Snapshot of the coefficient column, in the sum's canonical order (partition-bucket index ascending, then lexicographic `(x, z)`; equal to plain lex order for sums of ≤ 1024 terms).
-    pub fn coeffs(&self) -> Vec<Complex64> {
-        fn coeffs_of<const W: usize>(s: &CorePauliSum<W>) -> Vec<Complex64> {
-            let (_, _, c) = s.to_arrays();
-            c
-        }
-        for_each_width!(self, |s| coeffs_of(s))
-    }
-
-    /// `(width, x_flat, z_flat)` snapshot of the SoA columns, in the sum's canonical order (see [`Self::coeffs`]), the same across the three arrays since the order is a deterministic function of the sum.
-    /// `x_flat`/`z_flat` have length `len() * width`; caller reshapes to `(len, width)`.
-    pub fn xz_flat(&self) -> (usize, Vec<u64>, Vec<u64>) {
-        fn flatten<const W: usize>(rows: &[[u64; W]]) -> Vec<u64> {
-            // Flat-copy via iteration; W is small (≤16) and this is not on the hot path.
-            let mut out = Vec::with_capacity(rows.len() * W);
-            for r in rows {
-                out.extend_from_slice(r);
-            }
-            out
-        }
-        fn xz_of<const W: usize>(s: &CorePauliSum<W>) -> (usize, Vec<u64>, Vec<u64>) {
-            let (x, z, _) = s.to_arrays();
-            (W, flatten(&x), flatten(&z))
-        }
-        for_each_width!(self, |s| xz_of(s))
-    }
-
-    /// `(width, x_flat, z_flat, coefficients)` from one snapshot of the columns; see [`Self::xz_flat`].
-    pub fn columns_flat(&self) -> (usize, Vec<u64>, Vec<u64>, Vec<Complex64>) {
-        fn columns_of<const W: usize>(
-            s: &CorePauliSum<W>,
-        ) -> (usize, Vec<u64>, Vec<u64>, Vec<Complex64>) {
-            let (x, z, c) = s.to_arrays();
-            (W, x.concat(), z.concat(), c)
-        }
-        for_each_width!(self, |s| columns_of(s))
-    }
-
-    /// Build from a `{pauli_string: coefficient}` Python dict. `num_qubits` is inferred from the first key's length when `None`.
-    pub fn from_strings_dict(
-        terms: &Bound<'_, PyDict>,
-        num_qubits: Option<usize>,
-    ) -> PyResult<Self> {
-        let num_qubits = match num_qubits {
-            Some(n) => n,
-            None => match terms.iter().next() {
-                Some((key, _)) => {
-                    let s: String = key.extract().map_err(|_| {
-                        PyTypeError::new_err("PauliSum.from_strings keys must be str")
-                    })?;
-                    s.chars().count()
-                }
-                None => {
-                    return Err(PyValueError::new_err(
-                        "PauliSum.from_strings: cannot infer num_qubits from an empty dict; pass num_qubits explicitly",
-                    ))
-                }
-            },
-        };
-        for_num_qubits!(num_qubits, |W| parse_terms::<W>(num_qubits, terms)?).ok_or_else(|| {
-            PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-        })
-    }
-
-    /// Build from two equal-length sequences, `labels` (`I/X/Y/Z` strings) and `coefficients`. `num_qubits` is inferred from the first label's length when `None`. A label repeated in `labels` accumulates rather than overwriting, unlike a dict's keys.
-    pub fn from_label_list(
-        labels: &Bound<'_, PyAny>,
-        coefficients: &Bound<'_, PyAny>,
-        num_qubits: Option<usize>,
-    ) -> PyResult<Self> {
-        let labels: Vec<String> = labels.extract().map_err(|_| {
-            PyTypeError::new_err("PauliSum.from_strings: labels must be a sequence of str")
-        })?;
-        let n_coeffs = coefficients.len()?;
-        if labels.len() != n_coeffs {
-            return Err(PyValueError::new_err(format!(
-                "PauliSum.from_strings: {} labels but {} coefficients",
-                labels.len(),
-                n_coeffs
-            )));
-        }
-        let num_qubits = match num_qubits {
-            Some(n) => n,
-            None => labels.first().map(|s| s.chars().count()).ok_or_else(|| {
-                PyValueError::new_err(
-                    "PauliSum.from_strings: cannot infer num_qubits from zero terms; pass num_qubits explicitly",
-                )
-            })?,
-        };
-        for_num_qubits!(num_qubits, |W| parse_label_list::<W>(num_qubits, &labels, coefficients)?)
-            .ok_or_else(|| {
-                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-            })
-    }
-
-    /// Single-term sum from a `PauliString`'s key and a coefficient — `PauliString.__mul__`'s body.
-    /// `coeff` may be exactly zero; `BuildAccumulator::finalize` already drops it, giving the empty sum.
-    pub fn from_single(
-        term: &crate::pauli_string::PauliStringImpl,
-        num_qubits: usize,
-        coeff: Complex64,
-    ) -> Self {
-        fn build<const W: usize>(
-            p: &PauliString<W>,
-            num_qubits: usize,
-            coeff: Complex64,
-        ) -> CorePauliSum<W> {
-            let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, 1);
-            acc.add_term(*p, coeff);
-            acc.finalize()
-        }
-        use crate::pauli_string::PauliStringImpl as PS;
-        match term {
-            PS::W1(p) => PauliSumImpl::W1(build(p, num_qubits, coeff)),
-            PS::W2(p) => PauliSumImpl::W2(build(p, num_qubits, coeff)),
-            PS::W4(p) => PauliSumImpl::W4(build(p, num_qubits, coeff)),
-            PS::W8(p) => PauliSumImpl::W8(build(p, num_qubits, coeff)),
-            PS::W16(p) => PauliSumImpl::W16(build(p, num_qubits, coeff)),
-        }
-    }
-
-    /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse
-    /// of [`Self::xz_flat`] / [`Self::coeffs`]. See `PauliSum::from_arrays`
-    /// for the shape/dtype contract; this just picks the width band for
-    /// `num_qubits` and delegates.
-    pub fn from_arrays(
-        num_qubits: usize,
-        x: &PyReadonlyArray2<'_, u64>,
-        z: &PyReadonlyArray2<'_, u64>,
-        coefficients: &[Complex64],
-    ) -> PyResult<Self> {
-        let x_shape = x.as_array().shape().to_vec();
-        let z_shape = z.as_array().shape().to_vec();
-        if x_shape != z_shape {
-            return Err(PyValueError::new_err(format!(
-                "PauliSum.from_arrays: x.shape {:?} != z.shape {:?}",
-                x_shape, z_shape
-            )));
-        }
-        if x_shape[0] != coefficients.len() {
-            return Err(PyValueError::new_err(format!(
-                "PauliSum.from_arrays: coefficients length {} != x/z row count {}",
-                coefficients.len(),
-                x_shape[0]
-            )));
-        }
-        for_num_qubits!(num_qubits, |W| build_from_arrays::<W>(num_qubits, x, z, coefficients)?)
-            .ok_or_else(|| {
-                PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
-            })
-    }
-}
-
-/// Build a `PauliSum<W>` from a `{pauli_string: coefficient}` Python dict.
-/// Format matches the test helper in `pauli_sum.rs`: character `i` describes qubit `i`, coefficients multiply the literal Hermitian Pauli string.
-fn parse_terms<const W: usize>(
-    num_qubits: usize,
-    terms: &Bound<'_, PyDict>,
-) -> PyResult<CorePauliSum<W>> {
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, terms.len());
-    for (key, val) in terms.iter() {
-        let s: String = key
-            .extract()
-            .map_err(|_| PyTypeError::new_err("PauliSum.from_strings keys must be str"))?;
-        if s.len() != num_qubits {
-            return Err(PyValueError::new_err(format!(
-                "Pauli string {:?} has length {}, expected {} (length must match num_qubits)",
-                s,
-                s.len(),
-                num_qubits
-            )));
-        }
-        let c = extract_complex(&val)?;
-        acc.add_term(parse_pauli_key::<W>(&s)?, c);
-    }
-    Ok(acc.finalize())
-}
-
-/// Build a `PauliSum<W>` from parallel `labels`/`coefficients` sequences. Unlike [`parse_terms`]'s dict, a label repeated in `labels` is not an error — `BuildAccumulator::add_term` sums it, the same accumulation the manual's Hamiltonian example does by hand with a dict.
-fn parse_label_list<const W: usize>(
-    num_qubits: usize,
-    labels: &[String],
-    coefficients: &Bound<'_, PyAny>,
-) -> PyResult<CorePauliSum<W>> {
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, labels.len());
-    for (i, s) in labels.iter().enumerate() {
-        if s.len() != num_qubits {
-            return Err(PyValueError::new_err(format!(
-                "Pauli string {:?} has length {}, expected {} (length must match num_qubits)",
-                s,
-                s.len(),
-                num_qubits
-            )));
-        }
-        let c = extract_complex(&coefficients.get_item(i)?)?;
-        acc.add_term(parse_pauli_key::<W>(s)?, c);
-    }
-    Ok(acc.finalize())
-}
-
-/// Parse an `I/X/Y/Z` label into a symplectic key (the crate's Hermitian convention: `Y` maps to `(x=1, z=1)` with no phase factor).
-/// Caller checks the label's length against `num_qubits` first; this only rejects characters outside the alphabet.
-pub(crate) fn parse_pauli_key<const W: usize>(s: &str) -> PyResult<PauliString<W>> {
-    let mut x = [0u64; W];
-    let mut z = [0u64; W];
-    for (i, ch) in s.chars().enumerate() {
-        let word = i / 64;
-        let bit = 1u64 << (i % 64);
-        match ch {
-            'I' => {}
-            'X' => x[word] |= bit,
-            'Z' => z[word] |= bit,
-            'Y' => {
-                x[word] |= bit;
-                z[word] |= bit;
-            }
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "unexpected Pauli character {:?} (expected I/X/Y/Z)",
-                    other
-                )));
-            }
-        }
-    }
-    Ok(PauliString::<W> { x, z })
-}
-
-/// Contract `sum` against the stabilizer state spelled by `generators` (signed Pauli strings, same alphabet and indexing as `from_strings`).
-/// The core validates the set and its `StabilizerError` becomes the `ValueError` message verbatim.
-fn stabilizer_expectation<const W: usize>(
-    sum: &CorePauliSum<W>,
-    generators: &[String],
-) -> PyResult<Complex64> {
-    let num_qubits = sum.num_qubits();
-    let mut gens: Vec<(PauliString<W>, bool)> = Vec::with_capacity(generators.len());
-    for (i, spec) in generators.iter().enumerate() {
-        let (minus, body) = match spec.as_bytes().first() {
-            Some(b'-') => (true, &spec[1..]),
-            Some(b'+') => (false, &spec[1..]),
-            _ => (false, spec.as_str()),
-        };
-        if body.len() != num_qubits {
-            return Err(PyValueError::new_err(format!(
-                "expectation_stabilizer: generator {i} {spec:?} has length {} after the optional \
-                 sign, expected {num_qubits} (one character per qubit)",
-                body.len(),
-            )));
-        }
-        let key = parse_pauli_key::<W>(body).map_err(|e| {
-            PyValueError::new_err(format!("expectation_stabilizer: generator {i} {spec:?}: {e}"))
-        })?;
-        gens.push((key, minus));
-    }
-    let state = StabilizerState::<W>::from_generators(num_qubits, &gens)
-        .map_err(|e| PyValueError::new_err(format!("expectation_stabilizer: {e}")))?;
-    Ok(sum.expectation_stabilizer(&state))
-}
-
-/// Bit mask of the qubits `word` (a `64·word .. 64·(word+1)` slice) actually covers within `num_qubits`; any set bit outside this mask addresses a qubit that does not exist.
-fn word_mask(word: usize, num_qubits: usize) -> u64 {
-    let start = word * 64;
-    if start >= num_qubits {
-        0
-    } else {
-        let bits_in_word = (num_qubits - start).min(64);
-        if bits_in_word == 64 {
-            !0u64
-        } else {
-            (1u64 << bits_in_word) - 1
-        }
-    }
-}
-
-/// Build a `PauliSum<W>` from raw `(x, z, coefficients)` arrays.
-/// Rows are symplectic keys in the Hermitian convention (matching `parse_terms`); a row narrower than `W` words is zero-padded, a wider one is a `ValueError`.
-/// Ingest goes through `BuildAccumulator`, so duplicate `(x, z)` rows sum their coefficients and exact-`0+0i` rows are dropped.
-fn build_from_arrays<const W: usize>(
-    num_qubits: usize,
-    x: &PyReadonlyArray2<'_, u64>,
-    z: &PyReadonlyArray2<'_, u64>,
-    coefficients: &[Complex64],
-) -> PyResult<CorePauliSum<W>> {
-    let xa = x.as_array();
-    let za = z.as_array();
-    let n = xa.shape()[0];
-    let w_in = xa.shape()[1];
-    if w_in > W {
-        return Err(PyValueError::new_err(format!(
-            "PauliSum.from_arrays: array width {w_in} exceeds the band width {W} \
-             for num_qubits={num_qubits}"
-        )));
-    }
-    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
-    for row in 0..n {
-        let mut px = [0u64; W];
-        let mut pz = [0u64; W];
-        for j in 0..w_in {
-            px[j] = xa[[row, j]];
-            pz[j] = za[[row, j]];
-        }
-        for j in 0..w_in {
-            let mask = word_mask(j, num_qubits);
-            if px[j] & !mask != 0 || pz[j] & !mask != 0 {
-                return Err(PyValueError::new_err(format!(
-                    "PauliSum.from_arrays: row {row} has a bit set at or beyond qubit \
-                     {num_qubits} (word {j}, x={:#x}, z={:#x})",
-                    px[j], pz[j]
-                )));
-            }
-        }
-        acc.add_term(PauliString::<W> { x: px, z: pz }, coefficients[row]);
-    }
-    Ok(acc.finalize())
-}
-
-/// Extract a Python 1-D array of `complex128` or a real-float dtype
-/// (`float64`, cast to a zero-imaginary complex) into a `Vec<Complex64>`.
-fn extract_complex_array(val: &Bound<'_, PyAny>) -> PyResult<Vec<Complex64>> {
-    if let Ok(arr) = val.extract::<PyReadonlyArray1<Complex64>>() {
-        return Ok(arr.as_array().to_vec());
-    }
-    if let Ok(arr) = val.extract::<PyReadonlyArray1<f64>>() {
-        return Ok(arr.as_array().iter().map(|&re| Complex64::new(re, 0.0)).collect());
-    }
-    Err(PyTypeError::new_err(
-        "PauliSum.from_arrays: coefficients must be a complex128 or float64 NumPy array",
-    ))
-}
-
-/// Extract a Python complex/float/int into `Complex64`.
-pub(crate) fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
-    if let Ok(c) = val.downcast::<PyComplex>() {
-        return Ok(Complex64::new(c.real(), c.imag()));
-    }
-    if let Ok(f) = val.extract::<f64>() {
-        return Ok(Complex64::new(f, 0.0));
-    }
-    Err(PyTypeError::new_err("expected complex, float, or int coefficient"))
-}
-
-/// One character of a per-qubit product-state label, in qiskit's `Statevector.from_label` alphabet. `None` for anything else.
 /// A product state as `PauliSum.expectation` spells it: a uniform name or one per-qubit label.
 pub(crate) enum ProductState {
     Uniform(PauliAxis),
@@ -545,6 +75,7 @@ pub(crate) fn parse_product_state(state: &str, num_qubits: usize) -> PyResult<Pr
     Ok(ProductState::Labels(axes))
 }
 
+/// One character of a per-qubit product-state label, in qiskit's `Statevector.from_label` alphabet. `None` for anything else.
 /// Returns `(axis, minus)`, exactly what `ProductBasis::from_axes` consumes.
 fn parse_state_label(ch: char) -> Option<(PauliAxis, bool)> {
     Some(match ch {
@@ -973,17 +504,17 @@ impl TracePlacement {
 }
 
 /// What one run hands back besides the sum.
-struct RunOutput<const W: usize> {
-    sum: CorePauliSum<W>,
+struct RunOutput<const W: usize, C: PyCoefficient> {
+    sum: CorePauliSum<W, C>,
     trace: Option<RunTrace>,
     /// The call's collapses, `None` without a sampler in the policy.
     collapses: Option<u64>,
 }
 
 #[cfg(feature = "mpi")]
-impl<const W: usize> RunOutput<W> {
+impl<const W: usize, C: PyCoefficient> RunOutput<W, C> {
     /// This rank's side of a `comm=` run, host or device.
-    fn from_mpi(out: crate::mpi::MpiOutcome<W>) -> Self {
+    fn from_mpi(out: crate::mpi::MpiOutcome<W, C>) -> Self {
         let (rank, size) = (out.rank, out.size);
         Self {
             sum: out.sum,
@@ -1002,19 +533,19 @@ impl<const W: usize> RunOutput<W> {
 
 impl RunMode {
     /// Run `circuit` over `sum`, recording the per-layer trace when `traced`. Called inside `allow_threads`; consumes the mode, so a distributed run's communicator is freed before it returns.
-    fn run<const W: usize>(
+    fn run<const W: usize, C: PyCoefficient>(
         self,
         circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W>,
+        sum: &CorePauliSum<W, C>,
         policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> Result<RunOutput<W>, PropagateFailure> {
+    ) -> Result<RunOutput<W, C>, PropagateFailure> {
         let before = collapse_count(policy);
         match self {
             RunMode::Classic => {
-                let mut scratch = LayerScratch::<W>::new();
+                let mut scratch = LayerScratch::<W, C>::new();
                 if traced {
                     scratch.enable_trace();
                 }
@@ -1091,16 +622,16 @@ impl RunMode {
 /// Scatter `sum` over the device partitions `config` places by `rows`, propagate, and gather.
 #[cfg(feature = "cuda")]
 #[allow(clippy::too_many_arguments)]
-fn run_devices<const W: usize>(
+fn run_devices<const W: usize, C: PyCoefficient>(
     config: &PartitionConfig,
     rows: &PartitionRowPolicy,
     circuit: &CoreCircuit<W>,
-    sum: &CorePauliSum<W>,
+    sum: &CorePauliSum<W, C>,
     policy: &BuiltinTruncation,
     direction: Direction,
     options: PropagateOptions,
     traced: bool,
-) -> Result<(CorePauliSum<W>, Option<PartitionTrace>), PropagateFailure> {
+) -> Result<(CorePauliSum<W, C>, Option<PartitionTrace>), PropagateFailure> {
     use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
     // Cached like a host runtime: each slot's pool binds its device context once, not per call.
     let runtime = runtime_for(config).map_err(PropagateFailure::Topology)?;
@@ -1353,6 +884,32 @@ pub(crate) fn check_num_qubits(
         )));
     }
     Ok(())
+}
+
+/// A real-dtype sum propagates only through a circuit whose every channel preserves Hermiticity; the core panics on any other, so every entry point raises this `ValueError` first.
+pub(crate) fn check_dtype_carries(
+    what: &str,
+    dtype: Dtype,
+    circuit: &crate::circuit::Circuit,
+) -> PyResult<()> {
+    match hermiticity_refusal(what, dtype, &circuit.inner) {
+        Some(message) => Err(PyValueError::new_err(message)),
+        None => Ok(()),
+    }
+}
+
+/// [`check_dtype_carries`]'s message, `None` when `circuit` can carry a `dtype` sum.
+pub(crate) fn hermiticity_refusal(
+    what: &str,
+    dtype: Dtype,
+    circuit: &crate::circuit::CircuitImpl,
+) -> Option<String> {
+    (dtype.is_real() && !circuit.preserves_hermiticity()).then(|| {
+        format!(
+            "a {} {what} cannot propagate through this circuit: one of its channels does not preserve Hermiticity, so the coefficients would turn imaginary; convert with astype(\"complex128\") (or \"complex64\") first",
+            dtype.name()
+        )
+    })
 }
 
 /// Per-layer term counts from `PauliSum.propagate_with_stats`.
@@ -1663,8 +1220,8 @@ impl PauliSum {
         Self { inner }
     }
 
-    /// `self + factor · other`, with the qubit counts checked first — the core's merge asserts on a mismatch, and two different qubit counts can still share a width band.
-    fn checked_add(&self, other: &PauliSumImpl, factor: Complex64) -> PyResult<PauliSumImpl> {
+    /// The qubit counts checked before a merge — the core's merge asserts on a mismatch, and two different qubit counts can still share a width band.
+    fn check_same_qubits(&self, other: &PauliSumImpl) -> PyResult<()> {
         if self.inner.num_qubits() != other.num_qubits() {
             return Err(PyValueError::new_err(format!(
                 "num_qubits mismatch ({} vs {})",
@@ -1672,56 +1229,54 @@ impl PauliSum {
                 other.num_qubits(),
             )));
         }
-        self.inner
-            .add_scaled(other, factor)
-            .ok_or_else(|| PyValueError::new_err("sums were monomorphized at different widths"))
+        Ok(())
+    }
+
+    /// `self ± other` at the promoted dtype.
+    fn checked_add(&self, other: &PauliSumImpl, subtract: bool) -> PyResult<PauliSumImpl> {
+        self.check_same_qubits(other)?;
+        self.inner.add_promoted(other, subtract).ok_or_else(width_mismatch)
     }
 
     /// `self` scaled by a Python number. An exact-zero factor gives the empty sum, keeping the "no stored zero coefficient" invariant `from_strings` and the merge both hold.
     fn scaled(&self, factor: &Bound<'_, PyAny>) -> PyResult<PauliSumImpl> {
         let factor = scalar_factor(factor)?;
         if factor == Complex64::new(0.0, 0.0) {
-            return PauliSumImpl::empty_for(self.inner.num_qubits())
+            return PauliSumImpl::empty_for(self.inner.num_qubits(), self.inner.dtype())
                 .ok_or_else(|| PyValueError::new_err("internal: width band lost"));
         }
         let mut inner = self.inner.clone();
-        inner.scale(factor);
+        inner.scale(factor)?;
         Ok(inner)
     }
 
-    /// `slf += factor · other`, in place.
+    /// `slf ± other`, in place.
     /// `a += a` aliases one Python object into both operands, so that case merges against a snapshot rather than taking two borrows of the same cell.
     fn add_in_place(
         slf: &Bound<'_, Self>,
         other: &Bound<'_, Self>,
-        factor: Complex64,
+        subtract: bool,
     ) -> PyResult<()> {
         let combined = if slf.is(other) {
             let this = slf.borrow();
             let snapshot = this.inner.clone();
-            this.checked_add(&snapshot, factor)?
+            this.checked_add(&snapshot, subtract)?
         } else {
             let this = slf.borrow();
             let that = other.borrow();
-            this.checked_add(&that.inner, factor)?
+            this.checked_add(&that.inner, subtract)?
         };
-        let mut this = slf.borrow_mut();
-        this.inner = combined;
+        slf.borrow_mut().inner = combined;
         Ok(())
     }
 }
 
+fn width_mismatch() -> PyErr {
+    PyValueError::new_err("sums were monomorphized at different widths")
+}
+
 /// How many terms `__repr__`/`__str__` show before falling back to `... (N more terms)`.
 const PREVIEW_TERMS: usize = 4;
-
-/// `0.25` for a real coefficient, `(0.25+0.5j)` otherwise — dropping the `+0j` tail Python's own `complex.__repr__` always carries, since most coefficients in this library are real.
-fn format_coeff(c: Complex64) -> String {
-    if c.im == 0.0 {
-        format!("{}", c.re)
-    } else {
-        format!("({}{}{}j)", c.re, if c.im < 0.0 { "-" } else { "+" }, c.im.abs())
-    }
-}
 
 /// `PauliSum.__repr__`/`__str__`'s body: the first [`PREVIEW_TERMS`] terms as `coefficient*label`, `+`-joined, with a trailing count of however many more there are.
 /// `0` for the empty sum — the zero operator, not "no terms".
@@ -1731,8 +1286,7 @@ fn format_sum(inner: &PauliSumImpl) -> String {
         return "0".to_string();
     }
     let shown = inner.preview(PREVIEW_TERMS);
-    let mut parts: Vec<String> =
-        shown.iter().map(|(label, c)| format!("{}*{}", format_coeff(*c), label)).collect();
+    let mut parts: Vec<String> = shown.iter().map(|(label, c)| format!("{c}*{label}")).collect();
     if len > shown.len() {
         parts.push(format!(
             "... ({} more term{})",
@@ -1891,15 +1445,6 @@ impl RowKwargs {
     }
 }
 
-/// The rows `policy` names for `2^bits` partitions of `sum`, at its width, and why they leave partitions unreachable, if they do.
-fn partition_shortfall<const W: usize>(
-    sum: &paulistrings::PauliSum<W>,
-    policy: &PartitionRowPolicy,
-    bits: u8,
-) -> Option<String> {
-    policy.rows::<W>(sum.num_qubits(), bits, sum.hash().seed()).rank_deficiency()
-}
-
 /// A `RuntimeWarning` when the rows `policy` names for `partitions` partitions are dependent; overlap with the bucket rows is the engine's to log, at the layer it starts to matter.
 pub(crate) fn warn_partition_rows(
     py: Python<'_>,
@@ -1932,9 +1477,13 @@ fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
 #[pymethods]
 impl PauliSum {
     /// Empty Pauli sum on `num_qubits` qubits.
+    ///
+    /// `dtype` is the coefficient type: `float64`, `float32`, `complex128` (the default) or `complex64`, in any spelling `numpy.dtype` accepts.
     #[new]
-    fn new(num_qubits: usize) -> PyResult<Self> {
-        PauliSumImpl::empty_for(num_qubits).map(Self::plain).ok_or_else(|| {
+    #[pyo3(signature = (num_qubits, *, dtype=None))]
+    fn new(py: Python<'_>, num_qubits: usize, dtype: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+        let dtype = Dtype::parse(py, dtype)?;
+        PauliSumImpl::empty_for(num_qubits, dtype).map(Self::plain).ok_or_else(|| {
             PyValueError::new_err("num_qubits exceeds largest monomorphized width (1024)")
         })
     }
@@ -1946,14 +1495,17 @@ impl PauliSum {
     /// Pauli string, so a Hermitian observable has real coefficients.
     /// `num_qubits` is inferred from the first label's length when omitted.
     /// A label repeated in the two-sequence form accumulates, unlike a dict's keys.
+    /// `dtype` is as for `PauliSum(num_qubits, dtype=...)`; a real dtype raises `ValueError` on a coefficient with a nonzero imaginary part.
     #[classmethod]
-    #[pyo3(signature = (terms, coefficients=None, *, num_qubits=None))]
+    #[pyo3(signature = (terms, coefficients=None, *, num_qubits=None, dtype=None))]
     fn from_strings(
-        _cls: &Bound<'_, pyo3::types::PyType>,
+        cls: &Bound<'_, pyo3::types::PyType>,
         terms: &Bound<'_, PyAny>,
         coefficients: Option<&Bound<'_, PyAny>>,
         num_qubits: Option<usize>,
+        dtype: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
+        let dtype = Dtype::parse(cls.py(), dtype)?;
         let inner = match coefficients {
             Some(coefficients) => {
                 if terms.downcast::<PyDict>().is_ok() {
@@ -1961,7 +1513,7 @@ impl PauliSum {
                         "PauliSum.from_strings: pass either a dict, or (labels, coefficients) as two sequences — not a dict with coefficients also given",
                     ));
                 }
-                PauliSumImpl::from_label_list(terms, coefficients, num_qubits)?
+                PauliSumImpl::from_label_list(terms, coefficients, num_qubits, dtype)?
             }
             None => {
                 let dict = terms.downcast::<PyDict>().map_err(|_| {
@@ -1969,7 +1521,7 @@ impl PauliSum {
                         "PauliSum.from_strings: pass a dict, or (labels, coefficients) as two equal-length sequences",
                     )
                 })?;
-                PauliSumImpl::from_strings_dict(dict, num_qubits)?
+                PauliSumImpl::from_strings_dict(dict, num_qubits, dtype)?
             }
         };
         Ok(Self::plain(inner))
@@ -1977,19 +1529,41 @@ impl PauliSum {
 
     /// Build from raw symplectic `(x, z, coefficients)` arrays — the inverse of `x_array` / `z_array` / `coefficients_array`.
     ///
-    /// `x`/`z` are `uint64` arrays of shape `(n_terms, w)`, `w` from `1` up to the band width `num_qubits` picks; a narrower array is zero-padded, so a sum round-trips exactly. `coefficients` is a 1-D array of length `n_terms`, `complex128` or a real-float dtype.
+    /// `x`/`z` are `uint64` arrays of shape `(n_terms, w)`, `w` from `1` up to the band width `num_qubits` picks; a narrower array is zero-padded, so a sum round-trips exactly. `coefficients` is a 1-D `float64`, `float32`, `complex128` or `complex64` array of length `n_terms`.
     /// Rows are symplectic keys in the Hermitian convention (no phase, matching `from_strings`); duplicate `(x, z)` rows sum their coefficients and exact-zero rows are dropped. A set bit at or beyond qubit `num_qubits` is a `ValueError`.
+    /// `dtype` is the sum's, as for `PauliSum(num_qubits, dtype=...)`, whatever the array's own dtype; `to_arrays` returns the sum's.
     #[classmethod]
+    #[pyo3(signature = (x, z, coefficients, num_qubits, *, dtype=None))]
     fn from_arrays(
-        _cls: &Bound<'_, pyo3::types::PyType>,
+        cls: &Bound<'_, pyo3::types::PyType>,
         x: PyReadonlyArray2<'_, u64>,
         z: PyReadonlyArray2<'_, u64>,
         coefficients: &Bound<'_, PyAny>,
         num_qubits: usize,
+        dtype: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
-        let coeffs = extract_complex_array(coefficients)?;
-        let inner = PauliSumImpl::from_arrays(num_qubits, &x, &z, &coeffs)?;
+        let dtype = Dtype::parse(cls.py(), dtype)?;
+        let inner = PauliSumImpl::from_arrays(num_qubits, &x, &z, coefficients, dtype)?;
         Ok(Self::plain(inner))
+    }
+
+    /// The coefficient type, a `numpy.dtype`: `float64`, `float32`, `complex128` or `complex64`.
+    #[getter]
+    fn dtype<'py>(&self, py: Python<'py>) -> Bound<'py, PyArrayDescr> {
+        self.inner.dtype().numpy(py)
+    }
+
+    /// A copy with coefficients of type `dtype`, in any spelling `numpy.dtype` accepts.
+    ///
+    /// Raises `ValueError` when `dtype` is real and a coefficient has a nonzero imaginary part; a narrower float rounds.
+    fn astype(&self, py: Python<'_>, dtype: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let dtype = Dtype::parse(py, Some(dtype))?;
+        self.inner.cast(dtype).map(Self::plain).ok_or_else(|| {
+            crate::dtype::imaginary_error(
+                &format!("astype({}): a coefficient", dtype.name()),
+                dtype,
+            )
+        })
     }
 
     #[getter]
@@ -2068,17 +1642,17 @@ impl PauliSum {
         Ok(Self::plain(rehashed))
     }
 
-    /// Snapshot of the coefficient column as a list of Python complex values.
-    fn coefficients(&self) -> Vec<Complex64> {
-        self.inner.coeffs()
+    /// Snapshot of the coefficient column as a list of Python `float` (real dtype) or `complex` values.
+    fn coefficients(&self, py: Python<'_>) -> PyObject {
+        self.inner.coefficients(py)
     }
 
     /// Expectation value in a single-qubit product state.
     ///
     /// `state` is either a uniform name — `"x+"`, `"y+"`, `"z+"`, the `+1` eigenstate of that Pauli on every qubit, matched case-insensitively — or a per-qubit label string of exactly `num_qubits` characters in qiskit's `Statevector.from_label` alphabet (`0`/`1` = Z±, `+`/`-` = X±, `r`/`l` = Y±, case-sensitive). Qubit indexing matches `from_strings`.
-    /// Cost is one masked pass over the terms either way, never an expansion over basis states. Returns a Python complex; take `.real` when the operator is Hermitian.
+    /// Cost is one masked pass over the terms either way, never an expansion over basis states. Returns a Python `float` for a real dtype and a `complex` otherwise; take `.real` of the latter when the operator is Hermitian.
     #[pyo3(signature = (state="x+"))]
-    fn expectation(&self, state: &str) -> PyResult<Complex64> {
+    fn expectation(&self, state: &str) -> PyResult<Scalar> {
         Ok(match parse_product_state(state, self.inner.num_qubits())? {
             ProductState::Uniform(axis) => self.inner.expectation_uniform(axis),
             ProductState::Labels(axes) => self.inner.expectation_labels(&axes),
@@ -2089,21 +1663,21 @@ impl PauliSum {
     ///
     /// `generators` is a list of exactly `num_qubits` signed Pauli strings — `"+XX"`, `"-ZZ"`, or a bare `"ZIZ"` for `+` — in the same `I/X/Y/Z` alphabet and qubit indexing as `from_strings`. They must be pairwise commuting and independent over GF(2); anything else is a `ValueError`.
     /// Reads any stabilizer state (Bell, GHZ, cluster, Clifford-circuit output; see `paulistrings.interop.stabilizers_from_stim`), where `expectation` reads only product states. Cost is `O(terms · num_qubits² / 64)` after a one-off `O(num_qubits³ / 64)` reduction of the generators; prefer `expectation` when the state factorizes.
-    /// Returns a Python complex; take `.real` when the operator is Hermitian.
+    /// Returns a Python `float` for a real dtype and a `complex` otherwise, as `expectation` does.
     ///
     /// ```python
     /// bell = ["XX", "ZZ"]                      # (|00> + |11>) / sqrt(2)
     /// PauliSum.from_strings({"YY": 1.0}, num_qubits=2).expectation_stabilizer(bell)
     /// # (-1+0j), since XX·ZZ = -YY
     /// ```
-    fn expectation_stabilizer(&self, generators: Vec<String>) -> PyResult<Complex64> {
+    fn expectation_stabilizer(&self, generators: Vec<String>) -> PyResult<Scalar> {
         self.inner.expectation_stabilizer(&generators)
     }
 
     /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n`.
     ///
-    /// On the Pauli basis this is `sum(conj(a_i) * b_i)` over shared keys.
-    fn overlap(&self, other: &Self) -> PyResult<Complex64> {
+    /// On the Pauli basis this is `sum(conj(a_i) * b_i)` over shared keys, computed at the two dtypes' NumPy promotion and returned as a `float` when that is real.
+    fn overlap(&self, other: &Self) -> PyResult<Scalar> {
         if self.inner.num_qubits() != other.inner.num_qubits() {
             return Err(PyValueError::new_err(format!(
                 "overlap: num_qubits mismatch ({} vs {})",
@@ -2116,33 +1690,35 @@ impl PauliSum {
         })
     }
 
-    /// Coefficient of the identity term, i.e. `tr(O) / 2^n`.
-    fn identity_coefficient(&self) -> Complex64 {
+    /// Coefficient of the identity term, i.e. `tr(O) / 2^n`; a `float` for a real dtype.
+    fn identity_coefficient(&self) -> Scalar {
         self.inner.identity_coefficient()
     }
 
     /// `self + other`: coefficients added on matching strings, the rest kept. Both operands are left untouched.
+    /// The result's dtype is NumPy's promotion of the two: complex if either is, double precision if either is.
     fn __add__(&self, other: &Self) -> PyResult<Self> {
-        Ok(Self::plain(self.checked_add(&other.inner, Complex64::new(1.0, 0.0))?))
+        Ok(Self::plain(self.checked_add(&other.inner, false)?))
     }
 
     /// `self - other`, the same merge with `other`'s coefficients negated.
     fn __sub__(&self, other: &Self) -> PyResult<Self> {
-        Ok(Self::plain(self.checked_add(&other.inner, Complex64::new(-1.0, 0.0))?))
+        Ok(Self::plain(self.checked_add(&other.inner, true)?))
     }
 
-    /// `self += other`, in place.
+    /// `self += other`, in place, at the dtype `+` would give.
     fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
-        Self::add_in_place(slf, other, Complex64::new(1.0, 0.0))
+        Self::add_in_place(slf, other, false)
     }
 
-    /// `self -= other`, in place.
+    /// `self -= other`, in place, as `+=`.
     fn __isub__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
-        Self::add_in_place(slf, other, Complex64::new(-1.0, 0.0))
+        Self::add_in_place(slf, other, true)
     }
 
-    /// `self * scalar`: every coefficient scaled by a complex or real number.
+    /// `self * scalar`: every coefficient scaled by a complex or real number, keeping the dtype.
     ///
+    /// A real dtype raises `ValueError` on a scalar with a nonzero imaginary part; `astype` to a complex dtype first.
     /// Scalar-only. Multiplying two sums is a full operator product, a much larger operation this class does not implement.
     fn __mul__(&self, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self::plain(self.scaled(factor)?))
@@ -2159,9 +1735,9 @@ impl PauliSum {
         Ok(())
     }
 
-    /// Snapshot of the coefficient column as a 1-D NumPy `complex128` array.
-    fn coefficients_array<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<Complex64>> {
-        self.inner.coeffs().into_pyarray_bound(py)
+    /// Snapshot of the coefficient column as a 1-D NumPy array of the sum's dtype.
+    fn coefficients_array<'py>(&self, py: Python<'py>) -> Bound<'py, PyAny> {
+        self.inner.coefficients_array(py)
     }
 
     /// Snapshot of the X-part column as a 2-D NumPy `uint64` array of shape
@@ -2182,21 +1758,20 @@ impl PauliSum {
         z_flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
     }
 
-    /// `(x, z, coefficients)` as NumPy arrays, the exact inverse of `from_arrays`: `x`/`z` are `uint64` of shape `(len, width)` and `coefficients` is `complex128` of shape `(len,)`, row `i` of each describing the same term.
+    /// `(x, z, coefficients)` as NumPy arrays, the exact inverse of `from_arrays`: `x`/`z` are `uint64` of shape `(len, width)` and `coefficients` is of the sum's dtype and shape `(len,)`, row `i` of each describing the same term.
     ///
     /// On a `propagate(..., comm=..., result="local")` share it is this rank's terms only.
     #[allow(clippy::type_complexity)]
     fn to_arrays<'py>(
         &self,
         py: Python<'py>,
-    ) -> (Bound<'py, PyArray2<u64>>, Bound<'py, PyArray2<u64>>, Bound<'py, PyArray1<Complex64>>)
-    {
-        let (w, x_flat, z_flat, coeffs) = self.inner.columns_flat();
-        let n = coeffs.len();
+    ) -> (Bound<'py, PyArray2<u64>>, Bound<'py, PyArray2<u64>>, Bound<'py, PyAny>) {
+        let (w, x_flat, z_flat, coeffs) = self.inner.columns(py);
+        let n = x_flat.len() / w;
         let reshape = |flat: Vec<u64>| {
             flat.into_pyarray_bound(py).reshape([n, w]).expect("flat length is n*w by construction")
         };
-        (reshape(x_flat), reshape(z_flat), coeffs.into_pyarray_bound(py))
+        (reshape(x_flat), reshape(z_flat), coeffs)
     }
 
     /// Active monomorphized width `W` (number of `u64` words per term).
@@ -2210,6 +1785,7 @@ impl PauliSum {
     ///
     /// `direction` is `"forward"` (default) or `"heisenberg"`. `policy` is an optional `Truncation`; `None` applies no per-term filtering beyond the engine's own exact-zero drop.
     /// `target_bucket_len` (at least 1) and `min_buckets` (at least 16) are the engine's per-layer bucket-sizing knobs, raising `ValueError` below those bounds. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since the count moves only outside a gap of 8× around the target.
+    /// The result keeps the sum's dtype; a real dtype raises `ValueError` unless every channel of `circuit` preserves Hermiticity, as every `gates` and `noise` factory does.
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
@@ -2227,7 +1803,7 @@ impl PauliSum {
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
     /// With `comm`, each MPI rank drives one device: an `int` ordinal or `"auto"` (a device near the rank's CPUs, distinct per rank on a node while there are enough), with `result=` as for a host `comm=` run; this needs both the `cuda` and `mpi` features.
-    /// `device` is an alternative to `partitions` and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
+    /// `device` is an alternative to `partitions`, runs `complex128` sums only (`TypeError` for another dtype), and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
     ///
     /// ```python
     /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
@@ -2259,6 +1835,7 @@ impl PauliSum {
             warn_local_result(py)?;
         }
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
+        check_dtype_carries("PauliSum", self.inner.dtype(), circuit)?;
         let policy = PyTruncation::tree_of(policy);
         // Last, because adopting a communicator is collective: every check
         // above raises on all ranks alike, before any of them has entered MPI.
@@ -2317,6 +1894,7 @@ impl PauliSum {
             warn_local_result(py)?;
         }
         check_num_qubits("PauliSum", self.inner.num_qubits(), circuit)?;
+        check_dtype_carries("PauliSum", self.inner.dtype(), circuit)?;
         let policy = PyTruncation::tree_of(policy);
         // Last, because adopting a communicator is collective: every check
         // above raises on all ranks alike, before any of them has entered MPI.
@@ -2378,7 +1956,7 @@ impl PauliSum {
     /// Upload `self` to CUDA device `device`, returning a resident `GpuPauliSum`; `self` is left untouched.
     ///
     /// The resident sum is stepped in place by `GpuPauliSum.propagate` and read back by `GpuPauliSum.to_host`, so a loop of many short propagations pays one upload and one download rather than one of each per call.
-    /// Raises `RuntimeError` without the `cuda` feature or with no visible device, `ValueError` for an ordinal this process cannot see, and `MemoryError` if the device cannot hold the sum.
+    /// Raises `RuntimeError` without the `cuda` feature or with no visible device, `TypeError` for a dtype other than `complex128`, `ValueError` for an ordinal this process cannot see, and `MemoryError` if the device cannot hold the sum.
     #[pyo3(signature = (device=0))]
     fn to_device(&self, py: Python<'_>, device: i64) -> PyResult<PyObject> {
         crate::gpu::to_device(py, &self.inner, device)
@@ -2412,20 +1990,22 @@ impl PauliSum {
         let (mut trace, mut collapses) = (None, None);
         let slots = (&mut trace, &mut collapses);
         let inner = py.allow_threads(move || -> Result<PauliSumImpl, PropagateFailure> {
-            Ok(for_each_width_propagate!(
-                PauliSumImpl,
-                &self.inner,
-                &circuit.inner,
-                |s, c, W, wrap| {
-                    let out = mode.run::<W>(c, s, policy, dir, options, traced)?;
-                    *slots.0 = out.trace;
-                    *slots.1 = out.collapses;
-                    wrap(out.sum)
-                },
-                else {
-                    return Err(PropagateFailure::WidthMismatch);
-                }
-            ))
+            Ok(for_each_dtype_convert!(PauliSumImpl => PauliSumImpl, &self.inner, |sum| {
+                for_each_width_propagate!(
+                    WidthSum,
+                    sum,
+                    &circuit.inner,
+                    |s, c, W, wrap| {
+                        let out = mode.run::<W, _>(c, s, policy, dir, options, traced)?;
+                        *slots.0 = out.trace;
+                        *slots.1 = out.collapses;
+                        wrap(out.sum)
+                    },
+                    else {
+                        return Err(PropagateFailure::WidthMismatch);
+                    }
+                )
+            }))
         })?;
         Ok((Self::plain(inner), trace, collapses))
     }
@@ -2544,3 +2124,6 @@ mod propagate_options_tests {
         assert_eq!(literal, PropagateOptions::default());
     }
 }
+
+#[cfg(test)]
+mod tests;

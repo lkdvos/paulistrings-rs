@@ -3,7 +3,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::coefficient::Coefficient;
 use num_complex::Complex64;
+use std::marker::PhantomData;
 
 use super::distributed::{repartition_share, PartitionRowPolicy, ScatterOptions, ScatterRows};
 #[cfg(feature = "phase-timing")]
@@ -27,9 +29,10 @@ use crate::truncation::TruncationPolicy;
 ///
 /// Between calls every partition's sum holds only keys of its own partition and shares one hash and bucket count with its peers ([`PartitionedSum::assert_invariants`]).
 /// `B` is where a partition lives: host memory by default, a CUDA device for `gpu::GpuPartitionedSum`.
-pub struct PartitionedSum<const W: usize, B = HostPartition<W>> {
+pub struct PartitionedSum<const W: usize, C: Coefficient = Complex64, B = HostPartition<W, C>> {
     /// In rank order.
     parts: Vec<B>,
+    coefficient: PhantomData<fn() -> C>,
     rows: PartitionRows<W>,
     runtime: Arc<PartitionRuntime>,
     /// `None` unless [`enable_trace`](Self::enable_trace) was called.
@@ -38,7 +41,7 @@ pub struct PartitionedSum<const W: usize, B = HostPartition<W>> {
     laps: DriverLaps,
 }
 
-impl<const W: usize, B> PartitionedSum<W, B> {
+impl<const W: usize, C: Coefficient, B> PartitionedSum<W, C, B> {
     /// A split around partitions another backend already scattered, with `scatter_ns` its scatter time.
     #[cfg(feature = "cuda")]
     pub(crate) fn from_backend(
@@ -51,6 +54,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         let _ = scatter_ns;
         Self {
             parts,
+            coefficient: PhantomData,
             rows,
             runtime,
             trace: None,
@@ -113,8 +117,8 @@ impl<const W: usize, B> PartitionedSum<W, B> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: TruncationPolicy<W> + ?Sized,
-        B: PartitionBackend<W, T>,
+        T: TruncationPolicy<W, C> + ?Sized,
+        B: PartitionBackend<W, C, T>,
     {
         let runtime = &*self.runtime;
         let size = self.parts.len();
@@ -144,7 +148,7 @@ impl<const W: usize, B> PartitionedSum<W, B> {
     }
 }
 
-impl<const W: usize, B: PartitionStorage<W>> PartitionedSum<W, B> {
+impl<const W: usize, C: Coefficient, B: PartitionStorage<W, C>> PartitionedSum<W, C, B> {
     /// Terms in the whole sum, summed over partitions.
     pub fn len(&self) -> usize {
         self.parts.iter().map(|p| p.len()).sum()
@@ -166,7 +170,7 @@ impl<const W: usize, B: PartitionStorage<W>> PartitionedSum<W, B> {
     }
 }
 
-impl<const W: usize> PartitionedSum<W> {
+impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
     /// Splits `sum` across the partitions `config` places, by the default rows ([`PartitionRowPolicy::Seeded`] at the sum's own hash seed); other rows go through [`scatter_with`](Self::scatter_with).
     ///
     /// # Errors
@@ -176,7 +180,7 @@ impl<const W: usize> PartitionedSum<W> {
     /// # Panics
     ///
     /// In debug builds, if the partition rows are not independent of the sum's hash rows.
-    pub fn scatter(sum: PauliSum<W>, config: &PartitionConfig) -> Result<Self, TopologyError> {
+    pub fn scatter(sum: PauliSum<W, C>, config: &PartitionConfig) -> Result<Self, TopologyError> {
         let options = ScatterOptions {
             runtime: PartitionRuntime::new(config)?,
             rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(None)),
@@ -190,7 +194,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// If the rows do not name the runtime's partition count, or as [`PartitionRows::cut`].
     /// In debug builds, if the rows are not independent of the sum's hash rows, which costs load balance but not correctness.
-    pub fn scatter_with(sum: PauliSum<W>, options: ScatterOptions<W>) -> Self {
+    pub fn scatter_with(sum: PauliSum<W, C>, options: ScatterOptions<W>) -> Self {
         let ScatterOptions { runtime, rows } = options;
         let rows = rows.resolve(&sum, runtime.partition_bits());
         let size = runtime.num_partitions();
@@ -216,6 +220,7 @@ impl<const W: usize> PartitionedSum<W> {
 
         Self {
             parts: locals.into_iter().map(HostPartition::new).collect(),
+            coefficient: PhantomData,
             rows,
             runtime,
             trace: None,
@@ -230,7 +235,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// If `rows` does not name this split's partition count, or as [`repartition_share`].
     pub fn repartition(&mut self, rows: PartitionRows<W>) {
-        let shares: Vec<PauliSum<W>> = self
+        let shares: Vec<PauliSum<W, C>> = self
             .parts
             .iter_mut()
             .map(|part| std::mem::replace(&mut part.sum, PauliSum::empty(rows.num_qubits())))
@@ -253,7 +258,7 @@ impl<const W: usize> PartitionedSum<W> {
     ///
     /// As [`PauliSum::with_hash`].
     pub fn rehash_buckets(&mut self, hash: Gf2Hash<W>) {
-        let shares: Vec<PauliSum<W>> = self
+        let shares: Vec<PauliSum<W, C>> = self
             .parts
             .iter_mut()
             .map(|part| std::mem::replace(&mut part.sum, PauliSum::empty(self.rows.num_qubits())))
@@ -268,7 +273,7 @@ impl<const W: usize> PartitionedSum<W> {
     /// Propagates through `circuit` under `policy`, in place; see [`propagate_with`](Self::propagate_with).
     pub fn propagate<T>(&mut self, circuit: &Circuit<W>, policy: &T, direction: Direction)
     where
-        T: TruncationPolicy<W> + ?Sized,
+        T: TruncationPolicy<W, C> + ?Sized,
     {
         self.propagate_with(circuit, policy, direction, PropagateOptions::default())
     }
@@ -289,13 +294,13 @@ impl<const W: usize> PartitionedSum<W> {
         direction: Direction,
         options: PropagateOptions,
     ) where
-        T: TruncationPolicy<W> + ?Sized,
+        T: TruncationPolicy<W, C> + ?Sized,
     {
         self.propagate_on_backend(circuit, policy, direction, options);
     }
 
     /// Merges the partitions back into one sum on the calling thread, leaving `self` intact.
-    pub fn gather(&self) -> PauliSum<W> {
+    pub fn gather(&self) -> PauliSum<W, C> {
         timed!(let started = Instant::now());
         let out = PauliSum::merge_partitions(self.parts.iter().map(|p| p.sum.clone()).collect());
         timed!(self.laps.lap_gather(started.elapsed().as_nanos() as u64));
@@ -303,7 +308,7 @@ impl<const W: usize> PartitionedSum<W> {
     }
 
     /// [`gather`](Self::gather) by value — no clone of the parts.
-    pub fn into_gathered(self) -> PauliSum<W> {
+    pub fn into_gathered(self) -> PauliSum<W, C> {
         PauliSum::merge_partitions(self.parts.into_iter().map(|p| p.sum).collect())
     }
 
@@ -312,12 +317,12 @@ impl<const W: usize> PartitionedSum<W> {
     /// # Panics
     ///
     /// If `r` is not a partition of this sum.
-    pub fn partition(&self, r: usize) -> &PauliSum<W> {
+    pub fn partition(&self, r: usize) -> &PauliSum<W, C> {
         &self.parts[r].sum
     }
 
     /// `⟨ψ|O|ψ⟩` in the product state `basis`, the partitions' own values added in rank order.
-    pub fn expectation_product(&self, basis: &ProductBasis<W>) -> Complex64 {
+    pub fn expectation_product(&self, basis: &ProductBasis<W>) -> C {
         self.parts.iter().map(|part| part.sum.expectation_product(basis)).sum()
     }
 

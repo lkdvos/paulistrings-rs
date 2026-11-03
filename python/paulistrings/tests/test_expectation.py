@@ -14,10 +14,11 @@ import pytest
 from paulistrings import Circuit, PauliSum
 
 R = 1.0 / math.sqrt(2.0)
+DTYPES = ["float64", "float32", "complex128", "complex64"]
 
 
-def _sum(terms, num_qubits):
-    return PauliSum.from_strings(terms, num_qubits=num_qubits)
+def _sum(terms, num_qubits, dtype=None):
+    return PauliSum.from_strings(terms, num_qubits=num_qubits, dtype=dtype)
 
 
 # ---- expectation ----
@@ -66,10 +67,11 @@ def test_expectation_rejects_an_unknown_state():
         s.expectation("bogus")
 
 
+@pytest.mark.parametrize("dtype", DTYPES)
 @pytest.mark.parametrize("num_qubits", [3, 80, 200, 400, 800])
-def test_expectation_across_all_width_bands(num_qubits):
+def test_expectation_across_all_width_bands(num_qubits, dtype):
     label = "X" + "I" * (num_qubits - 1)
-    s = _sum({label: 2.0}, num_qubits)
+    s = _sum({label: 2.0}, num_qubits, dtype)
     assert s.expectation("x+").real == pytest.approx(2.0)
     assert s.expectation("z+").real == pytest.approx(0.0)
 

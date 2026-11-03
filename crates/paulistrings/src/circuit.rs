@@ -28,7 +28,7 @@ impl<const W: usize> Circuit<W> {
     /// # Panics
     ///
     /// If the channel's support reaches a qubit at or above [`num_qubits`](Self::num_qubits).
-    pub fn push<C: Channel<W> + 'static>(&mut self, channel: C) {
+    pub fn push<Ch: Channel<W> + 'static>(&mut self, channel: Ch) {
         self.push_boxed(Box::new(channel));
     }
 
@@ -69,6 +69,16 @@ impl<const W: usize> Circuit<W> {
     /// `true` iff no channels have been pushed.
     pub fn is_empty(&self) -> bool {
         self.channels.is_empty()
+    }
+
+    /// Whether every channel maps Hermitian operators to Hermitian ones, its transfer table being real both ways, as a real [`Coefficient`](crate::Coefficient) type requires; a channel whose preparation declines is not this check's concern.
+    pub fn preserves_hermiticity(&self) -> bool {
+        let hash = Gf2Hash::<W>::new(self.num_qubits, 0, DEFAULT_HASH_SEED);
+        self.channels.iter().all(|channel| {
+            [false, true].into_iter().all(|adjoint| {
+                channel.prepare(&hash, adjoint).is_none_or(|p| p.convert::<f64>().is_ok())
+            })
+        })
     }
 
     /// Every nonzero key shift each channel applies to a term, as `(x-mask, z-mask)`, or `None` for a channel the partitioned engine declines.

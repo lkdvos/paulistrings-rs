@@ -9,6 +9,7 @@
 //! At `P = 1` there is no group: the loop skips the reduction and refines every layer, as `propagate` does.
 
 use crate::channel::Prepare;
+use crate::coefficient::Coefficient;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
@@ -101,24 +102,35 @@ pub(crate) const DECLINED_PREPARATION: &str = "support above MAX_LOCAL_SUPPORT (
 const _: () = assert!(MAX_LOCAL_SUPPORT == 2, "DECLINED_PREPARATION names the value");
 
 /// The channel's preparation, or the unpartitioned engine's hard error naming the partition and layer.
-fn prepare_or_panic<const W: usize>(
+fn prepare_or_panic<const W: usize, C: Coefficient>(
     channel: &dyn Channel<W>,
     hash: &Gf2Hash<W>,
     adjoint: bool,
     rank: usize,
     circuit_index: usize,
-) -> crate::channel::prepared::Prepared<W> {
-    channel.prepare(hash, adjoint).unwrap_or_else(|| {
+) -> crate::channel::prepared::Prepared<W, C> {
+    let prepared = channel.prepare(hash, adjoint).unwrap_or_else(|| {
         let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
             "partition {rank}, layer {circuit_index}: channel preparation declined for a \
              channel of support {weight}: {DECLINED_PREPARATION}",
         )
-    })
+    });
+    prepared.convert().expect("assert_coefficient_type admitted the circuit")
+}
+
+/// Panic unless a sum of coefficient type `C` can carry `circuit`: a real type needs [`Circuit::preserves_hermiticity`].
+pub(crate) fn assert_coefficient_type<const W: usize, C: Coefficient>(circuit: &Circuit<W>) {
+    assert!(
+        !C::IS_REAL || circuit.preserves_hermiticity(),
+        "propagate: a {} sum needs every channel to preserve Hermiticity (a real transfer table); \
+         use a complex coefficient type",
+        C::NAME,
+    );
 }
 
 /// One partition's layer loop, run in lock-step with its peers inside its own pool, in the module's collective order.
-pub(crate) fn run_layers<const W: usize, T, X, B>(
+pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
     circuit: &Circuit<W>,
     policy: &T,
     direction: Direction,
@@ -127,10 +139,11 @@ pub(crate) fn run_layers<const W: usize, T, X, B>(
     work: &mut PartitionWork<B>,
     transport: &X,
 ) where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
     X: Transport,
-    B: PartitionBackend<W, T>,
+    B: PartitionBackend<W, C, T>,
 {
+    assert_coefficient_type::<W, C>(circuit);
     let PartitionContext { rows, rank, size, tracing } = context;
     let num_layers = circuit.channels.len();
     let adjoint = matches!(direction, Direction::Heisenberg);

@@ -1,8 +1,8 @@
 //! The per-coset kernel of the bucketed layer: gather, sort and merge one coset in place.
 
-use num_complex::Complex64;
+use crate::coefficient::Coefficient;
 
-use super::{DeltaPlan, ExtraRows, ZERO};
+use super::{DeltaPlan, ExtraRows};
 use crate::channel::prepared::LocalPtm;
 use crate::engine::merge::{merge_identity_and_rest, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
@@ -16,15 +16,15 @@ use crate::engine::timing::{lap, stamp, tally};
 
 /// One coset task's working set: the swapped-out input columns and the per-output-member gather runs.
 #[derive(Clone, Debug, Default)]
-pub(in crate::engine) struct CosetScratch<const W: usize> {
+pub(in crate::engine) struct CosetScratch<const W: usize, C: Coefficient = num_complex::Complex64> {
     /// The coset's input columns, swapped with the live bucket slots so the layer runs in place.
-    pub(super) old: Vec<BucketColumns<W>>,
+    pub(super) old: Vec<BucketColumns<W, C>>,
     /// Per-output-member gather runs.
-    pub(super) runs: Vec<GatherRun<W>>,
+    pub(super) runs: Vec<GatherRun<W, C>>,
     /// The per-run sort's scratch.
-    pub(super) sort: SortScratch<W>,
+    pub(super) sort: SortScratch<W, C>,
     /// The coset's bucket handles while it runs, member `j` at index `j`; all empty between cosets.
-    pub(super) members: Vec<BucketColumns<W>>,
+    pub(super) members: Vec<BucketColumns<W, C>>,
     /// The coset's bucket indices, member `j` at index `j`.
     pub(super) betas: Vec<u32>,
     /// The rotation layer's merges done in place, and through `old[0]`.
@@ -37,19 +37,14 @@ pub(in crate::engine) struct CosetScratch<const W: usize> {
 
 /// One output member's gather run, split into the identity stream and the rest.
 #[derive(Clone, Debug, Default)]
-pub(in crate::engine) struct GatherRun<const W: usize> {
+pub(in crate::engine) struct GatherRun<const W: usize, C: Coefficient = num_complex::Complex64> {
     /// The identity-delta stream, already sorted; under a dense identity only `coeff` is filled.
-    pub(super) identity: BucketColumns<W>,
+    pub(super) identity: BucketColumns<W, C>,
     /// Every other delta's rows, unsorted until the per-run sort.
-    pub(super) rest: BucketColumns<W>,
+    pub(super) rest: BucketColumns<W, C>,
 }
 
-/// `value != ZERO`, without the `||` short-circuit — one flag, no branch.
-pub(super) fn nonzero(value: Complex64) -> bool {
-    (value.re != 0.0) | (value.im != 0.0)
-}
-
-impl<const W: usize> GatherRun<W> {
+impl<const W: usize, C: Coefficient> GatherRun<W, C> {
     pub(super) fn reset(
         &mut self,
         identity_key_capacity: usize,
@@ -73,11 +68,11 @@ impl<const W: usize> GatherRun<W> {
     ///
     /// `len < capacity` on each of the three columns, which [`GatherRun::reset`] guarantees.
     pub(super) unsafe fn append_if(
-        columns: &mut BucketColumns<W>,
+        columns: &mut BucketColumns<W, C>,
         keep: bool,
         x: [u64; W],
         z: [u64; W],
-        c: Complex64,
+        c: C,
     ) {
         let BucketColumns { x: xs, z: zs, coeff: cs } = columns;
         let len = xs.len();
@@ -96,19 +91,19 @@ impl<const W: usize> GatherRun<W> {
     }
 
     /// Branchless filtered append to the rest stream.
-    pub(super) fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+    pub(super) fn push_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: C) {
         // SAFETY: `reset` reserved `rest_capacity + 1` on all three columns, and `rest_capacity` bounds every row the plan's deltas can emit into this run.
         unsafe { Self::append_if(&mut self.rest, keep, x, z, c) }
     }
 
     /// Branchless filtered append to the identity stream.
-    pub(super) fn push_identity_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: Complex64) {
+    pub(super) fn push_identity_if(&mut self, keep: bool, x: [u64; W], z: [u64; W], c: C) {
         // SAFETY: as `push_if`, with `identity_key_capacity` / `identity_coefficient_capacity` bounding the identity stream's rows.
         unsafe { Self::append_if(&mut self.identity, keep, x, z, c) }
     }
 
     /// Unchecked append to the identity coefficient column, the only one a dense identity materializes.
-    pub(super) fn push_identity_coefficient(&mut self, c: Complex64) {
+    pub(super) fn push_identity_coefficient(&mut self, c: C) {
         let coeff = &mut self.identity.coeff;
         let len = coeff.len();
         debug_assert!(len < coeff.capacity());
@@ -127,8 +122,8 @@ impl<const W: usize> GatherRun<W> {
 
 /// Panic unless `append_into` left the run's identity stream as it was and grew its rest stream by exactly the rows `count` promised: received rows must never join the identity stream, which the merge requires strictly ascending.
 #[cfg(debug_assertions)]
-fn debug_assert_received_rows_joined_the_rest<const W: usize>(
-    run: &GatherRun<W>,
+fn debug_assert_received_rows_joined_the_rest<const W: usize, C: Coefficient>(
+    run: &GatherRun<W, C>,
     (identity_keys, identity_coefficients, rest): (usize, usize, usize),
     promised: usize,
 ) {
@@ -151,16 +146,16 @@ fn debug_assert_received_rows_joined_the_rest<const W: usize>(
 pub(in crate::engine) const MIN_COSETS_FOR_PARALLEL: usize = 2;
 
 /// Gather, sort and merge one coset's `2^r` bucket columns in place; `betas[j]` is member `j`'s bucket, which `extra` is asked about.
-pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
-    chunk: &mut [BucketColumns<W>],
-    plan: &DeltaPlan<'_, W>,
+pub(in crate::engine) fn fill_coset<const W: usize, C: Coefficient, T, X>(
+    chunk: &mut [BucketColumns<W, C>],
+    plan: &DeltaPlan<'_, W, C>,
     policy: &T,
-    scratch: &mut CosetScratch<W>,
+    scratch: &mut CosetScratch<W, C>,
     extra: &X,
     betas: &[u32],
 ) where
-    T: TruncationPolicy<W> + ?Sized,
-    X: ExtraRows<W>,
+    T: TruncationPolicy<W, C> + ?Sized,
+    X: ExtraRows<W, C>,
 {
     let members = chunk.len();
     debug_assert_eq!(betas.len(), members);
@@ -256,7 +251,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
                                 true,
                                 product.x,
                                 product.z,
-                                total.apply(source.coeff[row]) * rotation.sin,
+                                source.coeff[row].mul_phase(total) * rotation.sin,
                             );
                         }
                     }
@@ -300,7 +295,7 @@ pub(in crate::engine) fn fill_coset<const W: usize, T, X>(
             }
         };
         let identity = ColumnsRef { x: a_x, z: a_z, coeff: &run.identity.coeff };
-        merge_identity_and_rest::<W, T>(identity, run.rest.view(), destination, policy);
+        merge_identity_and_rest::<W, C, T>(identity, run.rest.view(), destination, policy);
         lap!(stamp, scratch.stats.merge_ns);
     }
 
@@ -318,10 +313,10 @@ const GATHER_OUTPUT_MAJOR_MIN_R: u8 = 3;
 
 /// Input-major gather for a `Local` plan: each term is loaded once and scattered by `member(i) ⊕ δ = member(i ⊕ coord(δ))`.
 // Not a branch on zero amplitudes: research/FINDINGS.md §Branch misprediction: merge loop split and branchless gather filter
-pub(super) fn gather_local_input_major<const W: usize>(
-    old: &[BucketColumns<W>],
-    runs: &mut [GatherRun<W>],
-    ptm: &LocalPtm<W>,
+pub(super) fn gather_local_input_major<const W: usize, C: Coefficient>(
+    old: &[BucketColumns<W, C>],
+    runs: &mut [GatherRun<W, C>],
+    ptm: &LocalPtm<W, C>,
     coordinates: &[u32],
     has_identity: bool,
     dense_identity: bool,
@@ -333,11 +328,11 @@ pub(super) fn gather_local_input_major<const W: usize>(
             if has_identity {
                 let amplitude = ptm.deltas()[0].amplitude[pattern];
                 if dense_identity {
-                    debug_assert!(amplitude != ZERO);
+                    debug_assert!(amplitude != C::ZERO);
                     runs[i].push_identity_coefficient(source.coeff[row] * amplitude);
                 } else {
                     runs[i].push_identity_if(
-                        nonzero(amplitude),
+                        amplitude.is_nonzero(),
                         source.x[row],
                         source.z[row],
                         source.coeff[row] * amplitude,
@@ -353,7 +348,7 @@ pub(super) fn gather_local_input_major<const W: usize>(
                     key_z[w] ^= delta.mask_z[w];
                 }
                 runs[i ^ coordinates[entry] as usize].push_if(
-                    nonzero(amplitude),
+                    amplitude.is_nonzero(),
                     key_x,
                     key_z,
                     source.coeff[row] * amplitude,
@@ -364,10 +359,10 @@ pub(super) fn gather_local_input_major<const W: usize>(
 }
 
 /// Output-major gather for a `Local` plan: each output member streams one input bucket per delta.
-pub(super) fn gather_local_output_major<const W: usize>(
-    old: &[BucketColumns<W>],
-    runs: &mut [GatherRun<W>],
-    ptm: &LocalPtm<W>,
+pub(super) fn gather_local_output_major<const W: usize, C: Coefficient>(
+    old: &[BucketColumns<W, C>],
+    runs: &mut [GatherRun<W, C>],
+    ptm: &LocalPtm<W, C>,
     coordinates: &[u32],
     has_identity: bool,
     dense_identity: bool,
@@ -381,11 +376,11 @@ pub(super) fn gather_local_output_major<const W: usize>(
                 let pattern = ptm.support_bits(&source.x[row], &source.z[row]);
                 let amplitude = delta.amplitude[pattern];
                 if dense_identity {
-                    debug_assert!(amplitude != ZERO);
+                    debug_assert!(amplitude != C::ZERO);
                     run.push_identity_coefficient(source.coeff[row] * amplitude);
                 } else {
                     run.push_identity_if(
-                        nonzero(amplitude),
+                        amplitude.is_nonzero(),
                         source.x[row],
                         source.z[row],
                         source.coeff[row] * amplitude,
@@ -404,7 +399,7 @@ pub(super) fn gather_local_output_major<const W: usize>(
                     key_x[w] ^= delta.mask_x[w];
                     key_z[w] ^= delta.mask_z[w];
                 }
-                run.push_if(nonzero(amplitude), key_x, key_z, source.coeff[row] * amplitude);
+                run.push_if(amplitude.is_nonzero(), key_x, key_z, source.coeff[row] * amplitude);
             }
         }
     }

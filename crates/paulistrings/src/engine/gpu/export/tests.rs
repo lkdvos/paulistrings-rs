@@ -103,7 +103,8 @@ fn download<const W: usize>(
     let n = block.rows();
     let x = s.clone_dtoh(&block.x.slice(0..n * W)).unwrap();
     let z = s.clone_dtoh(&block.z.slice(0..n * W)).unwrap();
-    let c = s.clone_dtoh(&block.coefficient.slice(0..2 * n)).unwrap();
+    let bytes = s.clone_dtoh(&block.coefficient.slice(0..n * size_of::<Complex64>())).unwrap();
+    let c = bytes.chunks_exact(8).map(|b| f64::from_ne_bytes(b.try_into().unwrap())).collect();
     s.synchronize().unwrap();
     (x, z, c)
 }

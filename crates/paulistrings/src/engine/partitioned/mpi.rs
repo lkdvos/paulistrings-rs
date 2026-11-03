@@ -19,6 +19,7 @@ use super::distributed::DistributedSum;
 use super::topology::{PartitionConfig, Placement};
 use super::PLACEMENT_LOG_TARGET as LOG_TARGET;
 use crate::circuit::Circuit;
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::transport::{AlreadyHere, ChunkMap, ChunkWait, Payload, Transport, ROOT};
 use crate::engine::{Direction, PropagateOptions};
@@ -29,7 +30,7 @@ use crate::truncation::TruncationPolicy;
 pub use ::mpi as rsmpi;
 
 /// A [`DistributedSum`] over the MPI transport, the persistent form of a [`propagate_mpi`] run.
-pub type MpiSum<const W: usize> = DistributedSum<W, MpiTransport>;
+pub type MpiSum<const W: usize, C = num_complex::Complex64> = DistributedSum<W, MpiTransport, C>;
 
 /// Version of the header framing, bumped when it changes.
 const WIRE_VERSION: u32 = 2;
@@ -667,19 +668,19 @@ pub fn default_config() -> PartitionConfig {
 /// # Panics
 ///
 /// If the group size is not a power of two, if the placement cannot be resolved, or as [`DistributedSum::propagate_with`].
-pub fn propagate_mpi<const W: usize, T>(
+pub fn propagate_mpi<const W: usize, C: Coefficient, T>(
     circuit: &Circuit<W>,
-    sum: PauliSum<W>,
+    sum: PauliSum<W, C>,
     policy: &T,
     direction: Direction,
     options: PropagateOptions,
     comm: &impl Communicator,
-) -> Option<PauliSum<W>>
+) -> Option<PauliSum<W, C>>
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     let transport = MpiTransport::from_communicator(comm);
-    let mut split = MpiSum::<W>::scatter(sum, transport, &default_config())
+    let mut split = MpiSum::<W, C>::scatter(sum, transport, &default_config())
         .unwrap_or_else(|err| panic!("could not place the MPI rank's partition: {err}"));
     split.propagate_with(circuit, policy, direction, options);
     split.gather()

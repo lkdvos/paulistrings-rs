@@ -6,6 +6,7 @@ use super::partitioned::layer::{
 use super::plan::PartitionPlan;
 use super::transport::Transport;
 use crate::channel::prepared::Prepared;
+use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::bucketed::LayerScratch;
 #[cfg(feature = "phase-timing")]
@@ -18,7 +19,9 @@ use crate::truncation::TruncationPolicy;
 /// The policy-independent half of a partition.
 // `pub` only because the `pub` methods of `PartitionedSum` and `DistributedSum` bound their backend parameter on it.
 #[doc(hidden)]
-pub trait PartitionStorage<const W: usize>: Send + Sized {
+pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex64>:
+    Send + Sized
+{
     fn len(&self) -> usize;
     fn hash(&self) -> &Gf2Hash<W>;
     fn refine(&mut self);
@@ -27,7 +30,7 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
     /// The bucket bits this partition proposes for the layer; a backend may raise the host formula but never lower it.
     fn proposed_bits(
         &self,
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         target_bucket_len: usize,
         min_buckets: usize,
     ) -> u8 {
@@ -52,10 +55,12 @@ pub trait PartitionStorage<const W: usize>: Send + Sized {
 }
 
 /// One layer under policy `T`; an implementor must issue exactly the transport calls the host layer issues, in the same order, or the group falls out of step; the device backend's one addition is the exchange vote (`engine/gpu/export.rs`), legal only because every partition of a group runs the same backend.
-pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W> {
+pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
+    PartitionStorage<W, C>
+{
     fn apply_layer<X: Transport>(
         &mut self,
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         plan: &PartitionPlan,
         rows: &PartitionRows<W>,
         policy: &T,
@@ -72,26 +77,26 @@ pub(crate) trait PartitionBackend<const W: usize, T: ?Sized>: PartitionStorage<W
 // `pub` only because it is the default backend parameter of `PartitionedSum` and `DistributedSum`.
 #[doc(hidden)]
 #[derive(Debug)]
-pub struct HostPartition<const W: usize> {
-    pub(crate) sum: PauliSum<W>,
-    pub(super) state: PartitionState<W>,
+pub struct HostPartition<const W: usize, C: Coefficient = num_complex::Complex64> {
+    pub(crate) sum: PauliSum<W, C>,
+    pub(super) state: PartitionState<W, C>,
 }
 
-impl<const W: usize> HostPartition<W> {
-    pub(crate) fn new(sum: PauliSum<W>) -> Self {
+impl<const W: usize, C: Coefficient> HostPartition<W, C> {
+    pub(crate) fn new(sum: PauliSum<W, C>) -> Self {
         Self::with_layer_scratch(sum, LayerScratch::default())
     }
 
-    pub(crate) fn with_layer_scratch(sum: PauliSum<W>, layer: LayerScratch<W>) -> Self {
+    pub(crate) fn with_layer_scratch(sum: PauliSum<W, C>, layer: LayerScratch<W, C>) -> Self {
         Self { sum, state: PartitionState { layer, ..PartitionState::default() } }
     }
 
-    pub(crate) fn into_parts(self) -> (PauliSum<W>, LayerScratch<W>) {
+    pub(crate) fn into_parts(self) -> (PauliSum<W, C>, LayerScratch<W, C>) {
         (self.sum, self.state.layer)
     }
 }
 
-impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
+impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W, C> {
     fn len(&self) -> usize {
         self.sum.len()
     }
@@ -127,13 +132,13 @@ impl<const W: usize> PartitionStorage<W> for HostPartition<W> {
     }
 }
 
-impl<const W: usize, T> PartitionBackend<W, T> for HostPartition<W>
+impl<const W: usize, C: Coefficient, T> PartitionBackend<W, C, T> for HostPartition<W, C>
 where
-    T: TruncationPolicy<W> + ?Sized,
+    T: TruncationPolicy<W, C> + ?Sized,
 {
     fn apply_layer<X: Transport>(
         &mut self,
-        prepared: &Prepared<W>,
+        prepared: &Prepared<W, C>,
         plan: &PartitionPlan,
         rows: &PartitionRows<W>,
         policy: &T,

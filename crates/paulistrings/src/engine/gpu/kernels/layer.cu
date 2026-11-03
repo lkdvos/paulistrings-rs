@@ -2,6 +2,9 @@
 // Records (g_lo32, tag) for every emitting (source bucket, entry) pair, local or received, live in shared memory; a 16-bit index array is radix-sorted over them, equal-g32 runs are checked on the full key, and a segmented sum deduplicates before the surviving rows are written to the arena at seg_start[p].
 // Fallbacks are block-uniform: a colliding adjacent pair (equal g_lo32, different key) triggers eight more passes over g_hi32, and a pair still colliding after that a full lex-key sort.
 
+// The shared copy of a local table's amplitudes.
+#define AMPLITUDE_SCALARS (MAX_ENTRIES * LOCAL_DIM * COEFF_PARTS)
+
 struct Smem {
     u32* sg;                       // n_cap
     u16* stag;                     // n_cap
@@ -9,7 +12,7 @@ struct Smem {
     u16* ib;                       // n_cap
     u16* scnt;                     // n_cap / 2 : [digit][it][warp]
     u32* swarp;                    // 36
-    double* s_amplitude;           // 512
+    real_t* s_amplitude;           // AMPLITUDE_SCALARS
     u64* s_mask;                   // 32 * W
     u64* s_fingerprint_delta;      // 16
     u32* s_bucket_delta;           // 16
@@ -19,8 +22,8 @@ struct Smem {
     u32* s_len;                    // 16
     u32* s_ebase;                  // 18
     u32* s_flag;                   // 4
-    double* s_segr;                // 32
-    double* s_segi;                // 32
+    real_t* s_segr;                // 32
+    real_t* s_segi;                // 32, read only when COEFF_COMPLEX
     u32* s_segf;                   // 32
 };
 
@@ -32,8 +35,8 @@ __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
     s.ib = s.ia + n_cap;
     s.scnt = s.ib + n_cap;
     s.swarp = (u32*)(s.scnt + n_cap / 2);
-    s.s_amplitude = (double*)(s.swarp + 36);
-    s.s_mask = (u64*)(s.s_amplitude + 512);
+    s.s_amplitude = (real_t*)(s.swarp + 36);
+    s.s_mask = (u64*)(s.s_amplitude + AMPLITUDE_SCALARS);
     s.s_fingerprint_delta = s.s_mask + 32 * W;
     s.s_bucket_delta = (u32*)(s.s_fingerprint_delta + 16);
     s.s_nonzero_patterns = s.s_bucket_delta + 16;
@@ -42,10 +45,31 @@ __device__ __forceinline__ Smem carve(u8* base, u32 n_cap) {
     s.s_len = s.s_received_slot + 16;
     s.s_ebase = s.s_len + 16;
     s.s_flag = s.s_ebase + 18;
-    s.s_segr = (double*)(s.s_flag + 4);
+    s.s_segr = (real_t*)(s.s_flag + 4);
+#if COEFF_COMPLEX
     s.s_segi = s.s_segr + 32;
     s.s_segf = (u32*)(s.s_segi + 32);
+#else
+    s.s_segi = nullptr;
+    s.s_segf = (u32*)(s.s_segr + 32);
+#endif
     return s;
+}
+
+__device__ __forceinline__ void seg_store(const Smem& S, u32 i, Coeff v) {
+    S.s_segr[i] = v.part[0];
+#if COEFF_COMPLEX
+    S.s_segi[i] = v.part[1];
+#endif
+}
+
+__device__ __forceinline__ Coeff seg_load(const Smem& S, u32 i) {
+    Coeff v;
+    v.part[0] = S.s_segr[i];
+#if COEFF_COMPLEX
+    v.part[1] = S.s_segi[i];
+#endif
+    return v;
 }
 
 // One stable counting-sort pass on 4-bit digits; item i = it * THREADS + tid holds record ia[i].
@@ -97,16 +121,16 @@ __device__ __forceinline__ void radix_pass(u16* ia, u16* ib, u16* scnt, u32* swa
 
 template <int C, bool SEGSCAN>
 __device__ __forceinline__ void layer_body(
-    const u64* __restrict__ x, const u64* __restrict__ z, const double* __restrict__ c, const u64* __restrict__ g,
+    const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
     const u32* __restrict__ in_start, const u32* __restrict__ in_len, const u32* __restrict__ bucket_at,
     const u32* __restrict__ cnt, const u32* __restrict__ seg_start,
     u32 mode, u32 E, u32 support_size, u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin,
-    const double* __restrict__ amplitude, const u64* __restrict__ mask, const u32* __restrict__ nonzero_patterns,
+    const real_t* __restrict__ amplitude, const u64* __restrict__ mask, const u32* __restrict__ nonzero_patterns,
     const u32* __restrict__ bucket_delta, const u64* __restrict__ fingerprint_delta,
     const u32* __restrict__ received_slot, const u32* __restrict__ recv_off, const u32* __restrict__ rbase, u32 B,
-    const u64* __restrict__ rx, const u64* __restrict__ rz, const double* __restrict__ rc, const u64* __restrict__ rg,
+    const u64* __restrict__ rx, const u64* __restrict__ rz, const real_t* __restrict__ rc, const u64* __restrict__ rg,
     const KeepProg& prog, u32 p0,
-    u64* __restrict__ out_x, u64* __restrict__ out_z, double* __restrict__ out_c, u64* __restrict__ out_g,
+    u64* __restrict__ out_x, u64* __restrict__ out_z, real_t* __restrict__ out_c, u64* __restrict__ out_g,
     u32* __restrict__ rows_per_position, u32* __restrict__ fallback) {
     extern __shared__ __align__(16) u8 smem_raw[];
     const u32 n_cap = C * THREADS;
@@ -122,7 +146,7 @@ __device__ __forceinline__ void layer_body(
     }
 
     // A rotation table never reads `amplitude`.
-    if (mode == MODE_LOCAL) for (u32 i = tid; i < 512; i += THREADS) S.s_amplitude[i] = amplitude[i];
+    if (mode == MODE_LOCAL) for (u32 i = tid; i < AMPLITUDE_SCALARS; i += THREADS) S.s_amplitude[i] = amplitude[i];
     for (u32 i = tid; i < 32 * W; i += THREADS) S.s_mask[i] = mask[i];
     // A received entry's source is segment p of its block: rows already shifted and multiplied by the sender.
     if (tid < MAX_ENTRIES) {
@@ -298,19 +322,15 @@ __device__ __forceinline__ void layer_body(
     __syncthreads();
 
     // A received row's product is the identity: the sender already applied the entry.
-    auto product = [&](u32 j, double& pr, double& pi) {
+    auto product = [&](u32 j) -> Coeff {
         u32 e;
         bool received;
         const u32 src = src_of(j, e, received);
-        if (received) {
-            pr = rc[2 * (size_t)src];
-            pi = rc[2 * (size_t)src + 1];
-            return;
-        }
+        if (received) return coeff_load(rc, src);
         const Key k = load_key(x, z, src);
-        entry_product(T, k, e, c[2 * (size_t)src], c[2 * (size_t)src + 1], pr, pi);
+        return entry_product(T, k, e, coeff_load(c, src));
     };
-    auto write_row = [&](u32 slot, u32 j, double ar, double ai) {
+    auto write_row = [&](u32 slot, u32 j, Coeff v) {
         u32 e;
         bool received;
         const u32 src = src_of(j, e, received);
@@ -331,81 +351,75 @@ __device__ __forceinline__ void layer_body(
             }
             out_g[slot] = g[src] ^ s_fingerprint_delta[e];
         }
-        out_c[2 * (size_t)slot] = ar;
-        out_c[2 * (size_t)slot + 1] = ai;
+        coeff_store(out_c, slot, v);
     };
-    auto survives = [&](u32 j, double ar, double ai) -> bool {
-        if (ar == 0.0 && ai == 0.0) return false;
-        return keep_eval(prog, [&]() -> Key { return out_key(j); }, ar, ai);
+    auto survives = [&](u32 j, Coeff v) -> bool {
+        if (coeff_is_zero(v)) return false;
+        return keep_eval(prog, [&]() -> Key { return out_key(j); }, v);
     };
 
     if (SEGSCAN) {
         // Block-parallel segmented sum: every item forms its product, and a segmented inclusive scan in sorted order lands each run's total on its last item.
         const u32 base = tid * C;
-        double pr[C], pi[C];
+        Coeff pc[C];
         bool head[C];
 #pragma unroll
         for (int it = 0; it < C; ++it) {
             const u32 i = base + it;
-            pr[it] = 0.0;
-            pi[it] = 0.0;
+            pc[it] = coeff_zero();
             head[it] = true;
             if (i < n_rows) {
-                product(ia[i], pr[it], pi[it]);
+                pc[it] = product(ia[i]);
                 head[it] = ib[i] != 0;
             }
         }
-        double tr = 0.0, ti = 0.0;
+        Coeff t = coeff_zero();
         bool tf = false;
 #pragma unroll
         for (int it = 0; it < C; ++it) {
-            if (head[it]) { tr = pr[it]; ti = pi[it]; tf = true; }
-            else { tr += pr[it]; ti += pi[it]; }
+            if (head[it]) { t = pc[it]; tf = true; }
+            else t = coeff_add(t, pc[it]);
         }
         // (sum, has_head) segmented scan: a range with a head absorbs nothing from its left.
-        double sr = tr, si = ti;
+        Coeff s = t;
         bool sf = tf;
 #pragma unroll
         for (u32 o = 1; o < 32; o <<= 1) {
-            const double r2 = __shfl_up_sync(~0u, sr, o);
-            const double i2 = __shfl_up_sync(~0u, si, o);
+            const Coeff s2 = coeff_shfl_up(s, o);
             const u32 f2 = __shfl_up_sync(~0u, (u32)sf, o);
-            if (lane >= o && !sf) { sr += r2; si += i2; sf = f2 != 0; }
+            if (lane >= o && !sf) { s = coeff_add(s, s2); sf = f2 != 0; }
         }
-        double er = __shfl_up_sync(~0u, sr, 1), ei = __shfl_up_sync(~0u, si, 1);
+        Coeff exclusive = coeff_shfl_up(s, 1);
         u32 ef = __shfl_up_sync(~0u, (u32)sf, 1);
-        if (lane == 0) { er = 0.0; ei = 0.0; ef = 0; }
-        if (lane == 31) { S.s_segr[warp] = sr; S.s_segi[warp] = si; S.s_segf[warp] = sf ? 1u : 0u; }
+        if (lane == 0) { exclusive = coeff_zero(); ef = 0; }
+        if (lane == 31) { seg_store(S, warp, s); S.s_segf[warp] = sf ? 1u : 0u; }
         __syncthreads();
         if (warp == 0) {
             const u32 nw = blockDim.x >> 5;
-            double vr = lane < nw ? S.s_segr[lane] : 0.0, vi = lane < nw ? S.s_segi[lane] : 0.0;
+            Coeff v = lane < nw ? seg_load(S, lane) : coeff_zero();
             bool vf = lane < nw ? S.s_segf[lane] != 0 : true;
 #pragma unroll
             for (u32 o = 1; o < 32; o <<= 1) {
-                const double r2 = __shfl_up_sync(~0u, vr, o);
-                const double i2 = __shfl_up_sync(~0u, vi, o);
+                const Coeff v2 = coeff_shfl_up(v, o);
                 const u32 f2 = __shfl_up_sync(~0u, (u32)vf, o);
-                if (lane >= o && !vf) { vr += r2; vi += i2; vf = f2 != 0; }
+                if (lane >= o && !vf) { v = coeff_add(v, v2); vf = f2 != 0; }
             }
-            double xr = __shfl_up_sync(~0u, vr, 1), xi = __shfl_up_sync(~0u, vi, 1);
-            if (lane == 0) { xr = 0.0; xi = 0.0; }
-            S.s_segr[lane] = xr;
-            S.s_segi[lane] = xi;
+            Coeff before = coeff_shfl_up(v, 1);
+            if (lane == 0) before = coeff_zero();
+            seg_store(S, lane, before);
         }
         __syncthreads();
-        double run_r = er, run_i = ei;
-        if (!ef) { run_r += S.s_segr[warp]; run_i += S.s_segi[warp]; }
+        Coeff run = exclusive;
+        if (!ef) run = coeff_add(run, seg_load(S, warp));
         bool keep[C];
 #pragma unroll
         for (int it = 0; it < C; ++it) {
             const u32 i = base + it;
-            if (head[it]) { run_r = pr[it]; run_i = pi[it]; }
-            else { run_r += pr[it]; run_i += pi[it]; }
+            if (head[it]) run = pc[it];
+            else run = coeff_add(run, pc[it]);
             const bool last = (i + 1 == n_rows) || (i + 1 < n_rows && ib[i + 1] != 0);
-            keep[it] = (i < n_rows) && last && survives(ia[i], run_r, run_i);
-            pr[it] = run_r;
-            pi[it] = run_i;
+            keep[it] = (i < n_rows) && last && survives(ia[i], run);
+            pc[it] = run;
         }
         __syncthreads();
 #pragma unroll
@@ -417,32 +431,29 @@ __device__ __forceinline__ void layer_body(
         for (int it = 0; it < C; ++it) {
             if (!keep[it]) continue;
             const u32 i = base + it;
-            write_row(seg0 + sg[i], ia[i], pr[it], pi[it]);
+            write_row(seg0 + sg[i], ia[i], pc[it]);
         }
     } else {
         // Segmented sum per head, sequential over the run, products recomputed from the input.
-        double accr[C], acci[C];
+        Coeff acc[C];
         bool keep[C];
 #pragma unroll
         for (int it = 0; it < C; ++it) {
             const u32 i = it * THREADS + tid;
             keep[it] = false;
-            accr[it] = 0.0;
-            acci[it] = 0.0;
+            acc[it] = coeff_zero();
             if (i < n_rows && ib[i]) {
                 u32 j = i;
                 bool first = true;
-                double ar = 0.0, ai = 0.0;
+                Coeff a = coeff_zero();
                 do {
-                    double pr, pi;
-                    product(ia[j], pr, pi);
-                    if (first) { ar = pr; ai = pi; first = false; }
-                    else { ar += pr; ai += pi; }
+                    const Coeff pj = product(ia[j]);
+                    if (first) { a = pj; first = false; }
+                    else a = coeff_add(a, pj);
                     ++j;
                 } while (j < n_rows && !ib[j]);
-                accr[it] = ar;
-                acci[it] = ai;
-                keep[it] = survives(ia[i], ar, ai);
+                acc[it] = a;
+                keep[it] = survives(ia[i], a);
             }
         }
         __syncthreads();
@@ -455,20 +466,20 @@ __device__ __forceinline__ void layer_body(
         for (int it = 0; it < C; ++it) {
             if (!keep[it]) continue;
             const u32 i = it * THREADS + tid;
-            write_row(seg0 + sg[i], ia[i], accr[it], acci[it]);
+            write_row(seg0 + sg[i], ia[i], acc[it]);
         }
     }
 }
 
 #define LAYER_KERNEL(C, SEG, NAME)                                                                         \
     extern "C" __global__ void __launch_bounds__(THREADS) NAME(                                            \
-        const u64* x, const u64* z, const double* c, const u64* g, const u32* in_start, const u32* in_len, \
+        const u64* x, const u64* z, const real_t* c, const u64* g, const u32* in_start, const u32* in_len, \
         const u32* bucket_at, const u32* cnt, const u32* seg_start, u32 mode, u32 E, u32 support_size,     \
-        u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin, const double* amplitude,       \
+        u32 qubit_0, u32 qubit_1, double rotation_cos, double rotation_sin, const real_t* amplitude,       \
         const u64* mask, const u32* nonzero_patterns, const u32* bucket_delta,                             \
         const u64* fingerprint_delta, const u32* received_slot, const u32* recv_off, const u32* rbase,     \
-        u32 B, const u64* rx, const u64* rz, const double* rc, const u64* rg,                              \
-        const __grid_constant__ KeepProg prog, u32 p0, u64* out_x, u64* out_z, double* out_c, u64* out_g,  \
+        u32 B, const u64* rx, const u64* rz, const real_t* rc, const u64* rg,                              \
+        const __grid_constant__ KeepProg prog, u32 p0, u64* out_x, u64* out_z, real_t* out_c, u64* out_g,  \
         u32* rows_per_position, u32* fallback) {                                                           \
         layer_body<C, SEG>(x, z, c, g, in_start, in_len, bucket_at, cnt, seg_start, mode, E, support_size, \
                            qubit_0, qubit_1, rotation_cos, rotation_sin, amplitude, mask, nonzero_patterns,\

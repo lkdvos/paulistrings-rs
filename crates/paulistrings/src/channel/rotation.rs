@@ -2,6 +2,7 @@
 
 use super::prepared::{PrepareToken, Prepared, PreparedRotation, MAX_LOCAL_SUPPORT};
 use super::{Channel, OutputBuffer};
+use crate::coefficient::Coefficient;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::phase::Phase;
@@ -61,7 +62,7 @@ impl<const W: usize> PauliRotation<W> {
         let mut product = input;
         let phase = product.mul_assign(&self.generator);
         let total_phase = Phase::I + phase;
-        out.push(product.x, product.z, total_phase.apply(coeff) * sin);
+        out.push(product.x, product.z, coeff.mul_phase(total_phase) * sin);
     }
 }
 

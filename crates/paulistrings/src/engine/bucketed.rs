@@ -18,7 +18,7 @@ use crate::collectives::Collectives;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
 use crate::truncation::octave_window::{
-    decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow,
+    decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow, WindowTotals,
 };
 use crate::truncation::{FusedApproxTopN, TruncationPolicy};
 use rotation_layer::{
@@ -66,6 +66,8 @@ pub(crate) struct LayerOctaves {
     /// The window the next layer counts, centred on the last boundary octave; `None` before the first.
     window: Option<OctaveWindow>,
     per_bucket: Vec<BucketOctaves>,
+    /// `per_bucket` summed.
+    totals: WindowTotals,
     /// Whether `per_bucket` counts the sum as the last layer left it, under `window`.
     counted: bool,
     /// The last layer pass's cut, not yet applied.
@@ -115,9 +117,14 @@ impl LayerOctaves {
             return;
         }
         let decided = match self.window {
-            Some(window) if std::mem::take(&mut self.counted) => {
-                decide_from_window(sum.len(), collectives, n, window, &self.per_bucket)
-            }
+            Some(window) if std::mem::take(&mut self.counted) => decide_from_window(
+                sum.len(),
+                collectives,
+                n,
+                window,
+                &self.per_bucket,
+                &self.totals,
+            ),
             _ => None,
         };
         let (edge, total) = match decided {
@@ -470,20 +477,29 @@ where
     F: Fn(&mut [BucketColumns<W, C>], &[u32], &mut CosetScratch<W, C>) + Sync,
 {
     let num_cosets = span.num_cosets();
+    let counting = octaves.count.is_some();
     // Each coset reads and writes only its own buckets (engine/coset.rs).
     if num_cosets < MIN_COSETS_FOR_PARALLEL {
+        scratch.task.octave_totals = WindowTotals::default();
         let buckets = DisjointSlots::new(sum.buckets_mut());
-        (0..num_cosets as u32)
+        let len = (0..num_cosets as u32)
             .map(|coset| run_coset(coset, span, &buckets, octaves, &mut scratch.task, &fill))
-            .sum()
+            .sum();
+        if counting {
+            scratch.octaves.totals = scratch.task.octave_totals;
+        }
+        len
     } else {
         let pool = rayon::current_num_threads().max(1);
         if scratch.workers.len() < pool {
             scratch.workers.resize_with(pool, Mutex::default);
         }
+        for worker in &mut scratch.workers {
+            worker.get_mut().unwrap().octave_totals = WindowTotals::default();
+        }
         let workers = &scratch.workers;
         let buckets = DisjointSlots::new(sum.buckets_mut());
-        (0..num_cosets as u32)
+        let len = (0..num_cosets as u32)
             .into_par_iter()
             .map(|coset| {
                 // `workers` was sized to `current_num_threads()` above, and this closure runs on that pool.
@@ -492,7 +508,15 @@ where
                 let mut worker_scratch = workers[worker].lock().unwrap();
                 run_coset(coset, span, &buckets, octaves, &mut worker_scratch, &fill)
             })
-            .sum()
+            .sum();
+        if counting {
+            let mut totals = WindowTotals::default();
+            for worker in &mut scratch.workers {
+                totals.merge(&worker.get_mut().unwrap().octave_totals);
+            }
+            scratch.octaves.totals = totals;
+        }
+        len
     }
 }
 
@@ -536,6 +560,10 @@ where
                 window.count(&slot.coeff, unsafe { counts.get(beta as usize) });
             }
             (None, None) => {}
+        }
+        if let Some((_, counts)) = octaves.count {
+            // SAFETY: as above, and the match's reference to these counts is dead.
+            scratch.octave_totals.add(unsafe { counts.get(beta as usize) });
         }
         // SAFETY: as above.
         std::mem::swap(slot, unsafe { buckets.get(beta as usize) });

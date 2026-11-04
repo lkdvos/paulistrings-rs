@@ -40,7 +40,7 @@ fn a_nan_term_is_counted_only_without_a_cut() {
     octaves.ahead.push(ahead);
     octaves.ahead_window = Some(window);
     assert_eq!(octaves.rows_ahead(0), Some(4));
-    octaves.defer(BoundaryCut { bin, quotas: vec![1], kept: 3 });
+    octaves.defer(BoundaryCut { bin, split: 0, split_quota: 1, kept: 3 });
     assert_eq!(octaves.rows_ahead(0), Some(2));
 }
 

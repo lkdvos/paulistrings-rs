@@ -1233,11 +1233,14 @@ mod finalize_tests {
         apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
         assert!(scratch.octaves.counted);
         assert_eq!(scratch.octaves.per_bucket.len(), b.num_buckets());
+        let mut totals = WindowTotals::default();
         for (bucket, counts) in scratch.octaves.per_bucket.iter().enumerate() {
             let mut want = [0; _];
             window.count(b.bucket(bucket).2, &mut want);
             assert_eq!(counts, &want, "bucket {bucket}");
+            totals.add(&want);
         }
+        assert_eq!(scratch.octaves.totals, totals, "the workers' totals");
 
         let mut unarmed = LayerScratch::<1>::new();
         unarmed.octaves.window = Some(window);

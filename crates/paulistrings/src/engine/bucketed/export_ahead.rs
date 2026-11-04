@@ -209,7 +209,7 @@ impl LayerOctaves {
             "the cut's octave is outside the window"
         );
         let above: u32 = emitting[slot + 1..].iter().sum();
-        match cut.quota(b) {
+        match cut.split.quota(b) {
             0 => Some(above),
             quota if quota >= self.per_bucket[b][slot] as usize => Some(above + emitting[slot]),
             _ => None,

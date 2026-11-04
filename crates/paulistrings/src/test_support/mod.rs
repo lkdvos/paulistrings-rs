@@ -83,8 +83,7 @@ pub fn mpi_build_library_version() -> &'static str {
 pub(crate) fn median_octave_cut<const W: usize, C: crate::Coefficient>(
     sum: &crate::PauliSum<W, C>,
 ) -> crate::truncation::octave_window::BoundaryCut {
-    use crate::truncation::builtin::octave;
-    use crate::truncation::octave_window::quota_split;
+    use crate::truncation::builtin::{octave, QuotaSplit};
     let mut octaves: Vec<usize> = sum.iter().map(|(_, _, c)| octave(c.norm_sqr())).collect();
     octaves.sort_unstable();
     let bin = octaves.get(octaves.len() / 2).copied().unwrap_or(0);
@@ -97,9 +96,8 @@ pub(crate) fn median_octave_cut<const W: usize, C: crate::Coefficient>(
     }
     let total = boundary_counts.iter().sum::<usize>();
     let quota = total / 2;
-    let (split, split_quota) =
-        quota_split(|b| boundary_counts[b], boundary_counts.len(), total, quota);
-    crate::truncation::octave_window::BoundaryCut { bin, split, split_quota, kept: above + quota }
+    let split = QuotaSplit::new(|b| boundary_counts[b], boundary_counts.len(), total, quota);
+    crate::truncation::octave_window::BoundaryCut { bin, split, kept: above + quota }
 }
 
 #[cfg(test)]

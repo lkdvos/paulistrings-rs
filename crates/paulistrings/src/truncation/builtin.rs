@@ -141,17 +141,61 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for TopN {
     }
 }
 
-/// How many boundary terms each bucket keeps: `quota` handed out in bucket order, each bucket taking at most its own count.
-pub(crate) fn bucket_quotas(boundary_counts: &[usize], quota: usize) -> Vec<usize> {
-    let mut remaining = quota;
-    boundary_counts
-        .iter()
-        .map(|&count| {
-            let taken = count.min(remaining);
-            remaining -= taken;
-            taken
-        })
-        .collect()
+/// Where a boundary quota runs out when the buckets' boundary terms are taken in bucket order: buckets before `bucket` keep all of theirs, `bucket` its first `remaining`, the buckets after it none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct QuotaSplit {
+    pub(crate) bucket: usize,
+    pub(crate) remaining: usize,
+}
+
+impl QuotaSplit {
+    /// The split of `quota` over `buckets` buckets of `count(b)` boundary terms, `total` in all; whole chunks are summed in parallel.
+    pub(crate) fn new(
+        count: impl Fn(usize) -> usize + Sync,
+        buckets: usize,
+        total: usize,
+        quota: usize,
+    ) -> Self {
+        const CHUNK: usize = 1024;
+        if quota >= total {
+            return Self { bucket: buckets, remaining: 0 };
+        }
+        if quota == 0 {
+            return Self { bucket: 0, remaining: 0 };
+        }
+        let chunk_counts: Vec<usize> = (0..buckets.div_ceil(CHUNK))
+            .into_par_iter()
+            .map(|chunk| (chunk * CHUNK..buckets.min((chunk + 1) * CHUNK)).map(&count).sum())
+            .collect();
+        let mut remaining = quota;
+        let mut start = 0;
+        for chunk_count in chunk_counts {
+            if chunk_count > remaining {
+                break;
+            }
+            remaining -= chunk_count;
+            start += CHUNK;
+        }
+        for bucket in start..buckets {
+            let bucket_count = count(bucket);
+            if bucket_count > remaining {
+                return Self { bucket, remaining };
+            }
+            remaining -= bucket_count;
+        }
+        unreachable!("a quota below the total runs out at some bucket")
+    }
+
+    /// Bucket `b`'s quota, `usize::MAX` for all of its boundary terms.
+    pub(crate) fn quota(&self, b: usize) -> usize {
+        if b < self.bucket {
+            usize::MAX
+        } else if b == self.bucket {
+            self.remaining
+        } else {
+            0
+        }
+    }
 }
 
 /// Keep every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`), in bucket order.
@@ -167,8 +211,9 @@ pub(crate) fn retain_with_boundary_quota<const W: usize, C: Coefficient>(
             sum.bucket(b).2.iter().filter(|c| classify(c.norm_sqr()) == Ordering::Equal).count()
         })
         .collect();
-    let quotas = bucket_quotas(&boundary_counts, quota);
-    sum.retain_per_bucket(|b| boundary_filter(&classify, quotas[b]));
+    let total = boundary_counts.iter().sum();
+    let split = QuotaSplit::new(|b| boundary_counts[b], boundary_counts.len(), total, quota);
+    sum.retain_per_bucket(|b| boundary_filter(&classify, split.quota(b)));
 }
 
 /// Accepts, over one bucket in order, every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`), branch-free since the side is unpredictable.

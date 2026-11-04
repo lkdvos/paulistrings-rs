@@ -665,3 +665,26 @@ fn or_keeps_if_either() {
         Complex64::new(0.1, 0.0)
     ));
 }
+
+/// A split hands each bucket what is left of the quota after the buckets before it, on sparse and dense counts across the chunk edges.
+#[test]
+fn a_quota_split_hands_out_the_quota_in_bucket_order() {
+    let mut rng = crate::test_support::Xs64::new(0x5917);
+    for buckets in [0usize, 1, 5, 1023, 1024, 1025, 4100] {
+        for spread in [1u64, 2, 9] {
+            let counts: Vec<usize> =
+                (0..buckets).map(|_| (rng.next_u64() % (spread + 1)) as usize).collect();
+            let total: usize = counts.iter().sum();
+            for quota in [0, 1, total / 3, total / 2, total.saturating_sub(1), total, total + 5] {
+                let split = QuotaSplit::new(|b| counts[b], buckets, total, quota);
+                let label = format!("buckets={buckets} spread={spread} quota={quota}");
+                let mut remaining = quota;
+                for (b, &count) in counts.iter().enumerate() {
+                    let want = count.min(remaining);
+                    remaining -= want;
+                    assert_eq!(split.quota(b).min(count), want, "{label}: bucket {b}");
+                }
+            }
+        }
+    }
+}

@@ -2118,7 +2118,7 @@ impl PauliSum {
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
-    /// In partitioned mode `RAYON_NUM_THREADS` is ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+    /// In partitioned mode `RAYON_NUM_THREADS` is ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`, or `partition_topn` for a per-partition cap).
     ///
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
@@ -2132,7 +2132,7 @@ impl PauliSum {
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
     /// With `comm`, each MPI rank drives one device: an `int` ordinal or `"auto"` (a device near the rank's CPUs, distinct per rank on a node while there are enough), with `result=` as for a host `comm=` run; this needs both the `cuda` and `mpi` features.
-    /// `device` is an alternative to `partitions`, runs `complex128` sums only (`TypeError` for another dtype), and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
+    /// `device` is an alternative to `partitions`, keeps the sum's dtype, and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
     ///
     /// ```python
     /// observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
@@ -2284,7 +2284,7 @@ impl PauliSum {
     /// Upload `self` to CUDA device `device`, returning a resident `GpuPauliSum`; `self` is left untouched.
     ///
     /// The resident sum is stepped in place by `GpuPauliSum.propagate` and read back by `GpuPauliSum.to_host`, so a loop of many short propagations pays one upload and one download rather than one of each per call.
-    /// Raises `RuntimeError` without the `cuda` feature or with no visible device, `TypeError` for a dtype other than `complex128`, `ValueError` for an ordinal this process cannot see, and `MemoryError` if the device cannot hold the sum.
+    /// Raises `RuntimeError` without the `cuda` feature or with no visible device, `ValueError` for an ordinal this process cannot see, and `MemoryError` if the device cannot hold the sum.
     #[pyo3(signature = (device=0))]
     fn to_device(&self, py: Python<'_>, device: i64) -> PyResult<PyObject> {
         crate::gpu::to_device(py, &self.inner, device)

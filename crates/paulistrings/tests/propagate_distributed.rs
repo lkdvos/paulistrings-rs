@@ -17,8 +17,8 @@ use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, collapsing_circuit,
     haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
-    spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter, z0_sum, zz_rotation,
-    KeepAll,
+    spread_magnitudes, trotter_circuit, truncated_liouvillian, unpinned_partitions,
+    unpinned_scatter, z0_sum, zz_rotation, KeepAll,
 };
 use paulistrings::Collectives;
 use paulistrings::PtmChannel;
@@ -725,7 +725,7 @@ fn lanczos_coefficients_agree_across_ranks() {
     let mut want = Vec::new();
     let (mut previous, mut current) = (PauliSum::<1, f64>::empty(num_qubits), seed.clone());
     for _ in 0..steps {
-        let mut next = h.liouvillian_with(&current, &policy);
+        let mut next = truncated_liouvillian(&h, &current, &policy);
         let mut scaled = previous.clone();
         scaled.scale(-want.last().copied().unwrap_or(0.0));
         next = next.add(&scaled);

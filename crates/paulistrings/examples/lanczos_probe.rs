@@ -18,12 +18,9 @@ lanczos_probe: operator Lanczos on a Heisenberg model, one in-place add_liouvill
   --field F                      Z field on every site (default 0.3)
   --steps S                      Lanczos steps (default 14)
   --threshold T                  coefficient threshold per step (default 1e-12)
-  --rows seeded | blocks | xblocks
-                                 partition rows: seeded GF(2) rows, or one contiguous block of
+  --rows seeded | xblocks        partition rows: seeded GF(2) rows, or one contiguous block of
                                  sites per partition (strips of rows on a square) labelled by the
-                                 z-bits (`PartitionRows::cut`) or the x-bits of its sites; a Z
-                                 field moves every z-labelled term, so xblocks is the local choice
-                                 (default seeded)
+                                 x-bits of its sites, which a Z field never changes (default seeded)
   --partitions P                 in-process partitions, a power of two (default 1)
   --unpinned                     unpinned in-process partitions instead of one per NUMA node
   --threads T                    threads per partition (default: the placement's CPUs)
@@ -79,7 +76,6 @@ impl Model {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Rows {
     Seeded,
-    Blocks,
     XBlocks,
 }
 
@@ -135,12 +131,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
             "--rows" => {
                 cfg.rows = match value()?.as_str() {
                     "seeded" => Rows::Seeded,
-                    "blocks" => Rows::Blocks,
                     "xblocks" => Rows::XBlocks,
                     other => {
-                        return Err(format!(
-                            "--rows: expected seeded, blocks or xblocks, got {other}"
-                        ))
+                        return Err(format!("--rows: expected seeded or xblocks, got {other}"))
                     }
                 }
             }
@@ -198,8 +191,7 @@ fn blocks(cfg: &Config, partitions: usize) -> Vec<Vec<usize>> {
 fn row_policy(cfg: &Config, partitions: usize) -> PartitionRowPolicy {
     match cfg.rows {
         Rows::Seeded => PartitionRowPolicy::Seeded(Some(0x5EED)),
-        Rows::Blocks => PartitionRowPolicy::Cut(blocks(cfg, partitions)),
-        // Row `i` reads the x-bits of every block whose index has bit `i` set, as `cut` does with z-bits.
+        // Row `i` reads the x-bits of every block whose index has bit `i` set, as `PartitionRows::cut` does with z-bits.
         Rows::XBlocks => {
             let n = cfg.model.num_qubits();
             let rows = (0..partitions.trailing_zeros())

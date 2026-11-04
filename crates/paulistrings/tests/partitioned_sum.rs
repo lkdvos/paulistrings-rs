@@ -1,9 +1,11 @@
 //! The persistent partitioned driver: `PartitionedSum` held across calls, its
 //! accessors, and the runtime shared between sums.
 
+use num_complex::Complex64;
 use paulistrings::test_support::{
     approx_eq, assert_runs_agree, assert_terms_close, drop_tiny, low_weight_sum, partition_rows,
-    propagate_discarding, rand_sum, spread_magnitudes, unpinned_partitions, KeepAll,
+    propagate_discarding, rand_sum, spread_magnitudes, truncated_liouvillian, unpinned_partitions,
+    KeepAll,
 };
 use paulistrings::{propagate, Circuit, Direction, PauliAxis, PauliString, PauliSum, ProductBasis};
 use paulistrings::{ApproxTopN, CoefficientThreshold};
@@ -162,7 +164,9 @@ fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
     let split =
         PartitionedSum::scatter(operand.clone(), &config(4)).expect("an unpinned config resolves");
 
-    let product = split.product_with(&generator, &KeepAll);
+    let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
+    let mut product = split.empty_like();
+    product.add_product(&generator, &split, one, zero, &KeepAll);
     product.assert_invariants();
     assert_terms_close(
         &drop_tiny(&product.gather()),
@@ -170,7 +174,8 @@ fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
         TOL,
         "product",
     );
-    let anticommutator = split.anticommutator_with(&generator, &KeepAll);
+    let mut anticommutator = split.empty_like();
+    anticommutator.add_anticommutator(&generator, &split, one, zero, &KeepAll);
     assert_terms_close(
         &drop_tiny(&anticommutator.gather()),
         &drop_tiny(&generator.anticommutator(&operand)),
@@ -181,8 +186,10 @@ fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
     let policy = CoefficientThreshold(1e-3);
     let (mut want, mut split) = (operand, split);
     for step in 0..3 {
-        want = generator.liouvillian_with(&want, &policy);
-        split = split.liouvillian_with(&generator, &policy);
+        want = truncated_liouvillian(&generator, &want, &policy);
+        let mut next = split.empty_like();
+        next.add_liouvillian(&generator, &split, one, zero, &policy);
+        split = next;
         split.assert_invariants();
         assert_terms_close(&split.gather(), &want, TOL, &format!("step {step}"));
     }
@@ -196,7 +203,7 @@ fn lanczos_one_process(h: &PauliSum<1, f64>, seed: &PauliSum<1, f64>, steps: usi
     let mut previous = PauliSum::<1, f64>::empty(seed.num_qubits());
     let mut b = vec![0.0];
     for _ in 0..steps {
-        let mut next = h.liouvillian_with(&current, &policy);
+        let mut next = truncated_liouvillian(h, &current, &policy);
         let mut scaled = previous.clone();
         scaled.scale(-b[b.len() - 1]);
         next = next.add(&scaled);
@@ -254,7 +261,7 @@ fn a_traced_split_records_each_product_as_one_layer() {
     let operand = low_weight_sum::<1>(3_000, NQ, 3, 0x62);
     let split =
         PartitionedSum::scatter(operand.clone(), &config(4)).expect("an unpinned config resolves");
-    let mut dest = split.liouvillian_with(&generator, &KeepAll);
+    let mut dest = split.clone();
     dest.enable_trace();
     dest.add_liouvillian(&generator, &split, 1.0.into(), (-0.5).into(), &KeepAll);
     let trace = dest.take_trace().expect("tracing was enabled");

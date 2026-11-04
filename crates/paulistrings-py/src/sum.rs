@@ -1352,8 +1352,8 @@ impl PauliSum {
     ) -> PyResult<Self> {
         self.check_same_qubits(other)?;
         let policy = PyTruncation::tree_of(policy);
-        let inner = py.allow_threads(|| self.inner.pair_promoted(other, pairing, &policy));
-        Ok(Self::plain(inner.ok_or_else(width_mismatch)?))
+        let inner = py.allow_threads(|| self.inner.pair_promoted(other, pairing, &policy))?;
+        Ok(Self::plain(inner))
     }
 
     /// `self ± other` at the promoted dtype.

@@ -69,8 +69,8 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         self.parts.iter().zip(&other.parts).map(|(a, b)| a.sum.overlap(&b.sum)).sum()
     }
 
-    /// An empty split on the same runtime and rows.
-    fn empty_like(&self) -> Self {
+    /// An empty split on the same runtime and rows, the destination of a fresh product.
+    pub fn empty_like(&self) -> Self {
         Self {
             parts: self
                 .parts
@@ -126,11 +126,11 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
 
     /// `self ← alpha · i[generator, operand] + beta · self`, truncated by `policy` as one layer; `beta = 0` ignores `self`'s terms.
     ///
-    /// Each partition receives from a partner only the terms a generator term moving between the two can anticommute with ([`liouvillian_share`](crate::liouvillian_share)), and sums its pairs straight into its own buckets.
+    /// Each partition receives from a partner only the terms a generator term moving between the two can anticommute with (`operator_products::pair_share_into`), and sums its pairs straight into its own buckets.
     ///
     /// # Panics
     ///
-    /// If the two splits have different rows, or as [`liouvillian_share`](crate::liouvillian_share); a panic in any partition is re-raised on the calling thread.
+    /// If the two splits have different rows, or if the partitions disagree about `generator` or `policy` has a layer pass with no partitioned form; a panic in any partition is re-raised on the calling thread.
     pub fn add_liouvillian<P>(
         &mut self,
         generator: &PauliSum<W, C>,
@@ -179,51 +179,5 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         P: TruncationPolicy<W, C> + ?Sized,
     {
         self.add_paired(generator, operand, Pairing::Product, Weights { alpha, beta }, policy);
-    }
-
-    /// `pairing(generator, self)` as a new split on the same runtime and rows.
-    fn paired_with<P>(&self, generator: &PauliSum<W, C>, pairing: Pairing, policy: &P) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        let mut out = self.empty_like();
-        out.add_paired(generator, self, pairing, Weights::fresh(), policy);
-        out
-    }
-
-    /// The Liouvillian `i[generator, self]` as a new split: [`add_liouvillian`](Self::add_liouvillian) into an empty one.
-    ///
-    /// # Panics
-    ///
-    /// As [`add_liouvillian`](Self::add_liouvillian).
-    pub fn liouvillian_with<P>(&self, generator: &PauliSum<W, C>, policy: &P) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        self.paired_with(generator, Pairing::Liouvillian, policy)
-    }
-
-    /// The anticommutator `{generator, self}` as a new split, as [`liouvillian_with`](Self::liouvillian_with) builds it.
-    ///
-    /// # Panics
-    ///
-    /// As [`add_anticommutator`](Self::add_anticommutator).
-    pub fn anticommutator_with<P>(&self, generator: &PauliSum<W, C>, policy: &P) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        self.paired_with(generator, Pairing::Anticommutator, policy)
-    }
-
-    /// The operator product `generator · self` as a new split, as [`liouvillian_with`](Self::liouvillian_with) builds it.
-    ///
-    /// # Panics
-    ///
-    /// As [`add_product`](Self::add_product).
-    pub fn product_with<P>(&self, generator: &PauliSum<W, C>, policy: &P) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        self.paired_with(generator, Pairing::Product, policy)
     }
 }

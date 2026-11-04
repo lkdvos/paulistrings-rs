@@ -3,8 +3,41 @@ use num_complex::Complex64;
 use super::*;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::accumulator::BuildAccumulator;
-use crate::test_support::{assert_terms_close, low_weight_sum, KeepAll, Xs64};
+use crate::test_support::{
+    assert_terms_close, low_weight_sum, truncated_liouvillian, KeepAll, Xs64,
+};
 use crate::truncation::{CoefficientThreshold, TopN};
+
+/// This rank's share of `pairing(generator, operand)` into a fresh sum. **Collective.**
+fn share_of<const W: usize, C: Coefficient, P: TruncationPolicy<W, C> + ?Sized>(
+    pairing: Pairing,
+    (generator, share): (&PauliSum<W, C>, &PauliSum<W, C>),
+    rows: &PartitionRows<W>,
+    transport: &InProcessTransport,
+    policy: &P,
+) -> PauliSum<W, C> {
+    let mut out = PauliSum::empty_with_hash(share.num_qubits(), share.hash().clone());
+    let _ = pair_share_into(
+        &mut out,
+        generator,
+        share,
+        rows,
+        transport,
+        (pairing, Weights::fresh()),
+        policy,
+    );
+    out
+}
+
+fn liouvillian_share<const W: usize, C: Coefficient, P: TruncationPolicy<W, C> + ?Sized>(
+    generator: &PauliSum<W, C>,
+    share: &PauliSum<W, C>,
+    rows: &PartitionRows<W>,
+    transport: &InProcessTransport,
+    policy: &P,
+) -> PauliSum<W, C> {
+    share_of(Pairing::Liouvillian, (generator, share), rows, transport, policy)
+}
 
 /// `sum` cut into one share per partition of `rows`.
 fn split<const W: usize, C: Coefficient>(
@@ -65,7 +98,8 @@ fn agrees_with_one_process<const W: usize>(partitions: usize, num_qubits: usize,
         &format!("{what}: liouvillian"),
     );
 
-    let got = on_ranks(&shares, |s, t| product_share(&generator, s, &rows, t, &KeepAll));
+    let got =
+        on_ranks(&shares, |s, t| share_of(Pairing::Product, (&generator, s), &rows, t, &KeepAll));
     assert_shares_belong(&got, &rows);
     assert_terms_close(
         &PauliSum::merge_partitions(got),
@@ -74,7 +108,9 @@ fn agrees_with_one_process<const W: usize>(partitions: usize, num_qubits: usize,
         &format!("{what}: product"),
     );
 
-    let got = on_ranks(&shares, |s, t| anticommutator_share(&generator, s, &rows, t, &KeepAll));
+    let got = on_ranks(&shares, |s, t| {
+        share_of(Pairing::Anticommutator, (&generator, s), &rows, t, &KeepAll)
+    });
     assert_terms_close(
         &PauliSum::merge_partitions(got),
         &generator.anticommutator(&operand),
@@ -121,7 +157,7 @@ fn a_filter_policy_sees_the_whole_key() {
     let got = on_ranks(&split(&operand, &rows), |s, t| {
         liouvillian_share(&generator, s, &rows, t, &policy)
     });
-    let want = generator.liouvillian_with(&operand, &policy);
+    let want = truncated_liouvillian(&generator, &operand, &policy);
     assert!(want.len() < generator.liouvillian(&operand).len());
     assert_terms_close(&PauliSum::merge_partitions(got), &want, 1e-12, "threshold");
 }

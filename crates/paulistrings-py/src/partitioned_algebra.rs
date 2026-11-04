@@ -10,20 +10,11 @@ use crate::partitioned::{Split, SplitImpl, WidthSplit};
 use crate::storage::{width_mismatch, Pairing, PauliSumImpl, WidthSum};
 
 impl<const W: usize, C: PyCoefficient> Split<W, C> {
-    /// `pairing(generator, self)` as a new split on the same rows, truncated by `policy` as one layer. **Collective** under MPI, where the new split owns a duplicate of this one's communicator.
-    fn paired(
-        &self,
-        generator: &CorePauliSum<W, C>,
-        pairing: Pairing,
-        policy: &BuiltinTruncation,
-    ) -> Self {
+    /// An empty split on the same rows, the destination of a fresh product; under MPI it owns a duplicate of this split's communicator. **Collective** under MPI.
+    fn empty_like(&self) -> Self {
         match self {
             Split::Process(split) => {
-                let mut out = match pairing {
-                    Pairing::Product => split.product_with(generator, policy),
-                    Pairing::Liouvillian => split.liouvillian_with(generator, policy),
-                    Pairing::Anticommutator => split.anticommutator_with(generator, policy),
-                };
+                let mut out = split.empty_like();
                 out.enable_trace();
                 Split::Process(out)
             }
@@ -32,13 +23,7 @@ impl<const W: usize, C: PyCoefficient> Split<W, C> {
                 let transport = paulistrings::mpi::MpiTransport::from_communicator(
                     split.transport().communicator(),
                 );
-                let mut out = match pairing {
-                    Pairing::Product => split.product_with(generator, policy, transport),
-                    Pairing::Liouvillian => split.liouvillian_with(generator, policy, transport),
-                    Pairing::Anticommutator => {
-                        split.anticommutator_with(generator, policy, transport)
-                    }
-                };
+                let mut out = split.empty_like(transport);
                 out.enable_trace();
                 Split::Ranks(Box::new(out))
             }
@@ -178,14 +163,14 @@ macro_rules! width_pair {
 }
 
 impl<C: PyCoefficient> WidthSplit<C> {
-    /// `None` when the generator was monomorphized at another width.
-    fn paired(
-        &self,
-        generator: &WidthSum<C>,
-        pairing: Pairing,
-        policy: &BuiltinTruncation,
-    ) -> Option<Self> {
-        width_pair!((self, generator), WidthSum, |s, g, wrap| wrap(s.paired(g, pairing, policy)))
+    fn empty_like(&self) -> Self {
+        match self {
+            WidthSplit::W1(s) => WidthSplit::W1(s.empty_like()),
+            WidthSplit::W2(s) => WidthSplit::W2(s.empty_like()),
+            WidthSplit::W4(s) => WidthSplit::W4(s.empty_like()),
+            WidthSplit::W8(s) => WidthSplit::W8(s.empty_like()),
+            WidthSplit::W16(s) => WidthSplit::W16(s.empty_like()),
+        }
     }
 
     fn duplicate(&self) -> Self {
@@ -287,7 +272,7 @@ impl SplitImpl {
         })
     }
 
-    /// `pairing(generator, self)` as a new split, the generator converted to this split's dtype. **Collective** under MPI.
+    /// `pairing(generator, self)` as a new split on the same rows: [`add_paired`](Self::add_paired) into an empty one. **Collective** under MPI, where the new split owns a duplicate of this one's communicator.
     ///
     /// Callers check the qubit counts and the policy first, before the GIL is released.
     pub(crate) fn paired(
@@ -296,12 +281,10 @@ impl SplitImpl {
         pairing: Pairing,
         policy: &BuiltinTruncation,
     ) -> PyResult<SplitImpl> {
-        let generator = self.generator_at_dtype(generator, pairing)?;
-        dtype_pair!((self, &generator), PauliSumImpl, |s, g, wrap| s
-            .paired(g, pairing, policy)
-            .map(wrap))
-        .flatten()
-        .ok_or_else(|| PyValueError::new_err("the generator was monomorphized at another width"))
+        let mut out = for_each_dtype_convert!(SplitImpl => SplitImpl, self, |s| s.empty_like());
+        let fresh = (Complex64::ONE, Complex64::new(0.0, 0.0));
+        out.add_paired(generator, self, pairing, fresh, policy)?;
+        Ok(out)
     }
 
     /// A copy. **Collective** under MPI.

@@ -128,16 +128,6 @@ impl<C: PyCoefficient> WidthSum<C> {
         })
     }
 
-    /// The operator product `pairing` names, truncated by `policy` as one layer; `None` on a width mismatch.
-    /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`], and passes a complex `C` for [`Pairing::Product`].
-    pub fn pair(&self, other: &Self, pairing: Pairing, policy: &BuiltinTruncation) -> Option<Self> {
-        for_each_width_pair_rewrap!((self, other), |a, b, wrap| wrap(match pairing {
-            Pairing::Product => a.product_with(b, policy),
-            Pairing::Liouvillian => a.liouvillian_with(b, policy),
-            Pairing::Anticommutator => a.anticommutator_with(b, policy),
-        }))
-    }
-
     /// `self ← alpha · other + beta · self`, in place; `None` on a width mismatch.
     /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
     pub fn add_scaled(&mut self, other: &Self, alpha: C, beta: C) -> Option<()> {
@@ -436,24 +426,21 @@ impl PauliSumImpl {
         .flatten()
     }
 
-    /// The operator product `pairing` names at the two dtypes' promotion, made complex for [`Pairing::Product`]; `None` on a width mismatch.
+    /// The operator product `pairing` names at the two dtypes' promotion, made complex for [`Pairing::Product`]: [`add_paired`](Self::add_paired) into an empty sum.
     /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
     pub fn pair_promoted(
         &self,
         other: &Self,
         pairing: Pairing,
         policy: &BuiltinTruncation,
-    ) -> Option<Self> {
+    ) -> PyResult<Self> {
         let mut dtype = self.dtype().promote(other.dtype());
         if pairing == Pairing::Product {
             dtype = dtype.complex();
         }
-        let a = self.converted(dtype).expect("promotion never narrows");
-        let b = other.converted(dtype).expect("promotion never narrows");
-        for_each_dtype_pair!((a.as_ref(), b.as_ref()), |x, y, wrap| x
-            .pair(y, pairing, policy)
-            .map(wrap))
-        .flatten()
+        let mut out = Self::empty_for(self.num_qubits(), dtype).ok_or_else(width_mismatch)?;
+        out.add_paired(self, other, pairing, (Complex64::ONE, Complex64::new(0.0, 0.0)), policy)?;
+        Ok(out)
     }
 
     /// `other` at this sum's dtype, a `ValueError` naming it `what` when it has an imaginary part a real dtype cannot hold.

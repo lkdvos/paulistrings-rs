@@ -1,4 +1,4 @@
-//! Linear algebra and operator products on a [`DistributedSum`] held in host memory, the steps of a Lanczos recursion, each accumulating into a destination sum; a call that builds a new sum takes the endpoint it will own.
+//! Linear algebra and operator products on a [`DistributedSum`] held in host memory, the steps of a Lanczos recursion, each accumulating into a destination sum; a new sum takes the endpoint it will own.
 
 use num_complex::Complex64;
 use std::marker::PhantomData;
@@ -51,6 +51,15 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
     /// A copy owning `transport`, an endpoint of a group with the same rank and size.
     pub fn duplicate(&self, transport: X) -> Self {
         self.with_share(self.local.sum.clone(), transport)
+    }
+
+    /// An empty sum split as this one and owning `transport`, the destination of a fresh product.
+    pub fn empty_like(&self, transport: X) -> Self {
+        let share = &self.local.sum;
+        self.with_share(
+            PauliSum::empty_with_hash(share.num_qubits(), share.hash().clone()),
+            transport,
+        )
     }
 
     /// Multiply every coefficient by `c`, in place; no communication.
@@ -115,7 +124,7 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
     ///
     /// # Panics
     ///
-    /// If the two sums are split by different rows or over groups of different sizes, or as [`liouvillian_share`](crate::liouvillian_share).
+    /// If the two sums are split by different rows or over groups of different sizes, or if the ranks disagree about `generator` or `policy` has a layer pass with no partitioned form.
     pub fn add_liouvillian<P>(
         &mut self,
         generator: &PauliSum<W, C>,
@@ -164,64 +173,5 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
         P: TruncationPolicy<W, C> + ?Sized,
     {
         self.add_paired(generator, operand, Pairing::Product, Weights { alpha, beta }, policy);
-    }
-
-    /// `pairing(generator, self)` as a new sum owning `transport`. **Collective** over the new endpoint's group.
-    fn paired_with<P>(
-        &self,
-        generator: &PauliSum<W, C>,
-        pairing: Pairing,
-        policy: &P,
-        transport: X,
-    ) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        let share = &self.local.sum;
-        let empty = PauliSum::empty_with_hash(share.num_qubits(), share.hash().clone());
-        let mut out = self.with_share(empty, transport);
-        out.add_paired(generator, self, pairing, Weights::fresh(), policy);
-        out
-    }
-
-    /// The Liouvillian `i[generator, self]` as a new sum owning `transport`: [`add_liouvillian`](Self::add_liouvillian) into an empty one. **Collective.**
-    ///
-    /// # Panics
-    ///
-    /// As [`add_liouvillian`](Self::add_liouvillian), or if `transport`'s rank or size differ from this sum's.
-    pub fn liouvillian_with<P>(&self, generator: &PauliSum<W, C>, policy: &P, transport: X) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        self.paired_with(generator, Pairing::Liouvillian, policy, transport)
-    }
-
-    /// The anticommutator `{generator, self}` as [`liouvillian_with`](Self::liouvillian_with) builds it. **Collective.**
-    ///
-    /// # Panics
-    ///
-    /// As [`liouvillian_with`](Self::liouvillian_with).
-    pub fn anticommutator_with<P>(
-        &self,
-        generator: &PauliSum<W, C>,
-        policy: &P,
-        transport: X,
-    ) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        self.paired_with(generator, Pairing::Anticommutator, policy, transport)
-    }
-
-    /// The operator product `generator · self` as [`liouvillian_with`](Self::liouvillian_with) builds it. **Collective.**
-    ///
-    /// # Panics
-    ///
-    /// As [`liouvillian_with`](Self::liouvillian_with), and if `C` is real.
-    pub fn product_with<P>(&self, generator: &PauliSum<W, C>, policy: &P, transport: X) -> Self
-    where
-        P: TruncationPolicy<W, C> + ?Sized,
-    {
-        self.paired_with(generator, Pairing::Product, policy, transport)
     }
 }

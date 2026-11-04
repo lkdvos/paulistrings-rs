@@ -1,4 +1,4 @@
-//! Operator products of a replicated generator with a partitioned operand, as collectives over a [`Transport`]: [`liouvillian_share`], [`product_share`] and [`anticommutator_share`].
+//! Operator products of a replicated generator with a partitioned operand, accumulated into a destination share as one collective over a [`Transport`] ([`pair_share_into`]).
 //!
 //! Partition rows are GF(2)-linear, so a generator term `h` takes an operand term from partition `p` to `p ⊕ R·h`, and rank `r` computes `Σ_δ H_δ · O_{r ⊕ δ}` with `H_δ` the generator terms of partition delta `δ`.
 //! Partner `r ⊕ δ` sends rank `r` the operand terms `H_δ` can reach, only the anticommuting ones for a Liouvillian, so operands cross the wire and products never do.
@@ -114,6 +114,13 @@ fn encode_reachable<const W: usize, C: Coefficient>(
 }
 
 /// `dest ← alpha · pairing(generator, operand) + beta · dest` on this rank, where `share` is this rank's share of the operand under `rows`, `dest` holds only this rank's keys and `generator` is the same on every rank, returning the call as one trace row. **Collective.**
+///
+/// Every rank passes the same `generator`, `rows` and `policy`; partner `r ⊕ δ` receives only the terms of `share` that some generator term of partition delta `δ` can reach, the anticommuting ones for a Liouvillian, so a generator whose terms mostly keep their partition exchanges a halo rather than the share.
+/// Every rank's share must carry the same bucket hash rows; bucket counts may differ and are raised to the group's largest.
+///
+/// # Panics
+///
+/// If the ranks disagree about `generator`, `rows` or the bucket hash rows, if `rows` does not name one partition per rank, if the qubit counts differ, if `policy` has a layer pass with no partitioned form, or for a product of a real `C`.
 pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     dest: &mut PauliSum<W, C>,
     generator: &PauliSum<W, C>,
@@ -238,100 +245,6 @@ where
         phases,
         ..PartitionLayerRow::default()
     }
-}
-
-/// This rank's share of `pairing(generator, operand)` as a fresh sum. **Collective.**
-fn pair_share<const W: usize, C, X, P>(
-    generator: &PauliSum<W, C>,
-    share: &PauliSum<W, C>,
-    rows: &PartitionRows<W>,
-    transport: &X,
-    pairing: Pairing,
-    policy: &P,
-) -> PauliSum<W, C>
-where
-    C: Coefficient,
-    X: Transport,
-    P: TruncationPolicy<W, C> + ?Sized,
-{
-    let mut out = PauliSum::empty_with_hash(share.num_qubits(), share.hash().clone());
-    let _ = pair_share_into(
-        &mut out,
-        generator,
-        share,
-        rows,
-        transport,
-        (pairing, Weights::fresh()),
-        policy,
-    );
-    out
-}
-
-/// This rank's share of the Liouvillian `i[generator, operand]`, truncated by `policy` as one layer, where `share` is this rank's share of the operand under `rows`. **Collective.**
-///
-/// Every rank passes the same `generator`, `rows` and `policy`; partner `r ⊕ δ` receives only the terms of `share` that anticommute with a generator term of partition delta `δ`, so a generator whose terms mostly keep their partition exchanges a halo rather than the share.
-/// Every rank's share must carry the same bucket hash rows; bucket counts may differ and are raised to the group's largest.
-///
-/// # Panics
-///
-/// If the ranks disagree about `generator`, `rows` or the bucket hash rows, if `rows` does not name one partition per rank, if the qubit counts differ, or if `policy` has a layer pass with no partitioned form.
-pub fn liouvillian_share<const W: usize, C, X, P>(
-    generator: &PauliSum<W, C>,
-    share: &PauliSum<W, C>,
-    rows: &PartitionRows<W>,
-    transport: &X,
-    policy: &P,
-) -> PauliSum<W, C>
-where
-    C: Coefficient,
-    X: Transport,
-    P: TruncationPolicy<W, C> + ?Sized,
-{
-    pair_share(generator, share, rows, transport, Pairing::Liouvillian, policy)
-}
-
-/// This rank's share of the anticommutator `{generator, operand}`, as [`liouvillian_share`] takes its arguments. **Collective.**
-///
-/// Commuting pairs include those with disjoint supports, so every partner of a generator delta receives this rank's whole share.
-///
-/// # Panics
-///
-/// As [`liouvillian_share`].
-pub fn anticommutator_share<const W: usize, C, X, P>(
-    generator: &PauliSum<W, C>,
-    share: &PauliSum<W, C>,
-    rows: &PartitionRows<W>,
-    transport: &X,
-    policy: &P,
-) -> PauliSum<W, C>
-where
-    C: Coefficient,
-    X: Transport,
-    P: TruncationPolicy<W, C> + ?Sized,
-{
-    pair_share(generator, share, rows, transport, Pairing::Anticommutator, policy)
-}
-
-/// This rank's share of the operator product `generator · operand`, as [`liouvillian_share`] takes its arguments. **Collective.**
-///
-/// Every partner of a generator delta receives this rank's whole share.
-///
-/// # Panics
-///
-/// As [`liouvillian_share`], and if `C` is real.
-pub fn product_share<const W: usize, C, X, P>(
-    generator: &PauliSum<W, C>,
-    share: &PauliSum<W, C>,
-    rows: &PartitionRows<W>,
-    transport: &X,
-    policy: &P,
-) -> PauliSum<W, C>
-where
-    C: Coefficient,
-    X: Transport,
-    P: TruncationPolicy<W, C> + ?Sized,
-{
-    pair_share(generator, share, rows, transport, Pairing::Product, policy)
 }
 
 #[cfg(test)]

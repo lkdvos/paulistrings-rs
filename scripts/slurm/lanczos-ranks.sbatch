@@ -12,7 +12,7 @@
 #
 # Environment knobs (all optional):
 #   MODELS       model:steps pairs (default "chain:40:17 square:6x6:9")
-#   ROWS         partition rows per cell (default "seeded xblocks"; `blocks` ships every Z-field term)
+#   ROWS         partition rows per cell (default "seeded xblocks")
 #   NODE_COUNTS  node counts to run on, each a power of two within the allocation (default 1 2 4 ... up to it)
 #   THRESHOLD    coefficient threshold per step (default 1e-12)
 #   PS_REV       commit to build (default: HEAD when the job starts)

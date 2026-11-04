@@ -33,16 +33,16 @@ use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
     haar_su4_matrix, heavy_cut, low_weight_sum, propagate_discarding, rand_sum, rand_sum_real,
-    single_cuts, skewed_by_partition, spread_magnitudes, trotter_circuit, unpinned_partitions,
-    unpinned_scatter, zz_rotation, KeepAll, PlainApproxTopN,
+    single_cuts, skewed_by_partition, spread_magnitudes, trotter_circuit, truncated_liouvillian,
+    unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll, PlainApproxTopN,
 };
 use paulistrings::test_support::{
     buckets_exported_ahead_under_cut_on_rank, count_remote_deltas, mpi_build_library_version,
     mpi_with_chunk_bytes, BITS_AGREE_EVERY,
 };
 use paulistrings::{
-    anticommutator_share, liouvillian_share, product_share, propagate, BuildAccumulator, Circuit,
-    Direction, PartitionRows, PauliString, PauliSum, PropagateOptions, TruncationPolicy,
+    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
+    PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, PerPartition, WeightCutoff,
@@ -959,24 +959,30 @@ fn run_host_cases(r: &mut Runner) {
         let transport = MpiTransport::from_communicator(r.world);
         let split =
             DistributedSum::scatter_with(operand.clone(), transport, unpinned_scatter(1, 2, SEED));
-        let (share, rows, transport) = (split.local(), split.rows(), split.transport());
+        let rows = split.rows().clone();
         let own = |sum: PauliSum<1>| {
             let mut sum = sum;
             sum.retain(|x, z, _| rows.partition_of(x, z) == r.rank);
             sum
         };
+        let fresh = || split.empty_like(MpiTransport::from_communicator(r.world));
+        let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
         let policy = CoefficientThreshold(1e-2);
-        let got = liouvillian_share(&generator, share, rows, transport, &policy);
+        let mut got = fresh();
+        got.add_liouvillian(&generator, &split, one, zero, &policy);
         assert_terms_close(
-            &got,
-            &own(generator.liouvillian_with(&operand, &policy)),
+            got.local(),
+            &own(truncated_liouvillian(&generator, &operand, &policy)),
             TOL,
             "liouvillian",
         );
-        let got = product_share(&generator, share, rows, transport, &KeepAll);
-        assert_terms_close(&got, &own(generator.product(&operand)), TOL, "product");
-        let got = anticommutator_share(&generator, share, rows, transport, &KeepAll);
-        assert_terms_close(&got, &own(generator.anticommutator(&operand)), TOL, "anticommutator");
+        let mut got = fresh();
+        got.add_product(&generator, &split, one, zero, &KeepAll);
+        assert_terms_close(got.local(), &own(generator.product(&operand)), TOL, "product");
+        let mut got = fresh();
+        got.add_anticommutator(&generator, &split, one, zero, &KeepAll);
+        let got = got.local();
+        assert_terms_close(got, &own(generator.anticommutator(&operand)), TOL, "anticommutator");
     });
 }
 

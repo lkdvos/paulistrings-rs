@@ -1,4 +1,4 @@
-//! Operator products accumulated into a destination under a [`TruncationPolicy`]: [`PauliSum::add_product`], [`PauliSum::add_liouvillian`] and [`PauliSum::add_anticommutator`], with `*_with` shorthands into a fresh sum.
+//! Operator products accumulated into a destination under a [`TruncationPolicy`]: [`PauliSum::add_product`], [`PauliSum::add_liouvillian`] and [`PauliSum::add_anticommutator`].
 //! One call is one layer to the policy: `keep_term` sees each output key's summed coefficient, the destination's own share included, as its bucket is drained, and the layer pass runs once on the result.
 
 use crate::coefficient::Coefficient;
@@ -82,59 +82,6 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
             Weights { alpha, beta },
             policy,
         );
-    }
-
-    /// `pairing(self, other)` under `policy` into an empty destination.
-    fn fresh<P: TruncationPolicy<W, C> + ?Sized>(
-        &self,
-        other: &Self,
-        pairing: Pairing,
-        policy: &P,
-    ) -> Self {
-        let mut out = Self::empty_with_hash(self.num_qubits(), other.hash().clone());
-        out.add_paired(self, other, pairing, Weights::fresh(), policy);
-        out
-    }
-
-    /// [`Self::product`], truncated by `policy` as one layer.
-    ///
-    /// # Panics
-    ///
-    /// As [`Self::add_product`].
-    pub fn product_with<P: TruncationPolicy<W, C> + ?Sized>(
-        &self,
-        other: &Self,
-        policy: &P,
-    ) -> Self {
-        let mut out = Self::empty_with_hash(self.num_qubits(), other.hash().clone());
-        out.add_product(self, other, C::ONE, C::ZERO, policy);
-        out
-    }
-
-    /// [`Self::liouvillian`], truncated by `policy` as one layer.
-    ///
-    /// # Panics
-    ///
-    /// As [`Self::add_liouvillian`].
-    pub fn liouvillian_with<P: TruncationPolicy<W, C> + ?Sized>(
-        &self,
-        other: &Self,
-        policy: &P,
-    ) -> Self {
-        self.fresh(other, Pairing::Liouvillian, policy)
-    }
-
-    /// [`Self::anticommutator`], truncated by `policy` as one layer.
-    ///
-    /// # Panics
-    ///
-    /// As [`Self::add_anticommutator`].
-    pub fn anticommutator_with<P: TruncationPolicy<W, C> + ?Sized>(
-        &self,
-        other: &Self,
-        policy: &P,
-    ) -> Self {
-        self.fresh(other, Pairing::Anticommutator, policy)
     }
 }
 

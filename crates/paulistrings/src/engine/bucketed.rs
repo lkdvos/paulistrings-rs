@@ -13,7 +13,10 @@ use super::coset::{CosetOrder, Gf2Span};
 use super::merge::{rest_rows_per_key, SortKernel};
 use super::trace::PartitionTrace;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
+use crate::collectives::Collectives;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
+use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
+use crate::truncation::octave_window::{finalize_from_window, BucketOctaves, OctaveWindow};
 use crate::truncation::TruncationPolicy;
 use rotation_layer::{
     fill_received_rotation_bucket, fill_rotation_coset, ReceivedRotation, RotationLayer,
@@ -45,6 +48,40 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
     pub(crate) stats: PhaseStats,
     /// `None` unless [`Self::enable_trace`] was called.
     pub(crate) trace: Option<PartitionTrace>,
+    /// The octave counts an `ApproxTopN` layer pass reads instead of the sum.
+    pub(crate) octaves: LayerOctaves,
+}
+
+/// Per-bucket octave counts, taken by the coset loop as it writes each bucket, for [`finalize_from_window`].
+///
+/// Every partition's window is set from the agreed boundary octave, so all count alike.
+#[derive(Debug, Default)]
+pub(crate) struct LayerOctaves {
+    /// The window the next layer counts, centred on the last boundary octave; `None` before the first.
+    window: Option<OctaveWindow>,
+    per_bucket: Vec<BucketOctaves>,
+    /// Whether `per_bucket` counts the sum as the last layer left it, under `window`.
+    counted: bool,
+}
+
+impl LayerOctaves {
+    /// `ApproxTopN(n)`'s layer pass over `sum`, from the counts when the last layer took them.
+    pub(crate) fn finalize<const W: usize, C: Coefficient>(
+        &mut self,
+        sum: &mut PauliSum<W, C>,
+        collectives: &dyn Collectives,
+        n: usize,
+    ) {
+        let edge = match self.window {
+            Some(window) if std::mem::take(&mut self.counted) => {
+                finalize_from_window(sum, collectives, n, window, &self.per_bucket)
+            }
+            _ => approx_top_n_pass(sum, collectives, n),
+        };
+        if let EdgeDecision::Boundary { bin, .. } = edge {
+            self.window = Some(OctaveWindow::around(bin));
+        }
+    }
 }
 
 impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
@@ -214,6 +251,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     X: ExtraRows<W, C> + Sync,
 {
     stamp!(stamp);
+    scratch.octaves.counted = false;
 
     // A partitioned layer's local table can look key-preserving while received rows still need merging.
     let rotation = match prepared {
@@ -247,29 +285,38 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     let span = Gf2Span::new(deltas, sum.hash().bits());
     debug_assert!(knobs.order.is_none_or(|order| order.dimension() == span.dimension()));
 
+    let window = scratch.octaves.window.filter(|_| policy.sole_approx_top_n().is_some());
+    let mut per_bucket = std::mem::take(&mut scratch.octaves.per_bucket);
+    if window.is_some() {
+        per_bucket.resize(sum.num_buckets(), [0; _]);
+    }
+    let octaves = window.map(|window| (window, DisjointSlots::new(&mut per_bucket)));
+    let octaves = octaves.as_ref().map(|(window, slots)| (*window, slots));
     let len = match (received_rotation, rotation) {
         (Some(layer), _) => {
             debug_assert_eq!(span.dimension(), 0, "only the identity delta is local");
             lap!(stamp, scratch.stats.span_plan_ns);
-            coset_loop(sum, &span, scratch, |members, betas, worker_scratch| {
+            coset_loop(sum, &span, scratch, octaves, |members, betas, worker_scratch| {
                 fill_received_rotation_bucket(members, betas, &layer, policy, worker_scratch, extra)
             })
         }
         (None, Some(layer)) => {
             debug_assert!(knobs.order.is_none());
             lap!(stamp, scratch.stats.span_plan_ns);
-            coset_loop(sum, &span, scratch, |members, _, worker_scratch| {
+            coset_loop(sum, &span, scratch, octaves, |members, _, worker_scratch| {
                 fill_rotation_coset(members, &layer, policy, worker_scratch)
             })
         }
         (None, None) => {
             let plan = DeltaPlan::new(prepared, &span, knobs);
             lap!(stamp, scratch.stats.span_plan_ns);
-            coset_loop(sum, &span, scratch, |members, betas, worker_scratch| {
+            coset_loop(sum, &span, scratch, octaves, |members, betas, worker_scratch| {
                 fill_coset::<W, C, T, X>(members, &plan, policy, worker_scratch, extra, betas)
             })
         }
     };
+    scratch.octaves.per_bucket = per_bucket;
+    scratch.octaves.counted = window.is_some();
     lap!(stamp, scratch.stats.coset_loop_ns);
     sum.set_len_after_layer(len);
     lap!(stamp, scratch.stats.recount_ns);
@@ -278,11 +325,15 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum.assert_invariants();
 }
 
-/// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns; returns the output terms.
+/// Each bucket's slot in a layer's octave counts, and the window they count.
+type OctaveSlots<'s, 'a> = Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>;
+
+/// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns, counting each output bucket into `octaves`; returns the output terms.
 fn coset_loop<const W: usize, C: Coefficient, F>(
     sum: &mut PauliSum<W, C>,
     span: &Gf2Span,
     scratch: &mut LayerScratch<W, C>,
+    octaves: OctaveSlots<'_, '_>,
     fill: F,
 ) -> usize
 where
@@ -293,7 +344,7 @@ where
     if num_cosets < MIN_COSETS_FOR_PARALLEL {
         let buckets = DisjointSlots::new(sum.buckets_mut());
         (0..num_cosets as u32)
-            .map(|coset| run_coset(coset, span, &buckets, &mut scratch.task, &fill))
+            .map(|coset| run_coset(coset, span, &buckets, octaves, &mut scratch.task, &fill))
             .sum()
     } else {
         let pool = rayon::current_num_threads().max(1);
@@ -309,17 +360,18 @@ where
                 let worker = rayon::current_thread_index()
                     .expect("the coset loop runs on a Rayon pool worker");
                 let mut worker_scratch = workers[worker].lock().unwrap();
-                run_coset(coset, span, &buckets, &mut worker_scratch, &fill)
+                run_coset(coset, span, &buckets, octaves, &mut worker_scratch, &fill)
             })
             .sum()
     }
 }
 
-/// Swap coset `coset`'s buckets into the task's member slots, fill them, and swap the outputs back; returns the coset's output terms.
+/// Swap coset `coset`'s buckets into the task's member slots, fill them, count them while they are in cache, and swap the outputs back; returns the coset's output terms.
 fn run_coset<const W: usize, C: Coefficient, F>(
     coset: u32,
     span: &Gf2Span,
     buckets: &DisjointSlots<'_, BucketColumns<W, C>>,
+    octaves: OctaveSlots<'_, '_>,
     scratch: &mut CosetScratch<W, C>,
     fill: &F,
 ) -> usize
@@ -340,6 +392,10 @@ where
     let mut len = 0;
     for (slot, &beta) in members.iter_mut().zip(&betas) {
         len += slot.len();
+        if let Some((window, counts)) = octaves {
+            // SAFETY: as for the buckets, which the counts are indexed alike with.
+            window.count(&slot.coeff, unsafe { counts.get(beta as usize) });
+        }
         // SAFETY: as above.
         std::mem::swap(slot, unsafe { buckets.get(beta as usize) });
     }

@@ -156,7 +156,10 @@ where
     }
 
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
-        policy.finalize_layer_partitioned(&mut self.sum, collectives);
+        match policy.sole_approx_top_n() {
+            Some(n) => self.state.layer.octaves.finalize(&mut self.sum, collectives, n),
+            None => policy.finalize_layer_partitioned(&mut self.sum, collectives),
+        }
     }
 }
 

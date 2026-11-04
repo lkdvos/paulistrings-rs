@@ -18,17 +18,29 @@ fn partitioned_finalize<const W: usize, T>(policy: &T, sum: &PauliSum<W>, pbits:
 where
     T: TruncationPolicy<W>,
 {
+    run_partitioned(sum, pbits, |local, collectives| {
+        policy.finalize_layer_partitioned(local, collectives)
+    })
+}
+
+/// Split `sum` into `1 << pbits` partitions, run `pass` on each in its own thread over one in-process group, and gather the result.
+pub(super) fn run_partitioned<const W: usize>(
+    sum: &PauliSum<W>,
+    pbits: u8,
+    pass: impl Fn(&mut PauliSum<W>, &dyn Collectives) + Sync,
+) -> PauliSum<W> {
     let parts = split(sum, pbits);
     let p = parts.len() as u32;
 
     let group = InProcessTransport::group(p);
+    let pass = &pass;
     let gathered: Vec<PauliSum<W>> = std::thread::scope(|scope| {
         let handles: Vec<_> = parts
             .into_iter()
             .zip(group)
             .map(|(mut local, transport)| {
                 scope.spawn(move || {
-                    policy.finalize_layer_partitioned(&mut local, &transport);
+                    pass(&mut local, &transport);
                     (transport.rank(), local)
                 })
             })

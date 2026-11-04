@@ -167,29 +167,24 @@ pub(crate) fn retain_with_boundary_quota<const W: usize, C: Coefficient>(
             sum.bucket(b).2.iter().filter(|c| classify(c.norm_sqr()) == Ordering::Equal).count()
         })
         .collect();
-    retain_with_bucket_quotas(sum, classify, &bucket_quotas(&boundary_counts, quota));
+    let quotas = bucket_quotas(&boundary_counts, quota);
+    sum.retain_per_bucket(|b| boundary_filter(&classify, quotas[b]));
 }
 
-/// Keep every term `classify` puts above the boundary (`Greater`) and the first `quotas[b]` it puts at it (`Equal`) in bucket `b`.
-pub(crate) fn retain_with_bucket_quotas<const W: usize, C: Coefficient>(
-    sum: &mut PauliSum<W, C>,
-    classify: impl Fn(f64) -> core::cmp::Ordering + Sync,
-    quotas: &[usize],
-) {
+/// Accepts, over one bucket in order, every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`).
+pub(crate) fn boundary_filter<const W: usize, C: Coefficient>(
+    classify: impl Fn(f64) -> core::cmp::Ordering,
+    mut quota: usize,
+) -> impl FnMut(&[u64; W], &[u64; W], C) -> bool {
     use core::cmp::Ordering;
-    debug_assert_eq!(quotas.len(), sum.num_buckets());
-    sum.retain_per_bucket(|b| {
-        let mut remaining = quotas[b];
-        let classify = &classify;
-        move |_: &[u64; W], _: &[u64; W], c: C| match classify(c.norm_sqr()) {
-            Ordering::Greater => true,
-            Ordering::Equal if remaining > 0 => {
-                remaining -= 1;
-                true
-            }
-            Ordering::Equal | Ordering::Less => false,
+    move |_, _, c| match classify(c.norm_sqr()) {
+        Ordering::Greater => true,
+        Ordering::Equal if quota > 0 => {
+            quota -= 1;
+            true
         }
-    });
+        Ordering::Equal | Ordering::Less => false,
+    }
 }
 
 /// Bins of [`ApproxTopN`]'s histogram, one per `f64` exponent.
@@ -274,22 +269,40 @@ where
     Count: Copy + Into<u64>,
 {
     debug_assert_eq!(hist.len(), APPROX_BINS, "octave_edge: wrong histogram size");
+    octave_edge_within(hist, 0, 0, total_len, n)
+        .expect("a histogram of more than n terms overflows n at some octave")
+}
+
+/// [`octave_edge`] from the counts of octaves `base..base + bins.len()` and the `above` terms above them; `None` when the boundary lies outside `bins`.
+pub(crate) fn octave_edge_within<Count>(
+    bins: &[Count],
+    base: usize,
+    above: usize,
+    total_len: usize,
+    n: usize,
+) -> Option<EdgeDecision>
+where
+    Count: Copy + Into<u64>,
+{
     if total_len <= n {
-        return EdgeDecision::KeepAll;
+        return Some(EdgeDecision::KeepAll);
     }
     if n == 0 {
-        return EdgeDecision::Clear;
+        return Some(EdgeDecision::Clear);
     }
-
-    let mut kept_above = 0usize;
-    for bin in (0..APPROX_BINS).rev() {
-        let population = hist[bin].into() as usize;
+    let mut kept_above = above;
+    if kept_above > n {
+        return None;
+    }
+    for (offset, &population) in bins.iter().enumerate().rev() {
+        let population = population.into() as usize;
         if kept_above + population > n {
-            return EdgeDecision::Boundary { bin, kept_above, quota: n - kept_above };
+            let bin = base + offset;
+            return Some(EdgeDecision::Boundary { bin, kept_above, quota: n - kept_above });
         }
         kept_above += population;
     }
-    unreachable!("a histogram of more than n terms overflows n at some octave")
+    None
 }
 
 /// Apply an [`EdgeDecision`] to one sum or partition, keeping `local_quota` boundary-octave terms.
@@ -309,12 +322,15 @@ pub(crate) fn retain_at_edge<const W: usize, C: Coefficient>(
 
 /// This partition's share of a boundary quota: what is left of `quota` after the lower ranks' boundary terms, at most `local_count`.
 ///
-/// One `allreduce_sum_u64` of a length-`P` vector holding each rank's `local_count` in its slot; every rank calls it with the same `quota`.
+/// Above one partition, one `allreduce_sum_u64` of a length-`P` vector holding each rank's `local_count` in its slot; every rank calls it with the same `quota`.
 pub(crate) fn local_boundary_quota(
     collectives: &dyn Collectives,
     local_count: usize,
     quota: usize,
 ) -> usize {
+    if collectives.size() == 1 {
+        return quota.min(local_count);
+    }
     let rank = collectives.rank() as usize;
     let mut counts = vec![0u64; collectives.size() as usize];
     counts[rank] = local_count as u64;
@@ -346,8 +362,6 @@ fn approx_top_n_solo<const W: usize, C: Coefficient>(
 }
 
 /// [`ApproxTopN`]'s layer pass over one partition, returning the decision it applied and the whole sum's length it decided on.
-///
-/// One `allreduce_sum_u64` of `[len, histogram…]`, the single-partition edge walk, and at a boundary one more of the per-rank boundary counts for this rank's quota; no early exit above one partition, since that would desynchronize the group.
 pub(crate) fn approx_top_n_pass<const W: usize, C: Coefficient>(
     local: &mut PauliSum<W, C>,
     collectives: &dyn Collectives,

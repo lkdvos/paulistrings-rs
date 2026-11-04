@@ -17,7 +17,7 @@ use crate::collectives::Collectives;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
 use crate::truncation::octave_window::{
-    decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow, WindowDecision,
+    decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow,
 };
 use crate::truncation::TruncationPolicy;
 use rotation_layer::{
@@ -98,29 +98,27 @@ impl LayerOctaves {
         if std::mem::take(&mut self.within) {
             return;
         }
-        let decision = match self.window {
+        let decided = match self.window {
             Some(window) if std::mem::take(&mut self.counted) => {
                 decide_from_window(sum.len(), collectives, n, window, &self.per_bucket)
             }
             _ => None,
         };
-        self.bound = Some(match decision {
-            None => match approx_top_n_pass(sum, collectives, n) {
-                (EdgeDecision::KeepAll, total) => total,
-                (EdgeDecision::Clear, _) => 0,
-                (EdgeDecision::Boundary { bin, .. }, _) => {
-                    self.window = Some(OctaveWindow::around(bin));
-                    n
+        let (edge, total) = match decided {
+            Some((edge, total, cut)) => {
+                if edge == EdgeDecision::Clear {
+                    sum.clear();
                 }
-            },
-            Some(WindowDecision::KeepAll { total }) => total,
-            Some(WindowDecision::Clear) => {
-                sum.clear();
-                0
+                self.pending = cut;
+                (edge, total)
             }
-            Some(WindowDecision::Cut(cut)) => {
-                self.window = Some(OctaveWindow::around(cut.bin));
-                self.pending = Some(cut);
+            None => approx_top_n_pass(sum, collectives, n),
+        };
+        self.bound = Some(match edge {
+            EdgeDecision::KeepAll => total,
+            EdgeDecision::Clear => 0,
+            EdgeDecision::Boundary { bin, .. } => {
+                self.window = Some(OctaveWindow::around(bin));
                 n
             }
         });

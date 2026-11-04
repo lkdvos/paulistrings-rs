@@ -1,20 +1,17 @@
-//! [`ApproxTopN`]'s layer pass decided from per-bucket octave counts the coset loop takes while each bucket is in cache, and the cut it decides, which the engine applies bucket by bucket.
+//! [`ApproxTopN`]'s layer pass decided from per-bucket octave counts the coset loop takes, and the [`BoundaryCut`] it decides, which the engine applies bucket by bucket.
 //!
 //! Contract: [`decide_from_window`] decides the cut [`approx_top_n_pass`] makes, or answers `None` when the boundary octave lies outside the window, and a [`BoundaryCut`] applied bucket by bucket keeps the same set as applied at once.
 
 #[cfg(doc)]
-use super::builtin::approx_top_n_pass;
-#[cfg(doc)]
-use super::builtin::ApproxTopN;
+use super::builtin::{approx_top_n_pass, ApproxTopN};
 use super::builtin::{
-    bucket_quotas, classify_octave, local_boundary_quota, octave, retain_with_bucket_quotas,
-    EdgeDecision, APPROX_BINS,
+    boundary_filter, bucket_quotas, classify_octave, local_boundary_quota, octave,
+    octave_edge_within, EdgeDecision, APPROX_BINS,
 };
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
-use core::cmp::Ordering;
 
 /// Octaves a window resolves.
 pub(crate) const WINDOW_OCTAVES: usize = 64;
@@ -40,36 +37,12 @@ impl OctaveWindow {
         (bin + 1).saturating_sub(self.base).min(WINDOW_OCTAVES + 1)
     }
 
-    /// Count `coefficients` into `counts`, which it overwrites, binned as `octave_histogram` bins them.
+    /// Overwrite `counts` with `coefficients`' counts.
     pub(crate) fn count<C: Coefficient>(&self, coefficients: &[C], counts: &mut BucketOctaves) {
         *counts = [0; WINDOW_OCTAVES + 2];
         for c in coefficients {
             counts[self.slot(octave(c.norm_sqr()))] += 1;
         }
-    }
-
-    /// `octave_edge` of a sum whose counts, summed over every bucket and partition, are `totals`; `None` when the boundary is outside the window.
-    fn edge(&self, totals: &[u64], total_len: usize, n: usize) -> Option<EdgeDecision> {
-        debug_assert_eq!(totals.len(), WINDOW_OCTAVES + 2);
-        if total_len <= n {
-            return Some(EdgeDecision::KeepAll);
-        }
-        if n == 0 {
-            return Some(EdgeDecision::Clear);
-        }
-        let mut kept_above = totals[WINDOW_OCTAVES + 1] as usize;
-        if kept_above > n {
-            return None;
-        }
-        for offset in (0..WINDOW_OCTAVES).rev() {
-            let population = totals[1 + offset] as usize;
-            if kept_above + population > n {
-                let bin = self.base + offset;
-                return Some(EdgeDecision::Boundary { bin, kept_above, quota: n - kept_above });
-            }
-            kept_above += population;
-        }
-        None
     }
 }
 
@@ -83,10 +56,16 @@ pub(crate) struct BoundaryCut {
 }
 
 impl BoundaryCut {
-    /// Apply the cut to the whole partition.
-    pub(crate) fn apply<const W: usize, C: Coefficient>(&self, local: &mut PauliSum<W, C>) {
+    fn filter<const W: usize, C: Coefficient>(
+        &self,
+        b: usize,
+    ) -> impl FnMut(&[u64; W], &[u64; W], C) -> bool {
         let bin = self.bin;
-        retain_with_bucket_quotas(local, |m| classify_octave(m, bin), &self.quotas);
+        boundary_filter(move |m| classify_octave(m, bin), self.quotas[b])
+    }
+
+    pub(crate) fn apply<const W: usize, C: Coefficient>(&self, local: &mut PauliSum<W, C>) {
+        local.retain_per_bucket(|b| self.filter(b));
         debug_assert!(local.len() <= self.kept, "a cut keeps at most `kept`");
     }
 
@@ -96,44 +75,11 @@ impl BoundaryCut {
         b: usize,
         columns: &mut BucketColumns<W, C>,
     ) {
-        let mut remaining = self.quotas[b];
-        let mut kept = 0usize;
-        for row in 0..columns.len() {
-            let (x, z, c) = (columns.x[row], columns.z[row], columns.coeff[row]);
-            let keep = match classify_octave(c.norm_sqr(), self.bin) {
-                Ordering::Greater => true,
-                Ordering::Equal if remaining > 0 => {
-                    remaining -= 1;
-                    true
-                }
-                Ordering::Equal | Ordering::Less => false,
-            };
-            if keep {
-                columns.x[kept] = x;
-                columns.z[kept] = z;
-                columns.coeff[kept] = c;
-                kept += 1;
-            }
-        }
-        columns.x.truncate(kept);
-        columns.z.truncate(kept);
-        columns.coeff.truncate(kept);
+        columns.retain(self.filter(b));
     }
 }
 
-/// What [`decide_from_window`] leaves to do.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum WindowDecision {
-    /// Nothing is dropped from the whole sum's `total` terms.
-    KeepAll {
-        total: usize,
-    },
-    /// Every term is dropped.
-    Clear,
-    Cut(BoundaryCut),
-}
-
-/// [`approx_top_n_pass`]'s decision for a partition whose bucket `b` holds `per_bucket[b]` under `window`, without touching the sum; `None` when the boundary octave lies outside the window.
+/// [`approx_top_n_pass`]'s decision and whole-sum length for a partition whose bucket `b` holds `per_bucket[b]` under `window`, with the cut at a boundary, without touching the sum; `None` when the boundary octave lies outside the window.
 ///
 /// One `allreduce_sum_u64` of `[len, window counts…]`, and at an in-window boundary one more of the per-rank boundary counts; every partition answers `None` alike, from the reduced counts.
 pub(crate) fn decide_from_window(
@@ -142,7 +88,7 @@ pub(crate) fn decide_from_window(
     n: usize,
     window: OctaveWindow,
     per_bucket: &[BucketOctaves],
-) -> Option<WindowDecision> {
+) -> Option<(EdgeDecision, usize, Option<BoundaryCut>)> {
     let mut packed = [0u64; WINDOW_OCTAVES + 3];
     packed[0] = local_len as u64;
     for counts in per_bucket {
@@ -151,54 +97,32 @@ pub(crate) fn decide_from_window(
         }
     }
     debug_assert_eq!(packed[1..].iter().sum::<u64>(), packed[0], "the window counts every term");
-    let solo = collectives.size() == 1;
-    if !solo {
+    if collectives.size() > 1 {
         collectives.allreduce_sum_u64(&mut packed);
     }
-    let decision = match window.edge(&packed[1..], packed[0] as usize, n)? {
-        EdgeDecision::KeepAll => WindowDecision::KeepAll { total: packed[0] as usize },
-        EdgeDecision::Clear => WindowDecision::Clear,
+    let total = packed[0] as usize;
+    let above = packed[WINDOW_OCTAVES + 2] as usize;
+    let edge = octave_edge_within(&packed[2..WINDOW_OCTAVES + 2], window.base, above, total, n)?;
+    let cut = match edge {
         EdgeDecision::Boundary { bin, quota, .. } => {
             let slot = window.slot(bin);
             let boundary_counts: Vec<usize> =
                 per_bucket.iter().map(|counts| counts[slot] as usize).collect();
-            let local_quota = if solo {
-                quota
-            } else {
-                local_boundary_quota(collectives, boundary_counts.iter().sum(), quota)
-            };
-            let above: usize = per_bucket
+            let local_quota =
+                local_boundary_quota(collectives, boundary_counts.iter().sum(), quota);
+            let local_above: usize = per_bucket
                 .iter()
                 .map(|counts| counts[slot + 1..].iter().map(|&count| count as usize).sum::<usize>())
                 .sum();
-            WindowDecision::Cut(BoundaryCut {
+            Some(BoundaryCut {
                 bin,
                 quotas: bucket_quotas(&boundary_counts, local_quota),
-                kept: above + local_quota,
+                kept: local_above + local_quota,
             })
         }
+        EdgeDecision::KeepAll | EdgeDecision::Clear => None,
     };
-    Some(decision)
-}
-
-/// [`approx_top_n_pass`] from the window counts: [`decide_from_window`], applied at once, or the plain pass outside the window.
-#[cfg(test)]
-pub(crate) fn finalize_from_window<const W: usize, C: Coefficient>(
-    local: &mut PauliSum<W, C>,
-    collectives: &dyn Collectives,
-    n: usize,
-    window: OctaveWindow,
-    per_bucket: &[BucketOctaves],
-) {
-    debug_assert_eq!(per_bucket.len(), local.num_buckets());
-    match decide_from_window(local.len(), collectives, n, window, per_bucket) {
-        None => {
-            super::builtin::approx_top_n_pass(local, collectives, n);
-        }
-        Some(WindowDecision::KeepAll { .. }) => {}
-        Some(WindowDecision::Clear) => local.clear(),
-        Some(WindowDecision::Cut(cut)) => cut.apply(local),
-    }
+    Some((edge, total, cut))
 }
 
 #[cfg(test)]

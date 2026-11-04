@@ -18,7 +18,7 @@ pub(super) const OP_OR: u32 = 4;
 /// The per-term half of a tree as a postfix program, passed to the fused layer and the rescale by value as `KeepProg`.
 ///
 /// Node `i` is `op[i]` with operand `arg[i]`: `Coefficient` carries `eps.to_bits()`, `Weight` carries `k`, `Keep`/`And`/`Or` none.
-/// `TopN`/`ApproxTopN`/`CollapseSample` leaves are `Keep` here, and `Keep` operands of `And`/`Or` are folded away, so a tree with no per-term filter is the one-node `Keep`.
+/// `TopN`/`ApproxTopN`/`CollapseSample` leaves are `Keep` here, a `PerPartition` is its policy's program, and `Keep` operands of `And`/`Or` are folded away, so a tree with no per-term filter is the one-node `Keep`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct KeepProgram {
@@ -35,6 +35,7 @@ fn per_term(tree: &BuiltinTruncation) -> BuiltinTruncation {
     use BuiltinTruncation as T;
     match tree {
         T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => T::Keep,
+        T::PerPartition(inner) => per_term(inner),
         T::Coefficient(eps) => T::Coefficient(*eps),
         T::Weight(k) => T::Weight(*k),
         T::And(a, b) => match (per_term(a), per_term(b)) {
@@ -58,6 +59,7 @@ fn emit(tree: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
             emit(b, out);
             out.push((if matches!(tree, T::And(..)) { OP_AND } else { OP_OR }, 0));
         }
+        T::PerPartition(inner) => emit(inner, out),
         T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => out.push((OP_KEEP, 0)),
     }
 }
@@ -85,14 +87,14 @@ impl KeepProgram {
     }
 }
 
-/// Visit the layer-pass leaves of `tree` in the order the host runs them: `And` both sides first then second, `Or` neither.
+/// Visit the layer-pass leaves of `tree` in the order the host runs them: `And` both sides first then second, `Or` neither, a `PerPartition` whole.
 pub(crate) fn layer_pass_leaves(
     tree: &BuiltinTruncation,
     visit: &mut dyn FnMut(&BuiltinTruncation),
 ) {
     use BuiltinTruncation as T;
     match tree {
-        T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => visit(tree),
+        T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) | T::PerPartition(_) => visit(tree),
         T::And(a, b) => {
             layer_pass_leaves(a, visit);
             layer_pass_leaves(b, visit);

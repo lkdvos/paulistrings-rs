@@ -3,7 +3,9 @@
 pub(crate) mod builtin;
 mod tree;
 
-pub use builtin::{And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff};
+pub use builtin::{
+    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition, TopN, WeightCutoff,
+};
 pub use tree::BuiltinTruncation;
 
 use crate::coefficient::Coefficient;
@@ -12,10 +14,10 @@ use crate::pauli_sum::PauliSum;
 
 /// A truncation strategy: a per-term filter, a per-layer pass, or both.
 ///
-/// Built-ins: [`CoefficientThreshold`] and [`WeightCutoff`] filter terms, [`TopN`], [`ApproxTopN`] and [`CollapseSample`] run a layer pass, [`And`] and [`Or`] compose, and [`BuiltinTruncation`] holds any of them as one value.
+/// Built-ins: [`CoefficientThreshold`] and [`WeightCutoff`] filter terms, [`TopN`], [`ApproxTopN`] and [`CollapseSample`] run a layer pass, [`And`], [`Or`] and [`PerPartition`] compose, and [`BuiltinTruncation`] holds any of them as one value.
 ///
 /// Above one partition every partition sees a disjoint slice of the layer, so a layer pass must be collective: a policy whose `finalizes_layer()` is `true` runs partitioned only if it overrides [`finalize_layer_partitioned`](Self::finalize_layer_partitioned) and [`supports_partitioned`](Self::supports_partitioned).
-/// Every built-in does except exact [`TopN`], which is not yet supported partitioned; [`ApproxTopN`] is the partitioned alternative.
+/// Every built-in does except exact [`TopN`], which is not yet supported partitioned; [`ApproxTopN`] is the partitioned alternative, and [`PerPartition`] runs either on each partition alone.
 pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex64>:
     Send + Sync
 {

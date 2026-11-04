@@ -311,6 +311,19 @@ def test_approx_topn_agrees_with_unpartitioned():
     assert got_stats.terms_out == want_stats.terms_out
 
 
+@pytest.mark.parametrize("factory", [truncation.partition_topn, truncation.partition_approx_topn])
+@pytest.mark.parametrize("budget", [None, 12_000], ids=["alone", "under approx_topn"])
+def test_partition_policies_cap_every_partition_on_every_layer(factory, budget):
+    """No partition holds more than ``n`` terms after any layer."""
+    n = 5_000
+    s, c = _observable(WIDTHS[0], light=True), _mixed_circuit(WIDTHS[0], scale=LIGHT)
+    policy = factory(n)
+    if budget is not None:
+        policy = truncation.approx_topn(budget) & policy
+    _, stats = s.propagate_with_stats(c, policy, partitions=_cpu_sets())
+    assert max(max(layer) for layer in stats.partition.terms_out) == n, "the cap must bind and hold"
+
+
 @pytest.mark.parametrize(
     "policy",
     [

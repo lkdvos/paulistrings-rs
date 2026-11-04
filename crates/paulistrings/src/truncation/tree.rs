@@ -1,7 +1,8 @@
 //! [`BuiltinTruncation`], every builtin policy and combinator as one runtime value.
 
 use super::builtin::{
-    or_operand_error, And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
+    or_operand_error, And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition,
+    TopN, WeightCutoff,
 };
 use super::TruncationPolicy;
 use crate::coefficient::Coefficient;
@@ -12,7 +13,7 @@ use std::sync::Arc;
 /// Any builtin policy or combinator as one runtime value, the form the device drivers take.
 ///
 /// Each variant truncates exactly as the builtin it names, and every builtin converts into one with [`From`]; a custom [`TruncationPolicy`] does not.
-/// A tree holding an exact `TopN` cannot run above one partition ([`supports_partitioned`](Self::supports_partitioned) is `false`).
+/// A tree holding an exact `TopN` outside a `PerPartition` cannot run above one partition ([`supports_partitioned`](Self::supports_partitioned) is `false`).
 /// `Or` combines per-term filters only: build it with [`or`](Self::or) or [`try_or`](Self::try_or), which reject an operand with a layer pass; a hand-built `Or` variant that holds one panics in [`finalizes_layer`](TruncationPolicy::finalizes_layer) and [`supports_partitioned`](Self::supports_partitioned).
 /// `Clone` shares a [`CollapseSample`] rather than copying it, so every clone continues the same trajectory.
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +34,8 @@ pub enum BuiltinTruncation {
     And(Box<BuiltinTruncation>, Box<BuiltinTruncation>),
     /// [`Or`] of two per-term filters.
     Or(Box<BuiltinTruncation>, Box<BuiltinTruncation>),
+    /// [`PerPartition`] of a policy.
+    PerPartition(Box<BuiltinTruncation>),
 }
 
 impl BuiltinTruncation {
@@ -45,7 +48,7 @@ impl BuiltinTruncation {
         Self::try_or(first, second).unwrap_or_else(|message| panic!("{message}"))
     }
 
-    /// `first` or `second`, or the reason it is rejected: an operand with a layer pass (`TopN`, `ApproxTopN`, `CollapseSample`, or an `And` containing one).
+    /// `first` or `second`, or the reason it is rejected: an operand with a layer pass (`TopN`, `ApproxTopN`, `CollapseSample`, or an `And` or `PerPartition` containing one).
     pub fn try_or(first: BuiltinTruncation, second: BuiltinTruncation) -> Result<Self, String> {
         match or_operand_error(first.has_layer_pass(), second.has_layer_pass()) {
             Some(message) => Err(message),
@@ -58,6 +61,7 @@ impl BuiltinTruncation {
         match self {
             Self::TopN(_) | Self::ApproxTopN(_) | Self::CollapseSample(_) => true,
             Self::And(a, b) => a.has_layer_pass() || b.has_layer_pass(),
+            Self::PerPartition(inner) => inner.has_layer_pass(),
             Self::Or(a, b) => {
                 if let Some(message) = or_operand_error(a.has_layer_pass(), b.has_layer_pass()) {
                     panic!("{message}");
@@ -68,7 +72,7 @@ impl BuiltinTruncation {
         }
     }
 
-    /// Whether the tree runs above one partition: `false` exactly when it holds an exact `TopN`.
+    /// Whether the tree runs above one partition: `false` exactly when it holds an exact `TopN` outside a `PerPartition`.
     ///
     /// # Panics
     ///
@@ -82,6 +86,7 @@ impl BuiltinTruncation {
             | Self::Coefficient(_)
             | Self::Weight(_)
             | Self::ApproxTopN(_)
+            | Self::PerPartition(_)
             | Self::CollapseSample(_) => true,
         }
     }
@@ -93,6 +98,7 @@ impl BuiltinTruncation {
             Self::And(a, b) | Self::Or(a, b) => {
                 a.contains_collapse_sample() || b.contains_collapse_sample()
             }
+            Self::PerPartition(inner) => inner.contains_collapse_sample(),
             Self::Keep
             | Self::Coefficient(_)
             | Self::Weight(_)
@@ -117,6 +123,7 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
             }
             Self::And(a, b) => a.keep_term(x, z, c) && b.keep_term(x, z, c),
             Self::Or(a, b) => a.keep_term(x, z, c) || b.keep_term(x, z, c),
+            Self::PerPartition(inner) => inner.keep_term(x, z, c),
         }
     }
 
@@ -131,6 +138,7 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
                 a.finalize_layer(sum);
                 b.finalize_layer(sum);
             }
+            Self::PerPartition(inner) => inner.finalize_layer(sum),
             Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => {}
         }
     }
@@ -157,6 +165,9 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
                     local,
                     collectives,
                 )
+            }
+            Self::PerPartition(inner) => {
+                <Self as TruncationPolicy<W, C>>::finalize_layer(inner, local)
             }
             Self::CollapseSample(s) => {
                 <CollapseSample as TruncationPolicy<W, C>>::finalize_layer_partitioned(
@@ -199,6 +210,12 @@ impl From<TopN> for BuiltinTruncation {
 impl From<ApproxTopN> for BuiltinTruncation {
     fn from(p: ApproxTopN) -> Self {
         Self::ApproxTopN(p.0)
+    }
+}
+
+impl<P: Into<BuiltinTruncation>> From<PerPartition<P>> for BuiltinTruncation {
+    fn from(p: PerPartition<P>) -> Self {
+        Self::PerPartition(Box::new(p.0.into()))
     }
 }
 

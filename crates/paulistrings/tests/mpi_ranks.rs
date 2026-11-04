@@ -31,9 +31,10 @@ use std::panic::AssertUnwindSafe;
 use num_complex::Complex64;
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
-    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, haar_su4_matrix,
-    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
+    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
+    spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation,
+    KeepAll, PlainApproxTopN,
 };
 use paulistrings::test_support::{
     count_remote_deltas, mpi_build_library_version, mpi_with_chunk_bytes, BITS_AGREE_EVERY,
@@ -321,6 +322,34 @@ impl Runner<'_> {
     }
 }
 
+impl Runner<'_> {
+    /// Two calls of fused `ApproxTopN(n)` on one `DistributedSum`, against the same split under [`PlainApproxTopN`]: every rank keeps the plain pass's set after each call, the window carried across them.
+    fn fused_keeps_the_plain_set<const W: usize>(
+        &self,
+        circuit: &Circuit<W>,
+        sum: &PauliSum<W>,
+        n: usize,
+        name: &str,
+    ) {
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let scatter = || {
+                let transport = MpiTransport::from_communicator(self.world);
+                DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, SEED))
+            };
+            let (mut got, mut want) = (scatter(), scatter());
+            for call in 0..2 {
+                got.propagate(circuit, &ApproxTopN(n), direction);
+                want.propagate(circuit, &PlainApproxTopN(n), direction);
+                let (got_len, want_len) = (got.len(), want.len());
+                let what = format!("{name} ranks={} {direction:?} call {call}", self.size);
+                assert_eq!(want_len, n, "{what}: the plain run must cut");
+                assert_eq!(got_len, want_len, "{what}: len()");
+                assert_same_terms(got.local(), want.local(), &format!("{what} rank {}", self.rank));
+            }
+        }
+    }
+}
+
 /// A partition-row seed under which every layer of `circuit` over `sum` is remote, found identically on every rank.
 fn all_remote_seed(circuit: &Circuit<1>, sum: &PauliSum<1>, size: u32) -> u64 {
     let nq = sum.num_qubits();
@@ -567,6 +596,16 @@ fn run_host_cases(r: &mut Runner) {
             SEED,
             "policy and",
         );
+    });
+
+    // ---- the fused ApproxTopN pass ---------------------------------------
+    r.case("fused approx-topn keeps the plain set over two calls", |r| {
+        let circuit = trotter_circuit::<1>(16, THETA);
+        let sum = spread_magnitudes(&rand_sum_real::<1>(800, 16, 0xA040), 40, 0xA040);
+        r.fused_keeps_the_plain_set(&circuit, &sum, 1_500, "w1 trotter");
+        let circuit = trotter_circuit::<2>(16, THETA);
+        let sum = spread_magnitudes(&rand_sum_real::<2>(600, 16, 0xA041), 40, 0xA041);
+        r.fused_keeps_the_plain_set(&circuit, &sum, 1_200, "w2 trotter");
     });
 
     // ---- degenerate inputs ----------------------------------------------

@@ -63,7 +63,7 @@ def _assert_phases(stats):
 
 
 def test_unpartitioned_run_reports_one_partitions_phases():
-    _, stats = _observable().propagate_with_stats(_circuit())
+    stats = _observable().propagate_with_stats(_circuit())
     _assert_phases(stats)
     part = stats.partition
     assert any(row[0] > 0 for row in part.coset_loop_ns)
@@ -71,7 +71,7 @@ def test_unpartitioned_run_reports_one_partitions_phases():
 
 
 def test_partitioned_run_reports_each_partitions_phases():
-    _, stats = _observable().propagate_with_stats(_circuit(), partitions=_cpu_sets(), pin_memory=False)
+    stats = _observable().propagate_with_stats(_circuit(), partitions=_cpu_sets(), pin_memory=False)
     _assert_phases(stats)
     part = stats.partition
     assert part.partitions == 2
@@ -82,6 +82,6 @@ def test_partitioned_run_reports_each_partitions_phases():
 
 
 def test_repr_leaves_the_phases_out():
-    _, stats = _observable(terms=8).propagate_with_stats(_circuit())
+    stats = _observable(terms=8).propagate_with_stats(_circuit())
     text = repr(stats.partition)
     assert all(name not in text for name in COARSE + FINE)

@@ -209,7 +209,7 @@ The fine phases are busy time summed over worker threads, so they can exceed `co
 
 <!-- doctest: skip -->
 ```python
-_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
+stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 part = stats.partition
 waiting = [max(part.exchange_ns[k][r] + part.collective_ns[k][r] for r in range(part.partitions)) for k in range(stats.layers)]
 ```

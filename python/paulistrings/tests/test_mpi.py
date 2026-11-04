@@ -375,7 +375,7 @@ def test_stats_name_the_group(observable, circuit, reference):
 
 
 def test_each_rank_reports_its_own_phases(observable, circuit):
-    _, stats = observable.propagate_with_stats(circuit, POLICY, comm=COMM)
+    stats = observable.copy().propagate_with_stats(circuit, POLICY, comm=COMM)
     part = stats.partition
     for name in ("collective_ns", "export_ns", "exchange_ns", "coset_loop_ns"):
         assert all(len(row) == 1 for row in getattr(part, name)), name

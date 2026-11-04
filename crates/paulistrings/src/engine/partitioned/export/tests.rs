@@ -53,8 +53,15 @@ fn export_all<const W: usize>(
             let plan = PartitionPlan::new(&prepared, rows, rank);
             let mut scratch = ExportScratch::default();
             let order = order_for(&plan, local.num_buckets());
-            let (send, counts) =
-                export_layer(&local, None, &prepared, &plan, size, &order, &mut scratch);
+            let (send, counts) = export_layer(
+                &local,
+                &LayerOctaves::default(),
+                &prepared,
+                &plan,
+                size,
+                &order,
+                &mut scratch,
+            );
             assert!(send[rank as usize].is_none(), "a partition exports to itself");
             assert_eq!(send.len(), size as usize);
             Exported { rank, send, counts }
@@ -203,7 +210,7 @@ fn every_segment_holds_the_rows_of_its_destination_bucket() {
                         let mut scratch = ExportScratch::default();
                         let (send, _) = export_layer(
                             &local,
-                            None,
+                            &LayerOctaves::default(),
                             &prepared,
                             &plan,
                             size,
@@ -385,7 +392,15 @@ fn a_reused_scratch_gives_the_same_export() {
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let wide_local = whole.filter_partition(&rows, 0);
     let order = order_for(&plan, wide_local.num_buckets());
-    let _ = export_layer(&wide_local, None, &prepared, &plan, 4, &order, &mut scratch);
+    let _ = export_layer(
+        &wide_local,
+        &LayerOctaves::default(),
+        &prepared,
+        &plan,
+        4,
+        &order,
+        &mut scratch,
+    );
 
     let h = PtmChannel::hadamard(3);
     let prepared = Prepare::<1>::prepare(&h, whole.hash(), false).unwrap();
@@ -393,9 +408,16 @@ fn a_reused_scratch_gives_the_same_export() {
     let local = whole.filter_partition(&rows, 0);
     let order = order_for(&plan, local.num_buckets());
     let (reused, counts_reused) =
-        export_layer(&local, None, &prepared, &plan, 4, &order, &mut scratch);
-    let (fresh, counts_fresh) =
-        export_layer(&local, None, &prepared, &plan, 4, &order, &mut ExportScratch::default());
+        export_layer(&local, &LayerOctaves::default(), &prepared, &plan, 4, &order, &mut scratch);
+    let (fresh, counts_fresh) = export_layer(
+        &local,
+        &LayerOctaves::default(),
+        &prepared,
+        &plan,
+        4,
+        &order,
+        &mut ExportScratch::default(),
+    );
     assert_eq!(counts_reused, counts_fresh);
     assert_eq!(reused.len(), fresh.len());
     for (a, b) in reused.iter().zip(&fresh) {
@@ -435,7 +457,7 @@ fn a_fully_split_fill_equals_an_unsplit_one() {
                     let mut scratch = ExportScratch::default();
                     export_layer_with(
                         &local,
-                        None,
+                        &LayerOctaves::default(),
                         &prepared,
                         &plan,
                         size,
@@ -474,11 +496,11 @@ fn assert_a_pending_cut_exports_the_cut_sum<const W: usize>(
                 let plan = PartitionPlan::new(&prepared, &rows, rank);
                 let order = order_for(&plan, local.num_buckets());
                 for min_terms in [0, usize::MAX] {
-                    let export = |sum: &PauliSum<W>, cut| {
+                    let export = |sum: &PauliSum<W>, octaves: &LayerOctaves| {
                         let mut scratch = ExportScratch::default();
                         export_layer_with(
                             sum,
-                            cut,
+                            octaves,
                             &prepared,
                             &plan,
                             size,
@@ -487,8 +509,10 @@ fn assert_a_pending_cut_exports_the_cut_sum<const W: usize>(
                             min_terms,
                         )
                     };
-                    let (deferred, deferred_counts) = export(&local, Some(&cut));
-                    let (applied, applied_counts) = export(&cut_local, None);
+                    let mut deferred_octaves = LayerOctaves::default();
+                    deferred_octaves.defer(cut.clone());
+                    let (deferred, deferred_counts) = export(&local, &deferred_octaves);
+                    let (applied, applied_counts) = export(&cut_local, &LayerOctaves::default());
                     let what = format!("{name} p={pbits} rank={rank} min_terms={min_terms}");
                     assert_eq!(deferred_counts, applied_counts, "{what}");
                     assert_eq!(deferred, applied, "{what}");

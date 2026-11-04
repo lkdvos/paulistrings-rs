@@ -3,6 +3,7 @@
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
 //! A pending `ApproxTopN` cut is not applied here: both passes skip the terms it drops, and the coset loop applies it as it swaps each bucket in.
+//! Pass 1 reads the counts the last coset loop took ahead where they answer (`LayerOctaves::rows_ahead`), and the bucket otherwise.
 
 use crate::coefficient::Coefficient;
 use rayon::prelude::*;
@@ -10,6 +11,7 @@ use rayon::prelude::*;
 use super::exchange_block::{ExchangeBlock, PartnerPayload};
 use super::layer::LayerExchangeCounts;
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
+use crate::engine::bucketed::LayerOctaves;
 use crate::engine::coset::CosetOrder;
 use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
@@ -55,26 +57,26 @@ impl<const W: usize, C: Coefficient> RowEmitter<'_, W, C> {
     }
 }
 
-/// This partition's outgoing payloads for one layer, one slot per partner rank, from `local` as `cut` leaves it.
+/// This partition's outgoing payloads for one layer, one slot per partner rank, from `local` as its pending cut in `octaves` leaves it.
 ///
 /// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
 pub(crate) fn export_layer<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
-    cut: Option<&BoundaryCut>,
+    octaves: &LayerOctaves,
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
     order: &CosetOrder,
     scratch: &mut ExportScratch<W, C>,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
-    export_layer_with(local, cut, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
+    export_layer_with(local, octaves, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
 }
 
 /// [`export_layer`] with the fill's leaf size in scanned input terms.
 #[allow(clippy::too_many_arguments)]
 fn export_layer_with<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
-    cut: Option<&BoundaryCut>,
+    octaves: &LayerOctaves,
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
@@ -84,6 +86,8 @@ fn export_layer_with<const W: usize, C: Coefficient>(
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
     let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
+    let cut = octaves.pending();
+    let ahead = num_remote == 1 && octaves.has_ahead();
     let mut send: Vec<Option<PartnerPayload<W, C>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
     if num_remote == 0 {
@@ -120,12 +124,29 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     scratch.counts.clear();
     scratch.counts.resize(num_buckets * num_remote, 0);
     scratch.counts.par_chunks_mut(num_remote).enumerate().for_each(|(bucket, slot)| {
-        let terms = local.bucket(bucket);
-        match cut {
-            None => count_bucket(terms, prepared, plan, &dense, KeepAll, slot),
-            Some(cut) => {
-                count_bucket(terms, prepared, plan, &dense, cut.bucket_filter(bucket), slot)
+        let counted = |slot: &mut [u32]| {
+            let terms = local.bucket(bucket);
+            match cut {
+                None => count_bucket(terms, prepared, plan, &dense, KeepAll, slot),
+                Some(cut) => {
+                    count_bucket(terms, prepared, plan, &dense, cut.bucket_filter(bucket), slot)
+                }
             }
+        };
+        match octaves.rows_ahead(bucket).filter(|_| ahead) {
+            Some(rows) => {
+                slot[0] = rows;
+                #[cfg(debug_assertions)]
+                {
+                    let mut recounted = [0u32];
+                    counted(&mut recounted);
+                    debug_assert_eq!(
+                        rows, recounted[0],
+                        "bucket {bucket}: the counts ahead disagree"
+                    );
+                }
+            }
+            None => counted(slot),
         }
     });
 

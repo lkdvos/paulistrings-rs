@@ -35,7 +35,7 @@ impl OctaveWindow {
 
     /// The slot of octave `bin` in [`BucketOctaves`].
     #[inline(always)]
-    fn slot(&self, bin: usize) -> usize {
+    pub(crate) fn slot(&self, bin: usize) -> usize {
         (bin + 1).saturating_sub(self.base).min(WINDOW_OCTAVES + 1)
     }
 

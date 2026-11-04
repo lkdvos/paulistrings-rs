@@ -12,6 +12,7 @@ use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
+use crate::engine::bucketed::EmitTest;
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
@@ -235,6 +236,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         _policy: &BuiltinTruncation,
         transport: &X,
         _clocked: bool,
+        _ahead: Option<&EmitTest<'_, W, C>>,
     ) -> LayerExchangeCounts {
         let size = transport.size();
         self.layers_applied += 1;

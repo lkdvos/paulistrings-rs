@@ -7,8 +7,8 @@ use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::engine::bucketed::{
-    apply_layer_bucketed, apply_layer_bucketed_with, is_rotation_table, ExtraRows, LayerKnobs,
-    LayerScratch,
+    apply_layer_bucketed_with, is_rotation_table, EmitTest, ExtraRows, LayerKnobs, LayerScratch,
+    NoExtra,
 };
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::knob::{parse_positive, Knob};
@@ -163,7 +163,7 @@ impl LayerExchangeCounts {
     }
 }
 
-/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`, and `clocked` fills the counts' phase times.
+/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`, `clocked` fills the counts' phase times, and `ahead` is the next layer's one remote delta, if it has exactly one, whose rows the coset loop counts for it.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, C: Coefficient, T, X>(
     local: &mut PauliSum<W, C>,
@@ -174,6 +174,7 @@ pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, C: Co
     state: &mut PartitionState<W, C>,
     transport: &X,
     clocked: bool,
+    ahead: Option<&EmitTest<'_, W, C>>,
 ) -> LayerExchangeCounts
 where
     T: TruncationPolicy<W, C> + ?Sized,
@@ -183,7 +184,15 @@ where
 
     // No transport call at all: every partition takes this branch, since `part(d)` depends on the delta alone.
     if !plan.has_remote() {
-        apply_layer_bucketed(local, prepared, policy, &mut state.layer);
+        apply_layer_bucketed_with(
+            local,
+            prepared,
+            policy,
+            &mut state.layer,
+            &NoExtra,
+            LayerKnobs::default(),
+            ahead,
+        );
         return LayerExchangeCounts::default();
     }
 
@@ -194,15 +203,8 @@ where
     let mut order = std::mem::take(&mut state.layer.order);
     order.rebuild(&span, true);
     state.chunks = ChunkMap::of_order(&order, *EXCHANGE_CHUNKS.get());
-    let (send, mut counts) = export_layer(
-        local,
-        state.layer.octaves.pending(),
-        prepared,
-        plan,
-        size,
-        &order,
-        &mut state.export,
-    );
+    let (send, mut counts) =
+        export_layer(local, &state.layer.octaves, prepared, plan, size, &order, &mut state.export);
     let export_ns = export_start.map_or(0, |start| start.elapsed().as_nanos() as u64);
     tally!(state.layer.stats.export_ns, export_ns);
     tally!(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
@@ -275,6 +277,7 @@ where
                 layer_scratch,
                 &received_rows,
                 knobs,
+                ahead,
             );
             timed! {
                 layer_scratch.stats.recv_rows += rows_received;

@@ -33,8 +33,8 @@ use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
     haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
-    spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation,
-    KeepAll, PlainApproxTopN,
+    skewed_by_partition, spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter,
+    zz_rotation, KeepAll, PlainApproxTopN,
 };
 use paulistrings::test_support::{
     buckets_exported_ahead_under_cut_on_rank, count_remote_deltas, mpi_build_library_version,
@@ -44,7 +44,9 @@ use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
     PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
+use paulistrings::{
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, PerPartition, WeightCutoff,
+};
 use paulistrings::{
     Collectives, DistributedSum, PartitionConfig, PartitionRowPolicy, PartitionRuntime,
     ScatterOptions, ScatterRows,
@@ -322,7 +324,7 @@ impl Runner<'_> {
         }
     }
 
-    /// Two calls of fused `ApproxTopN(n)` on one `DistributedSum`, against the same split under [`PlainApproxTopN`]: every rank keeps the plain pass's set after each call, the window carried across them.
+    /// Two calls of fused `ApproxTopN(n)`, and of `PerPartition(ApproxTopN(n / ranks))` over [`skewed_by_partition`] input, on one `DistributedSum`, against the same split under [`PlainApproxTopN`]: every rank keeps the plain pass's set after each call, the window carried across them.
     fn fused_keeps_the_plain_set<const W: usize>(
         &self,
         circuit: &Circuit<W>,
@@ -331,27 +333,57 @@ impl Runner<'_> {
         name: &str,
     ) {
         for direction in [Direction::Forward, Direction::Heisenberg] {
-            let scatter = || {
-                let transport = MpiTransport::from_communicator(self.world);
-                DistributedSum::scatter_with(sum.clone(), transport, unpinned_scatter(1, 2, SEED))
-            };
-            let (mut got, mut want) = (scatter(), scatter());
-            for call in 0..2 {
-                got.propagate(circuit, &ApproxTopN(n), direction);
-                want.propagate(circuit, &PlainApproxTopN(n), direction);
-                let (got_len, want_len) = (got.len(), want.len());
-                let what = format!("{name} ranks={} {direction:?} call {call}", self.size);
-                assert_eq!(want_len, n, "{what}: the plain run must cut");
-                assert_eq!(got_len, want_len, "{what}: len()");
-                assert_same_terms(got.local(), want.local(), &format!("{what} rank {}", self.rank));
+            for per_partition in [false, true] {
+                let input = if per_partition {
+                    skewed_by_partition(sum, self.size as usize, SEED)
+                } else {
+                    sum.clone()
+                };
+                let scatter = || {
+                    let transport = MpiTransport::from_communicator(self.world);
+                    DistributedSum::scatter_with(
+                        input.clone(),
+                        transport,
+                        unpinned_scatter(1, 2, SEED),
+                    )
+                };
+                let (mut got, mut want) = (scatter(), scatter());
+                for call in 0..2 {
+                    let what = format!(
+                        "{name} per_partition={per_partition} ranks={} {direction:?} call {call}",
+                        self.size
+                    );
+                    if per_partition {
+                        let n = n / self.size as usize;
+                        got.propagate(circuit, &PerPartition(ApproxTopN(n)), direction);
+                        want.propagate(circuit, &PerPartition(PlainApproxTopN(n)), direction);
+                        let transport = MpiTransport::from_communicator(self.world);
+                        let cut = transport.allreduce_max_u8(u8::from(want.local().len() == n));
+                        assert_eq!(cut, 1, "{what}: some rank's plain run must cut");
+                    } else {
+                        got.propagate(circuit, &ApproxTopN(n), direction);
+                        want.propagate(circuit, &PlainApproxTopN(n), direction);
+                        assert_eq!(want.len(), n, "{what}: the plain run must cut");
+                    }
+                    assert_eq!(got.len(), want.len(), "{what}: len()");
+                    assert_same_terms(
+                        got.local(),
+                        want.local(),
+                        &format!("{what} rank {}", self.rank),
+                    );
+                }
+                // Above one rank some export reads the counts ahead under a pending cut; the plain pass leaves none.
+                let ahead =
+                    [got, want].map(|split| buckets_exported_ahead_under_cut_on_rank(&split));
+                let mut total = [0u64; 2];
+                self.world.all_reduce_into(&ahead[..], &mut total[..], SystemOperation::sum());
+                let what = format!(
+                    "{name} per_partition={per_partition} ranks={} {direction:?}",
+                    self.size
+                );
+                assert!(self.size == 1 || total[0] > 0, "{what}: no export read the counts ahead");
+                assert_eq!(total[1], 0, "{what}: the plain layer pass left counts ahead");
             }
-            // Above one rank some export reads the counts ahead under a pending cut; the plain pass leaves none.
-            let ahead = [got, want].map(|split| buckets_exported_ahead_under_cut_on_rank(&split));
-            let mut total = [0u64; 2];
-            self.world.all_reduce_into(&ahead[..], &mut total[..], SystemOperation::sum());
-            let what = format!("{name} ranks={} {direction:?}", self.size);
-            assert!(self.size == 1 || total[0] > 0, "{what}: no export read the counts ahead");
-            assert_eq!(total[1], 0, "{what}: the plain layer pass left counts ahead");
         }
     }
 }

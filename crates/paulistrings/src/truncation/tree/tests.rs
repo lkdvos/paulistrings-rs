@@ -213,3 +213,28 @@ fn supports_partitioned_reflects_the_tree() {
     assert!(!supports(&T::TopN(3)));
     assert!(!supports(&and(T::Coefficient(0.1), and(T::Weight(2), T::TopN(3)))));
 }
+
+/// The fused `ApproxTopN` hook reaches the sole layer pass through `And`, agreed alone and local under `PerPartition`, alike as a generic policy and as a tree.
+#[test]
+fn fused_approx_top_n_reaches_the_sole_pass() {
+    fn both<P: TruncationPolicy<1>>(policy: P) -> Option<FusedApproxTopN>
+    where
+        T: From<P>,
+    {
+        let generic = policy.fused_approx_top_n();
+        let tree = <T as TruncationPolicy<1>>::fused_approx_top_n(&T::from(policy));
+        assert_eq!(generic, tree, "the generic policy and its tree");
+        generic
+    }
+    let agreed = Some(FusedApproxTopN { n: 9, agreed: true });
+    let local = Some(FusedApproxTopN { n: 9, agreed: false });
+    assert_eq!(both(ApproxTopN(9)), agreed);
+    assert_eq!(both(And(CoefficientThreshold(0.1), ApproxTopN(9))), agreed);
+    assert_eq!(both(PerPartition(ApproxTopN(9))), local);
+    assert_eq!(both(And(WeightCutoff(2), PerPartition(ApproxTopN(9)))), local);
+    assert_eq!(both(PerPartition(And(ApproxTopN(9), WeightCutoff(2)))), local);
+    assert_eq!(both(PerPartition(PerPartition(ApproxTopN(9)))), local);
+    assert_eq!(both(PerPartition(TopN(9))), None);
+    assert_eq!(both(And(ApproxTopN(9), PerPartition(ApproxTopN(9)))), None);
+    assert_eq!(both(And(TopN(9), ApproxTopN(9))), None);
+}

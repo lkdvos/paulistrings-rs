@@ -1,8 +1,8 @@
 //! Lowering of a [`BuiltinTruncation`] tree's per-term filter onto a generic policy, so a host propagate runs a monomorphized `keep_term` inside the merge instead of the tree's enum match.
 
 use paulistrings::{
-    And, BuiltinTruncation, Coefficient, CoefficientThreshold, Collectives, PauliSum,
-    TruncationPolicy, WeightCutoff,
+    And, BuiltinTruncation, Coefficient, CoefficientThreshold, Collectives, FusedApproxTopN,
+    PauliSum, TruncationPolicy, WeightCutoff,
 };
 use pyo3::prelude::*;
 use std::sync::Mutex;
@@ -45,8 +45,8 @@ impl<const W: usize, C: Coefficient, F: TruncationPolicy<W, C>> TruncationPolicy
         self.tree.supports_partitioned()
     }
 
-    fn sole_approx_top_n(&self) -> Option<usize> {
-        <BuiltinTruncation as TruncationPolicy<W, C>>::sole_approx_top_n(self.tree)
+    fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
+        <BuiltinTruncation as TruncationPolicy<W, C>>::fused_approx_top_n(self.tree)
     }
 }
 

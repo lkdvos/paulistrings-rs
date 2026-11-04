@@ -184,7 +184,11 @@ where
         clocked: bool,
         ahead: Option<&EmitTest<'_, W, C>>,
     ) -> LayerExchangeCounts {
-        self.state.layer.octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
+        self.state.layer.octaves.begin_layer(
+            max_fanout(prepared),
+            policy.fused_approx_top_n(),
+            plan.has_remote(),
+        );
         apply_layer_partitioned_with_plan(
             &mut self.sum,
             prepared,
@@ -199,8 +203,8 @@ where
     }
 
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
-        match policy.sole_approx_top_n() {
-            Some(n) => self.state.layer.octaves.finalize(&mut self.sum, collectives, n),
+        match policy.fused_approx_top_n() {
+            Some(fused) => self.state.layer.octaves.finalize(&mut self.sum, collectives, fused),
             None => {
                 if policy.finalizes_layer() {
                     self.state.layer.octaves.drop_ahead();

@@ -477,25 +477,18 @@ where
     F: Fn(&mut [BucketColumns<W, C>], &[u32], &mut CosetScratch<W, C>) + Sync,
 {
     let num_cosets = span.num_cosets();
-    let counting = octaves.count.is_some();
     // Each coset reads and writes only its own buckets (engine/coset.rs).
     if num_cosets < MIN_COSETS_FOR_PARALLEL {
-        scratch.task.octave_totals = WindowTotals::default();
         let buckets = DisjointSlots::new(sum.buckets_mut());
         let len = (0..num_cosets as u32)
             .map(|coset| run_coset(coset, span, &buckets, octaves, &mut scratch.task, &fill))
             .sum();
-        if counting {
-            scratch.octaves.totals = scratch.task.octave_totals;
-        }
+        scratch.octaves.totals = std::mem::take(&mut scratch.task.octave_totals);
         len
     } else {
         let pool = rayon::current_num_threads().max(1);
         if scratch.workers.len() < pool {
             scratch.workers.resize_with(pool, Mutex::default);
-        }
-        for worker in &mut scratch.workers {
-            worker.get_mut().unwrap().octave_totals = WindowTotals::default();
         }
         let workers = &scratch.workers;
         let buckets = DisjointSlots::new(sum.buckets_mut());
@@ -509,12 +502,10 @@ where
                 run_coset(coset, span, &buckets, octaves, &mut worker_scratch, &fill)
             })
             .sum();
-        if counting {
-            let mut totals = WindowTotals::default();
-            for worker in &mut scratch.workers {
-                totals.merge(&worker.get_mut().unwrap().octave_totals);
-            }
-            scratch.octaves.totals = totals;
+        scratch.octaves.totals = WindowTotals::default();
+        for worker in &mut scratch.workers {
+            let worker_totals = std::mem::take(&mut worker.get_mut().unwrap().octave_totals);
+            scratch.octaves.totals.merge(&worker_totals);
         }
         len
     }

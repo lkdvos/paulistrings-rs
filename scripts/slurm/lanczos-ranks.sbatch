@@ -4,7 +4,7 @@
 #SBATCH --constraint=genoa&rocky9
 #SBATCH --nodes=4
 #SBATCH --exclusive
-#SBATCH --time=03:00:00
+#SBATCH --time=01:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
 # Operator Lanczos across nodes (`crates/paulistrings/examples/lanczos_probe.rs`, one in-place `add_liouvillian` per step): per step the exchange volume and time, the share balance and the peak RSS.

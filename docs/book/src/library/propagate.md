@@ -121,9 +121,13 @@ A sum kept split between calls, over this process's NUMA partitions (`partitions
 | `.local()` | this process's terms: the whole sum in one process, this rank's share under MPI |
 | `.partition_rows()`, `.hash_rows()`, `.hash_seed`, `.num_buckets`, `.num_partitions`, `.rank`, `.num_qubits` | the current rows and placement; `rank` is `None` in one process |
 | `.dtype` | the coefficient type of the sum it was split from, which `gather()` and `local()` keep |
+| `h.liouvillian(split, policy=None)`, `h.anticommutator(split, ...)`, `h.product(split, ...)`, `h @ split` | a new split by the same rows, `h` a `PauliSum` the same on every rank; a partner receives only the strings a generator term moving between partitions can reach |
+| `.overlap(other)` | of the whole sums, the same on every rank |
+| `a + b`, `a - b`, `a += b`, `a -= b`, `a * c`, `c * a`, `a *= c`, `.copy()` | term by term with no exchange, for splits of one dtype by the same rows |
 
-Under MPI every member that reads or changes the whole sum is collective; `local()`, `repr()` and the properties are not.
+Under MPI every member that reads or changes the whole sum is collective, and one that builds a new split duplicates the communicator; `local()`, `repr()`, `*=` and the properties are not.
 Exact `truncation.topn` raises `NotImplementedError`, as for any partitioned run.
+A split keeps its dtype through products: `h` is cast to it, so a product needs a complex split, and splits of different dtypes do not combine.
 
 `Circuit.deltas()` lists each channel's nonzero key shifts as `(k, 2 * num_qubits)` boolean arrays, and `paulistrings.hashes.remote_layers(rows, deltas)` marks the channels a choice of partition rows makes exchange: exactly the layers `PartitionStats.local` reports as not local.
 

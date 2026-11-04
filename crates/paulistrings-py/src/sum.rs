@@ -1328,6 +1328,20 @@ impl PauliSum {
         Ok(())
     }
 
+    /// The operator product `pairing` names with `self` the left factor, a `PauliSum` or a `PartitionedPauliSum` as `other` is.
+    fn paired_with(
+        &self,
+        py: Python<'_>,
+        other: Operand<'_>,
+        pairing: Pairing,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<PyObject> {
+        Ok(match other {
+            Operand::Sum(other) => self.paired(py, &other.inner, pairing, policy)?.into_py(py),
+            Operand::Split(split) => split.paired_by(py, &self.inner, pairing, policy)?.into_py(py),
+        })
+    }
+
     /// The operator product `pairing` names, at the promoted dtype and truncated by `policy` as one layer, with the GIL released.
     fn paired(
         &self,
@@ -1572,11 +1586,18 @@ pub(crate) fn warn_partition_rows(
 }
 
 /// The scalar `*` accepts. Naming the two-sum case explicitly, since `a * b` on two sums is the one multiplication a reader is most likely to expect and the least likely to get.
+/// The right factor of an operator product: a sum held whole, or a split one.
+#[derive(FromPyObject)]
+pub(crate) enum Operand<'py> {
+    Sum(PyRef<'py, PauliSum>),
+    Split(PyRef<'py, crate::partitioned::PartitionedPauliSum>),
+}
+
 fn scalar_factor(factor: &Bound<'_, PyAny>) -> PyResult<Complex64> {
     if factor.downcast::<PauliSum>().is_ok() {
         return Err(PyTypeError::new_err(
-            "PauliSum * PauliSum is not supported: that is a full operator product, not a scalar \
-             scaling; * and *= take a complex or real number",
+            "PauliSum * PauliSum is not supported: * and *= take a complex or real number; the \
+             operator product is a @ b",
         ));
     }
     extract_complex(factor).map_err(|_| {
@@ -1845,6 +1866,9 @@ impl PauliSum {
     /// It costs one string product per pair of terms; for a commutator with a Hermitian generator use `liouvillian`, which does less work and keeps a real dtype real.
     /// `policy` truncates the result as one propagation layer would: a filter sees each string's summed coefficient, and a layer pass such as `topn` runs once on the result.
     ///
+    /// `other` may be a `PartitionedPauliSum`, with `self` the same on every partition or rank: the result is then a new split by the same rows, each partition receiving from another only the strings a generator term moving between them can reach.
+    /// A split operand keeps its dtype rather than promoting, so a product needs a complex split, and partitioned exact `truncation.topn` raises `NotImplementedError` as `propagate` does. **Collective** under MPI.
+    ///
     /// ```python
     /// x = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     /// z = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
@@ -1854,14 +1878,14 @@ impl PauliSum {
     fn product(
         &self,
         py: Python<'_>,
-        other: &Self,
+        other: Operand<'_>,
         policy: Option<&PyTruncation>,
-    ) -> PyResult<Self> {
-        self.paired(py, &other.inner, Pairing::Product, policy)
+    ) -> PyResult<PyObject> {
+        self.paired_with(py, other, Pairing::Product, policy)
     }
 
     /// `self @ other`, the operator product; see `product`.
-    fn __matmul__(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
+    fn __matmul__(&self, py: Python<'_>, other: Operand<'_>) -> PyResult<PyObject> {
         self.product(py, other, None)
     }
 
@@ -1871,6 +1895,7 @@ impl PauliSum {
     /// For Hermitian `self` and `other` the result is Hermitian, so a real dtype stays real; the dtype is the operands' promotion.
     /// Only pairs acting on a common qubit are visited, so a local generator against a large operator costs far fewer than `len(self) * len(other)` string products.
     /// `policy` truncates the result as `product`'s does; a nested commutator of a symmetric generator cancels many strings only to rounding, so a coefficient threshold belongs in every step of a recursion.
+    /// `other` may be a `PartitionedPauliSum`, as for `product`.
     ///
     /// ```python
     /// h = PauliSum.from_strings({"Z": 1.0}, num_qubits=1, dtype="float64")
@@ -1881,25 +1906,25 @@ impl PauliSum {
     fn liouvillian(
         &self,
         py: Python<'_>,
-        other: &Self,
+        other: Operand<'_>,
         policy: Option<&PyTruncation>,
-    ) -> PyResult<Self> {
-        self.paired(py, &other.inner, Pairing::Liouvillian, policy)
+    ) -> PyResult<PyObject> {
+        self.paired_with(py, other, Pairing::Liouvillian, policy)
     }
 
     /// The anticommutator `{self, other} = self @ other + other @ self`.
     ///
     /// Only commuting string pairs contribute.
     /// For Hermitian operands the result is Hermitian, so a real dtype stays real; the dtype is the operands' promotion.
-    /// `policy` truncates the result as `product`'s does.
+    /// `policy` truncates the result as `product`'s does, and `other` may be a `PartitionedPauliSum`, as for `product`.
     #[pyo3(signature = (other, policy=None))]
     fn anticommutator(
         &self,
         py: Python<'_>,
-        other: &Self,
+        other: Operand<'_>,
         policy: Option<&PyTruncation>,
-    ) -> PyResult<Self> {
-        self.paired(py, &other.inner, Pairing::Anticommutator, policy)
+    ) -> PyResult<PyObject> {
+        self.paired_with(py, other, Pairing::Anticommutator, policy)
     }
 
     /// `self * scalar`: every coefficient scaled by a complex or real number, keeping the dtype.

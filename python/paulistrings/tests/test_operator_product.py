@@ -130,3 +130,82 @@ def test_a_product_takes_a_policy_too():
     identity_only = h.product(o, policy=truncation.weight(0))
     assert len(identity_only) <= 1
     assert identity_only.identity_coefficient() == pytest.approx(h.product(o).identity_coefficient())
+
+
+def _chain(n, field=0.3):
+    terms = {}
+    for j in range(n - 1):
+        for p in "XYZ":
+            terms["I" * j + p + p + "I" * (n - j - 2)] = 1.0
+    for j in range(n):
+        terms["I" * j + "Z" + "I" * (n - j - 1)] = field
+    return PauliSum.from_strings(terms, num_qubits=n, dtype="float64")
+
+
+def _lanczos(h, o, steps, policy):
+    """The operator Lanczos coefficients b_n of i[h, .] from o; a_n vanishes for Hermitian h and o."""
+    o = o * (1.0 / o.overlap(o) ** 0.5)
+    previous, b = None, []
+    for _ in range(steps):
+        a = h.liouvillian(o, policy=policy)
+        if previous is not None:
+            a -= previous * b[-1]
+        norm = a.overlap(a) ** 0.5
+        b.append(norm)
+        previous, o = o, a * (1.0 / norm)
+    return b
+
+
+@pytest.mark.parametrize("partitions", [1, 2])
+def test_lanczos_on_a_split_agrees_with_one_process(partitions):
+    n = 14
+    h = _chain(n)
+    seed = PauliSum.from_strings({"I" * (n // 2) + "Z" + "I" * (n - n // 2 - 1): 1.0}, num_qubits=n, dtype="float64")
+    policy = truncation.coeff(1e-10)
+    want = _lanczos(h, seed, 8, policy)
+    got = _lanczos(h, seed.partition(partitions=partitions), 8, policy)
+    np.testing.assert_allclose(got, want, rtol=1e-10)
+
+
+def test_a_split_product_gathers_to_the_whole_product():
+    h, o = _chain_operands()
+    split = o.astype("complex128").partition(partitions=2)
+    hc = h.astype("complex128")
+    for got, want in [
+        ((hc @ split).gather(), hc @ o),
+        (h.liouvillian(o.partition(partitions=2)).gather(), h.liouvillian(o)),
+        (h.anticommutator(o.partition(partitions=2)).gather(), h.anticommutator(o)),
+    ]:
+        assert len(got) == len(want)
+        np.testing.assert_allclose(np.sort(np.abs(got.coefficients_array())), np.sort(np.abs(want.coefficients_array())))
+        assert got.overlap(want) == pytest.approx(want.overlap(want))
+
+
+def test_split_linear_algebra_matches_whole_sums():
+    h, o = _chain_operands()
+    a = o.partition(partitions=2)
+    b = h.liouvillian(a)
+    whole_a, whole_b = o, h.liouvillian(o)
+    assert a.overlap(b) == pytest.approx(whole_a.overlap(whole_b))
+    combined = (a + b * 2.0 - a).gather()
+    expected = whole_b * 2.0
+    assert combined.overlap(expected) == pytest.approx(expected.overlap(expected))
+    c = a.copy()
+    c += c
+    c *= 0.5
+    assert (c - a).overlap(c - a) == pytest.approx(0.0, abs=1e-24)
+
+
+def test_split_operands_reject_what_they_cannot_hold():
+    h, o = _chain_operands()
+    split = o.partition(partitions=2)
+    with pytest.raises(TypeError, match="complex"):
+        h.product(split)
+    with pytest.raises(NotImplementedError):
+        h.liouvillian(split, policy=truncation.topn(3))
+    with pytest.raises(ValueError, match="dtypes differ"):
+        split.overlap(o.astype("complex128").partition(partitions=2))
+    with pytest.raises(ValueError, match="num_qubits mismatch"):
+        PauliSum.from_strings({"XX": 1.0}, num_qubits=2).liouvillian(split)
+    with pytest.raises(ValueError, match="imaginary"):
+        h.astype("complex128").__mul__(1j).liouvillian(split)

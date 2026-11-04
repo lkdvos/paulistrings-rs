@@ -66,6 +66,7 @@ Terms whose coefficients cancel exactly are dropped, as is every term when `c` i
 `*` is scalar-only; the operator product is `@`.
 For Hermitian operands `liouvillian` and `anticommutator` are Hermitian, so a real dtype stays real.
 `policy` truncates a product as one propagation layer: a filter sees each string's summed coefficient, and a layer pass such as `topn` runs once on the result.
+`b` may be a `PartitionedPauliSum`, which gives a new split ([`PartitionedPauliSum`](propagate.md#partitionedpaulisum)).
 
 ## Saving, loading, importing
 

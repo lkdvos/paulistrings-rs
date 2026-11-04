@@ -252,6 +252,29 @@ print(o)
 8*YI
 ```
 
+The operator Lanczos recursion needs nothing more than these, `overlap` and scalar arithmetic; for a Hermitian generator and seed the diagonal coefficients `a_n` vanish:
+
+```python
+n = 12
+terms = {"I" * j + p + p + "I" * (n - j - 2): 1.0 for j in range(n - 1) for p in "XYZ"}
+h = PauliSum.from_strings(terms, dtype="float64")
+o = PauliSum.from_strings({"I" * 6 + "Z" + "I" * 5: 1.0}, dtype="float64")
+previous, b = None, []
+for _ in range(5):
+    a = h.liouvillian(o, policy=truncation.coeff(1e-12))
+    if previous is not None:
+        a -= previous * b[-1]
+    b.append(a.overlap(a) ** 0.5)
+    previous, o = o, a * (1.0 / b[-1])
+print([round(x, 4) for x in b])
+```
+
+```text
+[4.0, 9.5917, 16.0759, 22.9001, 29.9595]
+```
+
+The same loop runs unchanged on a split seed, `o = o.partition(partitions="auto")` or `o.partition(comm=comm)`, with `h` replicated: every step then stays split, and each partition receives from another only the strings a generator term moving between them can reach ([`PartitionedPauliSum`](../library/propagate.md#partitionedpaulisum)).
+
 
 ### A Hamiltonian
 

@@ -18,6 +18,7 @@ mod gpu;
 mod mpi;
 mod noise;
 mod partitioned;
+mod partitioned_algebra;
 mod pauli_string;
 mod storage;
 mod sum;

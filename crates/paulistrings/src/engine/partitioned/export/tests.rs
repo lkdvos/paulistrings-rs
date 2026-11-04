@@ -439,6 +439,17 @@ fn the_fill_splits_at_half_the_scan_work() {
     assert_eq!(split_at_half_work(&[0usize, 0, 0], 0, 2), 1);
 }
 
+/// A bucket that exports nothing costs no fill work, a scanned one its length, and a marked one its rows at [`MARKED_ROW_WORK`] each plus its mark words.
+#[test]
+fn the_fill_work_weighs_marked_rows() {
+    assert_eq!(fill_work(1000, 0, false), 0);
+    assert_eq!(fill_work(1000, 0, true), 0);
+    assert_eq!(fill_work(1000, 3, false), 1000);
+    assert_eq!(fill_work(1000, 3, true), 3 * MARKED_ROW_WORK + 15);
+    // A marked bucket of many rows outweighs scanning it, so a marked fill splits by rows.
+    assert!(fill_work(1000, 100, true) > fill_work(1000, 100, false));
+}
+
 /// Splitting the fill down to single positions gives the same payload as filling each block on one thread.
 #[test]
 fn a_fully_split_fill_equals_an_unsplit_one() {

@@ -96,19 +96,11 @@ impl BoundaryCut {
         b: usize,
         columns: &mut BucketColumns<W, C>,
     ) {
-        let mut remaining = self.quotas[b];
+        let mut filter = self.bucket_filter(b);
         let mut kept = 0usize;
         for row in 0..columns.len() {
             let (x, z, c) = (columns.x[row], columns.z[row], columns.coeff[row]);
-            let keep = match classify_octave(c.norm_sqr(), self.bin) {
-                Ordering::Greater => true,
-                Ordering::Equal if remaining > 0 => {
-                    remaining -= 1;
-                    true
-                }
-                Ordering::Equal | Ordering::Less => false,
-            };
-            if keep {
+            if filter.keep(c) {
                 columns.x[kept] = x;
                 columns.z[kept] = z;
                 columns.coeff[kept] = c;
@@ -118,6 +110,52 @@ impl BoundaryCut {
         columns.x.truncate(kept);
         columns.z.truncate(kept);
         columns.coeff.truncate(kept);
+    }
+
+    /// Bucket `b`'s keep test, to be asked of its terms in bucket order, as [`apply_to_bucket`](Self::apply_to_bucket) asks it.
+    pub(crate) fn bucket_filter(&self, b: usize) -> CutFilter {
+        CutFilter { bin: self.bin, remaining: self.quotas[b] }
+    }
+}
+
+/// Which of a bucket's terms survive a cut, asked of every term of the bucket in order.
+pub(crate) trait TermFilter {
+    /// Whether every term survives, so a caller may skip reading coefficients.
+    const KEEPS_ALL: bool;
+    fn keep<C: Coefficient>(&mut self, coeff: C) -> bool;
+}
+
+/// No cut pending.
+pub(crate) struct KeepAll;
+
+impl TermFilter for KeepAll {
+    const KEEPS_ALL: bool = true;
+
+    #[inline(always)]
+    fn keep<C: Coefficient>(&mut self, _coeff: C) -> bool {
+        true
+    }
+}
+
+/// One bucket's [`BoundaryCut`]: terms above `bin`, and the first `remaining` at it.
+pub(crate) struct CutFilter {
+    bin: usize,
+    remaining: usize,
+}
+
+impl TermFilter for CutFilter {
+    const KEEPS_ALL: bool = false;
+
+    #[inline(always)]
+    fn keep<C: Coefficient>(&mut self, coeff: C) -> bool {
+        match classify_octave(coeff.norm_sqr(), self.bin) {
+            Ordering::Greater => true,
+            Ordering::Equal if self.remaining > 0 => {
+                self.remaining -= 1;
+                true
+            }
+            Ordering::Equal | Ordering::Less => false,
+        }
     }
 }
 

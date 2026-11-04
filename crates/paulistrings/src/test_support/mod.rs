@@ -69,5 +69,29 @@ pub fn mpi_build_library_version() -> &'static str {
     crate::mpi::MpiTransport::build_library_version()
 }
 
+/// A cut of `sum` at its median octave keeping about half of that octave, the first terms of it in bucket order, as an `ApproxTopN` layer pass would leave pending.
+#[cfg(test)]
+pub(crate) fn median_octave_cut<const W: usize, C: crate::Coefficient>(
+    sum: &crate::PauliSum<W, C>,
+) -> crate::truncation::octave_window::BoundaryCut {
+    use crate::truncation::builtin::{bucket_quotas, octave};
+    let mut octaves: Vec<usize> = sum.iter().map(|(_, _, c)| octave(c.norm_sqr())).collect();
+    octaves.sort_unstable();
+    let bin = octaves.get(octaves.len() / 2).copied().unwrap_or(0);
+    let mut boundary_counts = Vec::with_capacity(sum.num_buckets());
+    let mut above = 0usize;
+    for b in 0..sum.num_buckets() {
+        let coefficients = sum.bucket(b).2;
+        boundary_counts.push(coefficients.iter().filter(|c| octave(c.norm_sqr()) == bin).count());
+        above += coefficients.iter().filter(|c| octave(c.norm_sqr()) > bin).count();
+    }
+    let quota = boundary_counts.iter().sum::<usize>() / 2;
+    crate::truncation::octave_window::BoundaryCut {
+        bin,
+        quotas: bucket_quotas(&boundary_counts, quota),
+        kept: above + quota,
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -121,7 +121,7 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// `ApproxTopN` with rescale layers between rotations: the deferred cut is applied by the next coset loop, a rescale, an exchange's export, a rebucket, or the end of the call.
+/// `ApproxTopN` with rescale layers between rotations: the deferred cut is applied by the next coset loop (an exchange's export reading around it), a rescale, a rebucket, or the end of the call.
 #[test]
 fn approx_top_n_through_rescale_layers_matches_propagate() {
     let mut circuit = Circuit::<1>::new(32);

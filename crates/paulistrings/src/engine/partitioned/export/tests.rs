@@ -53,7 +53,8 @@ fn export_all<const W: usize>(
             let plan = PartitionPlan::new(&prepared, rows, rank);
             let mut scratch = ExportScratch::default();
             let order = order_for(&plan, local.num_buckets());
-            let (send, counts) = export_layer(&local, &prepared, &plan, size, &order, &mut scratch);
+            let (send, counts) =
+                export_layer(&local, None, &prepared, &plan, size, &order, &mut scratch);
             assert!(send[rank as usize].is_none(), "a partition exports to itself");
             assert_eq!(send.len(), size as usize);
             Exported { rank, send, counts }
@@ -200,8 +201,15 @@ fn every_segment_holds_the_rows_of_its_destination_bucket() {
                         let plan = PartitionPlan::new(&prepared, &rows, rank);
                         let order = order_for(&plan, local.num_buckets());
                         let mut scratch = ExportScratch::default();
-                        let (send, _) =
-                            export_layer(&local, &prepared, &plan, size, &order, &mut scratch);
+                        let (send, _) = export_layer(
+                            &local,
+                            None,
+                            &prepared,
+                            &plan,
+                            size,
+                            &order,
+                            &mut scratch,
+                        );
                         for payload in send.iter().flatten() {
                             for block in &payload.blocks {
                                 for p in 0..block.num_buckets() {
@@ -377,16 +385,17 @@ fn a_reused_scratch_gives_the_same_export() {
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let wide_local = whole.filter_partition(&rows, 0);
     let order = order_for(&plan, wide_local.num_buckets());
-    let _ = export_layer(&wide_local, &prepared, &plan, 4, &order, &mut scratch);
+    let _ = export_layer(&wide_local, None, &prepared, &plan, 4, &order, &mut scratch);
 
     let h = PtmChannel::hadamard(3);
     let prepared = Prepare::<1>::prepare(&h, whole.hash(), false).unwrap();
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let local = whole.filter_partition(&rows, 0);
     let order = order_for(&plan, local.num_buckets());
-    let (reused, counts_reused) = export_layer(&local, &prepared, &plan, 4, &order, &mut scratch);
+    let (reused, counts_reused) =
+        export_layer(&local, None, &prepared, &plan, 4, &order, &mut scratch);
     let (fresh, counts_fresh) =
-        export_layer(&local, &prepared, &plan, 4, &order, &mut ExportScratch::default());
+        export_layer(&local, None, &prepared, &plan, 4, &order, &mut ExportScratch::default());
     assert_eq!(counts_reused, counts_fresh);
     assert_eq!(reused.len(), fresh.len());
     for (a, b) in reused.iter().zip(&fresh) {
@@ -426,6 +435,7 @@ fn a_fully_split_fill_equals_an_unsplit_one() {
                     let mut scratch = ExportScratch::default();
                     export_layer_with(
                         &local,
+                        None,
                         &prepared,
                         &plan,
                         size,
@@ -441,4 +451,61 @@ fn a_fully_split_fill_equals_an_unsplit_one() {
             }
         }
     }
+}
+
+/// Under a pending cut every partition exports exactly what it exports once the cut is applied, at every split of the fill.
+fn assert_a_pending_cut_exports_the_cut_sum<const W: usize>(
+    input: &PauliSum<W>,
+    channels: &[(&'static str, Box<dyn Channel<W>>)],
+) {
+    let num_qubits = input.num_qubits();
+    for (name, channel) in channels {
+        for &pbits in &[1u8, 2] {
+            let rows = PartitionRows::<W>::from_seed(num_qubits, pbits, 0x7777);
+            let whole = input.clone().with_hash(Gf2Hash::<W>::new(num_qubits, 5, 0xAB));
+            let prepared = channel.prepare(whole.hash(), false).expect("prepare");
+            let size = rows.num_partitions() as u32;
+            for rank in 0..size {
+                let local = whole.filter_partition(&rows, rank);
+                let cut = crate::test_support::median_octave_cut(&local);
+                let mut cut_local = local.clone();
+                cut.apply(&mut cut_local);
+                assert!(cut_local.len() < local.len(), "{name}: the fixture must drop terms");
+                let plan = PartitionPlan::new(&prepared, &rows, rank);
+                let order = order_for(&plan, local.num_buckets());
+                for min_terms in [0, usize::MAX] {
+                    let export = |sum: &PauliSum<W>, cut| {
+                        let mut scratch = ExportScratch::default();
+                        export_layer_with(
+                            sum,
+                            cut,
+                            &prepared,
+                            &plan,
+                            size,
+                            &order,
+                            &mut scratch,
+                            min_terms,
+                        )
+                    };
+                    let (deferred, deferred_counts) = export(&local, Some(&cut));
+                    let (applied, applied_counts) = export(&cut_local, None);
+                    let what = format!("{name} p={pbits} rank={rank} min_terms={min_terms}");
+                    assert_eq!(deferred_counts, applied_counts, "{what}");
+                    assert_eq!(deferred, applied, "{what}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_pending_cut_exports_the_cut_sum_w1() {
+    let input = rand_sum::<1>(3000, 8, 0x9C7);
+    assert_a_pending_cut_exports_the_cut_sum(&input, &differential_channels_w1());
+}
+
+#[test]
+fn a_pending_cut_exports_the_cut_sum_w2() {
+    let input = rand_sum::<2>(3000, 128, 0x9C8);
+    assert_a_pending_cut_exports_the_cut_sum(&input, &differential_channels_w2());
 }

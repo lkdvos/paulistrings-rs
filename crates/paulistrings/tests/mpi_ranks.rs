@@ -373,6 +373,7 @@ impl Runner<'_> {
                     );
                 }
                 // Above one rank some export reads the counts ahead under a pending cut; the plain pass leaves none.
+                // Not per partition: these ranks hold one bucket, which a local cut always splits.
                 let ahead =
                     [got, want].map(|split| buckets_exported_ahead_under_cut_on_rank(&split));
                 let mut total = [0u64; 2];
@@ -381,7 +382,10 @@ impl Runner<'_> {
                     "{name} per_partition={per_partition} ranks={} {direction:?}",
                     self.size
                 );
-                assert!(self.size == 1 || total[0] > 0, "{what}: no export read the counts ahead");
+                assert!(
+                    self.size == 1 || per_partition || total[0] > 0,
+                    "{what}: no export read the counts ahead"
+                );
                 assert_eq!(total[1], 0, "{what}: the plain layer pass left counts ahead");
             }
         }

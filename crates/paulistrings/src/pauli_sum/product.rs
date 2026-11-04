@@ -99,12 +99,18 @@ impl<'a, const W: usize, C: Coefficient> Job<'a, W, C> {
         pairing: Pairing,
         generator_left: bool,
     ) -> Self {
-        Self {
-            groups: Groups::new(generator, &operand.hash),
-            operand,
-            index: (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(operand)),
-            generator_left,
-        }
+        let index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(operand));
+        Self::with_index(generator, operand, index, generator_left)
+    }
+
+    /// [`Job::new`] with `operand`'s support index already built, which must be `Some` exactly for a Liouvillian.
+    pub(crate) fn with_index(
+        generator: impl Iterator<Item = Entry<W, C>>,
+        operand: &'a PauliSum<W, C>,
+        index: Option<SupportIndex>,
+        generator_left: bool,
+    ) -> Self {
+        Self { groups: Groups::new(generator, &operand.hash), operand, index, generator_left }
     }
 
     /// Every pair of this job landing in output bucket `out`, accumulated into `table`.

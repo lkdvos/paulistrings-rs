@@ -194,3 +194,63 @@ fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
         assert_terms_close(&split.gather(), &want, TOL, &format!("step {step}"));
     }
 }
+
+/// The first `steps` Lanczos coefficients `b_n` of `i[h, ·]` from `seed`, by the recursion `A = L(O_n) − b_n·O_{n−1}`, `b_{n+1} = ‖A‖`; `a_n` vanishes for Hermitian `h` and `O`.
+fn lanczos_one_process(h: &PauliSum<1, f64>, seed: &PauliSum<1, f64>, steps: usize) -> Vec<f64> {
+    let policy = CoefficientThreshold(1e-10);
+    let mut current = seed.clone();
+    current.scale(1.0 / current.overlap(&current).sqrt());
+    let mut previous = PauliSum::<1, f64>::empty(seed.num_qubits());
+    let mut b = vec![0.0];
+    for _ in 0..steps {
+        let mut next = h.liouvillian_with(&current, &policy);
+        let mut scaled = previous.clone();
+        scaled.scale(-b[b.len() - 1]);
+        next = next.add(&scaled);
+        let norm = next.overlap(&next).sqrt();
+        next.scale(1.0 / norm);
+        b.push(norm);
+        previous = std::mem::replace(&mut current, next);
+    }
+    b.split_off(1)
+}
+
+fn chain_and_seed() -> (PauliSum<1, f64>, PauliSum<1, f64>) {
+    let mut h = paulistrings::BuildAccumulator::<1, f64>::new(NQ);
+    for j in 0..NQ - 1 {
+        for f in [PauliString::<1>::x, PauliString::<1>::y, PauliString::<1>::z] {
+            let mut p = f(j);
+            p.mul_assign(&f(j + 1));
+            h.add_term(p, 1.0);
+        }
+        h.add_term(PauliString::<1>::z(j), 0.3);
+    }
+    let mut seed = paulistrings::BuildAccumulator::<1, f64>::new(NQ);
+    seed.add_term(PauliString::<1>::z(NQ / 2), 1.0);
+    (h.finalize(), seed.finalize())
+}
+
+#[test]
+fn lanczos_coefficients_agree_split_in_process() {
+    let (h, seed) = chain_and_seed();
+    let want = lanczos_one_process(&h, &seed, 8);
+    let policy = CoefficientThreshold(1e-10);
+    let mut current =
+        PartitionedSum::scatter(seed, &config(4)).expect("an unpinned config resolves");
+    current.scale(1.0 / current.overlap(&current).sqrt());
+    let mut previous: Option<PartitionedSum<1, f64>> = None;
+    let mut got: Vec<f64> = Vec::new();
+    for _ in 0..want.len() {
+        let mut next = current.liouvillian_with(&h, &policy);
+        if let Some(previous) = &previous {
+            next.add_assign_scaled(previous, -got[got.len() - 1]);
+        }
+        let norm: f64 = next.overlap(&next).sqrt();
+        next.scale(1.0 / norm);
+        got.push(norm);
+        previous = Some(std::mem::replace(&mut current, next));
+    }
+    for (n, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert!((g - w).abs() < 1e-9 * w, "b_{}: {g} vs {w}", n + 1);
+    }
+}

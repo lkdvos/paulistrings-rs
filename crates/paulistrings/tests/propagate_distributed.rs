@@ -699,3 +699,83 @@ fn ranks_repartitioning_by_different_rows_are_caught() {
         split.repartition(PartitionRows::from_seed(n, 1, 8));
     });
 }
+
+/// A Heisenberg chain with a `Z` field and `Z` on the middle qubit, both real.
+fn chain_and_seed(num_qubits: usize) -> (PauliSum<1, f64>, PauliSum<1, f64>) {
+    let mut h = BuildAccumulator::<1, f64>::new(num_qubits);
+    for j in 0..num_qubits - 1 {
+        for f in [PauliString::<1>::x, PauliString::<1>::y, PauliString::<1>::z] {
+            let mut p = f(j);
+            p.mul_assign(&f(j + 1));
+            h.add_term(p, 1.0);
+        }
+        h.add_term(PauliString::<1>::z(j), 0.3);
+    }
+    let mut seed = BuildAccumulator::<1, f64>::new(num_qubits);
+    seed.add_term(PauliString::<1>::z(num_qubits / 2), 1.0);
+    (h.finalize(), seed.finalize())
+}
+
+#[test]
+fn lanczos_coefficients_agree_across_ranks() {
+    let (num_qubits, steps, size) = (16, 8, 4u32);
+    let (h, seed) = chain_and_seed(num_qubits);
+    let policy = CoefficientThreshold(1e-10);
+
+    let mut want = Vec::new();
+    let (mut previous, mut current) = (PauliSum::<1, f64>::empty(num_qubits), seed.clone());
+    for _ in 0..steps {
+        let mut next = h.liouvillian_with(&current, &policy);
+        let mut scaled = previous.clone();
+        scaled.scale(-want.last().copied().unwrap_or(0.0));
+        next = next.add(&scaled);
+        let norm = next.overlap(&next).sqrt();
+        next.scale(1.0 / norm);
+        want.push(norm);
+        previous = std::mem::replace(&mut current, next);
+    }
+
+    // One fresh endpoint per rank for every sum a step builds, handed out in rank order.
+    let mut endpoints: Vec<Vec<InProcessTransport>> = (0..size).map(|_| Vec::new()).collect();
+    for _ in 0..steps {
+        for (rank, endpoint) in InProcessTransport::group(size).into_iter().enumerate() {
+            endpoints[rank].push(endpoint);
+        }
+    }
+    let got: Vec<Vec<f64>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = InProcessTransport::group(size)
+            .into_iter()
+            .zip(endpoints)
+            .map(|(transport, endpoints)| {
+                let (h, seed, policy) = (&h, &seed, &policy);
+                scope.spawn(move || {
+                    let mut current = DistributedSum::scatter_with(
+                        seed.clone(),
+                        transport,
+                        unpinned_scatter(1, 2, 0x5EED),
+                    );
+                    let mut previous: Option<DistributedSum<1, InProcessTransport, f64>> = None;
+                    let mut b: Vec<f64> = Vec::new();
+                    for endpoint in endpoints {
+                        let mut next = current.liouvillian_with(h, policy, endpoint);
+                        if let Some(previous) = &previous {
+                            next.add_assign_scaled(previous, -b[b.len() - 1]);
+                        }
+                        let norm = next.overlap(&next).sqrt();
+                        next.scale(1.0 / norm);
+                        b.push(norm);
+                        previous = Some(std::mem::replace(&mut current, next));
+                    }
+                    b
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("rank thread panicked")).collect()
+    });
+    for (rank, b) in got.iter().enumerate() {
+        assert_eq!(b, &got[0], "rank {rank} disagrees with rank 0");
+        for (n, (g, w)) in b.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-9 * w, "rank {rank} b_{}: {g} vs {w}", n + 1);
+        }
+    }
+}

@@ -685,5 +685,6 @@ pub(super) fn decode_rank<const W: usize, C: Coefficient>(
     PauliSum::from_bucket_columns(&lens, x, z, coeff, hash, num_qubits)
 }
 
+mod algebra;
 #[cfg(test)]
 mod tests;

@@ -7,13 +7,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lkdvos/paulistrings-rs"
 
 [workspace.dependencies]
-paulistrings = { path = "crates/paulistrings", version = "0.2.0" }
+paulistrings = { path = "crates/paulistrings", version = "0.3.0" }
 
 [profile.release]
 lto = "fat"

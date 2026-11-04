@@ -77,6 +77,17 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
         total
     }
 
+    /// The counters [`Self::take_phase_stats`] would drain, left in place.
+    #[cfg(feature = "phase-timing")]
+    pub(crate) fn peek_phase_stats(&self) -> PhaseStats {
+        let mut total = self.stats;
+        total.absorb_coset(&self.task.stats);
+        for slot in &self.workers {
+            total.absorb_coset(&slot.lock().unwrap().stats);
+        }
+        total
+    }
+
     /// Start recording a one-partition [`PartitionTrace`] on every later propagation driven by this scratch; idempotent.
     pub fn enable_trace(&mut self) {
         self.trace.get_or_insert_with(PartitionTrace::default);

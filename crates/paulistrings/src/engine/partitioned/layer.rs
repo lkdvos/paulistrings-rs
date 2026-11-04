@@ -14,11 +14,12 @@ use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::knob::{parse_positive, Knob};
 use crate::engine::merge::rest_rows_per_key;
 use crate::engine::plan::PartitionPlan;
-use crate::engine::timing::{lap, stamp, tally, timed};
+use crate::engine::timing::{tally, timed};
 use crate::engine::transport::{ChunkMap, ChunkWait, Transport};
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
+use std::time::Instant;
 
 /// Chunks a layer's bulk transfer is cut into by default; not derived from the thread count, since both sides must cut a block alike.
 const DEFAULT_EXCHANGE_CHUNKS: usize = 8;
@@ -141,6 +142,10 @@ pub(crate) struct LayerExchangeCounts {
     pub rows_received: u64,
     /// Chunks the received rows moved in; zero after a layer without an exchange.
     pub receive_chunks: u32,
+    /// [`LayerPhases::export_ns`](crate::LayerPhases::export_ns), zero unless the layer was timed.
+    pub export_ns: u64,
+    /// [`LayerPhases::exchange_ns`](crate::LayerPhases::exchange_ns), zero unless the layer was timed.
+    pub exchange_ns: u64,
 }
 
 impl LayerExchangeCounts {
@@ -152,11 +157,14 @@ impl LayerExchangeCounts {
             bytes_sent: vec![0; size as usize],
             rows_received: 0,
             receive_chunks: 0,
+            export_ns: 0,
+            exchange_ns: 0,
         }
     }
 }
 
-/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`.
+/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`, and `clocked` fills the counts' phase times.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, C: Coefficient, T, X>(
     local: &mut PauliSum<W, C>,
     prepared: &Prepared<W, C>,
@@ -165,6 +173,7 @@ pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, C: Co
     policy: &T,
     state: &mut PartitionState<W, C>,
     transport: &X,
+    clocked: bool,
 ) -> LayerExchangeCounts
 where
     T: TruncationPolicy<W, C> + ?Sized,
@@ -178,14 +187,16 @@ where
         return LayerExchangeCounts::default();
     }
 
-    stamp!(stamp);
+    let measured = clocked || cfg!(feature = "phase-timing");
+    let export_start = measured.then(Instant::now);
     // The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count; the coset loop reuses it.
     let span = Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits());
     let mut order = std::mem::take(&mut state.layer.order);
     order.rebuild(&span, true);
     state.chunks = ChunkMap::of_order(&order, *EXCHANGE_CHUNKS.get());
     let (send, mut counts) = export_layer(local, prepared, plan, size, &order, &mut state.export);
-    lap!(stamp, state.layer.stats.export_ns);
+    let export_ns = export_start.map_or(0, |start| start.elapsed().as_nanos() as u64);
+    tally!(state.layer.stats.export_ns, export_ns);
     tally!(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());
     #[cfg(debug_assertions)]
     {
@@ -224,13 +235,13 @@ where
     };
 
     let PartitionState { layer: layer_scratch, export: export_scratch, chunks: map } = state;
-    timed!(let body_ns = std::cell::Cell::new(0u64));
-    timed!(let exchange_start = std::time::Instant::now());
+    let body_ns = std::cell::Cell::new(0u64);
+    let exchange_start = measured.then(Instant::now);
 
     // The rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
     let (received, rows_received) =
         transport.exchange_layer(send, &mut export_scratch.pool, map, |received, wait| {
-            timed!(let body_start = std::time::Instant::now());
+            let body_start = measured.then(Instant::now);
             #[cfg(debug_assertions)]
             for block in received.iter().flatten().flat_map(|payload| &payload.blocks) {
                 debug_assert_eq!(
@@ -265,22 +276,25 @@ where
                 layer_scratch.stats.chunk_wait_ns += received_rows
                     .chunk_wait_ns
                     .load(std::sync::atomic::Ordering::Relaxed);
-                body_ns.set(body_start.elapsed().as_nanos() as u64);
+            }
+            if let Some(start) = body_start {
+                body_ns.set(start.elapsed().as_nanos() as u64);
             }
             rows_received
         });
-    timed! {
-        // Excludes the body it wraps: the transfer the coset loop did not hide.
-        layer_scratch.stats.exchange_ns +=
-            exchange_start.elapsed().as_nanos() as u64 - body_ns.get();
-        stamp.rearm();
-    }
+    // Excludes the body it wraps: the transfer the coset loop did not hide.
+    let exchange_ns = exchange_start
+        .map_or(0, |start| (start.elapsed().as_nanos() as u64).saturating_sub(body_ns.get()));
+    tally!(layer_scratch.stats.exchange_ns, exchange_ns);
     export_scratch.pool.extend(received.into_iter().flatten());
     layer_scratch.order = order;
 
     counts.remote_deltas = plan.remote.len();
     counts.rows_received = rows_received;
     counts.receive_chunks = map.chunks() as u32;
+    if clocked {
+        (counts.export_ns, counts.exchange_ns) = (export_ns, exchange_ns);
+    }
     counts
 }
 

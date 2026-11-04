@@ -374,6 +374,21 @@ def test_stats_name_the_group(observable, circuit, reference):
         assert len(got) == len(reference)
 
 
+def test_each_rank_reports_its_own_phases(observable, circuit):
+    stats = observable.copy().propagate_with_stats(circuit, POLICY, comm=COMM)
+    part = stats.partition
+    for name in ("collective_ns", "export_ns", "exchange_ns", "coset_loop_ns"):
+        assert all(len(row) == 1 for row in getattr(part, name)), name
+    for k in range(stats.layers):
+        coarse = (part.rebucket_ns, part.prepare_ns, part.collective_ns, part.export_ns)
+        coarse += (part.exchange_ns, part.coset_loop_ns, part.finalize_ns)
+        assert sum(field[k][0] for field in coarse) <= part.nanos[k][0]
+        if part.local[k]:
+            assert part.export_ns[k] == [0] and part.exchange_ns[k] == [0]
+        elif SIZE > 1:
+            assert part.export_ns[k][0] > 0
+
+
 def test_stats_repr_names_rank_and_size(observable, circuit):
     stats = observable.copy().propagate_with_stats(circuit, POLICY, comm=COMM)
     text = repr(stats.partition)

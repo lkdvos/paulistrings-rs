@@ -38,7 +38,9 @@ pub use engine::partitioned::{
 pub use engine::stats::PartitionPhaseStats;
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PhaseStats;
-pub use engine::trace::{DeviceLayerRecord, PartitionLayerRecord, PartitionTrace};
+pub use engine::trace::{
+    DeviceLayerRecord, FineLayerPhases, LayerPhases, PartitionLayerRecord, PartitionTrace,
+};
 pub use engine::transport::Transport;
 pub use engine::{propagate, propagate_with, Direction, PropagateOptions};
 pub use pauli_string::PauliString;

@@ -108,7 +108,15 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         let items: Vec<_> =
             self.parts.iter_mut().zip(&operand.parts).map(|(d, o)| (&mut d.sum, &o.sum)).collect();
         let traced = self.runtime.map_partitions(items, |_, (dest, share), transport| {
-            vec![pair_share_into(dest, generator, share, rows, transport, (pairing, weights), policy)]
+            vec![pair_share_into(
+                dest,
+                generator,
+                share,
+                rows,
+                transport,
+                (pairing, weights),
+                policy,
+            )]
         });
         if let Some(trace) = self.trace.as_mut() {
             let partners = traced.len();

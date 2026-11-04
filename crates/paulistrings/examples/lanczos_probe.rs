@@ -138,7 +138,9 @@ fn parse_args(args: &[String]) -> Result<Config, String> {
                     "blocks" => Rows::Blocks,
                     "xblocks" => Rows::XBlocks,
                     other => {
-                        return Err(format!("--rows: expected seeded, blocks or xblocks, got {other}"))
+                        return Err(format!(
+                            "--rows: expected seeded, blocks or xblocks, got {other}"
+                        ))
                     }
                 }
             }
@@ -222,7 +224,8 @@ fn runtime(cfg: &Config, partitions: usize) -> std::sync::Arc<PartitionRuntime> 
     } else {
         Placement::Auto { max_partitions: Some(partitions) }
     };
-    let config = PartitionConfig { placement, bind_memory: true, threads_per_partition: cfg.threads };
+    let config =
+        PartitionConfig { placement, bind_memory: true, threads_per_partition: cfg.threads };
     let runtime = PartitionRuntime::new(&config).unwrap_or_else(|err| {
         eprintln!("lanczos_probe: cannot resolve the placement: {err}");
         std::process::exit(2);
@@ -239,7 +242,13 @@ fn runtime(cfg: &Config, partitions: usize) -> std::sync::Arc<PartitionRuntime> 
 
 /// The recursion's view of a held split, in one process or across ranks.
 trait Krylov {
-    fn step(&mut self, h: &PauliSum<1, f64>, current: &Self, beta: f64, policy: &CoefficientThreshold);
+    fn step(
+        &mut self,
+        h: &PauliSum<1, f64>,
+        current: &Self,
+        beta: f64,
+        policy: &CoefficientThreshold,
+    );
     fn norm(&self) -> f64;
     fn scale(&mut self, c: f64);
     fn total_len(&self) -> usize;
@@ -255,7 +264,13 @@ fn only_layer(trace: Option<PartitionTrace>) -> PartitionLayerRecord {
 }
 
 impl Krylov for PartitionedSum<1, f64> {
-    fn step(&mut self, h: &PauliSum<1, f64>, current: &Self, beta: f64, policy: &CoefficientThreshold) {
+    fn step(
+        &mut self,
+        h: &PauliSum<1, f64>,
+        current: &Self,
+        beta: f64,
+        policy: &CoefficientThreshold,
+    ) {
         self.add_liouvillian(h, current, 1.0, beta, policy);
     }
     fn norm(&self) -> f64 {
@@ -275,7 +290,13 @@ impl Krylov for PartitionedSum<1, f64> {
 
 #[cfg(feature = "mpi")]
 impl Krylov for paulistrings::DistributedSum<1, paulistrings::mpi::MpiTransport, f64> {
-    fn step(&mut self, h: &PauliSum<1, f64>, current: &Self, beta: f64, policy: &CoefficientThreshold) {
+    fn step(
+        &mut self,
+        h: &PauliSum<1, f64>,
+        current: &Self,
+        beta: f64,
+        policy: &CoefficientThreshold,
+    ) {
         self.add_liouvillian(h, current, 1.0, beta, policy);
     }
     fn norm(&self) -> f64 {
@@ -331,7 +352,15 @@ fn recurse<S: Krylov>(
         );
         println!(
             "{:>4} {:>12} {:>9} {:>9} {:>9} {:>9} {:>8} {:>8} {:>9} {:>9}",
-            "step", "terms", "b", "step_ms", "prod_ms", "xchg_ms", "shipped", "imbal", "sent_GB",
+            "step",
+            "terms",
+            "b",
+            "step_ms",
+            "prod_ms",
+            "xchg_ms",
+            "shipped",
+            "imbal",
+            "sent_GB",
             "rss_GB"
         );
     }
@@ -361,7 +390,8 @@ fn recurse<S: Krylov>(
         let terms_in = &buffer[..group];
         let input: u64 = terms_in.iter().sum();
         let mean = input as f64 / group as f64;
-        let imbalance = if mean > 0.0 { *terms_in.iter().max().unwrap_or(&0) as f64 / mean } else { 1.0 };
+        let imbalance =
+            if mean > 0.0 { *terms_in.iter().max().unwrap_or(&0) as f64 / mean } else { 1.0 };
         let product_ns = buffer[group..2 * group].iter().copied().max().unwrap_or(0);
         let exchange_ns = buffer[2 * group..3 * group].iter().copied().max().unwrap_or(0);
         let rss_kb: u64 = buffer[3 * group..4 * group].iter().sum();
@@ -444,7 +474,9 @@ fn over_ranks(cfg: &Config) {
     let (universe, threading) = rsmpi::initialize_with_threading(rsmpi::Threading::Serialized)
         .expect("MPI is initialized once");
     if threading < rsmpi::Threading::Serialized {
-        eprintln!("lanczos_probe: MPI provided {threading:?}, below the SERIALIZED the engine needs");
+        eprintln!(
+            "lanczos_probe: MPI provided {threading:?}, below the SERIALIZED the engine needs"
+        );
     }
     let world = universe.world();
     let (rank, size) = (world.rank() as u32, world.size() as usize);

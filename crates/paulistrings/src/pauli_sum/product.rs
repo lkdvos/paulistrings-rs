@@ -210,7 +210,8 @@ pub(crate) fn accumulate_into<const W: usize, C: Coefficient>(
 ) {
     for job in jobs {
         assert!(
-            job.operand.hash.same_rows_as(&dest.hash) && job.operand.hash.bits() == dest.hash.bits(),
+            job.operand.hash.same_rows_as(&dest.hash)
+                && job.operand.hash.bits() == dest.hash.bits(),
             "accumulate_into: operands partitioned differently from the destination",
         );
         assert_eq!(job.operand.num_qubits, dest.num_qubits, "accumulate_into: num_qubits mismatch");

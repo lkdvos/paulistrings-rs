@@ -267,7 +267,11 @@ macro_rules! dtype_pair {
 
 impl SplitImpl {
     /// `generator` at this split's dtype for `pairing`: a `TypeError` for a product into a real split, a `ValueError` for an imaginary part a real split cannot take.
-    fn generator_at_dtype(&self, generator: &PauliSumImpl, pairing: Pairing) -> PyResult<PauliSumImpl> {
+    fn generator_at_dtype(
+        &self,
+        generator: &PauliSumImpl,
+        pairing: Pairing,
+    ) -> PyResult<PauliSumImpl> {
         let dtype = self.dtype();
         if pairing == Pairing::Product && dtype.is_real() {
             return Err(PyTypeError::new_err(format!(

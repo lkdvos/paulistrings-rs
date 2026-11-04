@@ -890,9 +890,7 @@ impl PartitionedPauliSum {
             )));
         }
         let (inner, generator, that) = (&mut this.inner, &generator.inner, &*that);
-        slf.py().allow_threads(move || {
-            inner.add_paired(generator, that, pairing, weights, &policy)
-        })
+        slf.py().allow_threads(move || inner.add_paired(generator, that, pairing, weights, &policy))
     }
 }
 

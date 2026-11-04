@@ -1407,9 +1407,8 @@ impl PauliSum {
         this.check_same_qubits(&operand)?;
         let policy = PyTruncation::tree_of(policy);
         let (inner, generator, operand) = (&mut this.inner, &*generator, &*operand);
-        slf.py().allow_threads(move || {
-            inner.add_paired(generator, operand, pairing, weights, &policy)
-        })
+        slf.py()
+            .allow_threads(move || inner.add_paired(generator, operand, pairing, weights, &policy))
     }
 }
 

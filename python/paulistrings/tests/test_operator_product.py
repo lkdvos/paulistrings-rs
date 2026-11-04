@@ -132,6 +132,11 @@ def test_a_product_takes_a_policy_too():
     assert identity_only.identity_coefficient() == pytest.approx(h.product(o).identity_coefficient())
 
 
+def _cpus(partitions):
+    """One CPU per partition, so two partitions place on a host with one NUMA domain too."""
+    return [[cpu] for cpu in range(partitions)]
+
+
 def _chain(n, field=0.3):
     terms = {}
     for j in range(n - 1):
@@ -186,20 +191,20 @@ def test_lanczos_on_a_split_agrees_with_one_process(partitions):
     seed = _chain_seed(n)
     policy = truncation.coeff(1e-10)
     want = _lanczos(h, seed, 8, policy)
-    got = _lanczos(h, seed.partition(partitions=partitions), 8, policy)
+    got = _lanczos(h, seed.partition(partitions=_cpus(partitions)), 8, policy)
     np.testing.assert_allclose(got, want, rtol=1e-10)
-    got = _lanczos_in_place(h, seed.partition(partitions=partitions), 8, policy)
+    got = _lanczos_in_place(h, seed.partition(partitions=_cpus(partitions)), 8, policy)
     np.testing.assert_allclose(got, want, rtol=1e-10)
 
 
 def test_a_split_product_gathers_to_the_whole_product():
     h, o = _chain_operands()
-    split = o.astype("complex128").partition(partitions=2)
+    split = o.astype("complex128").partition(partitions=_cpus(2))
     hc = h.astype("complex128")
     for got, want in [
         ((hc @ split).gather(), hc @ o),
-        (h.liouvillian(o.partition(partitions=2)).gather(), h.liouvillian(o)),
-        (h.anticommutator(o.partition(partitions=2)).gather(), h.anticommutator(o)),
+        (h.liouvillian(o.partition(partitions=_cpus(2))).gather(), h.liouvillian(o)),
+        (h.anticommutator(o.partition(partitions=_cpus(2))).gather(), h.anticommutator(o)),
     ]:
         assert len(got) == len(want)
         np.testing.assert_allclose(np.sort(np.abs(got.coefficients_array())), np.sort(np.abs(want.coefficients_array())))
@@ -208,7 +213,7 @@ def test_a_split_product_gathers_to_the_whole_product():
 
 def test_split_linear_algebra_matches_whole_sums():
     h, o = _chain_operands()
-    a = o.partition(partitions=2)
+    a = o.partition(partitions=_cpus(2))
     b = h.liouvillian(a)
     whole_a, whole_b = o, h.liouvillian(o)
     assert a.overlap(b) == pytest.approx(whole_a.overlap(whole_b))
@@ -223,13 +228,13 @@ def test_split_linear_algebra_matches_whole_sums():
 
 def test_split_operands_reject_what_they_cannot_hold():
     h, o = _chain_operands()
-    split = o.partition(partitions=2)
+    split = o.partition(partitions=_cpus(2))
     with pytest.raises(TypeError, match="complex"):
         h.product(split)
     with pytest.raises(NotImplementedError):
         h.liouvillian(split, policy=truncation.topn(3))
     with pytest.raises(ValueError, match="dtypes differ"):
-        split.overlap(o.astype("complex128").partition(partitions=2))
+        split.overlap(o.astype("complex128").partition(partitions=_cpus(2)))
     with pytest.raises(ValueError, match="num_qubits mismatch"):
         PauliSum.from_strings({"XX": 1.0}, num_qubits=2).liouvillian(split)
     with pytest.raises(ValueError, match="imaginary"):
@@ -328,7 +333,7 @@ def test_destination_products_reject_what_they_cannot_hold():
 @pytest.mark.parametrize("partitions", [1, 2])
 def test_split_destinations_match_whole_sums(partitions):
     h, o = _chain_operands()
-    a = o.partition(partitions=partitions)
+    a = o.partition(partitions=_cpus(partitions))
     y = h.liouvillian(a)
     y.add(a, alpha=0.5, beta=-2.0)
     assert _close(y.gather(), o * 0.5 + h.liouvillian(o) * -2.0)
@@ -342,4 +347,4 @@ def test_split_destinations_match_whole_sums(partitions):
     with pytest.raises(NotImplementedError):
         y.add_liouvillian(h, a, policy=truncation.topn(3))
     with pytest.raises(ValueError, match="dtypes differ"):
-        y.add(o.astype("complex128").partition(partitions=partitions))
+        y.add(o.astype("complex128").partition(partitions=_cpus(partitions)))

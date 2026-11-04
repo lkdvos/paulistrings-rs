@@ -56,15 +56,16 @@ All five array/list accessors return the sum's canonical order (partition-bucket
 | `a + b`, `a - b` | a new sum, coefficients combined on matching strings and the rest kept, at NumPy's promotion of the two dtypes |
 | `a += b`, `a -= b` | the same merge and dtype, in place |
 | `a * c`, `c * a`, `a *= c` | every coefficient scaled by a complex or real `c`, at `a`'s dtype |
-| `a @ b`, `a.product(b)` | the operator product $AB$, complex at the precision of NumPy's promotion of the two dtypes |
-| `a.liouvillian(b)` | $i[A, B]$, from anticommuting string pairs only, at the promotion of the two dtypes |
-| `a.anticommutator(b)` | $\{A, B\}$, from commuting string pairs only, at the promotion of the two dtypes |
+| `a @ b`, `a.product(b, policy=None)` | the operator product $AB$, complex at the precision of NumPy's promotion of the two dtypes |
+| `a.liouvillian(b, policy=None)` | $i[A, B]$, from anticommuting string pairs only, at the promotion of the two dtypes |
+| `a.anticommutator(b, policy=None)` | $\{A, B\}$, from commuting string pairs only, at the promotion of the two dtypes |
 
 Both operands of `+`/`-` and of the products must have the same `num_qubits`; anything else is a `ValueError`.
 A real-dtype `a` raises `ValueError` on a `c` with a nonzero imaginary part.
 Terms whose coefficients cancel exactly are dropped, as is every term when `c` is exactly zero.
 `*` is scalar-only; the operator product is `@`.
 For Hermitian operands `liouvillian` and `anticommutator` are Hermitian, so a real dtype stays real.
+`policy` truncates a product as one propagation layer: a filter sees each string's summed coefficient, and a layer pass such as `topn` runs once on the result.
 
 ## Saving, loading, importing
 

@@ -1328,10 +1328,17 @@ impl PauliSum {
         Ok(())
     }
 
-    /// The operator product `pairing` names, at the promoted dtype, with the GIL released.
-    fn paired(&self, py: Python<'_>, other: &PauliSumImpl, pairing: Pairing) -> PyResult<Self> {
+    /// The operator product `pairing` names, at the promoted dtype and truncated by `policy` as one layer, with the GIL released.
+    fn paired(
+        &self,
+        py: Python<'_>,
+        other: &PauliSumImpl,
+        pairing: Pairing,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<Self> {
         self.check_same_qubits(other)?;
-        let inner = py.allow_threads(|| self.inner.pair_promoted(other, pairing));
+        let policy = PyTruncation::tree_of(policy);
+        let inner = py.allow_threads(|| self.inner.pair_promoted(other, pairing, &policy));
         Ok(Self::plain(inner.ok_or_else(width_mismatch)?))
     }
 
@@ -1835,43 +1842,64 @@ impl PauliSum {
     /// The operator product `self @ other`, with every pair of strings multiplied and equal strings summed.
     ///
     /// The result is complex at the operands' precision, since a product of anticommuting Pauli strings carries a factor of `i`.
-    /// It costs one string product per pair of terms; for a commutator with a Hermitian generator use `liouvillian`, which does half the work and keeps a real dtype real.
+    /// It costs one string product per pair of terms; for a commutator with a Hermitian generator use `liouvillian`, which does less work and keeps a real dtype real.
+    /// `policy` truncates the result as one propagation layer would: a filter sees each string's summed coefficient, and a layer pass such as `topn` runs once on the result.
     ///
     /// ```python
     /// x = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     /// z = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     /// x.product(z)                             # -1j * Y
     /// ```
-    fn product(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
-        self.paired(py, &other.inner, Pairing::Product)
+    #[pyo3(signature = (other, policy=None))]
+    fn product(
+        &self,
+        py: Python<'_>,
+        other: &Self,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<Self> {
+        self.paired(py, &other.inner, Pairing::Product, policy)
     }
 
     /// `self @ other`, the operator product; see `product`.
     fn __matmul__(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
-        self.product(py, other)
+        self.product(py, other, None)
     }
 
     /// The Liouvillian `i[self, other] = i(self @ other - other @ self)`, the step of a Lanczos recursion or a Heisenberg-picture Taylor series with generator `self`.
     ///
     /// Only anticommuting string pairs contribute.
     /// For Hermitian `self` and `other` the result is Hermitian, so a real dtype stays real; the dtype is the operands' promotion.
-    /// The work is one string product per anticommuting pair, so a small generator against a large operator costs about `len(self) * len(other) / 2` products.
+    /// Only pairs acting on a common qubit are visited, so a local generator against a large operator costs far fewer than `len(self) * len(other)` string products.
+    /// `policy` truncates the result as `product`'s does; a nested commutator of a symmetric generator cancels many strings only to rounding, so a coefficient threshold belongs in every step of a recursion.
     ///
     /// ```python
     /// h = PauliSum.from_strings({"Z": 1.0}, num_qubits=1, dtype="float64")
     /// o = PauliSum.from_strings({"X": 1.0}, num_qubits=1, dtype="float64")
     /// h.liouvillian(o)                         # -2.0 * Y, since ZX = iY
     /// ```
-    fn liouvillian(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
-        self.paired(py, &other.inner, Pairing::Liouvillian)
+    #[pyo3(signature = (other, policy=None))]
+    fn liouvillian(
+        &self,
+        py: Python<'_>,
+        other: &Self,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<Self> {
+        self.paired(py, &other.inner, Pairing::Liouvillian, policy)
     }
 
     /// The anticommutator `{self, other} = self @ other + other @ self`.
     ///
     /// Only commuting string pairs contribute.
     /// For Hermitian operands the result is Hermitian, so a real dtype stays real; the dtype is the operands' promotion.
-    fn anticommutator(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
-        self.paired(py, &other.inner, Pairing::Anticommutator)
+    /// `policy` truncates the result as `product`'s does.
+    #[pyo3(signature = (other, policy=None))]
+    fn anticommutator(
+        &self,
+        py: Python<'_>,
+        other: &Self,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<Self> {
+        self.paired(py, &other.inner, Pairing::Anticommutator, policy)
     }
 
     /// `self * scalar`: every coefficient scaled by a complex or real number, keeping the dtype.

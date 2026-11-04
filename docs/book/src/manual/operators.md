@@ -236,7 +236,22 @@ print(z.anticommutator(x))
 1*ZX
 ```
 
-Each costs one string product per pair of terms, so it suits a small generator against a large operator; `*` between two `PauliSum` objects raises `TypeError`.
+`liouvillian` visits only the string pairs that share a qubit, so a local generator against a large operator is cheap; `*` between two `PauliSum` objects raises `TypeError`.
+Each takes a truncation `policy`, applied as to one propagation layer.
+A nested commutator of a symmetric generator cancels many strings only to rounding, so a recursion should threshold every step:
+
+```python
+from paulistrings import truncation
+o = x
+for _ in range(3):
+    o = z.liouvillian(o, policy=truncation.coeff(1e-12))
+print(o)
+```
+
+```text
+8*YI
+```
+
 
 ### A Hamiltonian
 

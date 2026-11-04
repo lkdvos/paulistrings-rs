@@ -17,7 +17,7 @@ use support::{SupportIndex, SCAN_ABOVE_WEIGHT};
 
 /// Which pairs a product keeps and the factor it puts on them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Pairing {
+pub(crate) enum Pairing {
     /// `A·B`: every pair, at `i^k`.
     Product,
     /// `i[A, B]`: anticommuting pairs, at `2·i^(k+1)`, which is real.
@@ -80,10 +80,13 @@ impl<const W: usize, C: Coefficient> Groups<W, C> {
     }
 }
 
-/// The table's nonzero terms as sorted bucket columns.
-fn sorted_columns<const W: usize, C: Coefficient>(table: &Table<W, C>) -> BucketColumns<W, C> {
+/// The table's nonzero terms that `keep` accepts, as sorted bucket columns.
+fn sorted_columns<const W: usize, C: Coefficient>(
+    table: &Table<W, C>,
+    keep: &impl Fn(&[u64; W], &[u64; W], C) -> bool,
+) -> BucketColumns<W, C> {
     let mut entries: Vec<&Entry<W, C>> =
-        table.entries().iter().filter(|e| e.c.is_nonzero()).collect();
+        table.entries().iter().filter(|e| e.c.is_nonzero() && keep(&e.x, &e.z, e.c)).collect();
     entries.sort_unstable_by(|a, b| (&a.x, &a.z).cmp(&(&b.x, &b.z)));
     let mut columns = BucketColumns::with_capacity(entries.len());
     for e in entries {
@@ -93,7 +96,13 @@ fn sorted_columns<const W: usize, C: Coefficient>(table: &Table<W, C>) -> Bucket
 }
 
 impl<const W: usize, C: Coefficient> PauliSum<W, C> {
-    fn pair(&self, other: &Self, pairing: Pairing) -> Self {
+    /// The operator product `pairing` names, keeping the summed terms `keep` accepts.
+    pub(crate) fn pair(
+        &self,
+        other: &Self,
+        pairing: Pairing,
+        keep: &(impl Fn(&[u64; W], &[u64; W], C) -> bool + Sync),
+    ) -> Self {
         assert_eq!(
             self.num_qubits, other.num_qubits,
             "PauliSum::{pairing:?}: num_qubits mismatch ({} vs {})",
@@ -160,7 +169,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
                             }
                         }
                     }
-                    sorted_columns(table)
+                    sorted_columns(table, keep)
                 },
             )
             .collect();
@@ -184,7 +193,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
             "PauliSum::product: a product is not Hermitian, so a real coefficient type ({}) cannot hold it; cast to a complex type first",
             C::NAME,
         );
-        self.pair(other, Pairing::Product)
+        self.pair(other, Pairing::Product, &|_, _, _| true)
     }
 
     /// The Liouvillian `i[self, other] = i(self · other − other · self)`, Hermitian whenever both operands are, so a real coefficient type stays exact.
@@ -195,7 +204,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     ///
     /// If the two sums disagree about `num_qubits`.
     pub fn liouvillian(&self, other: &Self) -> Self {
-        self.pair(other, Pairing::Liouvillian)
+        self.pair(other, Pairing::Liouvillian, &|_, _, _| true)
     }
 
     /// The anticommutator `{self, other} = self · other + other · self`, Hermitian whenever both operands are.
@@ -206,7 +215,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     ///
     /// If the two sums disagree about `num_qubits`.
     pub fn anticommutator(&self, other: &Self) -> Self {
-        self.pair(other, Pairing::Anticommutator)
+        self.pair(other, Pairing::Anticommutator, &|_, _, _| true)
     }
 }
 

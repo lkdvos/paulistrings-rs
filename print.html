@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-f6f3a6f5.js";
+            window.path_to_searchindex_js = "searchindex-de629d4d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -579,8 +579,48 @@ print(2.0 * (a + b))
 <pre><code class="language-text">-2*ZZII
 -2*ZZII + -2*IZZI
 </code></pre>
-<p>Of course, both operands must have the same <code>num_qubits</code>.
-Note, the product of two sums is not implemented, and <code>*</code> between two <code>PauliSum</code> objects raises <code>TypeError</code>.</p>
+<p>Of course, both operands must have the same <code>num_qubits</code>.</p>
+<p><code>a @ b</code> is the operator product, always complex since anticommuting strings multiply to a factor of $i$.
+<code>h.liouvillian(o)</code> is $i[H, O]$, the step of a Lanczos recursion or of a Heisenberg-picture Taylor series, and <code>a.anticommutator(b)</code> is ${A, B}$; for Hermitian operands both are Hermitian, so a real dtype stays real:</p>
+<pre><code class="language-python">z = PauliSum.from_strings({"ZI": 1.0}, dtype="float64")
+x = PauliSum.from_strings({"XI": 1.0, "IX": 0.5}, dtype="float64")
+print(z @ x)
+print(z.liouvillian(x))
+print(z.anticommutator(x))
+</code></pre>
+<pre><code class="language-text">(-0+1j)*YI + 0.5*ZX
+-2*YI
+1*ZX
+</code></pre>
+<p><code>liouvillian</code> visits only the string pairs that share a qubit, so a local generator against a large operator is cheap; <code>*</code> between two <code>PauliSum</code> objects raises <code>TypeError</code>.
+Each takes a truncation <code>policy</code>, applied as to one propagation layer.
+A nested commutator of a symmetric generator cancels many strings only to rounding, so a recursion should threshold every step:</p>
+<pre><code class="language-python">from paulistrings import truncation
+o = x
+for _ in range(3):
+    o = z.liouvillian(o, policy=truncation.coeff(1e-12))
+print(o)
+</code></pre>
+<pre><code class="language-text">8*YI
+</code></pre>
+<p>The operator Lanczos recursion needs nothing more than these, <code>overlap</code> and scalar arithmetic; for a Hermitian generator and seed the diagonal coefficients <code>a_n</code> vanish.
+<code>add_liouvillian</code> writes $\alpha, i[H, O] + \beta Y$ into an existing sum <code>y</code>, so each step overwrites the older vector, $O_{n-1} \leftarrow i[H, O_n] - b_n O_{n-1}$, and two operators serve the whole recursion:</p>
+<pre><code class="language-python">n = 12
+terms = {"I" * j + p + p + "I" * (n - j - 2): 1.0 for j in range(n - 1) for p in "XYZ"}
+h = PauliSum.from_strings(terms, dtype="float64")
+current = PauliSum.from_strings({"I" * 6 + "Z" + "I" * 5: 1.0}, dtype="float64")
+previous, b = current.copy(), []
+for _ in range(5):
+    previous.add_liouvillian(h, current, beta=-b[-1] if b else 0.0, policy=truncation.coeff(1e-12))
+    b.append(previous.overlap(previous) ** 0.5)
+    previous *= 1.0 / b[-1]
+    previous, current = current, previous
+print([round(x, 4) for x in b])
+</code></pre>
+<pre><code class="language-text">[4.0, 9.5917, 16.0759, 22.9001, 29.9595]
+</code></pre>
+<p><code>y.add(x, alpha, beta)</code> is the same update for a plain sum, $Y \leftarrow \alpha X + \beta Y$, and <code>y.add_product</code> and <code>y.add_anticommutator</code> complete the set.</p>
+<p>The same loop runs unchanged on a split seed, <code>current = current.partition(partitions="auto")</code> or <code>current.partition(comm=comm)</code>, with <code>h</code> replicated: every step then stays split, and each partition receives from another only the strings a generator term moving between them can reach (<a href="#partitionedpaulisum"><code>PartitionedPauliSum</code></a>).</p>
 <h3 id="a-hamiltonian"><a class="header" href="#a-hamiltonian">A Hamiltonian</a></h3>
 <p>The transverse-field Ising chain with open boundaries,</p>
 <p>$$
@@ -1543,7 +1583,7 @@ split.propagate(circuit[40:], policy, direction="heisenberg")
 value = split.expectation("z+")                       # the same on every rank
 evolved = split.gather()                              # rank 0 only, if the whole sum is needed
 </code></pre>
-<p>A <code>PartitionedPauliSum</code> takes the same row keywords as <code>propagate</code>; <code>len()</code>, <code>expectation</code>, <code>gather</code>, <code>propagate</code>, <code>repartition</code> and <code>rehash</code> are collective, so every rank makes the same calls with the same arguments, while <code>local()</code>, <code>repr()</code> and the properties read this rank alone.
+<p>A <code>PartitionedPauliSum</code> takes the same row keywords as <code>propagate</code>; <code>len()</code>, <code>expectation</code>, <code>overlap</code>, <code>gather</code>, <code>propagate</code>, <code>repartition</code>, <code>rehash</code>, the operator products and <code>+</code>, <code>-</code> and <code>*</code> are collective, so every rank makes the same calls with the same arguments, while <code>local()</code>, <code>repr()</code>, <code>*=</code>, <code>add</code> and the properties read this rank alone.
 <code>paulistrings.hashes.remote_layers(rows, circuit.deltas())</code> says which gates a choice of rows makes exchange, so a run can pick the rows for each segment of a circuit before running it; see <a href="#switching-rows-mid-circuit">NUMA partitions</a>.</p>
 <p><code>result="local"</code>, which returned each rank’s share as a plain <code>PauliSum</code>, is deprecated in favour of <code>PauliSum.partition(comm=...)</code>.
 Such a share fed back into a <code>propagate(comm=...)</code> split by other rows would lose the terms that now belong to another rank, so that call raises a <code>ValueError</code> instead.</p>
@@ -4473,15 +4513,26 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 </thead>
 <tbody>
 <tr><td><code>a + b</code>, <code>a - b</code></td><td>a new sum, coefficients combined on matching strings and the rest kept, at NumPy’s promotion of the two dtypes</td></tr>
-<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge and dtype, in place</td></tr>
+<tr><td><code>a += b</code>, <code>a -= b</code></td><td>the same merge and dtype, in place; merged into <code>a</code> bucket by bucket when <code>a</code> already has that dtype</td></tr>
 <tr><td><code>a * c</code>, <code>c * a</code>, <code>a *= c</code></td><td>every coefficient scaled by a complex or real <code>c</code>, at <code>a</code>’s dtype</td></tr>
+<tr><td><code>a @ b</code>, <code>a.product(b, policy=None)</code></td><td>the operator product <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right:0.05017em;">B</span></span></span></span>, complex at the precision of NumPy’s promotion of the two dtypes</td></tr>
+<tr><td><code>a.liouvillian(b, policy=None)</code></td><td><span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal">i</span><span class="mopen">[</span><span class="mord mathnormal">A</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.05017em;">B</span><span class="mclose">]</span></span></span></span>, from anticommuting string pairs only, at the promotion of the two dtypes</td></tr>
+<tr><td><code>a.anticommutator(b, policy=None)</code></td><td><span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mopen">{</span><span class="mord mathnormal">A</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.05017em;">B</span><span class="mclose">}</span></span></span></span>, from commuting string pairs only, at the promotion of the two dtypes</td></tr>
+<tr><td><code>y.add(x, alpha=1, beta=1)</code></td><td><code>None</code>; <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">←</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span> in place, merged bucket by bucket, at <code>y</code>’s dtype</td></tr>
+<tr><td><code>y.add_product(a, b, alpha=1, beta=1, policy=None)</code></td><td><code>None</code>; <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">←</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mord mathnormal">A</span><span class="mord mathnormal" style="margin-right:0.05017em;">B</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span> in place, the pairs summed straight into <code>y</code>, which must be complex</td></tr>
+<tr><td><code>y.add_liouvillian(a, b, ...)</code>, <code>y.add_anticommutator(a, b, ...)</code></td><td><code>None</code>; <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">←</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal">i</span><span class="mopen">[</span><span class="mord mathnormal">A</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.05017em;">B</span><span class="mclose">]</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span> and <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">←</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mopen">{</span><span class="mord mathnormal">A</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.05017em;">B</span><span class="mclose">}</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span>, as <code>add_product</code></td></tr>
 </tbody>
 </table>
 </div>
-<p>Both operands of <code>+</code>/<code>-</code> must have the same <code>num_qubits</code>; anything else is a <code>ValueError</code>.
+<p>Both operands of <code>+</code>/<code>-</code> and of the products must have the same <code>num_qubits</code>; anything else is a <code>ValueError</code>.
 A real-dtype <code>a</code> raises <code>ValueError</code> on a <code>c</code> with a nonzero imaginary part.
 Terms whose coefficients cancel exactly are dropped, as is every term when <code>c</code> is exactly zero.
-<code>*</code> is scalar-only: multiplying two sums is a full operator product, which this library does not implement.</p>
+<code>*</code> is scalar-only; the operator product is <code>@</code>.
+For Hermitian operands <code>liouvillian</code> and <code>anticommutator</code> are Hermitian, so a real dtype stays real.
+<code>policy</code> truncates a product as one propagation layer: a filter sees each string’s summed coefficient, and a layer pass such as <code>topn</code> runs once on the result.
+The <code>add</code> forms keep <code>y</code>’s dtype, converting the operands to it, and never build the intermediate sum; <code>beta=0</code> ignores <code>y</code>’s current terms, and a <code>policy</code> filter sees each string’s coefficient with <code>beta * y</code> already added.
+An operand may be <code>y</code> itself.
+<code>b</code> may be a <code>PartitionedPauliSum</code>, which gives a new split (<a href="#partitionedpaulisum"><code>PartitionedPauliSum</code></a>).</p>
 <h2 id="saving-loading-importing"><a class="header" href="#saving-loading-importing">Saving, loading, importing</a></h2>
 <div class="table-wrapper">
 <table>
@@ -4713,11 +4764,17 @@ Each draws from <code>numpy.random.default_rng(seed)</code> and keeps its rows l
 <tr><td><code>.local()</code></td><td>this process’s terms: the whole sum in one process, this rank’s share under MPI</td></tr>
 <tr><td><code>.partition_rows()</code>, <code>.hash_rows()</code>, <code>.hash_seed</code>, <code>.num_buckets</code>, <code>.num_partitions</code>, <code>.rank</code>, <code>.num_qubits</code></td><td>the current rows and placement; <code>rank</code> is <code>None</code> in one process</td></tr>
 <tr><td><code>.dtype</code></td><td>the coefficient type of the sum it was split from, which <code>gather()</code> and <code>local()</code> keep</td></tr>
+<tr><td><code>h.liouvillian(split, policy=None)</code>, <code>h.anticommutator(split, ...)</code>, <code>h.product(split, ...)</code>, <code>h @ split</code></td><td>a new split by the same rows, <code>h</code> a <code>PauliSum</code> the same on every rank; a partner receives only the strings a generator term moving between partitions can reach</td></tr>
+<tr><td><code>y.add_liouvillian(h, x, alpha=1, beta=1, policy=None)</code>, <code>y.add_anticommutator(...)</code>, <code>y.add_product(...)</code></td><td>in place, <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">←</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:1em;vertical-align:-0.25em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord"><span class="mord mathrm">op</span></span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right:0.08125em;">H</span><span class="mpunct">,</span><span class="mspace" style="margin-right:0.1667em;"></span><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="mclose">)</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span> as <code>PauliSum.add_liouvillian</code>, for <code>x</code> aligned with <code>y</code></td></tr>
+<tr><td><code>.add(other, alpha=1, beta=1)</code></td><td>in place, <span class="katex"><span class="katex-html" aria-hidden="true"><span class="base"><span class="strut" style="height:0.6833em;"></span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span><span class="mspace" style="margin-right:0.2778em;"></span><span class="mrel">←</span><span class="mspace" style="margin-right:0.2778em;"></span></span><span class="base"><span class="strut" style="height:0.7667em;vertical-align:-0.0833em;"></span><span class="mord mathnormal" style="margin-right:0.0037em;">α</span><span class="mord mathnormal" style="margin-right:0.07847em;">X</span><span class="mspace" style="margin-right:0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right:0.2222em;"></span></span><span class="base"><span class="strut" style="height:0.8889em;vertical-align:-0.1944em;"></span><span class="mord mathnormal" style="margin-right:0.05278em;">β</span><span class="mord mathnormal" style="margin-right:0.22222em;">Y</span></span></span></span>, with no exchange</td></tr>
+<tr><td><code>.overlap(other)</code></td><td>of the whole sums, the same on every rank</td></tr>
+<tr><td><code>a + b</code>, <code>a - b</code>, <code>a += b</code>, <code>a -= b</code>, <code>a * c</code>, <code>c * a</code>, <code>a *= c</code>, <code>.copy()</code></td><td>term by term with no exchange, for splits of one dtype by the same rows</td></tr>
 </tbody>
 </table>
 </div>
-<p>Under MPI every member that reads or changes the whole sum is collective; <code>local()</code>, <code>repr()</code> and the properties are not.
-Exact <code>truncation.topn</code> raises <code>NotImplementedError</code>, as for any partitioned run.</p>
+<p>Under MPI every member that reads or changes the whole sum is collective, and one that builds a new split duplicates the communicator, which the <code>add</code> forms never do; <code>local()</code>, <code>repr()</code>, <code>*=</code>, <code>add</code> of another split and the properties are not collective.
+Exact <code>truncation.topn</code> raises <code>NotImplementedError</code>, as for any partitioned run.
+A split keeps its dtype through products: <code>h</code> is cast to it, so a product needs a complex split, and splits of different dtypes do not combine.</p>
 <p><code>Circuit.deltas()</code> lists each channel’s nonzero key shifts as <code>(k, 2 * num_qubits)</code> boolean arrays, and <code>paulistrings.hashes.remote_layers(rows, deltas)</code> marks the channels a choice of partition rows makes exchange: exactly the layers <code>PartitionStats.local</code> reports as not local.</p>
 <h2 id="gpupaulisum"><a class="header" href="#gpupaulisum"><code>GpuPauliSum</code></a></h2>
 <pre><code class="language-text">sum.to_device(device=0) -&gt; GpuPauliSum

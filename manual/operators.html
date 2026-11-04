@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-f6f3a6f5.js";
+            window.path_to_searchindex_js = "../searchindex-de629d4d.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -322,8 +322,48 @@ print(2.0 * (a + b))
 <pre><code class="language-text">-2*ZZII
 -2*ZZII + -2*IZZI
 </code></pre>
-<p>Of course, both operands must have the same <code>num_qubits</code>.
-Note, the product of two sums is not implemented, and <code>*</code> between two <code>PauliSum</code> objects raises <code>TypeError</code>.</p>
+<p>Of course, both operands must have the same <code>num_qubits</code>.</p>
+<p><code>a @ b</code> is the operator product, always complex since anticommuting strings multiply to a factor of $i$.
+<code>h.liouvillian(o)</code> is $i[H, O]$, the step of a Lanczos recursion or of a Heisenberg-picture Taylor series, and <code>a.anticommutator(b)</code> is ${A, B}$; for Hermitian operands both are Hermitian, so a real dtype stays real:</p>
+<pre><code class="language-python">z = PauliSum.from_strings({"ZI": 1.0}, dtype="float64")
+x = PauliSum.from_strings({"XI": 1.0, "IX": 0.5}, dtype="float64")
+print(z @ x)
+print(z.liouvillian(x))
+print(z.anticommutator(x))
+</code></pre>
+<pre><code class="language-text">(-0+1j)*YI + 0.5*ZX
+-2*YI
+1*ZX
+</code></pre>
+<p><code>liouvillian</code> visits only the string pairs that share a qubit, so a local generator against a large operator is cheap; <code>*</code> between two <code>PauliSum</code> objects raises <code>TypeError</code>.
+Each takes a truncation <code>policy</code>, applied as to one propagation layer.
+A nested commutator of a symmetric generator cancels many strings only to rounding, so a recursion should threshold every step:</p>
+<pre><code class="language-python">from paulistrings import truncation
+o = x
+for _ in range(3):
+    o = z.liouvillian(o, policy=truncation.coeff(1e-12))
+print(o)
+</code></pre>
+<pre><code class="language-text">8*YI
+</code></pre>
+<p>The operator Lanczos recursion needs nothing more than these, <code>overlap</code> and scalar arithmetic; for a Hermitian generator and seed the diagonal coefficients <code>a_n</code> vanish.
+<code>add_liouvillian</code> writes $\alpha, i[H, O] + \beta Y$ into an existing sum <code>y</code>, so each step overwrites the older vector, $O_{n-1} \leftarrow i[H, O_n] - b_n O_{n-1}$, and two operators serve the whole recursion:</p>
+<pre><code class="language-python">n = 12
+terms = {"I" * j + p + p + "I" * (n - j - 2): 1.0 for j in range(n - 1) for p in "XYZ"}
+h = PauliSum.from_strings(terms, dtype="float64")
+current = PauliSum.from_strings({"I" * 6 + "Z" + "I" * 5: 1.0}, dtype="float64")
+previous, b = current.copy(), []
+for _ in range(5):
+    previous.add_liouvillian(h, current, beta=-b[-1] if b else 0.0, policy=truncation.coeff(1e-12))
+    b.append(previous.overlap(previous) ** 0.5)
+    previous *= 1.0 / b[-1]
+    previous, current = current, previous
+print([round(x, 4) for x in b])
+</code></pre>
+<pre><code class="language-text">[4.0, 9.5917, 16.0759, 22.9001, 29.9595]
+</code></pre>
+<p><code>y.add(x, alpha, beta)</code> is the same update for a plain sum, $Y \leftarrow \alpha X + \beta Y$, and <code>y.add_product</code> and <code>y.add_anticommutator</code> complete the set.</p>
+<p>The same loop runs unchanged on a split seed, <code>current = current.partition(partitions="auto")</code> or <code>current.partition(comm=comm)</code>, with <code>h</code> replicated: every step then stays split, and each partition receives from another only the strings a generator term moving between them can reach (<a href="../library/propagate.html#partitionedpaulisum"><code>PartitionedPauliSum</code></a>).</p>
 <h3 id="a-hamiltonian"><a class="header" href="#a-hamiltonian">A Hamiltonian</a></h3>
 <p>The transverse-field Ising chain with open boundaries,</p>
 <p>$$

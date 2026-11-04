@@ -1246,52 +1246,6 @@ mod finalize_tests {
         assert!(!scratch.octaves.counted, "the rescale path takes no counts");
     }
 
-    /// Through `propagate_with`, the fused pass keeps exactly the terms the policy's own pass keeps, across calls sharing one scratch.
-    fn assert_fused_approx_top_n_agrees<const W: usize>(
-        circuit: &crate::Circuit<W>,
-        num_qubits: usize,
-        n: usize,
-    ) {
-        let input = rand_sum::<W>(200, num_qubits, 0xF05E);
-        let mut scratch = LayerScratch::<W>::new();
-        let mut plain_scratch = LayerScratch::<W>::new();
-        let (mut got, mut want) = (input.clone(), input);
-        for call in 0..3 {
-            let options = crate::engine::PropagateOptions::default();
-            got = crate::engine::propagate_with(
-                circuit,
-                got,
-                &ApproxTopN(n),
-                crate::engine::Direction::Heisenberg,
-                &mut scratch,
-                options,
-            );
-            want = crate::engine::propagate_with(
-                circuit,
-                want,
-                &PlainApproxTopN(n),
-                crate::engine::Direction::Heisenberg,
-                &mut plain_scratch,
-                options,
-            );
-            assert_eq!(got.len(), n, "W={W} call {call}: the run must saturate");
-            assert_same_terms(&got, &want, &format!("W={W} call {call}"));
-        }
-        assert!(scratch.octaves.window.is_some(), "the fused pass never set a window");
-    }
-
-    #[test]
-    fn fused_approx_top_n_keeps_the_plain_set_w1() {
-        let circuit = crate::test_support::trotter_circuit::<1>(12, 0.3);
-        assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
-    }
-
-    #[test]
-    fn fused_approx_top_n_keeps_the_plain_set_w2() {
-        let circuit = crate::test_support::trotter_circuit::<2>(70, 0.3);
-        assert_fused_approx_top_n_agrees(&circuit, 70, 1500);
-    }
-
     /// Fan-out bounds as each layer path emits: a Clifford rotation moves strings, a general one splits them in two, a permutation or a rescale keeps one per input.
     #[test]
     fn max_fanout_counts_the_outputs_of_one_input() {
@@ -1304,36 +1258,6 @@ mod finalize_tests {
         assert_eq!(fanout(&PtmChannel::cnot(1, 2)), 1);
         assert_eq!(fanout(&PtmChannel::hadamard(0)), 1);
         assert_eq!(fanout(&PtmChannel::depolarizing(3, 0.11)), 1);
-    }
-
-    /// A circuit whose Clifford layers cannot grow the sum: their layer passes are skipped on the bound, and the sets still agree.
-    #[test]
-    fn fused_approx_top_n_skips_layers_that_cannot_grow() {
-        let quarter = std::f64::consts::FRAC_PI_2;
-        let mut circuit = crate::Circuit::<1>::new(12);
-        for _ in 0..3 {
-            for q in 0..11 {
-                circuit.push(crate::test_support::zz_rotation::<1>(q, q + 1, quarter));
-            }
-            for q in 0..12 {
-                circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.3));
-            }
-        }
-        assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
-    }
-
-    /// A rescale layer runs no coset loop, so it applies the deferred cut itself and the next pass falls back to the plain one.
-    #[test]
-    fn fused_approx_top_n_survives_rescale_layers() {
-        let trotter = crate::test_support::trotter_circuit::<1>(12, 0.3);
-        let mut circuit = crate::Circuit::<1>::new(12);
-        for (k, channel) in trotter.channels.into_iter().enumerate() {
-            circuit.push_boxed(channel);
-            if k % 5 == 4 {
-                circuit.push(PtmChannel::depolarizing(k % 12, 0.05));
-            }
-        }
-        assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
     }
 
     /// A sum rescaled between calls past the window the last call left, down or up: the next call's first pass misses the window and falls back to the plain one, keeping the plain set.

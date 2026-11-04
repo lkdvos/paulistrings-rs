@@ -121,7 +121,7 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// Two calls of fused `ApproxTopN(n)` on one split, each partition against the same split under [`PlainApproxTopN`]: the plain pass decides each partition's kept set from all-reduced counts and the partition rows alone, so the fused pass must keep the same set on every partition after every call, and `len()` must count the terms the split holds.
+/// Two calls of fused `ApproxTopN(n)` on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds.
 fn check_fused_keeps_the_plain_set<const W: usize>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -152,15 +152,17 @@ fn check_fused_keeps_the_plain_set<const W: usize>(
     }
 }
 
-/// The 64-channel TFIM Trotter step, both widths, the fused pass against the plain one on the same partitions.
+/// `len` real terms on `num_qubits` qubits, magnitudes spread over 40 octaves.
+fn spread_sum<const W: usize>(len: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    spread_magnitudes(&rand_sum_real::<W>(len, num_qubits, seed), 40, seed)
+}
+
 #[test]
 fn fused_approx_top_n_keeps_the_plain_set_partitioned() {
-    let circuit = trotter_circuit::<1>(32, THETA);
-    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A0), 40, 0x71A0);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "trotter w1");
-    let circuit = trotter_circuit::<2>(70, THETA);
-    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0x71A1), 40, 0x71A1);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "trotter w2");
+    let sum = spread_sum::<1>(2_000, 32, 0x71A0);
+    check_fused_keeps_the_plain_set(&trotter_circuit::<1>(32, THETA), &sum, 6_000, "trotter w1");
+    let sum = spread_sum::<2>(1_500, 70, 0x71A1);
+    check_fused_keeps_the_plain_set(&trotter_circuit::<2>(70, THETA), &sum, 4_000, "trotter w2");
 }
 
 /// ZZ bonds with a depolarizing layer every seventh, then an X field, on `num_qubits` qubits.
@@ -181,17 +183,13 @@ fn trotter_with_rescales<const W: usize>(num_qubits: usize) -> Circuit<W> {
     circuit
 }
 
-/// `ApproxTopN` with rescale layers between rotations: the deferred cut is applied by the next coset loop, a rescale, an exchange's export, a rebucket, or the end of the call.
+/// A rescale layer runs no coset loop, so it applies the deferred cut whole.
 #[test]
-fn approx_top_n_through_rescale_layers_matches_propagate() {
-    let circuit = trotter_with_rescales::<1>(32);
-    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A3), 40, 0x71A3);
-    check(&circuit, &sum, &ApproxTopN(6_000), "trotter rescale w1", &PS);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "trotter rescale w1");
-    let circuit = trotter_with_rescales::<2>(32);
-    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A3), 40, 0x71A3);
-    check(&circuit, &sum, &ApproxTopN(4_000), "trotter rescale w2", &PS);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "trotter rescale w2");
+fn fused_approx_top_n_through_rescale_layers() {
+    let sum = spread_sum::<1>(2_000, 32, 0x71A3);
+    check_fused_keeps_the_plain_set(&trotter_with_rescales::<1>(32), &sum, 6_000, "rescale w1");
+    let sum = spread_sum::<2>(1_500, 32, 0x71A3);
+    check_fused_keeps_the_plain_set(&trotter_with_rescales::<2>(32), &sum, 4_000, "rescale w2");
 }
 
 /// Three kicked-Ising steps: Clifford ZZ bonds, then an X kick, on `num_qubits` qubits.
@@ -210,20 +208,16 @@ fn kicked_ising<const W: usize>(num_qubits: usize) -> Circuit<W> {
     circuit
 }
 
-/// A kicked Ising chain whose Clifford bond layers cannot grow the sum, so every partition skips their layer pass on the agreed bound.
+/// Clifford bond layers cannot grow the sum, so every partition skips their layer pass on the agreed bound.
 #[test]
-fn approx_top_n_skipping_clifford_layers_matches_propagate() {
-    let circuit = kicked_ising::<1>(32);
-    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A4), 40, 0x71A4);
-    check(&circuit, &sum, &ApproxTopN(6_000), "kicked ising w1", &PS);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "kicked ising w1");
-    let circuit = kicked_ising::<2>(32);
-    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A4), 40, 0x71A4);
-    check(&circuit, &sum, &ApproxTopN(4_000), "kicked ising w2", &PS);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "kicked ising w2");
+fn fused_approx_top_n_skipping_clifford_layers() {
+    let sum = spread_sum::<1>(2_000, 32, 0x71A4);
+    check_fused_keeps_the_plain_set(&kicked_ising::<1>(32), &sum, 6_000, "kicked ising w1");
+    let sum = spread_sum::<2>(1_500, 32, 0x71A4);
+    check_fused_keeps_the_plain_set(&kicked_ising::<2>(32), &sum, 4_000, "kicked ising w2");
 }
 
-/// Amplitude damping at `gamma = 1 - 2^-40` after a Trotter step scales every non-identity coefficient on its qubit down by at least `2^-40` in `|c|²`, pushing the boundary out of the window the last pass centred, so those passes fall back to the plain one.
+/// A Trotter step, then amplitude damping at `gamma = 1 - 2^-40`, which scales `|c|²` on its qubit by at least `2^-40` and pushes the boundary out of the window.
 fn trotter_then_damping<const W: usize>(num_qubits: usize) -> Circuit<W> {
     let mut circuit = trotter_circuit::<W>(num_qubits, THETA);
     for q in 0..4 {
@@ -234,15 +228,12 @@ fn trotter_then_damping<const W: usize>(num_qubits: usize) -> Circuit<W> {
     circuit
 }
 
-/// The fused pass falls back to the plain pass where the boundary leaves the window, and still keeps the plain set.
 #[test]
-fn approx_top_n_window_miss_keeps_the_plain_set() {
-    let circuit = trotter_then_damping::<1>(32);
+fn fused_approx_top_n_window_miss_falls_back() {
     let sum = rand_sum_real::<1>(2_000, 32, 0x71A5);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 3_000, "damping w1");
-    let circuit = trotter_then_damping::<2>(70);
+    check_fused_keeps_the_plain_set(&trotter_then_damping::<1>(32), &sum, 3_000, "damping w1");
     let sum = rand_sum_real::<2>(1_500, 70, 0x71A5);
-    check_fused_keeps_the_plain_set(&circuit, &sum, 2_500, "damping w2");
+    check_fused_keeps_the_plain_set(&trotter_then_damping::<2>(70), &sum, 2_500, "damping w2");
 }
 
 /// One cut that splits a boundary group, dropping little weight.

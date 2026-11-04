@@ -67,6 +67,11 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
         })
     }
 
+    /// Whether strings move instead of splitting, so each input string has at most one output.
+    pub(super) fn is_clifford(&self) -> bool {
+        self.clifford
+    }
+
     /// Append each anticommuting string's partner `(k ⊕ g, c·a₁)` to `partners`, then scale the bucket by `a₀` in place, or on the Clifford arm drop the moved strings.
     fn scan(&self, bucket: &mut BucketColumns<W, C>, partners: &mut BucketColumns<W, C>) {
         let len = bucket.len();

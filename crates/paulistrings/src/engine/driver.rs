@@ -325,6 +325,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
             );
         }
     }
+    local.settle();
 }
 
 #[cfg(test)]

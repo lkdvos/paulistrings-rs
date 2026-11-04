@@ -8,12 +8,12 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::LayerScratch;
+use crate::engine::bucketed::{max_fanout, LayerScratch};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::trace::PartitionLayerRow;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
-use crate::pauli_sum::storage::PauliSum;
+use crate::pauli_sum::storage::{rebucketed_bits, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 /// The policy-independent half of a partition.
@@ -48,6 +48,8 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
         let _ = (target_bucket_len, min_buckets);
         false
     }
+    /// End a call: apply any truncation the last layer pass deferred; the driver calls it after the last layer.
+    fn settle(&mut self) {}
     /// Move the partition out, leaving an empty one under the same hash so the driver stays consistent if the work is never handed back.
     fn detach(&mut self) -> Self;
     #[cfg(feature = "phase-timing")]
@@ -104,8 +106,9 @@ impl<const W: usize, C: Coefficient> HostPartition<W, C> {
 }
 
 impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W, C> {
+    /// The length once a deferred cut is applied.
     fn len(&self) -> usize {
-        self.sum.len()
+        self.state.layer.octaves.len_after_cut(self.sum.len())
     }
 
     fn hash(&self) -> &Gf2Hash<W> {
@@ -113,16 +116,28 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
     }
 
     fn refine(&mut self) {
+        self.state.layer.octaves.apply_pending(&mut self.sum);
         self.sum.refine();
     }
 
     fn coarsen_to(&mut self, bits: u8) {
+        self.state.layer.octaves.apply_pending(&mut self.sum);
         self.sum.coarsen_to(bits);
     }
 
     fn refine_unprepared(&mut self, target_bucket_len: usize, min_buckets: usize) -> bool {
-        self.sum.rebucket(target_bucket_len, min_buckets);
+        let bits = self.sum.hash().bits();
+        let wanted = rebucketed_bits(self.len(), bits, target_bucket_len, min_buckets)
+            .min(self.sum.hash().max_bits());
+        if wanted != bits {
+            self.state.layer.octaves.apply_pending(&mut self.sum);
+            self.sum.rebucket(target_bucket_len, min_buckets);
+        }
         true
+    }
+
+    fn settle(&mut self) {
+        self.state.layer.octaves.settle(&mut self.sum);
     }
 
     fn detach(&mut self) -> Self {
@@ -157,6 +172,12 @@ where
         transport: &X,
         clocked: bool,
     ) -> LayerExchangeCounts {
+        let octaves = &mut self.state.layer.octaves;
+        octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
+        // The export reads the sum before the coset loop would apply the cut.
+        if plan.has_remote() {
+            octaves.apply_pending(&mut self.sum);
+        }
         apply_layer_partitioned_with_plan(
             &mut self.sum,
             prepared,
@@ -170,7 +191,10 @@ where
     }
 
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
-        policy.finalize_layer_partitioned(&mut self.sum, collectives);
+        match policy.sole_approx_top_n() {
+            Some(n) => self.state.layer.octaves.finalize(&mut self.sum, collectives, n),
+            None => policy.finalize_layer_partitioned(&mut self.sum, collectives),
+        }
     }
 }
 

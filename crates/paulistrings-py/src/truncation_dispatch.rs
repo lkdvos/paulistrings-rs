@@ -44,6 +44,10 @@ impl<const W: usize, C: Coefficient, F: TruncationPolicy<W, C>> TruncationPolicy
     fn supports_partitioned(&self) -> bool {
         self.tree.supports_partitioned()
     }
+
+    fn sole_approx_top_n(&self) -> Option<usize> {
+        <BuiltinTruncation as TruncationPolicy<W, C>>::sole_approx_top_n(self.tree)
+    }
 }
 
 /// The policy a host propagate runs a tree as.

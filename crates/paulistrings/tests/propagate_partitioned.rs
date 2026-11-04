@@ -121,6 +121,43 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
+/// `ApproxTopN` with rescale layers between rotations: the deferred cut is applied by the next coset loop, a rescale, an exchange's export, a rebucket, or the end of the call.
+#[test]
+fn approx_top_n_through_rescale_layers_matches_propagate() {
+    let mut circuit = Circuit::<1>::new(32);
+    for q in 0..32 {
+        circuit.push(paulistrings::test_support::zz_rotation::<1>(q, (q + 1) % 32, 2.0 * THETA));
+        if q % 7 == 6 {
+            circuit.push(paulistrings::PtmChannel::depolarizing(q, 0.02));
+        }
+    }
+    for q in 0..32 {
+        let generator = paulistrings::PauliString::<1>::x(q);
+        circuit.push(paulistrings::PauliRotation::new(generator, 2.0 * THETA));
+    }
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A3), 40, 0x71A3);
+    check(&circuit, &sum, &ApproxTopN(6_000), "trotter rescale", &PS);
+}
+
+/// A kicked Ising chain whose Clifford bond layers cannot grow the sum, so every partition skips their layer pass on the agreed bound.
+#[test]
+fn approx_top_n_skipping_clifford_layers_matches_propagate() {
+    let mut circuit = Circuit::<1>::new(32);
+    for _ in 0..3 {
+        for q in 0..31 {
+            let bond =
+                paulistrings::test_support::zz_rotation::<1>(q, q + 1, std::f64::consts::FRAC_PI_2);
+            circuit.push(bond);
+        }
+        for q in 0..32 {
+            let generator = paulistrings::PauliString::<1>::x(q);
+            circuit.push(paulistrings::PauliRotation::new(generator, THETA));
+        }
+    }
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A4), 40, 0x71A4);
+    check(&circuit, &sum, &ApproxTopN(6_000), "kicked ising", &PS);
+}
+
 /// One cut that splits a boundary group, dropping little weight.
 #[test]
 fn single_cuts_match_propagate() {

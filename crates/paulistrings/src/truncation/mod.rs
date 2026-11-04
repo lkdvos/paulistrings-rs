@@ -1,6 +1,7 @@
 //! The [`TruncationPolicy`] trait and the built-in policies.
 
 pub(crate) mod builtin;
+pub(crate) mod octave_window;
 mod tree;
 
 pub use builtin::{And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff};
@@ -68,6 +69,14 @@ pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex
     /// The default is `true` exactly when there is no layer pass; a policy that overrides `finalize_layer_partitioned` with a collective pass returns `true`.
     fn supports_partitioned(&self) -> bool {
         !self.finalizes_layer()
+    }
+
+    /// `Some(n)` when the layer pass is exactly [`ApproxTopN(n)`](ApproxTopN)'s and nothing else, so the engine may run its own fused form of that pass instead; `None` otherwise.
+    ///
+    /// The engine then skips both layer-pass methods, so an override must answer `Some` only if they do exactly what `ApproxTopN(n)`'s do.
+    #[doc(hidden)]
+    fn sole_approx_top_n(&self) -> Option<usize> {
+        None
     }
 }
 

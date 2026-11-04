@@ -94,6 +94,30 @@ impl<const W: usize, C: Coefficient> BucketColumns<W, C> {
         self.coeff.push(c);
     }
 
+    /// Keep, in order, the terms `update(x, z, coeff)` maps to a coefficient, rewritten to it.
+    pub(crate) fn update(&mut self, mut update: impl FnMut(&[u64; W], &[u64; W], C) -> Option<C>) {
+        let n = self.len();
+        let mut w = 0usize;
+        for r in 0..n {
+            if let Some(coeff) = update(&self.x[r], &self.z[r], self.coeff[r]) {
+                if w != r {
+                    self.x[w] = self.x[r];
+                    self.z[w] = self.z[r];
+                }
+                self.coeff[w] = coeff;
+                w += 1;
+            }
+        }
+        self.x.truncate(w);
+        self.z.truncate(w);
+        self.coeff.truncate(w);
+    }
+
+    /// Keep, in order, the terms `keep(x, z, coeff)` accepts.
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&[u64; W], &[u64; W], C) -> bool) {
+        self.update(|x, z, c| keep(x, z, c).then_some(c));
+    }
+
     fn extend_from(&mut self, other: &Self, start: usize) {
         self.x.extend_from_slice(&other.x[start..]);
         self.z.extend_from_slice(&other.z[start..]);
@@ -538,24 +562,10 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     where
         F: FnMut(&[u64; W], &[u64; W], C) -> Option<C>,
     {
-        self.buckets.par_iter_mut().enumerate().for_each(|(b, columns)| {
-            let mut update = update_for(b);
-            let n = columns.len();
-            let mut w = 0usize;
-            for r in 0..n {
-                if let Some(coeff) = update(&columns.x[r], &columns.z[r], columns.coeff[r]) {
-                    if w != r {
-                        columns.x[w] = columns.x[r];
-                        columns.z[w] = columns.z[r];
-                    }
-                    columns.coeff[w] = coeff;
-                    w += 1;
-                }
-            }
-            columns.x.truncate(w);
-            columns.z.truncate(w);
-            columns.coeff.truncate(w);
-        });
+        self.buckets
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(b, columns)| columns.update(update_for(b)));
         self.recount();
     }
 

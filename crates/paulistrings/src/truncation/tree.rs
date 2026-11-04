@@ -187,6 +187,24 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
     fn supports_partitioned(&self) -> bool {
         BuiltinTruncation::supports_partitioned(self)
     }
+
+    fn sole_approx_top_n(&self) -> Option<usize> {
+        match self {
+            Self::ApproxTopN(n) => Some(*n),
+            Self::And(a, b) => match (a.has_layer_pass(), b.has_layer_pass()) {
+                (true, false) => <Self as TruncationPolicy<W, C>>::sole_approx_top_n(a),
+                (false, true) => <Self as TruncationPolicy<W, C>>::sole_approx_top_n(b),
+                _ => None,
+            },
+            Self::Keep
+            | Self::Coefficient(_)
+            | Self::Weight(_)
+            | Self::TopN(_)
+            | Self::CollapseSample(_)
+            | Self::Or(_, _)
+            | Self::PerPartition(_) => None,
+        }
+    }
 }
 
 impl From<CoefficientThreshold> for BuiltinTruncation {

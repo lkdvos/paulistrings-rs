@@ -1137,7 +1137,8 @@ mod finalize_tests {
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
-    use crate::truncation::builtin::{And, CoefficientThreshold, TopN};
+    use crate::test_support::PlainApproxTopN;
+    use crate::truncation::builtin::{And, ApproxTopN, CoefficientThreshold, TopN};
 
     #[test]
     fn and_runs_both_finalizers_bucketed() {
@@ -1210,6 +1211,111 @@ mod finalize_tests {
         let got = b;
 
         assert_terms_close(&got, &want, 1e-11, "3 truncated layers");
+    }
+
+    /// An armed coset loop counts every output bucket into its window slot; an unarmed one, or a rescale layer, which runs no coset loop, leaves the counts invalid.
+    #[test]
+    fn an_armed_layer_counts_each_output_bucket() {
+        let input = rand_sum::<1>(1500, 8, 0x0C7A).with_hash(Gf2Hash::<1>::new(8, 4, 0x99));
+        let window = OctaveWindow::around(1020);
+        let mut b = input.clone();
+        let mut scratch = LayerScratch::<1>::new();
+        scratch.octaves.window = Some(window);
+        let rotation = PauliRotation::new(PauliString::<1>::x(3), 0.4);
+        let prepared = rotation.prepare(b.hash(), false).unwrap();
+        scratch.octaves.begin_layer(max_fanout(&prepared), Some(10));
+        apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
+        assert!(scratch.octaves.counted);
+        assert_eq!(scratch.octaves.per_bucket.len(), b.num_buckets());
+        for (bucket, counts) in scratch.octaves.per_bucket.iter().enumerate() {
+            let mut want = [0; _];
+            window.count(b.bucket(bucket).2, &mut want);
+            assert_eq!(counts, &want, "bucket {bucket}");
+        }
+
+        let mut unarmed = LayerScratch::<1>::new();
+        unarmed.octaves.window = Some(window);
+        unarmed.octaves.begin_layer(max_fanout(&prepared), None);
+        apply_layer_bucketed(&mut input.clone(), &prepared, &TopN(10), &mut unarmed);
+        assert!(!unarmed.octaves.counted, "a policy without ApproxTopN takes no counts");
+
+        let depolarizing = PtmChannel::depolarizing(3, 0.11);
+        let prepared = depolarizing.prepare(b.hash(), false).unwrap();
+        scratch.octaves.begin_layer(max_fanout(&prepared), Some(10));
+        apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
+        assert!(!scratch.octaves.counted, "the rescale path takes no counts");
+    }
+
+    /// Fan-out bounds as each layer path emits: a Clifford rotation moves strings, a general one splits them in two, a permutation or a rescale keeps one per input.
+    #[test]
+    fn max_fanout_counts_the_outputs_of_one_input() {
+        let hash = Gf2Hash::<1>::new(8, 3, 0x99);
+        let fanout = |channel: &dyn Channel<1>| max_fanout(&channel.prepare(&hash, false).unwrap());
+        let quarter = std::f64::consts::FRAC_PI_2;
+        assert_eq!(fanout(&PauliRotation::new(PauliString::<1>::x(3), quarter)), 1);
+        assert_eq!(fanout(&crate::test_support::zz_rotation::<1>(2, 3, quarter)), 1);
+        assert_eq!(fanout(&PauliRotation::new(PauliString::<1>::x(3), 0.4)), 2);
+        assert_eq!(fanout(&PtmChannel::cnot(1, 2)), 1);
+        assert_eq!(fanout(&PtmChannel::hadamard(0)), 1);
+        assert_eq!(fanout(&PtmChannel::depolarizing(3, 0.11)), 1);
+    }
+
+    /// A sum rescaled between calls past the window the last call left, down or up: the next call's first pass misses the window and falls back to the plain one, keeping the plain set.
+    #[test]
+    fn fused_approx_top_n_falls_back_when_the_scale_leaves_the_window() {
+        use crate::engine::{propagate_with, Direction, PropagateOptions};
+        use crate::truncation::octave_window::WINDOW_OCTAVES;
+        let circuit = crate::test_support::trotter_circuit::<1>(12, 0.3);
+        let n = 1500;
+        for (factor, outside_slot) in [(2f64.powi(-40), 0), (2f64.powi(40), WINDOW_OCTAVES + 1)] {
+            let input = rand_sum::<1>(200, 12, 0xF05F);
+            let mut scratch = LayerScratch::<1>::new();
+            let mut plain_scratch = LayerScratch::<1>::new();
+            let options = PropagateOptions::default();
+            let direction = Direction::Heisenberg;
+            let mut got = propagate_with(
+                &circuit,
+                input.clone(),
+                &ApproxTopN(n),
+                direction,
+                &mut scratch,
+                options,
+            );
+            let mut want = propagate_with(
+                &circuit,
+                input,
+                &PlainApproxTopN(n),
+                direction,
+                &mut plain_scratch,
+                options,
+            );
+            assert_same_terms(&got, &want, &format!("factor {factor}: first call"));
+
+            got.scale(Complex64::new(factor, 0.0));
+            want.scale(Complex64::new(factor, 0.0));
+            let window = scratch.octaves.window.expect("the first call cut");
+            let coefficients: Vec<Complex64> = got.iter().map(|(_, _, c)| c).collect();
+            let mut counts = [0; _];
+            window.count(&coefficients, &mut counts);
+            assert_eq!(
+                counts[outside_slot] as usize,
+                got.len(),
+                "factor {factor}: every term leaves the window"
+            );
+
+            let got =
+                propagate_with(&circuit, got, &ApproxTopN(n), direction, &mut scratch, options);
+            let want = propagate_with(
+                &circuit,
+                want,
+                &PlainApproxTopN(n),
+                direction,
+                &mut plain_scratch,
+                options,
+            );
+            assert_eq!(got.len(), n, "factor {factor}: the second call must cut");
+            assert_same_terms(&got, &want, &format!("factor {factor}: second call"));
+        }
     }
 }
 

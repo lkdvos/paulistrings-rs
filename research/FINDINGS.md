@@ -80,6 +80,12 @@ Redundant key gathers are still the fused kernel's largest known cost; a fix mus
 Idea: run every host policy as the `BuiltinTruncation` enum, matched per term, instead of one monomorphized engine per policy.
 Rejected: **10–14% slower** wall on `cnot` and `rotation_zz`, merge **+31–37%** (job 7228665); the host keeps the generic policies, onto which Python lowers its policy trees (`crates/paulistrings-py/src/truncation_dispatch.rs`).
 
+### Remote rotation's identity scaling folded into the export fill
+
+Idea (branch `rotation-fusion`, `5d579b52`): scale a remote rotation's identity half while the export fill reads the bucket, and merge received partners straight from the exchange block.
+Rejected: gather −23% / −57%, but sort +29% / +67%, merge +20% / +26% and export +18% / +13%, net wall **+1.15%** on `heavyhex_step` at 4 MPI ranks (job 7400720) and **+1.96%** on 24-qubit `tfim_step` at P = 2 (job 7400713), 5/5 pairs each.
+The reads it removed reappeared cold in the next pass: at saturation moving a pass does not help, only removing one does.
+
 ## Shipped
 
 ### Direct-apply path for small sums
@@ -243,6 +249,16 @@ Across genoa nodes, one rank per socket at 48 threads, 5/5 pairs each: 4 ranks o
 There the merge's busy time also falls 41–48% (5/5) though its code is unchanged; unattributed, plausibly the inbound transfer overlapping the merge less once partners send earlier.
 Against `main` after §Remote rotations run on the in-place rotation kernel (`d97db49b`), 4 genoa ranks on 2 nodes: wall **−47.5%** (4.57 → 2.40 s), export 2.63 → 0.73 s, 5/5 (job 7400053).
 Rejected: sending each chunk as soon as it is filled (branch `stream-sends`, `19f29c19`), wall **+26.9% / +31.5%** at 4 / 8 genoa ranks against this fill (5/5 each, jobs 7400054–5), export +84–87% against an exchange wait −12–20%; the export's extra cost is unattributed.
+
+### `ApproxTopN`'s layer pass fused into the coset loop
+
+At saturation `ApproxTopN`'s layer pass was three passes over the sum (octave histogram, per-bucket boundary count, retain): on ccqlin038 at `atopn:2e6` it was **48%** of wall on 24-qubit `tfim_step` and 28% on `heavyhex_step` at P = 1, 32–35% at P = 2, split histogram 26% / boundary count 22% / retain 52%.
+Now the coset loop counts each output bucket into a 64-octave window around the last boundary while the bucket is in cache (`truncation/octave_window.rs`), the pass decides the edge and per-bucket quotas from those counts, and the cut is deferred to the next coset loop, which applies it to each bucket as it swaps it in (`LayerOctaves`); a rescale, an exchanging layer's export, a rebucket and the end of a call apply it whole.
+A layer whose agreed bound on the sum's length times its fan-out (one for a Clifford rotation, a permutation or a rescale) stays within `n` takes no counts and skips the pass, collectives included.
+Code A/B against `6a2e9e4a` on ccqlin038 (shared, load 3–27, alternated, 2–6 pairs): `tfim_step` P = 1 wall **−40%** (2.11 → 1.25 s), P = 2 **−19% / −26%**; `heavyhex_step` P = 1 **−21% to −28%** (7.9 → 5.9 s), P = 2 **−19% / −21%**; finalize falls to 1–2% of wall at P = 1 and 4–6% at P = 2, where the remaining cost is the exchanging layers' whole-sum cut and the per-layer all-reduce wait.
+Counting alone (without the deferral) raised the coset loop 3–11%, which on `heavyhex_step` P = 1 cancelled its gain (its Clifford bond layers counted without cutting); the deferral and the skip removed that.
+The untouched `coeff:` path moved −4.8% to +5.4% across pairs, within this host's layout and load noise.
+Quiet-node A/B pending.
 
 ## GPU spike
 

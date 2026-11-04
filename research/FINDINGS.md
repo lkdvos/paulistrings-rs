@@ -281,6 +281,13 @@ Quiet-node code A/B against `ad9d358d` (`9e8f5c03`, same campaign and probe, 5 A
 On genoa weak-scaling sweeps (16×16 TFIM, 1e7 per rank, jobs 7402414 `ad9d358d` against 7402372 `9e8f5c03`, the latter noisy between cells), steady s/step at 2 ranks on one node: x-only 19.9 → 17.1, random rows 27.3 → 14.3, `avoid:10` 25.0 → 13.8; at 8 nodes random rows 41.5 → 21.0, x-only 28.5 → 18.4.
 So the large-sum weak-scaling workload gains roughly 2×, and the small probe across genoa nodes is flat to slightly worse; there the export absorbs the read of the terms the cut drops, which the whole-sum cut used to take outside the export phase, and the counting and marking cost is not repaid; the MPI export increase is open.
 
+### Operator products skip disjoint supports
+
+A Liouvillian pair whose supports miss always commutes, and on a nested-commutator probe (Heisenberg chain `L = 40` with a `0.3` Z field, 157 generator terms, `O` from `Z_20` thresholded at `1e-12` per step, 1.9e6 terms at step 13, `W = 1`) only 30% of pairs meet and 16.5% anticommute.
+`SupportIndex` keeps per bucket one bitset over its terms per qubit, and a generator term visits the OR of its qubits' rows: **−30% at 1 thread (3.48 → 2.46 s), −31% at 32 (215 → 149 ms)**, 4/4 pairs each, on ccqlin038.
+Without the index the visit cost 7.5 of 9.7 ns per pair and the inserts 2.2; with it the visits still cost 5.6 of 8.2, see §Operator products re-read each input bucket once per generator delta.
+About a third of `O`'s terms are rounding residues (below `1e-14` of the largest) when no threshold is applied, since nested commutators of a symmetric generator cancel to rounding rather than to exact zero.
+
 ## GPU spike
 
 Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.
@@ -416,3 +423,8 @@ The VmHWM cost is held capacity, not fragmentation (same ordering under `MALLOC_
 Rejected: a coefficient store only for anticommuting strings (+15%, mispredicts), merging without counting hits (+12–15%), reserving `len + partners` (VmHWM +15%), and growing a short bucket by exactly its new keys (VmHWM +20–26%, the TFIM gain lost).
 `PartnerOrder` against the stable `sort_by`: 15% faster on `heavyhex_step` at 8 threads, 10% slower on `rotation_zz` at one.
 Skipping the hit count when a bucket has room for every partner, and closing the hits' gap with the final shift, took `merge_ns` −22% to −28% on `heavyhex_step` and `tfim_step` and −4% to −12% on the all-hit `rotation_zz` and `rotation_local`; wall −9.1% / −1.5% (16 / 48 threads, the second not consistent) on `heavyhex_step` and −16.6% / −13.4% on `tfim_step`, VmHWM +0.3–1.6% (jobs 7396538–7396540 against `d7bbc753`; untouched `cnot` +2.2% at 16 threads, so wall effects under ~3% there are layout).
+
+### Operator products re-read each input bucket once per generator delta
+
+Output bucket `β′` reads the operand's buckets `β′ ⊕ h(s)` for every distinct generator bucket delta, so each input bucket is streamed once per delta (~157 times per call on the §Operator products skip disjoint supports probe, ~7 GB per call at 1.9e6 terms), and the visits stay memory-bound after the support skip.
+Hash rows under which most generator terms have `h(s) = 0` would fix the locality, but a row every generator term leaves at zero is constant over every operator the generator reaches and splits nothing; block-parity rows that only boundary terms flip are the untried middle.

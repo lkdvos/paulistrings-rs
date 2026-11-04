@@ -2,6 +2,7 @@
 //!
 //! A string product XORs keys and the bucket hash is GF(2)-linear, so output bucket `β′` reads only the larger operand's buckets `β′ ⊕ h(s)` over the smaller operand's terms `s`.
 //! Each output bucket is therefore one task that accumulates into its own [`Table`], and no two tasks write the same key.
+//! A Liouvillian visits only the pairs whose supports meet, through a [`support::SupportIndex`] of the larger operand.
 
 use rayon::prelude::*;
 
@@ -12,6 +13,7 @@ use super::table::{Entry, Table};
 use crate::coefficient::Coefficient;
 use crate::pauli_string::PauliString;
 use crate::phase::Phase;
+use support::{SupportIndex, SCAN_ABOVE_WEIGHT};
 
 /// Which pairs a product keeps and the factor it puts on them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,17 +120,19 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
         };
 
         let groups = Groups::new(small, &large.hash);
+        // Disjoint supports always commute, so only a Liouvillian can skip them.
+        let index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(large));
         let buckets: Vec<BucketColumns<W, C>> = (0..large.buckets.len())
             .into_par_iter()
-            .map_init(Table::<W, C>::default, |table, out| {
-                table.clear();
-                for (g, &delta) in groups.buckets.iter().enumerate() {
-                    let input = &large.buckets[out ^ delta as usize];
-                    let run = &groups.terms[groups.starts[g]..groups.starts[g + 1]];
-                    table.reserve(input.len());
-                    for i in 0..input.len() {
-                        let l = Entry { x: input.x[i], z: input.z[i], c: input.coeff[i] };
-                        for s in run {
+            .map_init(
+                || (Table::<W, C>::default(), Vec::new()),
+                |(table, candidates), out| {
+                    table.clear();
+                    for (g, &delta) in groups.buckets.iter().enumerate() {
+                        let b = out ^ delta as usize;
+                        let input = &large.buckets[b];
+                        let mut emit = |i: usize, s: &Entry<W, C>| {
+                            let l = Entry { x: input.x[i], z: input.z[i], c: input.coeff[i] };
                             let term = if self_is_large {
                                 pairing.term(&l, s)
                             } else {
@@ -137,11 +141,28 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
                             if let Some(t) = term {
                                 table.accumulate(t.x, t.z, t.c);
                             }
+                        };
+                        for s in &groups.terms[groups.starts[g]..groups.starts[g + 1]] {
+                            let support: [u64; W] = std::array::from_fn(|w| s.x[w] | s.z[w]);
+                            let weight: u32 = support.iter().map(|w| w.count_ones()).sum();
+                            match &index {
+                                Some(index) if weight <= SCAN_ABOVE_WEIGHT => {
+                                    index.candidates(b, &support, candidates);
+                                    for (w, &word) in candidates.iter().enumerate() {
+                                        let mut bits = word;
+                                        while bits != 0 {
+                                            emit(w * 64 + bits.trailing_zeros() as usize, s);
+                                            bits &= bits - 1;
+                                        }
+                                    }
+                                }
+                                _ => (0..input.len()).for_each(|i| emit(i, s)),
+                            }
                         }
                     }
-                }
-                sorted_columns(table)
-            })
+                    sorted_columns(table)
+                },
+            )
             .collect();
 
         let len = buckets.iter().map(BucketColumns::len).sum();
@@ -189,5 +210,6 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     }
 }
 
+mod support;
 #[cfg(test)]
 mod tests;

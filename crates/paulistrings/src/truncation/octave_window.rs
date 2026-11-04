@@ -122,8 +122,10 @@ impl BoundaryCut {
 /// What [`decide_from_window`] leaves to do.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum WindowDecision {
-    /// Nothing is dropped.
-    KeepAll,
+    /// Nothing is dropped from the whole sum's `total` terms.
+    KeepAll {
+        total: usize,
+    },
     /// Every term is dropped.
     Clear,
     Cut(BoundaryCut),
@@ -152,7 +154,7 @@ pub(crate) fn decide_from_window(
         collectives.allreduce_sum_u64(&mut packed);
     }
     let decision = match window.edge(&packed[1..], packed[0] as usize, n)? {
-        EdgeDecision::KeepAll => WindowDecision::KeepAll,
+        EdgeDecision::KeepAll => WindowDecision::KeepAll { total: packed[0] as usize },
         EdgeDecision::Clear => WindowDecision::Clear,
         EdgeDecision::Boundary { bin, quota, .. } => {
             let slot = window.slot(bin);
@@ -191,7 +193,7 @@ pub(crate) fn finalize_from_window<const W: usize, C: Coefficient>(
         None => {
             super::builtin::approx_top_n_pass(local, collectives, n);
         }
-        Some(WindowDecision::KeepAll) => {}
+        Some(WindowDecision::KeepAll { .. }) => {}
         Some(WindowDecision::Clear) => local.clear(),
         Some(WindowDecision::Cut(cut)) => cut.apply(local),
     }

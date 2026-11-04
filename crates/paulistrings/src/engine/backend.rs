@@ -8,7 +8,7 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::LayerScratch;
+use crate::engine::bucketed::{max_fanout, LayerScratch};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::trace::PartitionLayerRow;
@@ -48,7 +48,7 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
         let _ = (target_bucket_len, min_buckets);
         false
     }
-    /// Apply any truncation the last layer pass deferred; the driver calls it after the last layer.
+    /// End a call: apply any truncation the last layer pass deferred; the driver calls it after the last layer.
     fn settle(&mut self) {}
     /// Move the partition out, leaving an empty one under the same hash so the driver stays consistent if the work is never handed back.
     fn detach(&mut self) -> Self;
@@ -116,12 +116,12 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
     }
 
     fn refine(&mut self) {
-        self.settle();
+        self.state.layer.octaves.apply_pending(&mut self.sum);
         self.sum.refine();
     }
 
     fn coarsen_to(&mut self, bits: u8) {
-        self.settle();
+        self.state.layer.octaves.apply_pending(&mut self.sum);
         self.sum.coarsen_to(bits);
     }
 
@@ -130,7 +130,7 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
         let wanted = rebucketed_bits(self.len(), bits, target_bucket_len, min_buckets)
             .min(self.sum.hash().max_bits());
         if wanted != bits {
-            self.settle();
+            self.state.layer.octaves.apply_pending(&mut self.sum);
             self.sum.rebucket(target_bucket_len, min_buckets);
         }
         true
@@ -172,9 +172,11 @@ where
         transport: &X,
         clocked: bool,
     ) -> LayerExchangeCounts {
+        let octaves = &mut self.state.layer.octaves;
+        octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
         // The export reads the sum before the coset loop would apply the cut.
         if plan.has_remote() {
-            self.settle();
+            octaves.apply_pending(&mut self.sum);
         }
         apply_layer_partitioned_with_plan(
             &mut self.sum,

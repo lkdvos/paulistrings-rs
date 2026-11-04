@@ -208,6 +208,17 @@ fn every_rule_matches_the_double_loop_w2() {
 }
 
 #[test]
+fn generator_terms_above_the_index_weight_scan_their_bucket() {
+    // Dense keys on 128 qubits weigh about 96, above `SCAN_ABOVE_WEIGHT`.
+    let heavy = rand_sum::<2>(20, 128, 31);
+    let operand = low_weight_sum::<2>(10_000, 128, 6, 32);
+    assert!(heavy
+        .iter()
+        .all(|(x, z, _)| (0..2).map(|w| (x[w] | z[w]).count_ones()).sum::<u32>() > 64));
+    assert_matches_reference(&heavy, &operand, "heavy generator");
+}
+
+#[test]
 fn an_empty_operand_gives_an_empty_result() {
     let a = rand_sum::<1>(50, 8, 3);
     let empty = PauliSum::<1>::empty(8);

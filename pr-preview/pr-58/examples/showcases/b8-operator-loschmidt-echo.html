@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -194,9 +194,9 @@ The echo is <code>S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)</code>, where <code>A = C�
 <h2 id="pp-mc"><a class="header" href="#pp-mc">PP-MC</a></h2>
 <!-- doctest: skip -->
 <pre><code class="language-python">import ole
-from paulistrings import truncation
+from paulistrings import propagated, truncation
 policy = truncation.collapse_sample(cache=500_000_000, seed=s)
-A = O.propagate(C, policy, direction="heisenberg")
+A = propagated(O, C, policy, direction="heisenberg")
 S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
 </code></pre>
 <ul>

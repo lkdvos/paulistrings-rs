@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -193,7 +193,7 @@ A truncation policy names which terms count as tiny and deletes them at every la
 <p>The cost of a run is then set by the policy rather than by the circuit alone: the same circuit under <code>coeff(1e-2)</code> and under <code>coeff(1e-5)</code> can differ by orders of magnitude in term count, wall time and memory.
 The <a href="index.html#cost-model">cost model</a> is terms, and the policy is the knob on it.</p>
 <h2 id="choosing-a-policy"><a class="header" href="#choosing-a-policy">Choosing a policy</a></h2>
-<pre><code class="language-python">from paulistrings import truncation
+<pre><code class="language-python">from paulistrings import propagated, truncation
 
 policy = truncation.coeff(1e-10)
 </code></pre>
@@ -247,8 +247,8 @@ fused = Circuit(1)
 fused.unitary_1q(0, rz(0.15) @ rx(1.0))
 
 for policy in (None, truncation.coeff(0.1)):
-    a = observable.propagate(two_gates, policy, direction="heisenberg")
-    b = observable.propagate(fused, policy, direction="heisenberg")
+    a = propagated(observable, two_gates, policy, direction="heisenberg")
+    b = propagated(observable, fused, policy, direction="heisenberg")
     print(f"{str(policy):22s} two gates: {len(a)} terms  &lt;Z&gt;={a.expectation('z+').real:+.6f}   fused: {len(b)} terms  &lt;Z&gt;={b.expectation('z+').real:+.6f}")
 </code></pre>
 <pre><code class="language-text">None                   two gates: 3 terms  &lt;Z&gt;=+0.399630   fused: 3 terms  &lt;Z&gt;=+0.399630

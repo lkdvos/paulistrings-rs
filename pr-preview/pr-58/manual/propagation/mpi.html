@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -220,14 +220,14 @@ comm = MPI.COMM_WORLD
 observable = build_observable(seed=20260908)   # the SAME terms on every rank
 circuit = build_circuit()
 
-evolved = observable.propagate(
+observable.propagate(
     circuit,
     truncation.approx_topn(1_000_000),
     direction="heisenberg",
     comm=comm,
 )
 if comm.Get_rank() == 0:
-    print(len(evolved), evolved.expectation("z+"))
+    print(len(observable), observable.expectation("z+"))
 </code></pre>
 <p><code>comm</code> and <code>partitions</code> are alternatives — passing both is a <code>ValueError</code>.
 A distributed run places one partition per <em>process</em>, so the placement is the launcher’s job (<a href="#launching">Launching</a>).</p>
@@ -237,7 +237,7 @@ A distributed run places one partition per <em>process</em>, so the placement is
 <!-- doctest: skip -->
 <pre><code class="language-python">half = observable.num_qubits // 2
 blocks = [list(range(half)), list(range(half, observable.num_qubits))]
-evolved = observable.propagate(circuit, policy, comm=comm, partition_row_blocks=blocks)
+observable.propagate(circuit, policy, comm=comm, partition_row_blocks=blocks)
 </code></pre>
 <p>Both kwargs work the same way under <code>partitions=</code>, and the two are alternatives to each other.
 The block count must equal the rank count, the blocks must be disjoint, and they must be identical on every rank — the split is a local filter each rank computes for itself.
@@ -245,14 +245,14 @@ A term’s rank is then the XOR of the blocks it has odd Z-weight in, so a term 
 <p><code>partition_row_exclude=</code> keeps the random draw but forbids chosen coordinates, as a dict of <code>"x"</code> and <code>"z"</code> qubit lists:</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">everything = list(range(observable.num_qubits))
-evolved = observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
+observable.propagate(circuit, policy, comm=comm, partition_row_exclude={"z": everything})
 </code></pre>
 <p>A gate that never changes the excluded bits never moves a string between ranks: CZ and <code>rz</code> leave x-bits alone, so rows drawn on x-bits only keep a CZ/<code>rz</code> circuit’s exchange to its <code>rx</code> gates.
 Excluding coordinates also keeps strings that differ only there on one rank, which a per-rank <a href="../measurements.html#echo">echo read-out</a> needs.
 It cannot be combined with <code>partition_row_blocks=</code>.</p>
 <p>A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only <code>partition_row_blocks=</code> cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.</p>
 <h2 id="keeping-the-sum-split"><a class="header" href="#keeping-the-sum-split">Keeping the sum split</a></h2>
-<p><code>propagate(comm=...)</code> returns the whole evolved sum on rank 0 and an <strong>empty</strong> <code>PauliSum</code> of the same <code>num_qubits</code> on every other rank, which materializes everything on one rank.
+<p><code>propagate(comm=...)</code> leaves the whole evolved sum on rank 0 and an <strong>empty</strong> <code>PauliSum</code> of the same <code>num_qubits</code> on every other rank, which materializes everything on one rank.
 To keep the sum split between calls, read a scalar without gathering, or change the rows mid-circuit, split it once with <code>PauliSum.partition(comm=...)</code>:</p>
 <!-- doctest: skip -->
 <pre><code class="language-python">split = observable.partition(comm=comm, partition_row_seed=7)
@@ -323,7 +323,7 @@ A rank that skips one hangs the rest.</p>
 Its per-layer lists hold <strong>this rank’s entry only</strong> — gathering the group’s counters would mean a collective per layer for a diagnostic — so <code>terms_in[k]</code> is a one-element list, <code>rows_exported[k]</code> is what this rank sent, and <code>imbalance[k]</code> is always <code>1.0</code>.
 Reduce over <code>comm</code> for the group’s picture:</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, comm=comm)
+<pre><code class="language-python">stats = observable.propagate_with_stats(circuit, policy, comm=comm)
 exported = comm.allreduce(sum(stats.partition.rows_exported))
 </code></pre>
 <p>The field list is under <a href="../../library/propagate.html#partitionstats"><code>PartitionStats</code></a>.</p>

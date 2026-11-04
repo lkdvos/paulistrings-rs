@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -256,7 +256,7 @@ See <a href="../manual/circuits.html#noise-channels">Noise channels</a> for a wo
 </tbody>
 </table>
 </div>
-<p><code>circuit.adjoint()</code> satisfies <code>obs.propagate(c, direction="heisenberg") == obs.propagate(c.adjoint(), direction="forward")</code> to floating-point tolerance.
+<p><code>circuit.adjoint()</code> makes <code>direction="heisenberg"</code> through <code>c</code> and <code>direction="forward"</code> through <code>c.adjoint()</code> evolve a sum to the same result, to floating-point tolerance.
 Per gate: <code>rz</code>/<code>rx</code>/<code>ry</code>/<code>pauli_rotation</code> negate <code>theta</code>, <code>s</code> becomes <code>sdg</code> (and back), <code>unitary_1q</code>/<code>unitary_2q</code> conjugate-transpose, and <code>h</code>/<code>x</code>/<code>y</code>/<code>z</code>/<code>cnot</code>/<code>cz</code>/<code>swap</code> are self-adjoint.
 A non-unitary channel (a noise channel) raises <code>ValueError</code> naming it.</p>
 <h2 id="importing-a-circuit"><a class="header" href="#importing-a-circuit">Importing a circuit</a></h2>

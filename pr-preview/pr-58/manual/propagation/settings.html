@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -186,9 +186,9 @@
 <p>The pages before this one were about what <code>propagate</code> computes.
 This one is about watching it run: the per-layer counters, how to turn a term count into a memory bill before committing to a run, the log stream, and the handful of arguments and environment variables that change how fast the answer arrives without changing the answer.</p>
 <h2 id="stats"><a class="header" href="#stats">Stats</a></h2>
-<p><code>propagate_with_stats</code> returns the same evolved sum <code>propagate</code> would, alongside a <code>PropagationStats</code> with one entry per layer in application order.
+<p><code>propagate_with_stats</code> evolves the sum in place as <code>propagate</code> does and returns a <code>PropagationStats</code> with one entry per layer in application order.
 Enabling it does not change the propagated sum.</p>
-<pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
+<pre><code class="language-python">from paulistrings import Circuit, PauliSum, propagated, propagated_with_stats, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
 circuit = Circuit(4)
@@ -197,7 +197,7 @@ circuit.cnot(0, 1)
 circuit.depolarize(0.01, [0, 1])
 policy = truncation.coeff(1e-10)
 
-evolved, stats = observable.propagate_with_stats(circuit, policy, direction="heisenberg")
+evolved, stats = propagated_with_stats(observable, circuit, policy, direction="heisenberg")
 
 print(stats.layers, stats.peak_terms, stats.final_terms)
 print(stats.terms_in, stats.terms_out)   # one entry per layer, post-truncation
@@ -273,7 +273,7 @@ Compare evolved sums with <code>numpy.allclose</code> on <code>coefficients_arra
 <h2 id="untruncated-runs"><a class="header" href="#untruncated-runs">Untruncated runs</a></h2>
 <p><code>policy=None</code> applies no truncation at all; only coefficients that are exactly zero after a merge are dropped.
 The result is the exact evolved operator, and it is the reference the <a href="validation.html#score-against-an-exact-reference-where-you-can">cutoff sweep</a> is scored against wherever the problem is small enough to afford it.</p>
-<pre><code class="language-python">exact = observable.propagate(circuit, None, direction="heisenberg")
+<pre><code class="language-python">exact = propagated(observable, circuit, None, direction="heisenberg")
 print(len(exact), "terms untruncated")
 </code></pre>
 <pre><code class="language-text">5 terms untruncated

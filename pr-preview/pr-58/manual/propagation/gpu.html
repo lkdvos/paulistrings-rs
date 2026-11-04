@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -217,7 +217,7 @@ uv sync
 from paulistrings import truncation
 
 if paulistrings.cuda_available():
-    evolved = observable.propagate(
+    observable.propagate(
         circuit,
         truncation.approx_topn(10_000_000),
         direction="heisenberg",
@@ -229,7 +229,7 @@ if paulistrings.cuda_available():
 <code>target_bucket_len</code> and <code>min_buckets</code> still set the host-side bucket schedule the device refines on top of; <code>engine</code> is ignored.</p>
 <p><code>propagate_with_stats(..., device=0)</code> fills <code>PropagationStats.partition</code> as a one-partition run, and <code>PartitionStats.devices</code> names the device:</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, device=0)
+<pre><code class="language-python">stats = observable.propagate_with_stats(circuit, policy, device=0)
 print(stats.partition.devices)   # [0]
 print(stats.nanos)               # wall time per layer, on the device
 </code></pre>
@@ -248,7 +248,7 @@ Devices hold every <a href="../operators.html#dtypes">dtype</a>; <code>GpuPauliS
 <h3 id="multi-device"><a class="header" href="#multi-device">Several devices</a></h3>
 <p>A list places one partition on each entry, split by GF(2) partition rows and exchanged between layers as in a <a href="partitions.html">partitioned run</a>:</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">evolved, stats = observable.propagate_with_stats(
+<pre><code class="language-python">stats = observable.propagate_with_stats(
     circuit, truncation.approx_topn(10_000_000), direction="heisenberg", device=[0, 1, 2, 3]
 )
 print(stats.partition.devices)   # [0, 1, 2, 3]
@@ -262,7 +262,7 @@ The call scatters, propagates and gathers every time; a resident multi-device su
 <h3 id="comm-device"><a class="header" href="#comm-device">One device per MPI rank</a></h3>
 <p>With <code>comm=</code>, <code>device=</code> names this rank’s one device: an ordinal, or <code>"auto"</code> for a device near the rank’s CPUs, distinct per rank on a node while there are enough (see <a href="mpi.html#gpu-per-rank">MPI ranks</a>):</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">evolved = observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
+<pre><code class="language-python">observable.propagate(circuit, policy, direction="heisenberg", comm=comm, device="auto")
 </code></pre>
 <p>Everything else is the host <code>comm=</code> contract: replicated input, collective calls, <code>result="gather"</code> or <code>"local"</code>, and <code>stats.partition</code> holding this rank’s entry, with <code>devices</code> this rank’s device.
 It needs the extension built with both features (<code>maturin develop --release --features cuda,mpi</code>); a build lacking either raises <code>RuntimeError</code> naming it.

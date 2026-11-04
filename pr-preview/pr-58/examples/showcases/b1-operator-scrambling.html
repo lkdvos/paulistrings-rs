@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -209,9 +209,8 @@ python examples/b1_operator_scrambling/run_b1_2d.py     # 2D quench, ~15 minutes
 <pre><code class="language-python">from paulistrings import truncation
 from common import observables
 
-evolved = observables.single_z(center, n).propagate(
-    step_circuit, truncation.coeff(min_abs_coeff), direction="heisenberg"
-)
+evolved = observables.single_z(center, n)
+evolved.propagate(step_circuit, truncation.coeff(min_abs_coeff), direction="heisenberg")
 </code></pre>
 <p>Every quantity below is read from three arrays exported once —
 <code>evolved.x_array()</code>, <code>evolved.z_array()</code>, <code>evolved.coefficients_array()</code>:

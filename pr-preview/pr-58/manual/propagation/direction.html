@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-1eecc173.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -190,7 +190,7 @@ Both are valid, both are cheap or expensive for their own reasons, and neither r
 A local observable starts as a handful of terms and only spreads as far as its causal cone, which is why this is the direction almost every example on this site uses.</p>
 <p><strong>Forward</strong> answers “what does this circuit do to this operator?” — evolving a density matrix or a Hamiltonian in the Schrödinger picture.
 It starts from a wide operator, so the cost profile is different from the outset.</p>
-<pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
+<pre><code class="language-python">from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
 circuit = Circuit(4)
@@ -198,8 +198,8 @@ circuit.rz(0.3, 0)
 circuit.cnot(0, 1)
 policy = truncation.coeff(1e-10)
 
-heisenberg = observable.propagate(circuit, policy, direction="heisenberg")
-forward = observable.propagate(circuit, policy, direction="forward")
+heisenberg = propagated(observable, circuit, policy, direction="heisenberg")
+forward = propagated(observable, circuit, policy, direction="forward")
 </code></pre>
 <p><strong>The default is <code>"forward"</code>, and most examples on this site do not use it.</strong>
 The Python binding maps <code>direction=None</code> to <code>"forward"</code>, so a call that omits the argument silently computes <code>UOU†</code>.
@@ -224,8 +224,8 @@ both.rx(0.9, 2)
 both.cnot(1, 2)
 
 exact = truncation.coeff(1e-12)
-heisenberg = observable.propagate(both, exact, direction="heisenberg")
-forward = observable.propagate(both, exact, direction="forward")
+heisenberg = propagated(observable, both, exact, direction="heisenberg")
+forward = propagated(observable, both, exact, direction="forward")
 
 print("heisenberg", heisenberg.expectation("x+").real)
 print("forward   ", forward.expectation("x+").real)

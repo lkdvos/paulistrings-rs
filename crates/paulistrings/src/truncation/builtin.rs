@@ -1,6 +1,6 @@
 //! The built-in truncation policies and combinators, and the helpers their partitioned and device forms share.
 
-use super::TruncationPolicy;
+use super::{FusedApproxTopN, TruncationPolicy};
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::LOG_TARGET;
@@ -408,8 +408,8 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for ApproxTopN {
         true
     }
 
-    fn sole_approx_top_n(&self) -> Option<usize> {
-        Some(self.0)
+    fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
+        Some(FusedApproxTopN { n: self.0, agreed: true })
     }
 }
 
@@ -619,10 +619,10 @@ where
     }
 
     /// The operand's, when it holds the only layer pass.
-    fn sole_approx_top_n(&self) -> Option<usize> {
+    fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         match (self.0.finalizes_layer(), self.1.finalizes_layer()) {
-            (true, false) => self.0.sole_approx_top_n(),
-            (false, true) => self.1.sole_approx_top_n(),
+            (true, false) => self.0.fused_approx_top_n(),
+            (false, true) => self.1.fused_approx_top_n(),
             _ => None,
         }
     }
@@ -659,6 +659,10 @@ impl<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>> TruncationPolicy
 
     fn supports_partitioned(&self) -> bool {
         true
+    }
+
+    fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
+        self.0.fused_approx_top_n().map(|fused| FusedApproxTopN { agreed: false, ..fused })
     }
 }
 

@@ -1140,6 +1140,7 @@ mod finalize_tests {
     use crate::pauli_sum::PauliSum;
     use crate::test_support::PlainApproxTopN;
     use crate::truncation::builtin::{And, ApproxTopN, CoefficientThreshold, TopN};
+    use crate::truncation::FusedApproxTopN;
 
     #[test]
     fn and_runs_both_finalizers_bucketed() {
@@ -1224,7 +1225,11 @@ mod finalize_tests {
         scratch.octaves.window = Some(window);
         let rotation = PauliRotation::new(PauliString::<1>::x(3), 0.4);
         let prepared = rotation.prepare(b.hash(), false).unwrap();
-        scratch.octaves.begin_layer(max_fanout(&prepared), Some(10));
+        scratch.octaves.begin_layer(
+            max_fanout(&prepared),
+            Some(FusedApproxTopN { n: 10, agreed: true }),
+            false,
+        );
         apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
         assert!(scratch.octaves.counted);
         assert_eq!(scratch.octaves.per_bucket.len(), b.num_buckets());
@@ -1236,13 +1241,17 @@ mod finalize_tests {
 
         let mut unarmed = LayerScratch::<1>::new();
         unarmed.octaves.window = Some(window);
-        unarmed.octaves.begin_layer(max_fanout(&prepared), None);
+        unarmed.octaves.begin_layer(max_fanout(&prepared), None, false);
         apply_layer_bucketed(&mut input.clone(), &prepared, &TopN(10), &mut unarmed);
         assert!(!unarmed.octaves.counted, "a policy without ApproxTopN takes no counts");
 
         let depolarizing = PtmChannel::depolarizing(3, 0.11);
         let prepared = depolarizing.prepare(b.hash(), false).unwrap();
-        scratch.octaves.begin_layer(max_fanout(&prepared), Some(10));
+        scratch.octaves.begin_layer(
+            max_fanout(&prepared),
+            Some(FusedApproxTopN { n: 10, agreed: true }),
+            false,
+        );
         apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
         assert!(!scratch.octaves.counted, "the rescale path takes no counts");
     }

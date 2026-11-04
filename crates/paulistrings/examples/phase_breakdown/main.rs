@@ -18,7 +18,7 @@ mod rows;
 mod workloads;
 
 use paulistrings::test_support::KeepAll;
-use paulistrings::{ApproxTopN, CoefficientThreshold, TopN, TruncationPolicy};
+use paulistrings::{ApproxTopN, CoefficientThreshold, PerPartition, TopN, TruncationPolicy};
 
 #[cfg(feature = "mpi")]
 use cells::run_cell_mpi;
@@ -50,6 +50,11 @@ fn run<const W: usize, C: Coefficient>(cfg: &Config) {
         TruncSpec::ApproxTopN(n) => {
             run_cells::<W, C, _, _>(cfg, &ApproxTopN(n), Some(&ApproxTopN(n)))
         }
+        TruncSpec::PerPartitionApproxTopN(n) => run_cells::<W, C, _, _>(
+            cfg,
+            &PerPartition(ApproxTopN(n)),
+            Some(&PerPartition(ApproxTopN(n))),
+        ),
     }
 }
 

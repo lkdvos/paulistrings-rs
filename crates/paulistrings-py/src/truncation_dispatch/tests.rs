@@ -1,5 +1,5 @@
 use super::*;
-use paulistrings::CollapseSample;
+use paulistrings::{ApproxTopN, CollapseSample, FusedApproxTopN, PerPartition};
 use std::any::type_name_of_val;
 use BuiltinTruncation as T;
 
@@ -85,4 +85,25 @@ fn the_macro_runs_each_arm_as_its_own_type() {
         name(&T::or(T::Coefficient(1e-3), T::Weight(3))),
         "paulistrings::truncation::tree::BuiltinTruncation"
     );
+}
+
+/// A lowered filter runs the tree's layer pass, so it answers the tree's fused `ApproxTopN` hook.
+#[test]
+fn lowered_filters_forward_the_fused_approx_top_n_hook() {
+    let fused = |tree: &BuiltinTruncation| match Lowered::of(tree) {
+        Lowered::Coefficient(lowered) => TruncationPolicy::<1>::fused_approx_top_n(&lowered),
+        Lowered::CoefficientAndWeight(lowered) => {
+            TruncationPolicy::<1>::fused_approx_top_n(&lowered)
+        }
+        Lowered::Tree(tree) => TruncationPolicy::<1>::fused_approx_top_n(tree),
+    };
+    let per_partition = T::from(PerPartition(ApproxTopN(9)));
+    for (tree, agreed) in [
+        (and(T::Coefficient(1e-3), T::ApproxTopN(9)), true),
+        (and(T::Weight(3), per_partition.clone()), false),
+        (per_partition, false),
+    ] {
+        assert_eq!(fused(&tree), Some(FusedApproxTopN { n: 9, agreed }), "{tree:?}");
+    }
+    assert_eq!(fused(&and(T::Coefficient(1e-3), T::TopN(9))), None);
 }

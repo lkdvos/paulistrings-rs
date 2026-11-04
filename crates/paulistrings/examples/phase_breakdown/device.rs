@@ -20,6 +20,9 @@ pub(crate) fn builtin_truncation(spec: TruncSpec) -> BuiltinTruncation {
         TruncSpec::Coefficient(t) => BuiltinTruncation::Coefficient(t),
         TruncSpec::TopN(n) => BuiltinTruncation::TopN(n),
         TruncSpec::ApproxTopN(n) => BuiltinTruncation::ApproxTopN(n),
+        TruncSpec::PerPartitionApproxTopN(n) => {
+            BuiltinTruncation::PerPartition(Box::new(BuiltinTruncation::ApproxTopN(n)))
+        }
     }
 }
 

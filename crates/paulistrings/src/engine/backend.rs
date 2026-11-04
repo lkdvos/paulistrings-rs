@@ -105,6 +105,12 @@ impl<const W: usize, C: Coefficient> HostPartition<W, C> {
     pub(crate) fn into_parts(self) -> (PauliSum<W, C>, LayerScratch<W, C>) {
         (self.sum, self.state.layer)
     }
+
+    /// The buckets whose export read the counts ahead under a pending cut, summed over every layer this partition drove.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn buckets_exported_ahead_under_cut(&self) -> u64 {
+        self.state.export.buckets_ahead_under_cut
+    }
 }
 
 impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W, C> {

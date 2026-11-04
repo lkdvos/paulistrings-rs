@@ -34,6 +34,9 @@ pub(crate) struct ExportScratch<const W: usize, C: Coefficient = num_complex::Co
     work_prefix: Vec<usize>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W, C>>,
+    /// Test hook: the buckets whose pass 1 read the counts ahead under a pending cut, summed over layers.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) buckets_ahead_under_cut: u64,
 }
 
 /// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
@@ -150,6 +153,11 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             None => counted(slot),
         }
     });
+    #[cfg(any(test, feature = "test-utils"))]
+    if ahead && cut.is_some() {
+        scratch.buckets_ahead_under_cut +=
+            (0..num_buckets).filter(|&bucket| octaves.rows_ahead(bucket).is_some()).count() as u64;
+    }
 
     // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(

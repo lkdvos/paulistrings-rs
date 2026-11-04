@@ -52,12 +52,18 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
     fn detach(&mut self) -> Self;
     #[cfg(feature = "phase-timing")]
     fn stats(&mut self) -> &mut PhaseStats;
+    /// The run-total counters so far, busy time a backend holds apart from [`Self::stats`] included.
+    #[cfg(feature = "phase-timing")]
+    fn phase_snapshot(&mut self) -> PhaseStats {
+        *self.stats()
+    }
 }
 
 /// One layer under policy `T`; an implementor must issue exactly the transport calls the host layer issues, in the same order, or the group falls out of step; the device backend's one addition is the exchange vote (`engine/gpu/export.rs`), legal only because every partition of a group runs the same backend.
 pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
     PartitionStorage<W, C>
 {
+    /// `clocked` asks for the counts' phase times, which a backend may leave zero.
     fn apply_layer<X: Transport>(
         &mut self,
         prepared: &Prepared<W, C>,
@@ -65,6 +71,7 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         rows: &PartitionRows<W>,
         policy: &T,
         transport: &X,
+        clocked: bool,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
     /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
@@ -130,6 +137,11 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
     fn stats(&mut self) -> &mut PhaseStats {
         &mut self.state.layer.stats
     }
+
+    #[cfg(feature = "phase-timing")]
+    fn phase_snapshot(&mut self) -> PhaseStats {
+        self.state.layer.peek_phase_stats()
+    }
 }
 
 impl<const W: usize, C: Coefficient, T> PartitionBackend<W, C, T> for HostPartition<W, C>
@@ -143,6 +155,7 @@ where
         rows: &PartitionRows<W>,
         policy: &T,
         transport: &X,
+        clocked: bool,
     ) -> LayerExchangeCounts {
         apply_layer_partitioned_with_plan(
             &mut self.sum,
@@ -152,6 +165,7 @@ where
             policy,
             &mut self.state,
             transport,
+            clocked,
         )
     }
 

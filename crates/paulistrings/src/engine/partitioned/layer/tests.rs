@@ -563,5 +563,5 @@ where
     X: Transport,
 {
     let plan = PartitionPlan::new(prepared, rows, transport.rank());
-    apply_layer_partitioned_with_plan(local, prepared, &plan, rows, policy, state, transport)
+    apply_layer_partitioned_with_plan(local, prepared, &plan, rows, policy, state, transport, false)
 }

@@ -1,5 +1,7 @@
 //! [`PartitionTrace`], the opt-in per-layer record of a run, partitioned or not, and the per-partition rows it is transposed from.
 
+use std::time::Instant;
+
 /// What one layer did across the whole group; the per-partition vectors are indexed by rank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionLayerRecord {
@@ -33,6 +35,74 @@ pub struct PartitionLayerRecord {
     pub receive_chunks: Vec<u32>,
     /// Each partition's device counters, `None` on a host partition.
     pub device: Vec<Option<DeviceLayerRecord>>,
+    /// Where each partition's `nanos` went.
+    pub phases: Vec<LayerPhases>,
+}
+
+/// Where one partition's wall time for a layer went, in nanoseconds.
+///
+/// The coarse fields are disjoint wall-clock spans of the layer measured on the driving thread, so their [`total_ns`](Self::total_ns) is at most the layer's `nanos` and short of it only by the record's own bookkeeping.
+/// A device partition times its export and exchange inside `coset_loop_ns`, leaving `export_ns` and `exchange_ns` zero.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayerPhases {
+    /// Raising or lowering the bucket count.
+    pub rebucket_ns: u64,
+    /// Channel preparation and partition planning, both passes of a refining layer.
+    pub prepare_ns: u64,
+    /// The bucket-count proposal and its all-reduce, plus the policy finalization's collective calls.
+    pub collective_ns: u64,
+    /// The export pass building the per-partner blocks.
+    pub export_ns: u64,
+    /// The transfer the coset loop did not hide, as `PhaseStats::exchange_ns` defines it.
+    pub exchange_ns: u64,
+    /// The layer's own compute: the coset loop with its planning, or the rescale.
+    pub coset_loop_ns: u64,
+    /// The policy finalization less its collective calls.
+    pub finalize_ns: u64,
+    /// Worker busy sums, `Some` only under the `phase-timing` feature.
+    pub fine: Option<FineLayerPhases>,
+}
+
+impl LayerPhases {
+    /// Sum of the coarse fields.
+    pub fn total_ns(&self) -> u64 {
+        self.rebucket_ns
+            + self.prepare_ns
+            + self.collective_ns
+            + self.export_ns
+            + self.exchange_ns
+            + self.coset_loop_ns
+            + self.finalize_ns
+    }
+}
+
+/// One partition's busy time for a layer summed over its coset tasks, so a field can exceed the layer's wall time under parallelism; the fields keep `PhaseStats`' meanings, device ones included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FineLayerPhases {
+    /// Gathering each coset's rows, received ones included.
+    pub gather_ns: u64,
+    /// Sorting the rest streams.
+    pub sort_ns: u64,
+    /// The fused merge and reduction.
+    pub merge_ns: u64,
+    /// Appending received rows, part of `gather_ns`; zero on a layer without an exchange.
+    pub append_ns: u64,
+    /// Blocked on a chunk of received rows, part of `append_ns`.
+    pub chunk_wait_ns: u64,
+}
+
+#[cfg(feature = "phase-timing")]
+impl FineLayerPhases {
+    /// The busy time accumulated between two snapshots of the run-total counters.
+    pub(crate) fn between(before: &crate::PhaseStats, after: &crate::PhaseStats) -> Self {
+        Self {
+            gather_ns: after.gather_ns - before.gather_ns,
+            sort_ns: after.sort_ns - before.sort_ns,
+            merge_ns: after.merge_ns - before.merge_ns,
+            append_ns: after.append_ns - before.append_ns,
+            chunk_wait_ns: after.chunk_wait_ns - before.chunk_wait_ns,
+        }
+    }
 }
 
 /// What one device partition counted for a layer beyond the shared record.
@@ -133,6 +203,7 @@ pub(crate) struct PartitionLayerRow {
     pub refine_passes: u32,
     pub receive_chunks: u32,
     pub device: Option<DeviceLayerRecord>,
+    pub phases: LayerPhases,
 }
 
 /// Append one layer's record; cold and out of line to keep it from perturbing the inlined merge kernels' layout.
@@ -140,6 +211,31 @@ pub(crate) struct PartitionLayerRow {
 #[inline(never)]
 pub(super) fn record_layer_row(rows: &mut Vec<PartitionLayerRow>, row: PartitionLayerRow) {
     rows.push(row);
+}
+
+/// A chain of [`LayerPhases`] laps that reads the clock only when started, so an untraced layer pays one branch per lap.
+pub(crate) struct LayerClock(Option<Instant>);
+
+impl LayerClock {
+    pub(crate) fn new(start: Option<Instant>) -> Self {
+        Self(start)
+    }
+
+    /// Add the time since the previous lap to `slot`.
+    #[inline]
+    pub(crate) fn lap(&mut self, slot: &mut u64) {
+        if let Some(last) = self.0.as_mut() {
+            lap_cold(last, slot);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn lap_cold(last: &mut Instant, slot: &mut u64) {
+    let now = Instant::now();
+    *slot += now.duration_since(*last).as_nanos() as u64;
+    *last = now;
 }
 
 /// Transposes the partitions' rows into per-layer records appended to `trace`, the per-partner vectors padded to `partners`; panics if the partitions disagree on a collective decision.
@@ -178,6 +274,7 @@ pub(crate) fn assemble(
             refine_passes: Vec::with_capacity(size),
             receive_chunks: Vec::with_capacity(size),
             device: Vec::with_capacity(size),
+            phases: Vec::with_capacity(size),
         };
         for (rank, rows) in per_partition.iter().enumerate() {
             let row = &rows[k];
@@ -225,6 +322,7 @@ pub(crate) fn assemble(
             record.refine_passes.push(row.refine_passes);
             record.receive_chunks.push(row.receive_chunks);
             record.device.push(row.device);
+            record.phases.push(row.phases);
         }
         trace.layers.push(record);
     }

@@ -34,6 +34,44 @@ mod one_partition {
     /// from zero that no count below depends on a cancellation.
     const THETA: f64 = 0.3;
 
+    /// A layer's coarse phases account for its `nanos` up to the record's own bookkeeping; the fine phases are present exactly under `phase-timing`.
+    #[test]
+    fn coarse_phases_account_for_each_layer() {
+        use paulistrings::test_support::{rand_sum_real, zz_rotation};
+        let mut circuit = Circuit::<1>::new(32);
+        for q in 0..4 {
+            circuit.push(zz_rotation::<1>(q, q + 1, 0.13 + q as f64 * 0.05));
+        }
+        let mut scratch = LayerScratch::<1>::new();
+        scratch.enable_trace();
+        propagate_with(
+            &circuit,
+            rand_sum_real::<1>(20_000, 32, 0x51A75),
+            &AlwaysKeep,
+            Direction::Heisenberg,
+            &mut scratch,
+            PropagateOptions::default(),
+        );
+        let trace = scratch.take_trace().expect("trace was enabled");
+        assert_eq!(trace.layers.len(), 4);
+        for (k, layer) in trace.layers.iter().enumerate() {
+            let phases = one(&layer.phases);
+            let nanos = one(&layer.nanos);
+            assert!(phases.total_ns() <= nanos, "layer {k}: {phases:?} exceeds {nanos} ns");
+            assert!(
+                (nanos - phases.total_ns()) * 10 < nanos,
+                "layer {k}: {phases:?} leaves more than a tenth of {nanos} ns unaccounted",
+            );
+            assert!(phases.coset_loop_ns > 0, "layer {k}: {phases:?}");
+            assert_eq!((phases.export_ns, phases.exchange_ns), (0, 0), "layer {k}: no exchange");
+            assert_eq!(phases.fine.is_some(), cfg!(feature = "phase-timing"), "layer {k}");
+            if let Some(fine) = phases.fine {
+                assert!(fine.gather_ns > 0 && fine.merge_ns > 0, "layer {k}: {fine:?}");
+                assert_eq!((fine.append_ns, fine.chunk_wait_ns), (0, 0), "layer {k}: no exchange");
+            }
+        }
+    }
+
     /// `{X₀: 1}`.
     fn x0_observable<const W: usize>() -> PauliSum<W> {
         let mut acc = BuildAccumulator::<W>::with_capacity(NUM_QUBITS, 1);
@@ -520,6 +558,45 @@ mod partitioned {
         }
         assert!(grew, "the fixture should have grown the bucket count");
         assert_eq!(ps.bits(), prev);
+    }
+
+    /// Every partition's coarse phases fit inside its `nanos`; only a remote layer exports, and every layer of the opening ramp agrees the bucket count.
+    #[test]
+    fn coarse_phases_split_each_partitions_layer() {
+        let mut circuit = circuit();
+        circuit.push(PtmChannel::depolarizing(3, 0.1));
+        let mut ps = PartitionedSum::scatter_with(
+            rand_sum::<1>(4_000, NQ, 0x6),
+            unpinned_scatter(4, 2, 0x7_ACED_7ACE),
+        );
+        ps.enable_trace();
+        ps.propagate(&circuit, &KeepAll, Direction::Forward);
+        let trace = ps.take_trace().expect("tracing is on");
+        assert!(trace.remote_layers() > 0 && trace.local_layers() > 0, "{trace:?}");
+        for (k, layer) in trace.layers.iter().enumerate() {
+            assert_eq!(layer.phases.len(), 4, "layer {k}: one split per partition");
+            for (r, phases) in layer.phases.iter().enumerate() {
+                assert!(phases.total_ns() <= layer.nanos[r], "layer {k} partition {r}: {phases:?}");
+                assert!(phases.collective_ns > 0, "layer {k} partition {r}: {phases:?}");
+                assert_eq!(
+                    phases.export_ns > 0,
+                    layer.remote_deltas > 0,
+                    "layer {k} partition {r}: {phases:?}",
+                );
+                if layer.remote_deltas == 0 {
+                    assert_eq!(phases.exchange_ns, 0, "layer {k} partition {r}");
+                }
+                assert_eq!(phases.fine.is_some(), cfg!(feature = "phase-timing"));
+                if let Some(fine) = phases.fine {
+                    assert!(
+                        fine.chunk_wait_ns <= fine.append_ns,
+                        "layer {k} partition {r}: {fine:?}"
+                    );
+                    assert!(fine.append_ns <= fine.gather_ns, "layer {k} partition {r}: {fine:?}");
+                    assert_eq!(fine.append_ns > 0, layer.remote_deltas > 0, "layer {k}: {fine:?}");
+                }
+            }
+        }
     }
 
     /// The trace's gate-identity fields (`circuit_index`, `application_index`,

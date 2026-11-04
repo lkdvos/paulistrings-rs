@@ -383,7 +383,7 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for ApproxTopN {
         approx_top_n_solo(sum, self.0);
     }
 
-    /// [`approx_top_n_pass`].
+    /// One `allreduce_sum_u64` of `[len, histogram…]`, the single-partition edge walk, and at a boundary one more of the per-rank boundary counts for this rank's quota; no early exit, since that would desynchronize the group.
     fn finalize_layer_partitioned(
         &self,
         local: &mut PauliSum<W, C>,

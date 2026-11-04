@@ -209,9 +209,9 @@
 <a href=#209 id=209 data-nosnippet>209</a>            <span class="string">"the cut's octave is outside the window"
 <a href=#210 id=210 data-nosnippet>210</a>        </span>);
 <a href=#211 id=211 data-nosnippet>211</a>        <span class="kw">let </span>above: u32 = emitting[slot + <span class="number">1</span>..].iter().sum();
-<a href=#212 id=212 data-nosnippet>212</a>        <span class="kw">match </span>cut.quotas[b] {
+<a href=#212 id=212 data-nosnippet>212</a>        <span class="kw">match </span>cut.split.quota(b) {
 <a href=#213 id=213 data-nosnippet>213</a>            <span class="number">0 </span>=&gt; <span class="prelude-val">Some</span>(above),
-<a href=#214 id=214 data-nosnippet>214</a>            quota <span class="kw">if </span>quota == <span class="self">self</span>.per_bucket[b][slot] <span class="kw">as </span>usize =&gt; <span class="prelude-val">Some</span>(above + emitting[slot]),
+<a href=#214 id=214 data-nosnippet>214</a>            quota <span class="kw">if </span>quota &gt;= <span class="self">self</span>.per_bucket[b][slot] <span class="kw">as </span>usize =&gt; <span class="prelude-val">Some</span>(above + emitting[slot]),
 <a href=#215 id=215 data-nosnippet>215</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
 <a href=#216 id=216 data-nosnippet>216</a>        }
 <a href=#217 id=217 data-nosnippet>217</a>    }

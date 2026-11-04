@@ -37,7 +37,8 @@ use paulistrings::test_support::{
     KeepAll, PlainApproxTopN,
 };
 use paulistrings::test_support::{
-    count_remote_deltas, mpi_build_library_version, mpi_with_chunk_bytes, BITS_AGREE_EVERY,
+    buckets_exported_ahead_under_cut_on_rank, count_remote_deltas, mpi_build_library_version,
+    mpi_with_chunk_bytes, BITS_AGREE_EVERY,
 };
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
@@ -344,6 +345,13 @@ impl Runner<'_> {
                 assert_eq!(got_len, want_len, "{what}: len()");
                 assert_same_terms(got.local(), want.local(), &format!("{what} rank {}", self.rank));
             }
+            // Above one rank some export reads the counts ahead under a pending cut; the plain pass leaves none.
+            let ahead = [got, want].map(|split| buckets_exported_ahead_under_cut_on_rank(&split));
+            let mut total = [0u64; 2];
+            self.world.all_reduce_into(&ahead[..], &mut total[..], SystemOperation::sum());
+            let what = format!("{name} ranks={} {direction:?}", self.size);
+            assert!(self.size == 1 || total[0] > 0, "{what}: no export read the counts ahead");
+            assert_eq!(total[1], 0, "{what}: the plain layer pass left counts ahead");
         }
     }
 }

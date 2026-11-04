@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-9d228259.js";
+            window.path_to_searchindex_js = "searchindex-f6f3a6f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -1414,7 +1414,7 @@ Choosing rows automatically for a circuit with no obvious geometry is open resea
 On a single-node box <code>"auto"</code> also falls back to the unpartitioned path, and an integer larger than the node count this process may run on is a <code>ValueError</code> that points at explicit CPU lists.</p>
 <p><a href="#module-helpers"><code>paulistrings.numa_nodes()</code></a> reports what the machine offers, as one CPU list per node intersected with this process’s affinity mask, so a script can decide for itself before choosing.
 <code>pin_memory=False</code> pins the threads but not their allocations; the default binds both, which is the point of the placement.</p>
-<p><code>PropagationStats.partition</code> holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
+<p><code>PropagationStats.partition</code> holds, per layer, the terms each partition held, the rows and bytes it sent, the imbalance across partitions, and where each partition’s time went (<code>coset_loop_ns</code>, <code>export_ns</code>, <code>exchange_ns</code>, <code>collective_ns</code> and the rest).
 An unpartitioned run reports one partition.
 <code>local[k]</code> says whether the rows keep layer <code>k</code> local, which is the figure the cost/benefit split above turns on; a layer that is not local can still send no row when none of its terms takes a crossing shift.</p>
 <!-- doctest: skip -->
@@ -4789,10 +4789,30 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.terms_out</code></td><td><code>list[list[int]]</code></td><td>terms partition <code>r</code> held after layer <code>k</code>’s truncation</td></tr>
 <tr><td><code>.imbalance</code></td><td><code>list[float]</code></td><td>max/mean of <code>terms_in</code> per layer; <code>1.0</code> is perfect balance, <code>partitions</code> is worst case</td></tr>
 <tr><td><code>.nanos</code></td><td><code>list[list[int]]</code></td><td>each partition’s own elapsed wall time per layer; <code>PropagationStats.nanos[k]</code> is <code>max(nanos[k])</code></td></tr>
+<tr><td><code>.rebucket_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: raising or lowering the bucket count</td></tr>
+<tr><td><code>.prepare_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: channel preparation and partition planning</td></tr>
+<tr><td><code>.collective_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the bucket-count agreement and the policy’s collectives, the wait for the slowest partition included</td></tr>
+<tr><td><code>.export_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: building the rows to send; zero on a <code>local</code> layer</td></tr>
+<tr><td><code>.exchange_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the transfer the layer’s compute did not hide; zero on a <code>local</code> layer</td></tr>
+<tr><td><code>.coset_loop_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the layer’s own compute; on a device, its export and exchange too</td></tr>
+<tr><td><code>.finalize_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the policy’s pass after the layer, less its collectives</td></tr>
+<tr><td><code>.gather_ns</code></td><td><code>list[list[int]] | None</code></td><td>fine phase: gathering each coset’s rows, received ones included</td></tr>
+<tr><td><code>.sort_ns</code></td><td><code>list[list[int]] | None</code></td><td>fine phase: sorting</td></tr>
+<tr><td><code>.merge_ns</code></td><td><code>list[list[int]] | None</code></td><td>fine phase: merging duplicate strings</td></tr>
+<tr><td><code>.append_ns</code></td><td><code>list[list[int]] | None</code></td><td>fine phase: appending received rows, part of <code>gather_ns</code></td></tr>
+<tr><td><code>.chunk_wait_ns</code></td><td><code>list[list[int]] | None</code></td><td>fine phase: blocked on received rows still in flight, part of <code>append_ns</code></td></tr>
 </tbody>
 </table>
 </div>
-<p>Under <code>comm=</code>, a distributed run’s per-layer lists (<code>terms_in</code>, <code>terms_out</code>, <code>rows_exported</code>, <code>bytes_exported</code>, <code>nanos</code>) hold this rank’s own entry only — nothing gathers the group’s counters, since that would add a collective per layer for a diagnostic. Reduce over <code>comm</code> for the group’s picture; <code>imbalance</code> is always <code>1.0</code> in that case.</p>
+<p>The phase fields split <code>nanos[k][r]</code> and share its shape.
+The coarse phases are disjoint wall-clock spans recorded on every run, so they sum to at most <code>nanos[k][r]</code>.
+The fine phases are busy time summed over worker threads, so they can exceed <code>coset_loop_ns</code> under parallelism; they are <code>None</code> unless the extension was built with the <code>phase-timing</code> feature (<code>MATURIN_PEP517_ARGS="--features phase-timing"</code>).</p>
+<!-- doctest: skip -->
+<pre><code class="language-python">stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
+part = stats.partition
+waiting = [max(part.exchange_ns[k][r] + part.collective_ns[k][r] for r in range(part.partitions)) for k in range(stats.layers)]
+</code></pre>
+<p>Under <code>comm=</code>, a distributed run’s per-layer lists (<code>terms_in</code>, <code>terms_out</code>, <code>rows_exported</code>, <code>bytes_exported</code>, <code>nanos</code> and the phase fields) hold this rank’s own entry only — nothing gathers the group’s counters, since that would add a collective per layer for a diagnostic. Reduce over <code>comm</code> for the group’s picture; <code>imbalance</code> is always <code>1.0</code> in that case.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="truncation-policies"><a class="header" href="#truncation-policies">Truncation policies</a></h1>
 <p>All seven live in the <code>paulistrings.truncation</code> module and run after every channel.</p>

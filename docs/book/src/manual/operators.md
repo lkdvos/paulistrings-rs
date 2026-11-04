@@ -218,7 +218,25 @@ print(2.0 * (a + b))
 ```
 
 Of course, both operands must have the same `num_qubits`.
-Note, the product of two sums is not implemented, and `*` between two `PauliSum` objects raises `TypeError`.
+
+`a @ b` is the operator product, always complex since anticommuting strings multiply to a factor of $i$.
+`h.liouvillian(o)` is $i[H, O]$, the step of a Lanczos recursion or of a Heisenberg-picture Taylor series, and `a.anticommutator(b)` is $\{A, B\}$; for Hermitian operands both are Hermitian, so a real dtype stays real:
+
+```python
+z = PauliSum.from_strings({"ZI": 1.0}, dtype="float64")
+x = PauliSum.from_strings({"XI": 1.0, "IX": 0.5}, dtype="float64")
+print(z @ x)
+print(z.liouvillian(x))
+print(z.anticommutator(x))
+```
+
+```text
+(-0+1j)*YI + 0.5*ZX
+-2*YI
+1*ZX
+```
+
+Each costs one string product per pair of terms, so it suits a small generator against a large operator; `*` between two `PauliSum` objects raises `TypeError`.
 
 ### A Hamiltonian
 

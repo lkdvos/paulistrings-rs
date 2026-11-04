@@ -34,6 +34,14 @@ impl Dtype {
         matches!(self, Dtype::F64 | Dtype::C128)
     }
 
+    /// The complex dtype of the same precision.
+    pub(crate) fn complex(self) -> Self {
+        match self {
+            Dtype::F64 | Dtype::C128 => Dtype::C128,
+            Dtype::F32 | Dtype::C64 => Dtype::C64,
+        }
+    }
+
     /// NumPy's `result_type` restricted to the four: complex if either is, double if either is.
     pub(crate) fn promote(self, other: Self) -> Self {
         match (self.is_real() && other.is_real(), self.is_double() || other.is_double()) {

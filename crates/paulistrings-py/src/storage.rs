@@ -12,6 +12,17 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyComplex, PyDict};
 use std::borrow::Cow;
 
+/// Which operator product [`WidthSum::pair`] takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pairing {
+    /// `A·B`.
+    Product,
+    /// `i[A, B]`.
+    Liouvillian,
+    /// `{A, B}`.
+    Anticommutator,
+}
+
 /// Width-dispatch enum over sums of one coefficient type. The Python boundary picks the smallest width that fits `num_qubits`.
 #[derive(Clone)]
 pub enum WidthSum<C: PyCoefficient> {
@@ -115,6 +126,16 @@ impl<C: PyCoefficient> WidthSum<C> {
                 wrap(a.add(b))
             }
         })
+    }
+
+    /// The operator product `pairing` names; `None` on a width mismatch.
+    /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`], and passes a complex `C` for [`Pairing::Product`].
+    pub fn pair(&self, other: &Self, pairing: Pairing) -> Option<Self> {
+        for_each_width_pair_rewrap!((self, other), |a, b, wrap| wrap(match pairing {
+            Pairing::Product => a.product(b),
+            Pairing::Liouvillian => a.liouvillian(b),
+            Pairing::Anticommutator => a.anticommutator(b),
+        }))
     }
 
     /// Multiply every coefficient by `factor`, in place.
@@ -390,6 +411,19 @@ impl PauliSumImpl {
             .add_signed(y, subtract)
             .map(wrap))
         .flatten()
+    }
+
+    /// The operator product `pairing` names at the two dtypes' promotion, made complex for [`Pairing::Product`]; `None` on a width mismatch.
+    /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
+    pub fn pair_promoted(&self, other: &Self, pairing: Pairing) -> Option<Self> {
+        let mut dtype = self.dtype().promote(other.dtype());
+        if pairing == Pairing::Product {
+            dtype = dtype.complex();
+        }
+        let a = self.converted(dtype).expect("promotion never narrows");
+        let b = other.converted(dtype).expect("promotion never narrows");
+        for_each_dtype_pair!((a.as_ref(), b.as_ref()), |x, y, wrap| x.pair(y, pairing).map(wrap))
+            .flatten()
     }
 
     /// `tr(self† · other) / 2^n` at the two dtypes' promotion; `None` on a width mismatch.

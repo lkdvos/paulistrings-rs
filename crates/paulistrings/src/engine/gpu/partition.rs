@@ -265,6 +265,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         _rows: &PartitionRows<W>,
         _policy: &BuiltinTruncation,
         transport: &X,
+        _clocked: bool,
     ) -> LayerExchangeCounts {
         let size = transport.size();
         self.layers_applied += 1;

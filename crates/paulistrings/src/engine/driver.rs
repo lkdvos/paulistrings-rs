@@ -10,7 +10,7 @@
 
 use crate::channel::Prepare;
 use crate::coefficient::Coefficient;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::backend::PartitionBackend;
@@ -21,7 +21,7 @@ use crate::channel::Channel;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
 use crate::engine::timing::{lap, stamp, tally, timed};
-use crate::engine::trace::{record_layer_row, PartitionLayerRow};
+use crate::engine::trace::{record_layer_row, LayerClock, LayerPhases, PartitionLayerRow};
 use crate::engine::{Direction, PropagateOptions, LOG_TARGET};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::truncation::TruncationPolicy;
@@ -48,10 +48,23 @@ fn assert_bucket_bits_agree(collectives: &impl Collectives, bits: u8, applicatio
     );
 }
 
-/// A [`Collectives`] view that counts the policy finalization's calls for the trace.
+/// A [`Collectives`] view that counts the policy finalization's calls for the trace and, when `nanos` is given, times them.
 struct CountingCollectives<'a> {
     inner: &'a dyn Collectives,
     calls: &'a AtomicU32,
+    nanos: Option<&'a AtomicU64>,
+}
+
+impl CountingCollectives<'_> {
+    fn call<R>(&self, collective: impl FnOnce() -> R) -> R {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let start = self.nanos.map(|_| Instant::now());
+        let result = collective();
+        if let (Some(nanos), Some(start)) = (self.nanos, start) {
+            nanos.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        }
+        result
+    }
 }
 
 impl crate::collectives::sealed::Sealed for CountingCollectives<'_> {}
@@ -64,20 +77,16 @@ impl Collectives for CountingCollectives<'_> {
         self.inner.size()
     }
     fn allreduce_max_u8(&self, v: u8) -> u8 {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inner.allreduce_max_u8(v)
+        self.call(|| self.inner.allreduce_max_u8(v))
     }
     fn allreduce_sum_u64(&self, buffer: &mut [u64]) {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inner.allreduce_sum_u64(buffer)
+        self.call(|| self.inner.allreduce_sum_u64(buffer))
     }
     fn allreduce_sum_f64(&self, buffer: &mut [f64]) {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inner.allreduce_sum_f64(buffer)
+        self.call(|| self.inner.allreduce_sum_f64(buffer))
     }
     fn barrier(&self) {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        self.inner.barrier()
+        self.call(|| self.inner.barrier())
     }
 }
 
@@ -151,6 +160,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
     // `finalizes_layer` is a property of the policy type, so skipping the collective call is safe on every partition alike.
     let finalizes = policy.finalizes_layer();
     let policy_calls = AtomicU32::new(0);
+    let policy_nanos = AtomicU64::new(0);
     // At `P = 1` the local answer is the agreed one, so the loop rebuckets every layer exactly as an unpartitioned run would.
     let solo = group_size == 1;
     let local = &mut work.local;
@@ -170,6 +180,10 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         let layer_start = timed_layer.then(Instant::now);
         let terms_before = local.len();
         let bits_before = local.hash().bits();
+        let mut phases = LayerPhases::default();
+        let mut clock = LayerClock::new(if tracing { layer_start } else { None });
+        #[cfg(feature = "phase-timing")]
+        let stats_before = tracing.then(|| local.phase_snapshot());
 
         stamp!(stamp);
         tally!(local.stats().layers, 1);
@@ -181,11 +195,13 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         if refined_early {
             lap!(stamp, local.stats().rebucket_ns);
         }
+        clock.lap(&mut phases.rebucket_ns);
 
         // Otherwise prepared before the bucket count is settled, since the plan decides whether this layer agrees it; only `bucket_delta` depends on the count, so a refining layer prepares again.
         let mut prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, circuit_index);
         plan.rebuild(&prepared, rows, rank as u32);
         lap!(stamp, local.stats().prepare_ns);
+        clock.lap(&mut phases.prepare_ns);
 
         let mut collectives = 0u32;
         if !refined_early && (solo || plan.has_remote() || agrees_bucket_bits(application_index)) {
@@ -196,6 +212,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 collectives += 1;
             }
             lap!(stamp, local.stats().collective_ns);
+            clock.lap(&mut phases.collective_ns);
             if wanted_bits != local.hash().bits() {
                 while local.hash().bits() < wanted_bits {
                     local.refine();
@@ -204,9 +221,11 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                     local.coarsen_to(wanted_bits);
                 }
                 lap!(stamp, local.stats().rebucket_ns);
+                clock.lap(&mut phases.rebucket_ns);
                 prepared = prepare_or_panic(channel, local.hash(), adjoint, rank, circuit_index);
                 plan.rebuild(&prepared, rows, rank as u32);
                 lap!(stamp, local.stats().prepare_ns);
+                clock.lap(&mut phases.prepare_ns);
             }
         }
 
@@ -225,17 +244,39 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         if !solo {
             assert_bucket_bits_agree(transport, local.hash().bits(), application_index);
         }
+        clock.lap(&mut phases.collective_ns);
 
-        let counts = local.apply_layer(&prepared, &plan, rows, policy, transport);
+        let counts = local.apply_layer(&prepared, &plan, rows, policy, transport, tracing);
         timed!(stamp.rearm());
+        let mut applied_ns = 0;
+        clock.lap(&mut applied_ns);
+        phases.export_ns = counts.export_ns;
+        phases.exchange_ns = counts.exchange_ns;
+        phases.coset_loop_ns =
+            applied_ns.saturating_sub(counts.export_ns).saturating_sub(counts.exchange_ns);
 
         if finalizes {
             policy_calls.store(0, Ordering::Relaxed);
-            let counting = CountingCollectives { inner: transport, calls: &policy_calls };
+            policy_nanos.store(0, Ordering::Relaxed);
+            let counting = CountingCollectives {
+                inner: transport,
+                calls: &policy_calls,
+                nanos: tracing.then_some(&policy_nanos),
+            };
             local.finalize_layer(policy, &counting);
             collectives += policy_calls.load(Ordering::Relaxed);
         }
         lap!(stamp, local.stats().finalize_ns);
+        clock.lap(&mut phases.finalize_ns);
+        let policy_collective_ns = policy_nanos.load(Ordering::Relaxed).min(phases.finalize_ns);
+        phases.finalize_ns -= policy_collective_ns;
+        phases.collective_ns += policy_collective_ns;
+        #[cfg(feature = "phase-timing")]
+        {
+            phases.fine = stats_before.map(|before| {
+                crate::engine::trace::FineLayerPhases::between(&before, &local.phase_snapshot())
+            });
+        }
         tally!(local.stats().terms_out, local.len());
 
         // The trace sits behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion.
@@ -259,6 +300,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 refine_passes: u32::from(local.hash().bits().saturating_sub(bits_before)),
                 receive_chunks: counts.receive_chunks,
                 device: None,
+                phases,
             };
             local.trace_layer(&mut row);
             record_layer_row(&mut work.rows, row);

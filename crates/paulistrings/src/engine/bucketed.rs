@@ -124,12 +124,10 @@ impl LayerOctaves {
         });
     }
 
-    /// The partition's terms once the pending cut is applied.
     pub(crate) fn len_after_cut(&self, len: usize) -> usize {
         self.pending.as_ref().map_or(len, |cut| cut.kept)
     }
 
-    /// Apply the pending cut, if any, to the whole sum.
     pub(crate) fn apply_pending<const W: usize, C: Coefficient>(
         &mut self,
         sum: &mut PauliSum<W, C>,
@@ -406,7 +404,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum.assert_invariants();
 }
 
-/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and each bucket's slot in the octave counts it takes after, with their window.
+/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and the window counts it takes after.
 #[derive(Clone, Copy)]
 struct LayerOctaveIo<'s, 'a> {
     cut: Option<&'s BoundaryCut>,

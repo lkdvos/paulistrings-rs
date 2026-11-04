@@ -79,7 +79,7 @@ impl BoundaryCut {
     }
 }
 
-/// [`approx_top_n_pass`]'s decision and whole-sum length for a partition whose bucket `b` holds `per_bucket[b]` under `window`, with the cut at a boundary, without touching the sum; `None` when the boundary octave lies outside the window.
+/// [`approx_top_n_pass`]'s decision, the whole sum's length and, at a boundary, this partition's cut, from the window counts alone; `None` when the boundary octave lies outside the window.
 ///
 /// One `allreduce_sum_u64` of `[len, window counts…]`, and at an in-window boundary one more of the per-rank boundary counts; every partition answers `None` alike, from the reduced counts.
 pub(crate) fn decide_from_window(

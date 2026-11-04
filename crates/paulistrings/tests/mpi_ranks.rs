@@ -320,9 +320,7 @@ impl Runner<'_> {
             self.differential(backend, circuit, sum, policy, direction, seed, None, what);
         }
     }
-}
 
-impl Runner<'_> {
     /// Two calls of fused `ApproxTopN(n)` on one `DistributedSum`, against the same split under [`PlainApproxTopN`]: every rank keeps the plain pass's set after each call, the window carried across them.
     fn fused_keeps_the_plain_set<const W: usize>(
         &self,

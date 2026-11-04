@@ -48,6 +48,8 @@ pub use pauli_sum::accumulator::BuildAccumulator;
 pub use pauli_sum::{max_hash_bits, Gf2Hash, PartitionRows, PauliSum};
 pub use phase::Phase;
 pub use readout::{PauliAxis, ProductBasis, StabilizerError, StabilizerState};
+#[doc(hidden)]
+pub use truncation::FusedApproxTopN;
 pub use truncation::{
     And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, CollapseSample, Or, PerPartition,
     TopN, TruncationPolicy, WeightCutoff,

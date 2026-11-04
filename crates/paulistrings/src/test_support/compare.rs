@@ -197,6 +197,24 @@ impl<const W: usize> TruncationPolicy<W> for PlainApproxTopN {
     }
 }
 
+/// `sum` with the terms partition `r` holds under [`unpinned_scatter`]`(partitions, _, row_seed)` scaled by `2^(-12 r)` and thinned to every `(r + 1)`-th, so the partitions of that split differ in length and in the octave they cut at.
+pub fn skewed_by_partition<const W: usize>(
+    sum: &PauliSum<W>,
+    partitions: usize,
+    row_seed: u64,
+) -> PauliSum<W> {
+    let split =
+        crate::PartitionedSum::scatter_with(sum.clone(), unpinned_scatter(partitions, 1, row_seed));
+    let mut accumulator = BuildAccumulator::<W>::with_capacity(sum.num_qubits(), sum.len());
+    for r in 0..partitions {
+        let scale = 2f64.powi(-12 * r as i32);
+        for (x, z, c) in split.partition(r).iter().step_by(r + 1) {
+            accumulator.add_term(PauliString::<W> { x: *x, z: *z }, c * scale);
+        }
+    }
+    accumulator.finalize()
+}
+
 fn norm_sqr<const W: usize>(sum: &PauliSum<W>) -> f64 {
     sum.overlap(sum).re
 }

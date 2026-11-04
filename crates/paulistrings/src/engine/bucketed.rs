@@ -12,6 +12,7 @@ use rayon::prelude::*;
 use super::coset::{CosetOrder, Gf2Span};
 use super::merge::{rest_rows_per_key, SortKernel};
 use super::trace::PartitionTrace;
+use super::transport::SoloTransport;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
 use crate::collectives::Collectives;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
@@ -19,7 +20,7 @@ use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
 use crate::truncation::octave_window::{
     decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow,
 };
-use crate::truncation::TruncationPolicy;
+use crate::truncation::{FusedApproxTopN, TruncationPolicy};
 use rotation_layer::{
     fill_received_rotation_bucket, fill_rotation_coset, ReceivedRotation, RotationLayer,
 };
@@ -59,7 +60,7 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
 /// Per-bucket octave counts, taken by the coset loop as it writes each bucket, and the cut they decide, applied as the next coset loop reads each bucket.
 ///
 /// Contract: a cut is pending only between a layer pass and the next layer's coset loop, and anything else that reads or rebuckets the sum first applies it ([`settle`](Self::settle)), except an exchanging layer's export, which reads around it ([`pending`](Self::pending)).
-/// Every partition's window is set from the agreed boundary octave, so all count alike.
+/// An agreed pass sets every partition's window from the agreed boundary octave, so all count alike; a local one ([`FusedApproxTopN::agreed`] false) is this partition's alone and issues no collective.
 #[derive(Debug, Default)]
 pub(crate) struct LayerOctaves {
     /// The window the next layer counts, centred on the last boundary octave; `None` before the first.
@@ -69,7 +70,7 @@ pub(crate) struct LayerOctaves {
     counted: bool,
     /// The last layer pass's cut, not yet applied.
     pending: Option<BoundaryCut>,
-    /// An upper bound on the whole sum's length, agreed by every partition: set by a layer pass, scaled by each layer's [`max_fanout`], reset at the end of a call.
+    /// An upper bound on the length the layer pass decides on (the whole sum's, agreed, or this partition's): set by a layer pass, scaled by each layer's [`max_fanout`], reset at the end of a call and, for a local pass, by an exchanging layer.
     bound: Option<usize>,
     /// Whether this layer's coset loop takes counts, set by [`begin_layer`](Self::begin_layer).
     armed: bool,
@@ -82,24 +83,33 @@ pub(crate) struct LayerOctaves {
 }
 
 impl LayerOctaves {
-    /// Decide what the coming layer does for an `ApproxTopN(n)` policy (`None` for any other), from its [`max_fanout`].
-    pub(crate) fn begin_layer(&mut self, fanout: usize, n: Option<usize>) {
-        let Some(n) = n else {
+    /// Decide what the coming layer does for a fused `ApproxTopN` pass (`None` for any other policy), from its [`max_fanout`] and whether it exchanges terms between partitions.
+    pub(crate) fn begin_layer(
+        &mut self,
+        fanout: usize,
+        fused: Option<FusedApproxTopN>,
+        exchanges: bool,
+    ) {
+        let Some(FusedApproxTopN { n, agreed }) = fused else {
             (self.armed, self.within) = (false, false);
             return;
         };
+        if exchanges && !agreed {
+            self.bound = None;
+        }
         self.bound = self.bound.map(|bound| bound.saturating_mul(fanout));
         self.within = self.bound.is_some_and(|bound| bound <= n);
         self.armed = !self.within && self.window.is_some();
     }
 
-    /// `ApproxTopN(n)`'s layer pass over `sum`, from the counts when the last layer took them, leaving an in-window cut pending.
+    /// The fused `ApproxTopN` layer pass over `sum`, from the counts when the last layer took them, leaving an in-window cut pending.
     pub(crate) fn finalize<const W: usize, C: Coefficient>(
         &mut self,
         sum: &mut PauliSum<W, C>,
         collectives: &dyn Collectives,
-        n: usize,
+        FusedApproxTopN { n, agreed }: FusedApproxTopN,
     ) {
+        let collectives = if agreed { collectives } else { &SoloTransport };
         debug_assert!(self.pending.is_none(), "the layer did not apply the last cut");
         if std::mem::take(&mut self.within) {
             return;

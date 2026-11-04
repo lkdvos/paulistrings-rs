@@ -4,7 +4,7 @@ use super::builtin::{
     or_operand_error, And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition,
     TopN, WeightCutoff,
 };
-use super::TruncationPolicy;
+use super::{FusedApproxTopN, TruncationPolicy};
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::PauliSum;
@@ -188,21 +188,24 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
         BuiltinTruncation::supports_partitioned(self)
     }
 
-    fn sole_approx_top_n(&self) -> Option<usize> {
+    fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         match self {
-            Self::ApproxTopN(n) => Some(*n),
+            Self::ApproxTopN(n) => Some(FusedApproxTopN { n: *n, agreed: true }),
             Self::And(a, b) => match (a.has_layer_pass(), b.has_layer_pass()) {
-                (true, false) => <Self as TruncationPolicy<W, C>>::sole_approx_top_n(a),
-                (false, true) => <Self as TruncationPolicy<W, C>>::sole_approx_top_n(b),
+                (true, false) => <Self as TruncationPolicy<W, C>>::fused_approx_top_n(a),
+                (false, true) => <Self as TruncationPolicy<W, C>>::fused_approx_top_n(b),
                 _ => None,
             },
+            Self::PerPartition(inner) => {
+                <Self as TruncationPolicy<W, C>>::fused_approx_top_n(inner)
+                    .map(|fused| FusedApproxTopN { agreed: false, ..fused })
+            }
             Self::Keep
             | Self::Coefficient(_)
             | Self::Weight(_)
             | Self::TopN(_)
             | Self::CollapseSample(_)
-            | Self::Or(_, _)
-            | Self::PerPartition(_) => None,
+            | Self::Or(_, _) => None,
         }
     }
 }

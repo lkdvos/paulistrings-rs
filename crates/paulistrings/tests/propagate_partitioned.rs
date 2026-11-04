@@ -11,8 +11,8 @@
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
     buckets_exported_ahead_under_cut, heavy_cut, propagate_discarding, rand_sum, rand_sum_real,
-    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions, KeepAll,
-    PlainApproxTopN,
+    random_circuit, single_cuts, skewed_by_partition, spread_magnitudes, trotter_circuit,
+    unpinned_partitions, unpinned_scatter, KeepAll, PlainApproxTopN,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -22,7 +22,11 @@ use paulistrings::{
 };
 use paulistrings::{And, ApproxTopN, CoefficientThreshold, PerPartition, TopN, WeightCutoff};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 const TOL: f64 = 1e-11;
+/// Partition-row seed of the fused `ApproxTopN` checks' splits.
+const ROW_SEED: u64 = 0x5EED;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
 const THETA: f64 = 0.01;
 
@@ -122,7 +126,20 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// Two calls of fused `ApproxTopN(n)` on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds; returns the fewest buckets any split above one partition exported from the counts ahead under a pending cut, which the plain pass never leaves.
+/// [`PlainApproxTopN`]`(n)`'s single-partition pass, noting whether any pass cut.
+struct NotingCuts<'a>(usize, &'a AtomicBool);
+
+impl<const W: usize> TruncationPolicy<W> for NotingCuts<'_> {
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        let before = sum.len();
+        PlainApproxTopN(self.0).finalize_layer(sum);
+        if sum.len() < before {
+            self.1.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Two calls of fused `ApproxTopN(n)`, and of `PerPartition(ApproxTopN(n / P))` over [`skewed_by_partition`] input, on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds; returns the fewest buckets any split above one partition exported from the counts ahead under a pending cut, which the plain pass never leaves.
 fn check_fused_keeps_the_plain_set<const W: usize>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
@@ -130,16 +147,29 @@ fn check_fused_keeps_the_plain_set<const W: usize>(
     name: &str,
 ) -> u64 {
     let mut fewest_ahead = u64::MAX;
-    for direction in [Direction::Forward, Direction::Heisenberg] {
+    for (direction, per_partition) in [Direction::Forward, Direction::Heisenberg]
+        .into_iter()
+        .flat_map(|direction| [(direction, false), (direction, true)])
+    {
         for p in PS {
+            let input =
+                if per_partition { skewed_by_partition(sum, p, ROW_SEED) } else { sum.clone() };
             let scatter =
-                || PartitionedSum::scatter(sum.clone(), &config(p)).expect("topology resolves");
+                || PartitionedSum::scatter_with(input.clone(), unpinned_scatter(p, 2, ROW_SEED));
             let (mut got, mut want) = (scatter(), scatter());
             for call in 0..2 {
-                got.propagate(circuit, &ApproxTopN(n), direction);
-                want.propagate(circuit, &PlainApproxTopN(n), direction);
-                let what = format!("{name} P={p} {direction:?} call {call}");
-                assert_eq!(want.len(), n, "{what}: the plain run must cut");
+                let what =
+                    format!("{name} per_partition={per_partition} P={p} {direction:?} call {call}");
+                if per_partition {
+                    let (n, cut) = (n / p, AtomicBool::new(false));
+                    got.propagate(circuit, &PerPartition(ApproxTopN(n)), direction);
+                    want.propagate(circuit, &PerPartition(NotingCuts(n, &cut)), direction);
+                    assert!(cut.into_inner(), "{what}: the plain run must cut");
+                } else {
+                    got.propagate(circuit, &ApproxTopN(n), direction);
+                    want.propagate(circuit, &PlainApproxTopN(n), direction);
+                    assert_eq!(want.len(), n, "{what}: the plain run must cut");
+                }
                 for r in 0..p {
                     assert_same_terms(
                         got.partition(r),
@@ -150,7 +180,11 @@ fn check_fused_keeps_the_plain_set<const W: usize>(
                 let held: usize = (0..p).map(|r| got.partition(r).len()).sum();
                 assert_eq!(got.len(), held, "{what}: len() after the call");
             }
-            assert_eq!(buckets_exported_ahead_under_cut(&want), 0, "{name} P={p} {direction:?}");
+            assert_eq!(
+                buckets_exported_ahead_under_cut(&want),
+                0,
+                "{name} per_partition={per_partition} P={p} {direction:?}"
+            );
             if p > 1 {
                 fewest_ahead = fewest_ahead.min(buckets_exported_ahead_under_cut(&got));
             }

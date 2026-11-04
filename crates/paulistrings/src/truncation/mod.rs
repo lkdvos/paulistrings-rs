@@ -13,6 +13,14 @@ use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::PauliSum;
 
+/// The layer pass [`TruncationPolicy::fused_approx_top_n`] names: `ApproxTopN(n)` over the whole sum when `agreed`, else on each partition alone.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FusedApproxTopN {
+    pub n: usize,
+    pub agreed: bool,
+}
+
 /// A truncation strategy: a per-term filter, a per-layer pass, or both.
 ///
 /// Built-ins: [`CoefficientThreshold`] and [`WeightCutoff`] filter terms, [`TopN`], [`ApproxTopN`] and [`CollapseSample`] run a layer pass, [`And`], [`Or`] and [`PerPartition`] compose, and [`BuiltinTruncation`] holds any of them as one value.
@@ -73,11 +81,11 @@ pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex
         !self.finalizes_layer()
     }
 
-    /// `Some(n)` when the layer pass is exactly [`ApproxTopN(n)`](ApproxTopN)'s and nothing else, so the engine may run its own fused form of that pass instead; `None` otherwise.
+    /// `Some` when the layer pass is exactly [`ApproxTopN(n)`](ApproxTopN)'s, or [`PerPartition`]`(ApproxTopN(n))`'s, and nothing else, so the engine may run its own fused form of that pass instead; `None` otherwise.
     ///
-    /// The engine then skips both layer-pass methods, so an override must answer `Some` only if they do exactly what `ApproxTopN(n)`'s do.
+    /// The engine then skips both layer-pass methods, so an override must answer `Some` only if they do exactly what the pass it names does.
     #[doc(hidden)]
-    fn sole_approx_top_n(&self) -> Option<usize> {
+    fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         None
     }
 }

@@ -259,6 +259,11 @@ Quiet-node code A/B against `6a2e9e4a` (`scripts/slurm/ab-campaign.sbatch`, `439
 Finalize falls to 1–2% of wall at P = 1 and 4–6% at P = 2 (ccqlin038), where the remaining cost is the exchanging layers' whole-sum cut and the per-layer all-reduce wait.
 Counting alone (without the deferral) raised the coset loop 3–11%, which on `heavyhex_step` P = 1 cancelled its gain (its Clifford bond layers counted without cutting); the deferral and the skip removed that.
 
+`PerPartition(ApproxTopN(n))` takes the same pass locally: each partition decides from its own window on a group of one, with no collective, and its skip bound is its own length, forgotten by an exchanging layer.
+Code A/B against `23c15ce4` plus the probe's `patopn:` spelling on ccqlin038 (shared, load 1.5–10, abba, 4 pairs each), 24-qubit `tfim_step`: `patopn:1e6` at P = 2 wall **−11.8%** (4.93 → 4.35 ms/layer, finalize 27% → 0.8% of wall), `patopn:2e6` at P = 1 **−43.7%** (6.45 → 3.63 ms/layer, finalize 48% → 1.6%); the untouched `atopn:2e6` at P = 2 moved −3.2% to +1.0%, no consistent change.
+At P = 2 the barrier wait fell 39% and the exchange wait rose 35%: the partitions no longer meet at the layer pass, so the wait moves to the next exchange.
+Quiet-node A/B pending.
+
 ### Exchanging layers count and mark their rows a layer ahead
 
 An exchanging layer made three passes over the sum before its coset loop: the deferred `ApproxTopN` cut applied whole, the export's count pass, and a fill scanning every bucket that exports anything.

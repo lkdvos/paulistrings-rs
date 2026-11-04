@@ -38,15 +38,19 @@ macro_rules! for_each_width_pair {
     };
 }
 
-/// [`for_each_width_pair`] over three values of the same enum, for a destination and two operands (`PauliSum.add_liouvillian`); `None` on a width mismatch.
+/// [`for_each_width_pair`] over a destination and two operands (`PauliSum.add_liouvillian`); `None` on a width mismatch.
+/// The middle operand may name another width enum, `(dest, WidthSum: generator, operand)`, for a split's replicated generator.
 macro_rules! for_each_width_triple {
     (($a:expr, $b:expr, $c:expr), |$x:ident, $y:ident, $z:ident| $body:expr) => {
+        for_each_width_triple!(($a, Self: $b, $c), |$x, $y, $z| $body)
+    };
+    (($a:expr, $other:ident: $b:expr, $c:expr), |$x:ident, $y:ident, $z:ident| $body:expr) => {
         match ($a, $b, $c) {
-            (Self::W1($x), Self::W1($y), Self::W1($z)) => Some($body),
-            (Self::W2($x), Self::W2($y), Self::W2($z)) => Some($body),
-            (Self::W4($x), Self::W4($y), Self::W4($z)) => Some($body),
-            (Self::W8($x), Self::W8($y), Self::W8($z)) => Some($body),
-            (Self::W16($x), Self::W16($y), Self::W16($z)) => Some($body),
+            (Self::W1($x), $other::W1($y), Self::W1($z)) => Some($body),
+            (Self::W2($x), $other::W2($y), Self::W2($z)) => Some($body),
+            (Self::W4($x), $other::W4($y), Self::W4($z)) => Some($body),
+            (Self::W8($x), $other::W8($y), Self::W8($z)) => Some($body),
+            (Self::W16($x), $other::W16($y), Self::W16($z)) => Some($body),
             _ => None,
         }
     };
@@ -210,14 +214,18 @@ macro_rules! for_each_dtype_pair {
     };
 }
 
-/// [`for_each_dtype`] over three values of the same dtype enum; `None` on a dtype mismatch, which a caller that converted the operands to the destination's dtype never sees.
+/// [`for_each_dtype`] over a destination and two operands; `None` on a dtype mismatch, which a caller that converted the operands to the destination's dtype never sees.
+/// The middle operand may name another dtype enum, `(dest, PauliSumImpl: generator, operand)`, as in [`for_each_width_triple`].
 macro_rules! for_each_dtype_triple {
     (($a:expr, $b:expr, $c:expr), |$x:ident, $y:ident, $z:ident| $body:expr) => {
+        for_each_dtype_triple!(($a, Self: $b, $c), |$x, $y, $z| $body)
+    };
+    (($a:expr, $other:ident: $b:expr, $c:expr), |$x:ident, $y:ident, $z:ident| $body:expr) => {
         match ($a, $b, $c) {
-            (Self::F64($x), Self::F64($y), Self::F64($z)) => Some($body),
-            (Self::F32($x), Self::F32($y), Self::F32($z)) => Some($body),
-            (Self::C128($x), Self::C128($y), Self::C128($z)) => Some($body),
-            (Self::C64($x), Self::C64($y), Self::C64($z)) => Some($body),
+            (Self::F64($x), $other::F64($y), Self::F64($z)) => Some($body),
+            (Self::F32($x), $other::F32($y), Self::F32($z)) => Some($body),
+            (Self::C128($x), $other::C128($y), Self::C128($z)) => Some($body),
+            (Self::C64($x), $other::C64($y), Self::C64($z)) => Some($body),
             _ => None,
         }
     };

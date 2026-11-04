@@ -133,35 +133,6 @@ impl<const W: usize, C: PyCoefficient> Split<W, C> {
     }
 }
 
-/// Bind the matching widths of a `WidthSplit` and a value of the width enum `$other`, with `$wrap` the `WidthSplit` constructor of that width; `None` on a mismatch.
-macro_rules! width_pair {
-    (($a:expr, $b:expr), $other:ident, |$x:ident, $y:ident, $wrap:ident| $body:expr) => {
-        match ($a, $b) {
-            (WidthSplit::W1($x), $other::W1($y)) => {
-                let $wrap = Self::W1;
-                Some($body)
-            }
-            (WidthSplit::W2($x), $other::W2($y)) => {
-                let $wrap = Self::W2;
-                Some($body)
-            }
-            (WidthSplit::W4($x), $other::W4($y)) => {
-                let $wrap = Self::W4;
-                Some($body)
-            }
-            (WidthSplit::W8($x), $other::W8($y)) => {
-                let $wrap = Self::W8;
-                Some($body)
-            }
-            (WidthSplit::W16($x), $other::W16($y)) => {
-                let $wrap = Self::W16;
-                Some($body)
-            }
-            _ => None,
-        }
-    };
-}
-
 impl<C: PyCoefficient> WidthSplit<C> {
     fn empty_like(&self) -> Self {
         match self {
@@ -188,12 +159,12 @@ impl<C: PyCoefficient> WidthSplit<C> {
     }
 
     fn misaligned(&self, other: &Self) -> Option<&'static str> {
-        width_pair!((self, other), WidthSplit, |a, b, _wrap| a.misaligned(b))
+        for_each_width_pair!((self, other), |a, b| a.misaligned(b))
             .unwrap_or(Some("they hold different qubit counts"))
     }
 
     fn add_scaled(&mut self, other: &Self, alpha: C, beta: C) {
-        width_pair!((self, other), WidthSplit, |a, b, _wrap| a.add_scaled(b, alpha, beta))
+        for_each_width_pair!((self, other), |a, b| a.add_scaled(b, alpha, beta))
             .expect("checked by misaligned");
     }
 
@@ -206,48 +177,14 @@ impl<C: PyCoefficient> WidthSplit<C> {
         weights: (C, C),
         policy: &BuiltinTruncation,
     ) -> Option<()> {
-        macro_rules! arm {
-            ($($w:ident),*) => {
-                match (self, generator, operand) {
-                    $((WidthSplit::$w(d), WidthSum::$w(g), WidthSplit::$w(o)) => {
-                        Some(d.add_paired(g, o, pairing, weights, policy))
-                    })*
-                    _ => None,
-                }
-            };
-        }
-        arm!(W1, W2, W4, W8, W16)
+        for_each_width_triple!((self, WidthSum: generator, operand), |d, g, o| {
+            d.add_paired(g, o, pairing, weights, policy)
+        })
     }
 
     fn overlap(&self, other: &Self) -> C {
-        width_pair!((self, other), WidthSplit, |a, b, _wrap| a.overlap(b))
-            .expect("checked by misaligned")
+        for_each_width_pair!((self, other), |a, b| a.overlap(b)).expect("checked by misaligned")
     }
-}
-
-/// Bind the matching dtypes of two `SplitImpl`s, or of a `SplitImpl` and a `PauliSumImpl` already converted to its dtype.
-macro_rules! dtype_pair {
-    (($a:expr, $b:expr), $other:ident, |$x:ident, $y:ident, $wrap:ident| $body:expr) => {
-        match ($a, $b) {
-            (SplitImpl::F64($x), $other::F64($y)) => {
-                let $wrap = SplitImpl::F64;
-                Some($body)
-            }
-            (SplitImpl::F32($x), $other::F32($y)) => {
-                let $wrap = SplitImpl::F32;
-                Some($body)
-            }
-            (SplitImpl::C128($x), $other::C128($y)) => {
-                let $wrap = SplitImpl::C128;
-                Some($body)
-            }
-            (SplitImpl::C64($x), $other::C64($y)) => {
-                let $wrap = SplitImpl::C64;
-                Some($body)
-            }
-            _ => None,
-        }
-    };
 }
 
 impl SplitImpl {
@@ -309,7 +246,7 @@ impl SplitImpl {
                 other.dtype().name()
             ));
         }
-        dtype_pair!((self, other), SplitImpl, |a, b, _wrap| a.misaligned(b))
+        for_each_dtype_pair!((self, other), |a, b, _wrap| a.misaligned(b))
             .flatten()
             .map(str::to_string)
     }
@@ -321,7 +258,7 @@ impl SplitImpl {
         alpha: Complex64,
         beta: Complex64,
     ) -> PyResult<()> {
-        dtype_pair!((self, other), SplitImpl, |a, b, _wrap| {
+        for_each_dtype_pair!((self, other), |a, b, _wrap| {
             a.add_scaled(b, narrow(alpha, "alpha")?, narrow(beta, "beta")?);
             Ok(())
         })
@@ -340,23 +277,16 @@ impl SplitImpl {
         policy: &BuiltinTruncation,
     ) -> PyResult<()> {
         let generator = self.generator_at_dtype(generator, pairing)?;
-        macro_rules! arm {
-            ($($d:ident),*) => {
-                match (self, &generator, operand) {
-                    $((SplitImpl::$d(d), PauliSumImpl::$d(g), SplitImpl::$d(o)) => {
-                        let weights = (narrow(alpha, "alpha")?, narrow(beta, "beta")?);
-                        d.add_paired(g, o, pairing, weights, policy).ok_or_else(width_mismatch)
-                    })*
-                    _ => unreachable!("checked by misaligned and converted to this split's dtype"),
-                }
-            };
-        }
-        arm!(F64, F32, C128, C64)
+        for_each_dtype_triple!((self, PauliSumImpl: &generator, operand), |d, g, o| {
+            let weights = (narrow(alpha, "alpha")?, narrow(beta, "beta")?);
+            d.add_paired(g, o, pairing, weights, policy).ok_or_else(width_mismatch)
+        })
+        .expect("checked by misaligned and converted to this split's dtype")
     }
 
     /// The whole sums' overlap, after [`misaligned`](Self::misaligned) found nothing. **Collective** under MPI.
     pub(crate) fn overlap(&self, other: &SplitImpl) -> Scalar {
-        dtype_pair!((self, other), SplitImpl, |a, b, _wrap| Scalar::of(a.overlap(b)))
+        for_each_dtype_pair!((self, other), |a, b, _wrap| Scalar::of(a.overlap(b)))
             .expect("checked by misaligned")
     }
 }

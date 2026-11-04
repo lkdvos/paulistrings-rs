@@ -13,6 +13,7 @@ pub(crate) mod in_process;
 pub(crate) mod layer;
 #[cfg(feature = "mpi")]
 pub mod mpi;
+pub(crate) mod operator_products;
 pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;

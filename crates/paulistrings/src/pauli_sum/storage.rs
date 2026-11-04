@@ -234,6 +234,48 @@ pub(super) fn merge_sorted<const W: usize, C: Coefficient>(
     out
 }
 
+/// Merge two key-sorted runs of `(x, z, c)`, summing a shared key's coefficients and keeping the nonzero results `keep` accepts.
+pub(super) fn merge_summed<const W: usize, C: Coefficient>(
+    a: impl Iterator<Item = ([u64; W], [u64; W], C)>,
+    b: impl Iterator<Item = ([u64; W], [u64; W], C)>,
+    capacity: usize,
+    mut keep: impl FnMut(&[u64; W], &[u64; W], C) -> bool,
+) -> BucketColumns<W, C> {
+    let mut out = BucketColumns::with_capacity(capacity);
+    let mut push = |(x, z, c): ([u64; W], [u64; W], C)| {
+        if c.is_nonzero() && keep(&x, &z, c) {
+            out.push(x, z, c);
+        }
+    };
+    let (mut a, mut b) = (a.peekable(), b.peekable());
+    loop {
+        let order = match (a.peek(), b.peek()) {
+            (Some(p), Some(q)) => (&p.0, &p.1).cmp(&(&q.0, &q.1)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => break,
+        };
+        match order {
+            std::cmp::Ordering::Less => push(a.next().expect("peeked")),
+            std::cmp::Ordering::Greater => push(b.next().expect("peeked")),
+            std::cmp::Ordering::Equal => {
+                let (x, z, p) = a.next().expect("peeked");
+                let (_, _, q) = b.next().expect("peeked");
+                push((x, z, p + q));
+            }
+        }
+    }
+    out
+}
+
+/// A bucket's terms as owned triples, each coefficient multiplied by `factor`.
+pub(super) fn scaled_terms<const W: usize, C: Coefficient>(
+    columns: &BucketColumns<W, C>,
+    factor: C,
+) -> impl Iterator<Item = ([u64; W], [u64; W], C)> + '_ {
+    (0..columns.len()).map(move |i| (columns.x[i], columns.z[i], columns.coeff[i] * factor))
+}
+
 /// The `on_equal` of [`merge_sorted`] for runs whose keys are disjoint.
 pub(super) fn keys_are_disjoint<C: Coefficient>(_: C, _: C) -> Option<C> {
     debug_assert!(false, "PauliSum: duplicate key across merged runs");
@@ -626,6 +668,49 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
             .collect();
         let len = buckets.iter().map(|c| c.len()).sum();
         Self { buckets, hash: self.hash.clone(), num_qubits: self.num_qubits, len }
+    }
+
+    /// `self ← alpha · other + beta · self`, in place, bucket by bucket; terms summing to exactly zero are dropped, and `beta = 0` ignores `self`'s terms.
+    ///
+    /// `self` moves to `other`'s hash in place, so only one bucket per thread is held twice and `other` is never copied.
+    ///
+    /// # Panics
+    ///
+    /// If the two sums disagree about `num_qubits`.
+    pub fn add_scaled(&mut self, other: &Self, alpha: C, beta: C) {
+        assert_eq!(
+            self.num_qubits, other.num_qubits,
+            "PauliSum::add_scaled: num_qubits mismatch ({} vs {})",
+            self.num_qubits, other.num_qubits,
+        );
+        self.align_destination(&other.hash, beta);
+        let rhs = other.align_to(&self.hash);
+        self.buckets.par_iter_mut().zip(rhs.buckets.par_iter()).for_each(|(columns, theirs)| {
+            let capacity = columns.len() + theirs.len();
+            *columns = merge_summed(
+                scaled_terms(columns, beta),
+                scaled_terms(theirs, alpha),
+                capacity,
+                |_, _, _| true,
+            );
+        });
+        self.recount();
+        self.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+    }
+
+    /// Prepare `self` as the destination of `beta · self + …` under `hash`: emptied and rehashed when `beta = 0`, otherwise moved to `hash`'s bucket count in place, or rehashed when its rows differ.
+    pub(crate) fn align_destination(&mut self, hash: &Gf2Hash<W>, beta: C) {
+        if beta == C::ZERO {
+            *self = Self::empty_with_hash(self.num_qubits, hash.clone());
+        } else if !self.hash.same_rows_as(hash) {
+            *self = std::mem::replace(self, Self::empty_with_hash(self.num_qubits, hash.clone()))
+                .with_hash(hash.clone());
+        } else {
+            while self.hash.bits() < hash.bits() {
+                self.refine();
+            }
+            self.coarsen_to(hash.bits());
+        }
     }
 
     /// Assert the structural invariant: every term in its hash bucket, each bucket strictly ascending in `(x, z)`, every key within `num_qubits`.

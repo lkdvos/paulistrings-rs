@@ -427,3 +427,25 @@ pub fn buckets_exported_ahead_under_cut_on_rank<const W: usize, X: crate::Transp
 ) -> u64 {
     sum.buckets_exported_ahead_under_cut()
 }
+
+/// `sum` without the terms below `1e-13`, where two summation orders disagree on whether a key cancels exactly.
+pub fn drop_tiny<const W: usize>(sum: &PauliSum<W>) -> PauliSum<W> {
+    let mut out = sum.clone();
+    out.retain(|_, _, c| c.norm() > 1e-13);
+    out
+}
+
+/// `i[generator, operand]` truncated by `policy` as one layer, into a fresh sum: the one-process reference for a partitioned or recursive Liouvillian.
+pub fn truncated_liouvillian<const W: usize, C, P>(
+    generator: &PauliSum<W, C>,
+    operand: &PauliSum<W, C>,
+    policy: &P,
+) -> PauliSum<W, C>
+where
+    C: crate::Coefficient,
+    P: crate::TruncationPolicy<W, C> + ?Sized,
+{
+    let mut out = PauliSum::empty(operand.num_qubits());
+    out.add_liouvillian(generator, operand, C::ONE, C::ZERO, policy);
+    out
+}

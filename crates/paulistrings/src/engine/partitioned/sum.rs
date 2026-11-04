@@ -385,3 +385,5 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         }
     }
 }
+
+mod algebra;

@@ -218,7 +218,65 @@ print(2.0 * (a + b))
 ```
 
 Of course, both operands must have the same `num_qubits`.
-Note, the product of two sums is not implemented, and `*` between two `PauliSum` objects raises `TypeError`.
+
+`a @ b` is the operator product, always complex since anticommuting strings multiply to a factor of $i$.
+`h.liouvillian(o)` is $i[H, O]$, the step of a Lanczos recursion or of a Heisenberg-picture Taylor series, and `a.anticommutator(b)` is $\{A, B\}$; for Hermitian operands both are Hermitian, so a real dtype stays real:
+
+```python
+z = PauliSum.from_strings({"ZI": 1.0}, dtype="float64")
+x = PauliSum.from_strings({"XI": 1.0, "IX": 0.5}, dtype="float64")
+print(z @ x)
+print(z.liouvillian(x))
+print(z.anticommutator(x))
+```
+
+```text
+(-0+1j)*YI + 0.5*ZX
+-2*YI
+1*ZX
+```
+
+`liouvillian` visits only the string pairs that share a qubit, so a local generator against a large operator is cheap; `*` between two `PauliSum` objects raises `TypeError`.
+Each takes a truncation `policy`, applied as to one propagation layer.
+A nested commutator of a symmetric generator cancels many strings only to rounding, so a recursion should threshold every step:
+
+```python
+from paulistrings import truncation
+o = x
+for _ in range(3):
+    o = z.liouvillian(o, policy=truncation.coeff(1e-12))
+print(o)
+```
+
+```text
+8*YI
+```
+
+The operator Lanczos recursion needs nothing more than these, `overlap` and scalar arithmetic; for a Hermitian generator and seed the diagonal coefficients `a_n` vanish.
+`add_liouvillian` writes $\alpha\, i[H, O] + \beta Y$ into an existing sum `y`, so each step overwrites the older vector, $O_{n-1} \leftarrow i[H, O_n] - b_n O_{n-1}$, and two operators serve the whole recursion:
+
+```python
+n = 12
+terms = {"I" * j + p + p + "I" * (n - j - 2): 1.0 for j in range(n - 1) for p in "XYZ"}
+h = PauliSum.from_strings(terms, dtype="float64")
+current = PauliSum.from_strings({"I" * 6 + "Z" + "I" * 5: 1.0}, dtype="float64")
+previous, b = current.copy(), []
+for _ in range(5):
+    previous.add_liouvillian(h, current, beta=-b[-1] if b else 0.0, policy=truncation.coeff(1e-12))
+    b.append(previous.overlap(previous) ** 0.5)
+    previous *= 1.0 / b[-1]
+    previous, current = current, previous
+print([round(x, 4) for x in b])
+```
+
+```text
+[4.0, 9.5917, 16.0759, 22.9001, 29.9595]
+```
+
+`y.add(x, alpha, beta)` is the same update for a plain sum, $Y \leftarrow \alpha X + \beta Y$, and `y.add_product` and `y.add_anticommutator` complete the set.
+
+The same loop runs unchanged on a split seed, `current = current.partition(partitions="auto")` or `current.partition(comm=comm)`, with `h` replicated: every step then stays split, and each partition receives from another only the strings a generator term moving between them can reach ([`PartitionedPauliSum`](../library/propagate.md#partitionedpaulisum)).
+
 
 ### A Hamiltonian
 

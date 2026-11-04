@@ -5,7 +5,9 @@
 pub(crate) mod accumulator;
 pub(crate) mod hash;
 mod partition;
+pub(crate) mod product;
 pub(crate) mod storage;
+mod table;
 
 pub use hash::{max_hash_bits, Gf2Hash, PartitionRows};
 pub use storage::PauliSum;

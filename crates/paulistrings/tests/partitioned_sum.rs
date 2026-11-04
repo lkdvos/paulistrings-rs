@@ -1,9 +1,11 @@
 //! The persistent partitioned driver: `PartitionedSum` held across calls, its
 //! accessors, and the runtime shared between sums.
 
+use num_complex::Complex64;
 use paulistrings::test_support::{
-    approx_eq, assert_runs_agree, assert_terms_close, low_weight_sum, partition_rows,
-    propagate_discarding, rand_sum, spread_magnitudes, unpinned_partitions, KeepAll,
+    approx_eq, assert_runs_agree, assert_terms_close, drop_tiny, low_weight_sum, partition_rows,
+    propagate_discarding, rand_sum, spread_magnitudes, truncated_liouvillian, unpinned_partitions,
+    KeepAll,
 };
 use paulistrings::{propagate, Circuit, Direction, PauliAxis, PauliString, PauliSum, ProductBasis};
 use paulistrings::{ApproxTopN, CoefficientThreshold};
@@ -153,4 +155,126 @@ fn an_empty_sum_is_a_valid_partitioned_sum() {
     ps.propagate(&circuit(), &KeepAll, Direction::Forward);
     ps.assert_invariants();
     assert!(ps.gather().is_empty());
+}
+
+#[test]
+fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
+    let generator = low_weight_sum::<1>(24, NQ, 2, 0x51);
+    let operand = low_weight_sum::<1>(3_000, NQ, 3, 0x52);
+    let split =
+        PartitionedSum::scatter(operand.clone(), &config(4)).expect("an unpinned config resolves");
+
+    let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
+    let mut product = split.empty_like();
+    product.add_product(&generator, &split, one, zero, &KeepAll);
+    product.assert_invariants();
+    assert_terms_close(
+        &drop_tiny(&product.gather()),
+        &drop_tiny(&generator.product(&operand)),
+        TOL,
+        "product",
+    );
+    let mut anticommutator = split.empty_like();
+    anticommutator.add_anticommutator(&generator, &split, one, zero, &KeepAll);
+    assert_terms_close(
+        &drop_tiny(&anticommutator.gather()),
+        &drop_tiny(&generator.anticommutator(&operand)),
+        TOL,
+        "anticommutator",
+    );
+
+    let policy = CoefficientThreshold(1e-3);
+    let (mut want, mut split) = (operand, split);
+    for step in 0..3 {
+        want = truncated_liouvillian(&generator, &want, &policy);
+        let mut next = split.empty_like();
+        next.add_liouvillian(&generator, &split, one, zero, &policy);
+        split = next;
+        split.assert_invariants();
+        assert_terms_close(&split.gather(), &want, TOL, &format!("step {step}"));
+    }
+}
+
+/// The first `steps` Lanczos coefficients `b_n` of `i[h, ·]` from `seed`, by the recursion `A = L(O_n) − b_n·O_{n−1}`, `b_{n+1} = ‖A‖`; `a_n` vanishes for Hermitian `h` and `O`.
+fn lanczos_one_process(h: &PauliSum<1, f64>, seed: &PauliSum<1, f64>, steps: usize) -> Vec<f64> {
+    let policy = CoefficientThreshold(1e-10);
+    let mut current = seed.clone();
+    current.scale(1.0 / current.overlap(&current).sqrt());
+    let mut previous = PauliSum::<1, f64>::empty(seed.num_qubits());
+    let mut b = vec![0.0];
+    for _ in 0..steps {
+        let mut next = truncated_liouvillian(h, &current, &policy);
+        let mut scaled = previous.clone();
+        scaled.scale(-b[b.len() - 1]);
+        next = next.add(&scaled);
+        let norm = next.overlap(&next).sqrt();
+        next.scale(1.0 / norm);
+        b.push(norm);
+        previous = std::mem::replace(&mut current, next);
+    }
+    b.split_off(1)
+}
+
+fn chain_and_seed() -> (PauliSum<1, f64>, PauliSum<1, f64>) {
+    let mut h = paulistrings::BuildAccumulator::<1, f64>::new(NQ);
+    for j in 0..NQ - 1 {
+        for f in [PauliString::<1>::x, PauliString::<1>::y, PauliString::<1>::z] {
+            let mut p = f(j);
+            p.mul_assign(&f(j + 1));
+            h.add_term(p, 1.0);
+        }
+        h.add_term(PauliString::<1>::z(j), 0.3);
+    }
+    let mut seed = paulistrings::BuildAccumulator::<1, f64>::new(NQ);
+    seed.add_term(PauliString::<1>::z(NQ / 2), 1.0);
+    (h.finalize(), seed.finalize())
+}
+
+#[test]
+fn lanczos_coefficients_agree_split_in_process() {
+    let (h, seed) = chain_and_seed();
+    let want = lanczos_one_process(&h, &seed, 8);
+    let policy = CoefficientThreshold(1e-10);
+    let mut current =
+        PartitionedSum::scatter(seed, &config(4)).expect("an unpinned config resolves");
+    current.scale(1.0 / current.overlap(&current).sqrt());
+    // Each step overwrites the older vector in place: `O_{n−1} ← L(O_n) − b_n·O_{n−1}`, so only two splits are ever held.
+    let mut previous = current.clone();
+    let mut got: Vec<f64> = Vec::new();
+    for _ in 0..want.len() {
+        let beta = -got.last().copied().unwrap_or(0.0);
+        previous.add_liouvillian(&h, &current, 1.0, beta, &policy);
+        previous.assert_invariants();
+        let norm: f64 = previous.overlap(&previous).sqrt();
+        previous.scale(1.0 / norm);
+        got.push(norm);
+        std::mem::swap(&mut previous, &mut current);
+    }
+    for (n, (g, w)) in got.iter().zip(&want).enumerate() {
+        assert!((g - w).abs() < 1e-9 * w, "b_{}: {g} vs {w}", n + 1);
+    }
+}
+
+#[test]
+fn a_traced_split_records_each_product_as_one_layer() {
+    let generator = low_weight_sum::<1>(24, NQ, 2, 0x61);
+    let operand = low_weight_sum::<1>(3_000, NQ, 3, 0x62);
+    let split =
+        PartitionedSum::scatter(operand.clone(), &config(4)).expect("an unpinned config resolves");
+    let mut dest = split.clone();
+    dest.enable_trace();
+    dest.add_liouvillian(&generator, &split, 1.0.into(), (-0.5).into(), &KeepAll);
+    let trace = dest.take_trace().expect("tracing was enabled");
+    assert_eq!(trace.layers.len(), 1);
+    let layer = &trace.layers[0];
+    assert_eq!(layer.gate_name, "liouvillian");
+    assert_eq!(layer.terms_in.iter().sum::<usize>(), operand.len());
+    assert_eq!(layer.terms_out.iter().sum::<usize>(), dest.len());
+    let sent: u64 = layer.rows_sent.iter().flatten().sum();
+    assert_eq!(sent, layer.rows_received.iter().sum::<u64>());
+    assert!(sent > 0 && layer.remote_deltas > 0, "a nonlocal generator ships terms");
+    for (rank, row) in layer.rows_sent.iter().enumerate() {
+        assert_eq!(row[rank], 0, "partition {rank} sent to itself");
+    }
+    assert!(layer.bytes_sent.iter().flatten().sum::<u64>() > sent * 16);
 }

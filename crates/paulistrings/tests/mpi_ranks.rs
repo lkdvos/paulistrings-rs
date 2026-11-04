@@ -32,9 +32,9 @@ use num_complex::Complex64;
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
-    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
-    skewed_by_partition, spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter,
-    zz_rotation, KeepAll, PlainApproxTopN,
+    haar_su4_matrix, heavy_cut, low_weight_sum, propagate_discarding, rand_sum, rand_sum_real,
+    single_cuts, skewed_by_partition, spread_magnitudes, trotter_circuit, truncated_liouvillian,
+    unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll, PlainApproxTopN,
 };
 use paulistrings::test_support::{
     buckets_exported_ahead_under_cut_on_rank, count_remote_deltas, mpi_build_library_version,
@@ -949,6 +949,40 @@ fn run_host_cases(r: &mut Runner) {
         // rank — `len` is the whole sum's, `local().len()` this rank's share.
         assert_eq!(split.len(), oracle.len(), "rank {}: collective len", r.rank);
         assert!(split.local().len() <= split.len());
+    });
+
+    // ---- operator products of a replicated generator ----------------------
+    r.case("operator products of a replicated generator match one process", |r| {
+        let nq = 24;
+        let generator = low_weight_sum::<1>(30, nq, 2, 0xA0F1);
+        let operand = low_weight_sum::<1>(4_000, nq, 4, 0xA0F3);
+        let transport = MpiTransport::from_communicator(r.world);
+        let split =
+            DistributedSum::scatter_with(operand.clone(), transport, unpinned_scatter(1, 2, SEED));
+        let rows = split.rows().clone();
+        let own = |sum: PauliSum<1>| {
+            let mut sum = sum;
+            sum.retain(|x, z, _| rows.partition_of(x, z) == r.rank);
+            sum
+        };
+        let fresh = || split.empty_like(MpiTransport::from_communicator(r.world));
+        let (one, zero) = (Complex64::new(1.0, 0.0), Complex64::new(0.0, 0.0));
+        let policy = CoefficientThreshold(1e-2);
+        let mut got = fresh();
+        got.add_liouvillian(&generator, &split, one, zero, &policy);
+        assert_terms_close(
+            got.local(),
+            &own(truncated_liouvillian(&generator, &operand, &policy)),
+            TOL,
+            "liouvillian",
+        );
+        let mut got = fresh();
+        got.add_product(&generator, &split, one, zero, &KeepAll);
+        assert_terms_close(got.local(), &own(generator.product(&operand)), TOL, "product");
+        let mut got = fresh();
+        got.add_anticommutator(&generator, &split, one, zero, &KeepAll);
+        let got = got.local();
+        assert_terms_close(got, &own(generator.anticommutator(&operand)), TOL, "anticommutator");
     });
 }
 

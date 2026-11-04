@@ -4,13 +4,24 @@ use crate::dtype::{imaginary_error, narrow, Dtype, PyCoefficient, Scalar};
 use num_complex::{Complex32, Complex64};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use paulistrings::{
-    BuildAccumulator, Gf2Hash, PartitionRowPolicy, PauliAxis, PauliString,
+    BuildAccumulator, BuiltinTruncation, Gf2Hash, PartitionRowPolicy, PauliAxis, PauliString,
     PauliSum as CorePauliSum, ProductBasis, StabilizerState,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyComplex, PyDict};
 use std::borrow::Cow;
+
+/// Which operator product [`WidthSum::pair`] takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pairing {
+    /// `A·B`.
+    Product,
+    /// `i[A, B]`.
+    Liouvillian,
+    /// `{A, B}`.
+    Anticommutator,
+}
 
 /// Width-dispatch enum over sums of one coefficient type. The Python boundary picks the smallest width that fits `num_qubits`.
 #[derive(Clone)]
@@ -114,6 +125,29 @@ impl<C: PyCoefficient> WidthSum<C> {
             } else {
                 wrap(a.add(b))
             }
+        })
+    }
+
+    /// `self ← alpha · other + beta · self`, in place; `None` on a width mismatch.
+    /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
+    pub fn add_scaled(&mut self, other: &Self, alpha: C, beta: C) -> Option<()> {
+        for_each_width_pair!((self, other), |a, b| a.add_scaled(b, alpha, beta))
+    }
+
+    /// `self ← alpha · pairing(generator, operand) + beta · self`, truncated by `policy` as one layer; `None` on a width mismatch.
+    /// Caller checks the qubit counts first and passes a complex `C` for [`Pairing::Product`].
+    pub fn add_paired(
+        &mut self,
+        generator: &Self,
+        operand: &Self,
+        pairing: Pairing,
+        (alpha, beta): (C, C),
+        policy: &BuiltinTruncation,
+    ) -> Option<()> {
+        for_each_width_triple!((self, generator, operand), |d, g, o| match pairing {
+            Pairing::Product => d.add_product(g, o, alpha, beta, policy),
+            Pairing::Liouvillian => d.add_liouvillian(g, o, alpha, beta, policy),
+            Pairing::Anticommutator => d.add_anticommutator(g, o, alpha, beta, policy),
         })
     }
 
@@ -392,6 +426,66 @@ impl PauliSumImpl {
         .flatten()
     }
 
+    /// The operator product `pairing` names at the two dtypes' promotion, made complex for [`Pairing::Product`]: [`add_paired`](Self::add_paired) into an empty sum.
+    /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
+    pub fn pair_promoted(
+        &self,
+        other: &Self,
+        pairing: Pairing,
+        policy: &BuiltinTruncation,
+    ) -> PyResult<Self> {
+        let mut dtype = self.dtype().promote(other.dtype());
+        if pairing == Pairing::Product {
+            dtype = dtype.complex();
+        }
+        let mut out = Self::empty_for(self.num_qubits(), dtype).ok_or_else(width_mismatch)?;
+        out.add_paired(self, other, pairing, (Complex64::ONE, Complex64::new(0.0, 0.0)), policy)?;
+        Ok(out)
+    }
+
+    /// `other` at this sum's dtype, a `ValueError` naming it `what` when it has an imaginary part a real dtype cannot hold.
+    pub fn at_dtype_of<'a>(&self, other: &'a Self, what: &str) -> PyResult<Cow<'a, Self>> {
+        let dtype = self.dtype();
+        other.converted(dtype).ok_or_else(|| imaginary_error(what, dtype))
+    }
+
+    /// `self ← alpha · other + beta · self`, in place at this sum's dtype; a `ValueError` for an imaginary part a real dtype cannot hold.
+    /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
+    pub fn add_scaled(&mut self, other: &Self, alpha: Complex64, beta: Complex64) -> PyResult<()> {
+        let other = self.at_dtype_of(other, "the added sum")?;
+        for_each_dtype_pair!((self, other.as_ref()), |a, b, _wrap| {
+            let (alpha, beta) = (narrow(alpha, "alpha")?, narrow(beta, "beta")?);
+            a.add_scaled(b, alpha, beta).ok_or_else(width_mismatch)
+        })
+        .expect("converted to this sum's dtype")
+    }
+
+    /// `self ← alpha · pairing(generator, operand) + beta · self`, in place at this sum's dtype, truncated by `policy` as one layer.
+    /// A product into a real sum is a `TypeError`, an imaginary part a real dtype cannot hold a `ValueError`; caller checks the qubit counts first.
+    pub fn add_paired(
+        &mut self,
+        generator: &Self,
+        operand: &Self,
+        pairing: Pairing,
+        (alpha, beta): (Complex64, Complex64),
+        policy: &BuiltinTruncation,
+    ) -> PyResult<()> {
+        let dtype = self.dtype();
+        if pairing == Pairing::Product && dtype.is_real() {
+            return Err(PyTypeError::new_err(format!(
+                "a product is not Hermitian, so a {} PauliSum cannot hold it; use a complex destination",
+                dtype.name(),
+            )));
+        }
+        let generator = self.at_dtype_of(generator, "the generator")?;
+        let operand = self.at_dtype_of(operand, "the operand")?;
+        for_each_dtype_triple!((self, generator.as_ref(), operand.as_ref()), |d, g, o| {
+            let weights = (narrow(alpha, "alpha")?, narrow(beta, "beta")?);
+            d.add_paired(g, o, pairing, weights, policy).ok_or_else(width_mismatch)
+        })
+        .expect("converted to this sum's dtype")
+    }
+
     /// `tr(self† · other) / 2^n` at the two dtypes' promotion; `None` on a width mismatch.
     pub fn overlap(&self, other: &Self) -> Option<Scalar> {
         let dtype = self.dtype().promote(other.dtype());
@@ -653,4 +747,9 @@ pub(crate) fn extract_complex(val: &Bound<'_, PyAny>) -> PyResult<Complex64> {
         return Ok(Complex64::new(f, 0.0));
     }
     Err(PyTypeError::new_err("expected complex, float, or int coefficient"))
+}
+
+/// The error for operands monomorphized at different widths, which only differing qubit counts produce.
+pub(crate) fn width_mismatch() -> PyErr {
+    PyValueError::new_err("sums were monomorphized at different widths")
 }

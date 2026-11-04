@@ -11,6 +11,7 @@ The templates share `common.sh`: the shared toolchain, a private checkout of `PS
 | `gpu-devices.sbatch` | one 4 × A100 node (`gpu` partition): the single-device CUDA net, `tests/propagate_gpu_partitioned.rs` at one partition per GPU, then `phase_breakdown --device 0` and `--device 0,1,2,3` on the device cells | the CUDA backend, one process (needs the `cuda` cargo feature) |
 | `mpi-gpu.sbatch` | one 4-GPU node by default (`--gpus-per-node=4 --ntasks-per-node=4`, every node GPU visible to every task), one GPU per MPI rank over NCCL: diagnostics preamble, `tests/mpi_ranks.rs` with `NCCL_DEBUG` on, then `phase_breakdown --mpi --device auto` at `--n 4e6 × ranks` | GPU per rank (needs `mpi` and `cuda`) |
 | `mpi-ranks.sbatch` | the multi-rank differential test (`tests/mpi_ranks.rs`) at one rank per NUMA domain under `srun --cpu-bind=ldoms --mpi=pmix`, then `phase_breakdown --mpi` across the allocation | distributed runs (needs the `mpi` cargo feature) |
+| `lanczos-ranks.sbatch` | operator Lanczos (`examples/lanczos_probe.rs`, one in-place `add_liouvillian` per step) per model: one whole-node rank, then one rank per NUMA domain on 1, 2, 4, ... nodes for each choice of partition rows; per-step exchange volume and time, balance and peak RSS, tabulated by `scripts/lanczos-report.py` | distributed operator products (needs the `mpi` cargo feature) |
 
 ## The thread-scaling job
 

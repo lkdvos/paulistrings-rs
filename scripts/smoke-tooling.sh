@@ -22,6 +22,12 @@ build_probe phase-timing
 "$probe" "${cell[@]}" --json-out "$out/host.jsonl"
 python3 scripts/scaling-report.py "$out/host.jsonl"
 "$probe" "${cell[@]}" --partitions 2 --partition-cpus unpinned --json-out "$out/partitioned.jsonl"
+step "lanczos_probe: one process and two partitions"
+cargo build --offline --release -p paulistrings --example lanczos_probe
+lanczos="${CARGO_TARGET_DIR:-target}/release/examples/lanczos_probe"
+"$lanczos" --model chain:16 --steps 6 --unpinned --threads 2 --json-out "$out/lanczos-p1.jsonl"
+"$lanczos" --model chain:16 --steps 6 --partitions 2 --rows xblocks --unpinned --threads 2 --json-out "$out/lanczos-p2.jsonl"
+python3 scripts/lanczos-report.py "$out/lanczos-p1.jsonl" "$out/lanczos-p2.jsonl"
 step "ab-compare: a one-pair runtime-knob A/B"
 scripts/ab-compare.sh smoke-tooling --a . --b . --probe "${cell[*]}" --probe-b "${cell[*]} --partitions 2" --pairs 1
 step "bench-campaign: one item of each kind"
@@ -49,6 +55,12 @@ if command -v mpirun >/dev/null && [ -n "${LIBCLANG_PATH:-}" ]; then
     step "probe under mpirun -n 2, a paired MPI A/B, and the mpi_ranks net"
     build_probe phase-timing,mpi
     mpirun -n 2 "$probe" "${cell[@]}" --mpi --json-out "$out/mpi.jsonl"
+    cargo build --offline --release -p paulistrings --example lanczos_probe --features mpi
+    mpirun -n 2 "${CARGO_TARGET_DIR:-target}/release/examples/lanczos_probe" --model chain:16 --steps 6 --mpi --unpinned --threads 2 --json-out "$out/lanczos-mpi.jsonl"
+    if [ -d "${SHARED_RUST:-$HOME/.local/rust-shared}/cargo" ]; then
+        step "the Slurm Lanczos template under SMOKE=1"
+        TMPDIR="$out" SMOKE=1 bash scripts/slurm/lanczos-ranks.sbatch
+    fi
     scripts/ab-compare.sh smoke-tooling-mpi --a . --b . --features phase-timing,mpi --launch "mpirun -n 2" \
         --probe "${cell[*]} --mpi" --probe-b "${cell[*]} --mpi --truncation atopn:1000" --pairs 1
     scripts/mpi-test.sh --ranks 2

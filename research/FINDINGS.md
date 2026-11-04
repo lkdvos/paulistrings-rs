@@ -281,6 +281,30 @@ Quiet-node code A/B against `ad9d358d` (`9e8f5c03`, same campaign and probe, 5 A
 On genoa weak-scaling sweeps (16×16 TFIM, 1e7 per rank, jobs 7402414 `ad9d358d` against 7402372 `9e8f5c03`, the latter noisy between cells), steady s/step at 2 ranks on one node: x-only 19.9 → 17.1, random rows 27.3 → 14.3, `avoid:10` 25.0 → 13.8; at 8 nodes random rows 41.5 → 21.0, x-only 28.5 → 18.4.
 So the large-sum weak-scaling workload gains roughly 2×, and the small probe across genoa nodes is flat to slightly worse; there the export absorbs the read of the terms the cut drops, which the whole-sum cut used to take outside the export phase, and the counting and marking cost is not repaid; the MPI export increase is open.
 
+### Operator products skip disjoint supports
+
+A Liouvillian pair whose supports miss always commutes, and on a nested-commutator probe (Heisenberg chain `L = 40` with a `0.3` Z field, 157 generator terms, `O` from `Z_20` thresholded at `1e-12` per step, 1.9e6 terms at step 13, `W = 1`) only 30% of pairs meet and 16.5% anticommute.
+`SupportIndex` keeps per bucket one bitset over its terms per qubit, and a generator term visits the OR of its qubits' rows: **−30% at 1 thread (3.48 → 2.46 s), −31% at 32 (215 → 149 ms)**, 4/4 pairs each, on ccqlin038.
+Without the index the visit cost 7.5 of 9.7 ns per pair and the inserts 2.2; with it the visits still cost 5.6 of 8.2, see §Operator products re-read each input bucket once per generator delta.
+About a third of `O`'s terms are rounding residues (below `1e-14` of the largest) when no threshold is applied, since nested commutators of a symmetric generator cancel to rounding rather than to exact zero.
+
+### Partitioned Liouvillian: exchange volume against balance
+
+`liouvillian_share` ships each partner the operand terms a crossing generator term anticommutes with; on the §Operator products skip disjoint supports probe at step 13 (1.9e6 terms, `O` grown from `Z_20`), ccqlin038, 32 threads in all, best of 3:
+
+| rows | partners per rank | shipped per step | largest share | wall |
+|---|---|---|---|---|
+| one process | — | — | — | 123 ms |
+| P=2 seeded | 1 | 1.00 × operand | 1.00 × mean | 179 ms |
+| P=2 x-cut at bond (19, 20) | 1 | 0.75 × | 1.09 × | 150 ms |
+| P=4 seeded | 3 | 2.99 × | 1.00 × | 208 ms |
+| P=4 x-cut, blocks of 10 in Gray order | 2 | 1.04 × | 1.92 × | 196 ms |
+
+The halo is thin only while the light cone stays inside a block: strings averaging weight 10 almost all touch a cut through it.
+Cut rows trade volume for balance as they do for circuits (§Partition rows without a known lattice); in one process the exchange is a copy, so balance decides, and across nodes the 3× volume of seeded rows is unmeasured.
+Rows reading only x-bits keep a `Z` field local; `PartitionRows::cut` reads z-bits, so every field term crosses.
+Selecting the sends in parallel over buckets and reusing the send index for the local job took P=2 seeded from 219 to 179 ms.
+
 ## GPU spike
 
 Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.
@@ -416,3 +440,12 @@ The VmHWM cost is held capacity, not fragmentation (same ordering under `MALLOC_
 Rejected: a coefficient store only for anticommuting strings (+15%, mispredicts), merging without counting hits (+12–15%), reserving `len + partners` (VmHWM +15%), and growing a short bucket by exactly its new keys (VmHWM +20–26%, the TFIM gain lost).
 `PartnerOrder` against the stable `sort_by`: 15% faster on `heavyhex_step` at 8 threads, 10% slower on `rotation_zz` at one.
 Skipping the hit count when a bucket has room for every partner, and closing the hits' gap with the final shift, took `merge_ns` −22% to −28% on `heavyhex_step` and `tfim_step` and −4% to −12% on the all-hit `rotation_zz` and `rotation_local`; wall −9.1% / −1.5% (16 / 48 threads, the second not consistent) on `heavyhex_step` and −16.6% / −13.4% on `tfim_step`, VmHWM +0.3–1.6% (jobs 7396538–7396540 against `d7bbc753`; untouched `cnot` +2.2% at 16 threads, so wall effects under ~3% there are layout).
+
+### Operator products re-read each input bucket once per generator delta
+
+Output bucket `β′` reads the operand's buckets `β′ ⊕ h(s)` for every distinct generator bucket delta, so each input bucket is streamed once per delta (~152 distinct deltas on the §Operator products skip disjoint supports probe), and at 32 threads the visits run at ccqlin038's ~48 GB/s read ceiling.
+No loop order fixes this under dense hash rows: a tile `c ⊕ S` of output buckets reads `c ⊕ S ⊕ Γ`, and random deltas `Γ` spread that over every input bucket at any tile size that fits in cache.
+The layout does: hash rows on the coordinates `x_q`, `z_q` of the 6 central qubits leave 130 of the 157 generator terms at delta 0 and 26 distinct deltas, and cut the visits 39% at 1 thread (1450 → 891 ms) and the call **−26% at 1 thread (2160 → 1590 ms), −15% at 32 (122 → 104 ms)**, inserts unchanged; the largest bucket is 14.8× the mean, which is what holds back 32 threads.
+Open: choosing such rows from a generator and an operand, balanced, and keeping them across a recursion (the output inherits the operand's hash).
+Measured and not kept (branch `multiply-gemm-wip`, `0576def7`): a bit-sliced ℤ₄ micro-kernel, each generator run transposed into per-qubit X/Y/Z planes so one operand term's phases against the whole run come out of two bit-plane counters, −6% at 1 thread under coordinate rows and nothing under dense rows; `POPCNT` multiversioning of the per-bucket pass, −3–4% at 1 thread, flat at 32; both inside ccqlin038's ±10% noise.
+After the layout change a call splits about evenly between visits, inserts with their drain sort, and the singleton runs of the generator terms on the hashed qubits.

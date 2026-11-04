@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyString;
 
 use crate::dtype::{Dtype, PyCoefficient, Scalar};
+use crate::storage::{extract_complex, Pairing};
 use crate::sum::{
     check_dtype_carries, check_num_qubits, coordinate_flags, parse_direction, parse_partitions,
     parse_product_state, parse_row_matrix, propagate_options, runtime_for, topology_error,
@@ -292,7 +293,7 @@ pub(crate) enum SplitImpl {
 }
 
 impl SplitImpl {
-    fn dtype(&self) -> Dtype {
+    pub(crate) fn dtype(&self) -> Dtype {
         fn of<C: PyCoefficient>(_: &WidthSplit<C>) -> Dtype {
             C::DTYPE
         }
@@ -579,6 +580,120 @@ impl PartitionedPauliSum {
         Ok(py.allow_threads(move || inner.expectation(&parsed)))
     }
 
+    /// Hilbert-Schmidt overlap `tr(self* . other) / 2^n` of the whole sums, the same value on every rank; `PauliSum.overlap`'s, for splits by the same partition rows. **Collective** under MPI.
+    ///
+    /// A `float` for a real dtype. Both splits must share their dtype and partition rows, and either both live in this process or both across the same MPI group; anything else is a `ValueError`.
+    fn overlap(&self, py: Python<'_>, other: &Self) -> PyResult<Scalar> {
+        self.check_aligned(&other.inner, "overlap")?;
+        let (a, b) = (&self.inner, &other.inner);
+        Ok(py.allow_threads(move || a.overlap(b)))
+    }
+
+    /// A copy, split as this one. **Collective** under MPI, where it duplicates the communicator.
+    fn copy(&self, py: Python<'_>) -> Self {
+        let inner = &self.inner;
+        Self { inner: py.allow_threads(move || inner.duplicate()) }
+    }
+
+    /// `self + other` as a new split, with no exchange: equal partition rows put a string in the same partition of both. **Collective** under MPI.
+    ///
+    /// The splits must be aligned as for `overlap`.
+    fn __add__(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
+        self.combined(py, &other.inner, Complex64::new(1.0, 0.0), "PartitionedPauliSum +")
+    }
+
+    /// `self - other`, as `+`.
+    fn __sub__(&self, py: Python<'_>, other: &Self) -> PyResult<Self> {
+        self.combined(py, &other.inner, Complex64::new(-1.0, 0.0), "PartitionedPauliSum -")
+    }
+
+    /// `self += other`, in place, as `+`.
+    fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
+        let weights = (Complex64::ONE, Complex64::ONE);
+        Self::combine_in_place(slf, other, weights, "PartitionedPauliSum +=")
+    }
+
+    /// `self -= other`, in place, as `+`.
+    fn __isub__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
+        let weights = (-Complex64::ONE, Complex64::ONE);
+        Self::combine_in_place(slf, other, weights, "PartitionedPauliSum -=")
+    }
+
+    /// `self = alpha * other + beta * self`, in place and without communication, as `PauliSum.add`; the splits must be aligned as for `overlap`.
+    #[pyo3(signature = (other, alpha=Complex64::ONE, beta=Complex64::ONE))]
+    fn add(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+    ) -> PyResult<()> {
+        Self::combine_in_place(slf, other, (alpha, beta), "PartitionedPauliSum.add")
+    }
+
+    /// `self = alpha * (generator @ operand) + beta * self`, in place, as `PauliSum.add_product`, with `generator` the same `PauliSum` on every partition or rank and `operand` a split aligned with this one as for `overlap`.
+    ///
+    /// Each partition receives from another only the strings a generator term moving between them can reach and sums its pairs straight into its own share, so no intermediate split is built and no communicator is duplicated.
+    /// Partitioned exact `truncation.topn` raises `NotImplementedError` as `propagate` does. **Collective** under MPI.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_product(
+        slf: &Bound<'_, Self>,
+        generator: PyRef<'_, PauliSum>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Product;
+        Self::add_paired_into(slf, &generator, operand, pairing, (alpha, beta), policy)
+    }
+
+    /// `self = alpha * i[generator, operand] + beta * self`, in place, as `add_product` accumulates. **Collective** under MPI.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_liouvillian(
+        slf: &Bound<'_, Self>,
+        generator: PyRef<'_, PauliSum>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Liouvillian;
+        Self::add_paired_into(slf, &generator, operand, pairing, (alpha, beta), policy)
+    }
+
+    /// `self = alpha * {generator, operand} + beta * self`, in place, as `add_product` accumulates. **Collective** under MPI.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_anticommutator(
+        slf: &Bound<'_, Self>,
+        generator: PyRef<'_, PauliSum>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Anticommutator;
+        Self::add_paired_into(slf, &generator, operand, pairing, (alpha, beta), policy)
+    }
+
+    /// `self * scalar` as a new split, keeping the dtype; a real dtype raises `ValueError` on an imaginary scalar. **Collective** under MPI, which duplicates the communicator.
+    fn __mul__(&self, py: Python<'_>, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let factor = extract_complex(factor)?;
+        let mut out = self.copy(py);
+        out.inner.scale(factor)?;
+        Ok(out)
+    }
+
+    /// `scalar * self`, as `*`.
+    fn __rmul__(&self, py: Python<'_>, factor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.__mul__(py, factor)
+    }
+
+    /// `self *= scalar`, in place and without communication.
+    fn __imul__(&mut self, factor: &Bound<'_, PyAny>) -> PyResult<()> {
+        let factor = extract_complex(factor)?;
+        self.inner.scale(factor)
+    }
+
     /// Terms in the whole sum. **Collective** under MPI.
     fn __len__(&self, py: Python<'_>) -> usize {
         let inner = &self.inner;
@@ -667,6 +782,132 @@ impl PartitionedPauliSum {
             inner.propagate(&circuit.inner, &policy, direction, options, traced)
         })?;
         Ok(outcome)
+    }
+    /// `pairing(generator, self)` as a new split, the body of `PauliSum.product`, `liouvillian` and `anticommutator` on a split operand.
+    /// Every check raises before the GIL is released, so under MPI a rejected call raises on every rank alike.
+    pub(crate) fn paired_by(
+        &self,
+        py: Python<'_>,
+        generator: &PauliSumImpl,
+        pairing: Pairing,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<Self> {
+        if generator.num_qubits() != self.inner.num_qubits() {
+            return Err(PyValueError::new_err(format!(
+                "num_qubits mismatch ({} vs {})",
+                generator.num_qubits(),
+                self.inner.num_qubits(),
+            )));
+        }
+        let policy = PyTruncation::tree_of(policy);
+        if !policy.supports_partitioned() {
+            return Err(PyNotImplementedError::new_err(format!(
+                "an operator product with a PartitionedPauliSum: {TOPN_PARTITIONED_MSG}"
+            )));
+        }
+        let inner = &self.inner;
+        let inner = py.allow_threads(move || inner.paired(generator, pairing, &policy))?;
+        Ok(Self { inner })
+    }
+
+    /// `ValueError` unless `other` combines with this split term by term.
+    fn check_aligned(&self, other: &SplitImpl, what: &str) -> PyResult<()> {
+        match self.inner.misaligned(other) {
+            Some(why) => Err(PyValueError::new_err(format!("{what}: {why}"))),
+            None => Ok(()),
+        }
+    }
+
+    /// `self + factor · other` as a new split. **Collective** under MPI.
+    fn combined(
+        &self,
+        py: Python<'_>,
+        other: &SplitImpl,
+        factor: Complex64,
+        what: &str,
+    ) -> PyResult<Self> {
+        self.check_aligned(other, what)?;
+        let inner = &self.inner;
+        let mut out = py.allow_threads(move || inner.duplicate());
+        out.add_scaled(other, factor, Complex64::ONE)?;
+        Ok(Self { inner: out })
+    }
+
+    /// The split an in-place call on `slf` reads from `other`: a copy when `other` is `slf`, so the call never borrows one cell twice. **Collective** under MPI when it copies.
+    fn held<'py>(slf: &Bound<'py, Self>, other: &Bound<'py, Self>) -> HeldSplit<'py> {
+        if slf.is(other) {
+            let this = slf.borrow();
+            let inner = &this.inner;
+            HeldSplit::Copy(slf.py().allow_threads(move || inner.duplicate()))
+        } else {
+            HeldSplit::Borrowed(other.borrow())
+        }
+    }
+
+    /// `slf ← alpha · other + beta · slf`, in place. **Collective** under MPI only when `other` is `slf`.
+    fn combine_in_place(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, Self>,
+        (alpha, beta): (Complex64, Complex64),
+        what: &str,
+    ) -> PyResult<()> {
+        let that = Self::held(slf, other);
+        let mut this = slf.borrow_mut();
+        this.check_aligned(&that, what)?;
+        let (inner, that) = (&mut this.inner, &*that);
+        slf.py().allow_threads(move || inner.add_scaled(that, alpha, beta))
+    }
+
+    /// `slf ← alpha · pairing(generator, operand) + beta · slf`, the body of `add_product`, `add_liouvillian` and `add_anticommutator`.
+    /// Every check raises before the GIL is released, so under MPI a rejected call raises on every rank alike. **Collective** under MPI.
+    fn add_paired_into(
+        slf: &Bound<'_, Self>,
+        generator: &PauliSum,
+        operand: &Bound<'_, Self>,
+        pairing: Pairing,
+        weights: (Complex64, Complex64),
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let what = match pairing {
+            Pairing::Product => "PartitionedPauliSum.add_product",
+            Pairing::Liouvillian => "PartitionedPauliSum.add_liouvillian",
+            Pairing::Anticommutator => "PartitionedPauliSum.add_anticommutator",
+        };
+        let that = Self::held(slf, operand);
+        let mut this = slf.borrow_mut();
+        this.check_aligned(&that, what)?;
+        if generator.inner.num_qubits() != this.inner.num_qubits() {
+            return Err(PyValueError::new_err(format!(
+                "num_qubits mismatch ({} vs {})",
+                generator.inner.num_qubits(),
+                this.inner.num_qubits(),
+            )));
+        }
+        let policy = PyTruncation::tree_of(policy);
+        if !policy.supports_partitioned() {
+            return Err(PyNotImplementedError::new_err(format!(
+                "an operator product with a PartitionedPauliSum: {TOPN_PARTITIONED_MSG}"
+            )));
+        }
+        let (inner, generator, that) = (&mut this.inner, &generator.inner, &*that);
+        slf.py().allow_threads(move || inner.add_paired(generator, that, pairing, weights, &policy))
+    }
+}
+
+/// See [`PartitionedPauliSum::held`].
+enum HeldSplit<'py> {
+    Copy(SplitImpl),
+    Borrowed(PyRef<'py, PartitionedPauliSum>),
+}
+
+impl std::ops::Deref for HeldSplit<'_> {
+    type Target = SplitImpl;
+
+    fn deref(&self) -> &SplitImpl {
+        match self {
+            HeldSplit::Copy(inner) => inner,
+            HeldSplit::Borrowed(split) => &split.inner,
+        }
     }
 }
 

@@ -237,7 +237,7 @@ def test_imul_is_in_place_and_zero_empties_the_sum():
 
 def test_multiplying_two_sums_is_a_type_error():
     sum_ = PauliSum.from_strings({"XI": 1.0}, num_qubits=2)
-    with pytest.raises(TypeError, match="full operator product"):
+    with pytest.raises(TypeError, match="operator product is a @ b"):
         sum_ * sum_
     with pytest.raises(TypeError, match="complex or real number"):
         sum_ * "two"

@@ -175,6 +175,28 @@ impl<const W: usize, P: TruncationPolicy<W> + ?Sized> TruncationPolicy<W> for Di
     }
 }
 
+/// [`ApproxTopN`](crate::ApproxTopN)`(n)`'s layer passes, hidden from the engine's fused form: the oracle for the fused pass's kept set.
+#[derive(Clone, Copy, Debug)]
+pub struct PlainApproxTopN(pub usize);
+
+impl<const W: usize> TruncationPolicy<W> for PlainApproxTopN {
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        crate::ApproxTopN(self.0).finalize_layer(sum);
+    }
+
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W>,
+        collectives: &dyn crate::Collectives,
+    ) {
+        crate::ApproxTopN(self.0).finalize_layer_partitioned(local, collectives);
+    }
+
+    fn supports_partitioned(&self) -> bool {
+        true
+    }
+}
+
 fn norm_sqr<const W: usize>(sum: &PauliSum<W>) -> f64 {
     sum.overlap(sum).re
 }

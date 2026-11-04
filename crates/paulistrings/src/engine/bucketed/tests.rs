@@ -1213,14 +1213,7 @@ mod finalize_tests {
         assert_terms_close(&got, &want, 1e-11, "3 truncated layers");
     }
 
-    /// `ApproxTopN(n)`'s layer pass, hidden from the engine's fused form.
-    struct PlainApproxTopN(usize);
-
-    impl<const W: usize> TruncationPolicy<W> for PlainApproxTopN {
-        fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-            ApproxTopN(self.0).finalize_layer(sum);
-        }
-    }
+    use crate::test_support::PlainApproxTopN;
 
     /// An armed coset loop counts every output bucket into its window slot; an unarmed one, or a rescale layer, which runs no coset loop, leaves the counts invalid.
     #[test]

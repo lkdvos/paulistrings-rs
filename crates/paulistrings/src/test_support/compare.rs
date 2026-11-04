@@ -375,3 +375,37 @@ pub fn assert_frequencies(counts: &[usize], probs: &[f64], what: &str) {
         );
     }
 }
+
+/// `ApproxTopN(n)`'s layer pass hidden from the engine's fused form, so the engine neither defers its cut nor keeps counts ahead across it.
+#[derive(Clone, Copy, Debug)]
+pub struct PlainApproxTopN(pub usize);
+
+impl<const W: usize> TruncationPolicy<W> for PlainApproxTopN {
+    fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+        crate::ApproxTopN(self.0).finalize_layer(sum);
+    }
+
+    fn finalize_layer_partitioned(
+        &self,
+        local: &mut PauliSum<W>,
+        collectives: &dyn crate::Collectives,
+    ) {
+        crate::ApproxTopN(self.0).finalize_layer_partitioned(local, collectives);
+    }
+
+    fn supports_partitioned(&self) -> bool {
+        true
+    }
+}
+
+/// The buckets whose export read the counts ahead under a pending cut, summed over `sum`'s partitions and every layer they drove.
+pub fn buckets_exported_ahead_under_cut<const W: usize>(sum: &crate::PartitionedSum<W>) -> u64 {
+    sum.buckets_exported_ahead_under_cut()
+}
+
+/// [`buckets_exported_ahead_under_cut`] of this rank's partition of `sum`.
+pub fn buckets_exported_ahead_under_cut_on_rank<const W: usize, X: crate::Transport>(
+    sum: &crate::DistributedSum<W, X>,
+) -> u64 {
+    sum.buckets_exported_ahead_under_cut()
+}

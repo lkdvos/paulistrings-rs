@@ -9,9 +9,10 @@
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use paulistrings::test_support::{
-    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, heavy_cut,
-    propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close,
+    buckets_exported_ahead_under_cut, heavy_cut, propagate_discarding, rand_sum, rand_sum_real,
+    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions, KeepAll,
+    PlainApproxTopN,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -464,4 +465,38 @@ fn repartitioning_and_rehashing_mid_run_match_propagate() {
         split.propagate(&circuit, &KeepAll, Direction::Forward);
         assert_terms_close(&split.gather(), &want, TOL, &format!("partitions={partitions}"));
     }
+}
+
+/// Through the driver, some exchanging layer exports from the counts the layer before took ahead while a cut is pending, and the run keeps what a run of the same layer pass hidden from the engine's fused form keeps, which has no counts ahead.
+fn the_driver_exports_from_counts_ahead<const W: usize>(sum: &PauliSum<W>, n: usize) {
+    let circuit = trotter_circuit::<W>(sum.num_qubits(), THETA);
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        for partitions in [2usize, 4] {
+            let what = format!("W={W} P={partitions} {direction:?}");
+            let run = |policy: &dyn TruncationPolicy<W>| {
+                let mut split = PartitionedSum::scatter(sum.clone(), &config(partitions))
+                    .expect("an unpinned placement resolves");
+                split.propagate(&circuit, policy, direction);
+                split.assert_invariants();
+                (split.gather(), buckets_exported_ahead_under_cut(&split))
+            };
+            let (got, ahead) = run(&ApproxTopN(n));
+            let (want, plain_ahead) = run(&PlainApproxTopN(n));
+            assert!(ahead > 0, "{what}: no export read the counts ahead under a pending cut");
+            assert_eq!(plain_ahead, 0, "{what}: the plain layer pass left counts ahead");
+            assert_terms_close(&got, &want, TOL, &what);
+        }
+    }
+}
+
+#[test]
+fn the_driver_exports_from_counts_ahead_w1() {
+    let sum = spread_magnitudes(&rand_sum_real::<1>(1_500, 16, 0xA4E1), 40, 0xA4E1);
+    the_driver_exports_from_counts_ahead(&sum, 1_000);
+}
+
+#[test]
+fn the_driver_exports_from_counts_ahead_w2() {
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0xA4E2), 40, 0xA4E2);
+    the_driver_exports_from_counts_ahead(&sum, 1_000);
 }

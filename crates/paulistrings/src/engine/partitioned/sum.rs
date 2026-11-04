@@ -321,6 +321,12 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         &self.parts[r].sum
     }
 
+    /// [`HostPartition::buckets_exported_ahead_under_cut`] summed over the partitions.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn buckets_exported_ahead_under_cut(&self) -> u64 {
+        self.parts.iter().map(HostPartition::buckets_exported_ahead_under_cut).sum()
+    }
+
     /// `⟨ψ|O|ψ⟩` in the product state `basis`, the partitions' own values added in rank order.
     pub fn expectation_product(&self, basis: &ProductBasis<W>) -> C {
         self.parts.iter().map(|part| part.sum.expectation_product(basis)).sum()

@@ -251,6 +251,23 @@ A Liouvillian pair whose supports miss always commutes, and on a nested-commutat
 Without the index the visit cost 7.5 of 9.7 ns per pair and the inserts 2.2; with it the visits still cost 5.6 of 8.2, see §Operator products re-read each input bucket once per generator delta.
 About a third of `O`'s terms are rounding residues (below `1e-14` of the largest) when no threshold is applied, since nested commutators of a symmetric generator cancel to rounding rather than to exact zero.
 
+### Partitioned Liouvillian: exchange volume against balance
+
+`liouvillian_share` ships each partner the operand terms a crossing generator term anticommutes with; on the §Operator products skip disjoint supports probe at step 13 (1.9e6 terms, `O` grown from `Z_20`), ccqlin038, 32 threads in all, best of 3:
+
+| rows | partners per rank | shipped per step | largest share | wall |
+|---|---|---|---|---|
+| one process | — | — | — | 123 ms |
+| P=2 seeded | 1 | 1.00 × operand | 1.00 × mean | 179 ms |
+| P=2 x-cut at bond (19, 20) | 1 | 0.75 × | 1.09 × | 150 ms |
+| P=4 seeded | 3 | 2.99 × | 1.00 × | 208 ms |
+| P=4 x-cut, blocks of 10 in Gray order | 2 | 1.04 × | 1.92 × | 196 ms |
+
+The halo is thin only while the light cone stays inside a block: strings averaging weight 10 almost all touch a cut through it.
+Cut rows trade volume for balance as they do for circuits (§Partition rows without a known lattice); in one process the exchange is a copy, so balance decides, and across nodes the 3× volume of seeded rows is unmeasured.
+Rows reading only x-bits keep a `Z` field local; `PartitionRows::cut` reads z-bits, so every field term crosses.
+Selecting the sends in parallel over buckets and reusing the send index for the local job took P=2 seeded from 219 to 179 ms.
+
 ## GPU spike
 
 Numbers are the second application of a gate on the saturated sum, CUDA events, medians of 5 warm repetitions, against `phase_breakdown` at 16 threads.

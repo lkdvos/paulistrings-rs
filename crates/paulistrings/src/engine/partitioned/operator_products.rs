@@ -5,6 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
+
 use super::distributed::{decode_rank, group_bits, identity_fingerprint};
 use crate::coefficient::Coefficient;
 use crate::engine::transport::{ByteParts, Transport};
@@ -35,56 +37,71 @@ fn generator_fingerprint<const W: usize, C: Coefficient>(generator: &PauliSum<W,
     folded
 }
 
+/// The terms of bucket `b` that some term of `generator` anticommutes with, or every term without an `index`, in order.
+fn reachable_in_bucket<const W: usize, C: Coefficient>(
+    share: &PauliSum<W, C>,
+    b: usize,
+    index: Option<&SupportIndex>,
+    generator: &[Entry<W, C>],
+    candidates: &mut Vec<u64>,
+) -> (Vec<[u64; W]>, Vec<[u64; W]>, Vec<C>) {
+    let (bucket_x, bucket_z, bucket_coeff) = share.bucket(b);
+    let Some(index) = index else {
+        return (bucket_x.to_vec(), bucket_z.to_vec(), bucket_coeff.to_vec());
+    };
+    let mut reached = vec![0u64; bucket_x.len().div_ceil(64)];
+    for h in generator {
+        let key = PauliString { x: h.x, z: h.z };
+        let support: [u64; W] = std::array::from_fn(|w| h.x[w] | h.z[w]);
+        let weight: u32 = support.iter().map(|w| w.count_ones()).sum();
+        if weight <= SCAN_ABOVE_WEIGHT {
+            index.candidates(b, &support, candidates);
+        } else {
+            candidates.clear();
+            candidates.resize(reached.len(), u64::MAX);
+        }
+        for (w, &word) in candidates.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let i = w * 64 + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if i < bucket_x.len() {
+                    let term = PauliString { x: bucket_x[i], z: bucket_z[i] };
+                    reached[w] |= (!key.commutes_with(&term) as u64) << (i % 64);
+                }
+            }
+        }
+    }
+    let kept = (0..bucket_x.len()).filter(|&i| reached[i / 64] >> (i % 64) & 1 == 1);
+    let mut out = (Vec::new(), Vec::new(), Vec::new());
+    for i in kept {
+        out.0.push(bucket_x[i]);
+        out.1.push(bucket_z[i]);
+        out.2.push(bucket_coeff[i]);
+    }
+    out
+}
+
 /// The terms of `share` that some term of `generator` anticommutes with, or every term without an `index`, in the gather's wire form, keeping every bucket's order.
 fn encode_reachable<const W: usize, C: Coefficient>(
     share: &PauliSum<W, C>,
     index: Option<&SupportIndex>,
     generator: &[Entry<W, C>],
 ) -> ByteParts {
-    let mut lens: Vec<u64> = Vec::with_capacity(share.num_buckets());
-    let (mut x, mut z, mut coeff) = (Vec::new(), Vec::new(), Vec::new());
-    let mut reached: Vec<u64> = Vec::new();
-    let mut candidates: Vec<u64> = Vec::new();
-    for b in 0..share.num_buckets() {
-        let (bucket_x, bucket_z, bucket_coeff) = share.bucket(b);
-        reached.clear();
-        reached.resize(bucket_x.len().div_ceil(64), 0);
-        match index {
-            Some(index) => {
-                for h in generator {
-                    let key = PauliString { x: h.x, z: h.z };
-                    let support: [u64; W] = std::array::from_fn(|w| h.x[w] | h.z[w]);
-                    let weight: u32 = support.iter().map(|w| w.count_ones()).sum();
-                    if weight <= SCAN_ABOVE_WEIGHT {
-                        index.candidates(b, &support, &mut candidates);
-                    } else {
-                        candidates.clear();
-                        candidates.resize(reached.len(), u64::MAX);
-                    }
-                    for (w, &word) in candidates.iter().enumerate() {
-                        let mut bits = word;
-                        while bits != 0 {
-                            let i = w * 64 + bits.trailing_zeros() as usize;
-                            bits &= bits - 1;
-                            if i < bucket_x.len() {
-                                let term = PauliString { x: bucket_x[i], z: bucket_z[i] };
-                                reached[w] |= (!key.commutes_with(&term) as u64) << (i % 64);
-                            }
-                        }
-                    }
-                }
-            }
-            None => reached.iter_mut().for_each(|w| *w = u64::MAX),
-        }
-        let before = coeff.len();
-        for i in 0..bucket_x.len() {
-            if reached[i / 64] >> (i % 64) & 1 == 1 {
-                x.push(bucket_x[i]);
-                z.push(bucket_z[i]);
-                coeff.push(bucket_coeff[i]);
-            }
-        }
-        lens.push((coeff.len() - before) as u64);
+    let buckets: Vec<_> = (0..share.num_buckets())
+        .into_par_iter()
+        .map_init(Vec::new, |candidates, b| {
+            reachable_in_bucket(share, b, index, generator, candidates)
+        })
+        .collect();
+    let lens: Vec<u64> = buckets.iter().map(|(_, _, c)| c.len() as u64).collect();
+    let terms: usize = buckets.iter().map(|(_, _, c)| c.len()).sum();
+    let (mut x, mut z, mut coeff) =
+        (Vec::with_capacity(terms), Vec::with_capacity(terms), Vec::with_capacity(terms));
+    for (bx, bz, bc) in buckets {
+        x.extend(bx);
+        z.extend(bz);
+        coeff.extend(bc);
     }
     ByteParts(vec![
         bytemuck::cast_slice(&lens).to_vec(),
@@ -142,15 +159,14 @@ where
     let remote: Vec<u32> = by_delta.keys().copied().filter(|&delta| delta != 0).collect();
 
     let rank = transport.rank();
-    let index =
-        (pairing == Pairing::Liouvillian && !remote.is_empty()).then(|| SupportIndex::new(share));
+    // Built once: the sends filter by it and the local job reads by it.
+    let mut index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(share));
     // Every rank holds every delta, so each sends to exactly the partners it receives from, an empty payload included.
     let mut send: Vec<Option<ByteParts>> = (0..size).map(|_| None).collect();
     for &delta in &remote {
         send[(rank ^ delta) as usize] =
             Some(encode_reachable(share, index.as_ref(), &by_delta[&delta]));
     }
-    drop(index);
     let mut received = transport.exchange(send, &mut Vec::new());
     let slices: Vec<(u32, PauliSum<W, C>)> = remote
         .iter()
@@ -165,7 +181,7 @@ where
 
     let mut jobs = Vec::with_capacity(slices.len() + 1);
     if let Some(local) = by_delta.get(&0) {
-        jobs.push(Job::new(local.iter().copied(), share, pairing, true));
+        jobs.push(Job::with_index(local.iter().copied(), share, index.take(), true));
     }
     for (delta, slice) in &slices {
         jobs.push(Job::new(by_delta[delta].iter().copied(), slice, pairing, true));

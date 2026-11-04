@@ -1252,16 +1252,19 @@ mod finalize_tests {
     }
 
     /// Through `propagate_with`, the fused pass keeps exactly the terms the policy's own pass keeps, across calls sharing one scratch.
-    fn assert_fused_approx_top_n_agrees<const W: usize>(num_qubits: usize, n: usize) {
+    fn assert_fused_approx_top_n_agrees<const W: usize>(
+        circuit: &crate::Circuit<W>,
+        num_qubits: usize,
+        n: usize,
+    ) {
         let input = rand_sum::<W>(200, num_qubits, 0xF05E);
-        let circuit = crate::test_support::trotter_circuit::<W>(num_qubits, 0.3);
         let mut scratch = LayerScratch::<W>::new();
         let mut plain_scratch = LayerScratch::<W>::new();
         let (mut got, mut want) = (input.clone(), input);
         for call in 0..3 {
             let options = crate::engine::PropagateOptions::default();
             got = crate::engine::propagate_with(
-                &circuit,
+                circuit,
                 got,
                 &ApproxTopN(n),
                 crate::engine::Direction::Heisenberg,
@@ -1269,7 +1272,7 @@ mod finalize_tests {
                 options,
             );
             want = crate::engine::propagate_with(
-                &circuit,
+                circuit,
                 want,
                 &PlainApproxTopN(n),
                 crate::engine::Direction::Heisenberg,
@@ -1284,12 +1287,28 @@ mod finalize_tests {
 
     #[test]
     fn fused_approx_top_n_keeps_the_plain_set_w1() {
-        assert_fused_approx_top_n_agrees::<1>(12, 1500);
+        let circuit = crate::test_support::trotter_circuit::<1>(12, 0.3);
+        assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
     }
 
     #[test]
     fn fused_approx_top_n_keeps_the_plain_set_w2() {
-        assert_fused_approx_top_n_agrees::<2>(70, 1500);
+        let circuit = crate::test_support::trotter_circuit::<2>(70, 0.3);
+        assert_fused_approx_top_n_agrees(&circuit, 70, 1500);
+    }
+
+    /// A rescale layer runs no coset loop, so it applies the deferred cut itself and the next pass falls back to the plain one.
+    #[test]
+    fn fused_approx_top_n_survives_rescale_layers() {
+        let trotter = crate::test_support::trotter_circuit::<1>(12, 0.3);
+        let mut circuit = crate::Circuit::<1>::new(12);
+        for (k, channel) in trotter.channels.into_iter().enumerate() {
+            circuit.push_boxed(channel);
+            if k % 5 == 4 {
+                circuit.push(PtmChannel::depolarizing(k % 12, 0.05));
+            }
+        }
+        assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
     }
 }
 

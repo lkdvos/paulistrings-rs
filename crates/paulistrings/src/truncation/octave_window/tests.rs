@@ -143,3 +143,27 @@ fn finalize_from_window_partitioned_is_the_plain_pass() {
         }
     }
 }
+
+/// A cut applied bucket by bucket keeps what the whole-sum application keeps, and `kept` counts it.
+#[test]
+fn a_cut_applies_alike_per_bucket_and_whole() {
+    let input = hashed(tie_heavy_sum::<1>(2000, 32, 0x7135), 4);
+    for n in [3usize, 700, 1200, 1900] {
+        let window = OctaveWindow::around(boundary_bin(&input, n));
+        let solo = InProcessTransport::group(1).pop().expect("one partition");
+        let Some(WindowDecision::Cut(cut)) =
+            decide_from_window(input.len(), &solo, n, window, &per_bucket(&input, window))
+        else {
+            panic!("n={n}: the window must resolve the boundary");
+        };
+        assert_eq!(cut.kept, n, "n={n}: kept");
+        let mut whole = input.clone();
+        cut.apply(&mut whole);
+        let mut each = input.clone();
+        for (b, columns) in each.buckets_mut().iter_mut().enumerate() {
+            cut.apply_to_bucket(b, columns);
+        }
+        each.recount();
+        assert_eq!(storage_triples(&each), storage_triples(&whole), "n={n}");
+    }
+}

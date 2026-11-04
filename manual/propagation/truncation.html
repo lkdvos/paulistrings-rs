@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c9e85025.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -206,14 +206,16 @@ It keeps terms of Pauli weight at most <code>k</code>, which is useful when the 
 It keeps at most <code>k</code> terms, largest <code>|c|</code> first, so the error is set by the discarded tail rather than by a threshold; a <code>topn</code> run cannot carry a <code>coeff</code>-sweep convergence panel, and it has no equivalent in <code>PauliPropagation.jl</code> for cross-engine comparison.
 A sum of more than <code>k</code> terms keeps exactly <code>k</code>: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
 <strong><code>approx_topn(n)</code></strong> is the cheap sibling: it bins terms by octave of <code>|c|²</code>, keeps whole octaves from the top down while they fit in <code>n</code>, and fills the rest from the next octave in storage order, so exactly <code>n</code> terms survive but not necessarily the <code>n</code> largest.
-Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="partitions.html">NUMA partitions</a> and <a href="mpi.html">MPI ranks</a>.</p>
+Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="partitions.html">NUMA partitions</a> and <a href="mpi.html">MPI ranks</a>.
+<strong><code>partition_topn(n)</code></strong> and <strong><code>partition_approx_topn(n)</code></strong> are <code>topn(n)</code> and <code>approx_topn(n)</code> on each partition separately, without communicating, so no partition holds more than <code>n</code> terms between layers however unevenly the sum splits.
+It keeps the locally rather than the globally largest terms, up to <code>P·n</code> in all; <code>approx_topn(total) &amp; partition_topn(n)</code> adds a global budget.</p>
 <p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
 Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
 It is unbiased only for weight-diagonal read-outs such as the <a href="../measurements.html#echo">diagonal echo</a>; average many seeds and report the standard error.
 <code>PropagationStats.collapses</code> counts the draws.</p>
 <pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
 </code></pre>
-<p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code>:</p>
+<p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code>, their <code>partition_</code> forms or <code>collapse_sample</code>:</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
 budgeted = truncation.coeff(1e-10) &amp; truncation.topn(200_000)
 </code></pre>

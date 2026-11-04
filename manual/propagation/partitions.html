@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-c9e85025.js";
+            window.path_to_searchindex_js = "../../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -248,6 +248,7 @@ The variable still governs an unpartitioned run (<a href="settings.html#threads"
 <p><strong>Exact <code>topn</code> is unavailable.</strong>
 Choosing the <code>n</code>-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run raises <code>NotImplementedError</code> on <code>truncation.topn</code>.
 Use <code>truncation.approx_topn(n)</code>, which is <em>partition-exact</em>: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.
+An <code>approx_topn(n)</code> budget bounds the whole sum, not a partition’s share of it; <a href="truncation.html"><code>partition_topn(n)</code> and <code>partition_approx_topn(n)</code></a> bound each partition’s.
 <code>coeff</code> and <code>weight</code> are per-term filters and need nothing.</p>
 <h2 id="limits"><a class="header" href="#limits">Limits</a></h2>
 <ul>

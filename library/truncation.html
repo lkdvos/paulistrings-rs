@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-c9e85025.js";
+            window.path_to_searchindex_js = "../searchindex-9d228259.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -183,7 +183,7 @@
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="truncation-policies"><a class="header" href="#truncation-policies">Truncation policies</a></h1>
-<p>All five live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
+<p>All seven live in the <code>paulistrings.truncation</code> module and run after every channel.</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -194,6 +194,8 @@
 <tr><td><code>truncation.weight(k)</code></td><td>Pauli weight <code>&lt;= k</code></td></tr>
 <tr><td><code>truncation.topn(k)</code></td><td>exactly <code>k</code> terms (all of a smaller sum), largest <code>|c|</code> first; no partitioned form</td></tr>
 <tr><td><code>truncation.approx_topn(k)</code></td><td>exactly <code>k</code> terms, ranked by octave of <code>|c|**2</code>; partition/comm-safe</td></tr>
+<tr><td><code>truncation.partition_topn(k)</code></td><td><code>topn(k)</code> on each partition separately; partition/comm-safe</td></tr>
+<tr><td><code>truncation.partition_approx_topn(k)</code></td><td><code>approx_topn(k)</code> on each partition separately; partition/comm-safe</td></tr>
 <tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
 </tbody>
 </table>
@@ -206,7 +208,7 @@
 </thead>
 <tbody>
 <tr><td><code>a &amp; b</code></td><td>both</td></tr>
-<tr><td><code>a | b</code></td><td>either; per-term filters only (<code>coeff</code>, <code>weight</code> and their compositions), so a <code>topn</code>, <code>approx_topn</code> or <code>collapse_sample</code> on either side raises <code>ValueError</code></td></tr>
+<tr><td><code>a | b</code></td><td>either; per-term filters only (<code>coeff</code>, <code>weight</code> and their compositions), so a <code>topn</code>, <code>approx_topn</code>, their <code>partition_</code> forms or <code>collapse_sample</code> on either side raises <code>ValueError</code></td></tr>
 </tbody>
 </table>
 </div>

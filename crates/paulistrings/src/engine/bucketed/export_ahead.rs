@@ -40,7 +40,7 @@ impl<'p, const W: usize, C: Coefficient> EmitTest<'p, W, C> {
     }
 
     /// Whether the term `(x, z)` emits a row.
-    #[inline(always)]
+    #[cfg(test)]
     pub(crate) fn emits(&self, x: &[u64; W], z: &[u64; W]) -> bool {
         match self {
             EmitTest::Every => true,
@@ -71,22 +71,47 @@ impl OctaveWindow {
         counts: Option<&mut BucketOctaves>,
         emitting: &mut BucketOctaves,
     ) {
+        match *test {
+            EmitTest::Every => self.count_rows(columns, |_, _| true, counts, emitting),
+            EmitTest::Table { ptm, entry } => {
+                let amplitude = &ptm.deltas()[entry].amplitude;
+                let emits =
+                    |x: &[u64; W], z: &[u64; W]| amplitude[ptm.support_bits(x, z)] != C::ZERO;
+                self.count_rows(columns, emits, counts, emitting);
+            }
+            EmitTest::Generator { generator } => {
+                let emits = |x: &[u64; W], z: &[u64; W]| {
+                    !PauliString::<W> { x: *x, z: *z }.commutes_with(generator)
+                };
+                self.count_rows(columns, emits, counts, emitting);
+            }
+        }
+    }
+
+    /// [`count_emitting`](Self::count_emitting) under one test, monomorphized so the loop carries no dispatch.
+    #[inline(always)]
+    fn count_rows<const W: usize, C: Coefficient>(
+        &self,
+        columns: &BucketColumns<W, C>,
+        emits: impl Fn(&[u64; W], &[u64; W]) -> bool,
+        counts: Option<&mut BucketOctaves>,
+        emitting: &mut BucketOctaves,
+    ) {
         *emitting = [0; WINDOW_OCTAVES + 2];
+        let rows = columns.x.iter().zip(&columns.z).zip(&columns.coeff);
         match counts {
             Some(counts) => {
                 *counts = [0; WINDOW_OCTAVES + 2];
-                for row in 0..columns.len() {
-                    let (slot, emitting_slot) = self.slots_of(columns.coeff[row]);
+                for ((x, z), &coeff) in rows {
+                    let (slot, emitting_slot) = self.slots_of(coeff);
                     counts[slot] += 1;
-                    emitting[emitting_slot] +=
-                        u32::from(test.emits(&columns.x[row], &columns.z[row]));
+                    emitting[emitting_slot] += u32::from(emits(x, z));
                 }
             }
             None => {
-                for row in 0..columns.len() {
-                    let (_, emitting_slot) = self.slots_of(columns.coeff[row]);
-                    emitting[emitting_slot] +=
-                        u32::from(test.emits(&columns.x[row], &columns.z[row]));
+                for ((x, z), &coeff) in rows {
+                    let (_, emitting_slot) = self.slots_of(coeff);
+                    emitting[emitting_slot] += u32::from(emits(x, z));
                 }
             }
         }

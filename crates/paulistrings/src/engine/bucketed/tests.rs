@@ -1137,7 +1137,7 @@ mod finalize_tests {
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
-    use crate::truncation::builtin::{And, CoefficientThreshold, TopN};
+    use crate::truncation::builtin::{And, ApproxTopN, CoefficientThreshold, TopN};
 
     #[test]
     fn and_runs_both_finalizers_bucketed() {
@@ -1210,6 +1210,86 @@ mod finalize_tests {
         let got = b;
 
         assert_terms_close(&got, &want, 1e-11, "3 truncated layers");
+    }
+
+    /// `ApproxTopN(n)`'s layer pass, hidden from the engine's fused form.
+    struct PlainApproxTopN(usize);
+
+    impl<const W: usize> TruncationPolicy<W> for PlainApproxTopN {
+        fn finalize_layer(&self, sum: &mut PauliSum<W>) {
+            ApproxTopN(self.0).finalize_layer(sum);
+        }
+    }
+
+    /// The coset loop counts every output bucket into its window slot, and a rescale layer, which runs no coset loop, leaves the counts invalid.
+    #[test]
+    fn a_layer_counts_each_output_bucket_under_approx_top_n() {
+        let input = rand_sum::<1>(1500, 8, 0x0C7A).with_hash(Gf2Hash::<1>::new(8, 4, 0x99));
+        let window = OctaveWindow::around(1020);
+        let mut b = input.clone();
+        let mut scratch = LayerScratch::<1>::new();
+        scratch.octaves.window = Some(window);
+        let rotation = PauliRotation::new(PauliString::<1>::x(3), 0.4);
+        let prepared = rotation.prepare(b.hash(), false).unwrap();
+        apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
+        assert!(scratch.octaves.counted);
+        assert_eq!(scratch.octaves.per_bucket.len(), b.num_buckets());
+        for (bucket, counts) in scratch.octaves.per_bucket.iter().enumerate() {
+            let mut want = [0; _];
+            window.count(b.bucket(bucket).2, &mut want);
+            assert_eq!(counts, &want, "bucket {bucket}");
+        }
+
+        let mut unarmed = LayerScratch::<1>::new();
+        unarmed.octaves.window = Some(window);
+        apply_layer_bucketed(&mut input.clone(), &prepared, &TopN(10), &mut unarmed);
+        assert!(!unarmed.octaves.counted, "a policy without ApproxTopN takes no counts");
+
+        let depolarizing = PtmChannel::depolarizing(3, 0.11);
+        let prepared = depolarizing.prepare(b.hash(), false).unwrap();
+        apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
+        assert!(!scratch.octaves.counted, "the rescale path takes no counts");
+    }
+
+    /// Through `propagate_with`, the fused pass keeps exactly the terms the policy's own pass keeps, across calls sharing one scratch.
+    fn assert_fused_approx_top_n_agrees<const W: usize>(num_qubits: usize, n: usize) {
+        let input = rand_sum::<W>(200, num_qubits, 0xF05E);
+        let circuit = crate::test_support::trotter_circuit::<W>(num_qubits, 0.3);
+        let mut scratch = LayerScratch::<W>::new();
+        let mut plain_scratch = LayerScratch::<W>::new();
+        let (mut got, mut want) = (input.clone(), input);
+        for call in 0..3 {
+            let options = crate::engine::PropagateOptions::default();
+            got = crate::engine::propagate_with(
+                &circuit,
+                got,
+                &ApproxTopN(n),
+                crate::engine::Direction::Heisenberg,
+                &mut scratch,
+                options,
+            );
+            want = crate::engine::propagate_with(
+                &circuit,
+                want,
+                &PlainApproxTopN(n),
+                crate::engine::Direction::Heisenberg,
+                &mut plain_scratch,
+                options,
+            );
+            assert_eq!(got.len(), n, "W={W} call {call}: the run must saturate");
+            assert_same_terms(&got, &want, &format!("W={W} call {call}"));
+        }
+        assert!(scratch.octaves.window.is_some(), "the fused pass never set a window");
+    }
+
+    #[test]
+    fn fused_approx_top_n_keeps_the_plain_set_w1() {
+        assert_fused_approx_top_n_agrees::<1>(12, 1500);
+    }
+
+    #[test]
+    fn fused_approx_top_n_keeps_the_plain_set_w2() {
+        assert_fused_approx_top_n_agrees::<2>(70, 1500);
     }
 }
 

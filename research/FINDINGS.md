@@ -255,10 +255,9 @@ Rejected: sending each chunk as soon as it is filled (branch `stream-sends`, `19
 At saturation `ApproxTopN`'s layer pass was three passes over the sum (octave histogram, per-bucket boundary count, retain): on ccqlin038 at `atopn:2e6` it was **48%** of wall on 24-qubit `tfim_step` and 28% on `heavyhex_step` at P = 1, 32–35% at P = 2, split histogram 26% / boundary count 22% / retain 52%.
 Now the coset loop counts each output bucket into a 64-octave window around the last boundary while the bucket is in cache (`truncation/octave_window.rs`), the pass decides the edge and per-bucket quotas from those counts, and the cut is deferred to the next coset loop, which applies it to each bucket as it swaps it in (`LayerOctaves`); a rescale, a rebucket and the end of a call apply it whole, and an exchanging layer's export reads around it (§Exchanging layers count and mark their rows a layer ahead).
 A layer whose agreed bound on the sum's length times its fan-out (one for a Clifford rotation, a permutation or a rescale) stays within `n` takes no counts and skips the pass, collectives included.
-Code A/B against `6a2e9e4a` on ccqlin038 (shared, load 3–27, alternated, 2–6 pairs): `tfim_step` P = 1 wall **−40%** (2.11 → 1.25 s), P = 2 **−19% / −26%**; `heavyhex_step` P = 1 **−21% to −28%** (7.9 → 5.9 s), P = 2 **−19% / −21%**; finalize falls to 1–2% of wall at P = 1 and 4–6% at P = 2, where the remaining cost is the exchanging layers' whole-sum cut and the per-layer all-reduce wait.
+Quiet-node code A/B against `6a2e9e4a` (`scripts/slurm/ab-campaign.sbatch`, `4394d8b6`, probe `--n 1e6 --qubits 24` at `atopn:2e6`, 5 ABBA pairs, every pair the same sign): icelake in-process `tfim_step` P = 1 wall **−35.3%** (job 7402418), P = 2 **−15.0%** (7402416), `heavyhex_step` P = 2 **−17.1%** (7402417); two genoa nodes over MPI `tfim_step` **−15.2%** (7402419), `heavyhex_step` **−22.4%** (7402420).
+Finalize falls to 1–2% of wall at P = 1 and 4–6% at P = 2 (ccqlin038), where the remaining cost is the exchanging layers' whole-sum cut and the per-layer all-reduce wait.
 Counting alone (without the deferral) raised the coset loop 3–11%, which on `heavyhex_step` P = 1 cancelled its gain (its Clifford bond layers counted without cutting); the deferral and the skip removed that.
-The untouched `coeff:` path moved −4.8% to +5.4% across pairs, within this host's layout and load noise.
-Quiet-node A/B pending.
 
 ### Exchanging layers count and mark their rows a layer ahead
 
@@ -268,7 +267,9 @@ Now the export reads around the pending cut (`BoundaryCut::filter` on a branch-f
 By step on the x-only cell: reading around the cut alone −8.2% (13.92 → 12.79 s), with the count pass replaced −16.0% (13.88 → 11.65 s), with the marked fill −23.2%.
 The 24-qubit `tfim_step` probe at `atopn:2e6`, P = 2 random rows (half an exporting bucket's terms emit, `W = 1`): wall **−7.1%** median (1791 → 1661 ms, 5/6 pairs, load 16–21), export −13%, coset loop +14% for the counting and marking; reading around the cut alone was flat there (export +100–140 ms against the 180 ms whole-sum cut, 4/6 pairs negative).
 Rejected: `boundary_filter` and the count with branches, export +35% and wall +2–4% on the probe.
-Quiet-node A/B pending.
+Quiet-node code A/B against `ad9d358d` (`9e8f5c03`, same campaign and probe, 5 ABBA pairs): icelake in-process P = 2 `tfim_step` wall **−11.9%** (5/5, job 7402421); two genoa nodes over MPI `tfim_step` −0.03% (no consistent sign, 7402422) with export **+28.7%** (5/5), `heavyhex_step` **+1.65%** (5/5, 7402423) with export **+23.8%** (5/5).
+On genoa weak-scaling sweeps (16×16 TFIM, 1e7 per rank, jobs 7402414 `ad9d358d` against 7402372 `9e8f5c03`, the latter noisy between cells), steady s/step at 2 ranks on one node: x-only 19.9 → 17.1, random rows 27.3 → 14.3, `avoid:10` 25.0 → 13.8; at 8 nodes random rows 41.5 → 21.0, x-only 28.5 → 18.4.
+So the large-sum weak-scaling workload gains roughly 2×, and the small probe across genoa nodes is flat to slightly worse; there the export absorbs the read of the terms the cut drops, which the whole-sum cut used to take outside the export phase, and the counting and marking cost is not repaid; the MPI export increase is open.
 
 ## GPU spike
 

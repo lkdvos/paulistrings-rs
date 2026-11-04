@@ -31,8 +31,7 @@ Key calls — an excerpt from the actual example script, verified by `pytest exa
 
 <!-- doctest: skip -->
 ```python
-tail_evolved = observable.copy()
-tail_evolved.propagate(tail_circuit, policy, direction="heisenberg")
+tail_evolved = propagated(observable, tail_circuit, policy, direction="heisenberg")
 psio.save(npz_path, tail_evolved)                 # round-trip through disk
 loaded = interop.load_task(task_path)
 composed = loaded.observable

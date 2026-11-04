@@ -11,9 +11,7 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, propagated
 
 R = 1.0 / math.sqrt(2.0)
 DTYPES = ["float64", "float32", "complex128", "complex64"]

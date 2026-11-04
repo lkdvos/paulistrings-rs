@@ -16,9 +16,7 @@ import math
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, gates, propagated
 
 R = 1.0 / math.sqrt(2.0)
 

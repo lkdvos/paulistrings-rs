@@ -11,7 +11,7 @@ A local observable starts as a handful of terms and only spreads as far as its c
 It starts from a wide operator, so the cost profile is different from the outset.
 
 ```python
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
 circuit = Circuit(4)
@@ -19,9 +19,8 @@ circuit.rz(0.3, 0)
 circuit.cnot(0, 1)
 policy = truncation.coeff(1e-10)
 
-heisenberg, forward = observable.copy(), observable.copy()
-heisenberg.propagate(circuit, policy, direction="heisenberg")
-forward.propagate(circuit, policy, direction="forward")
+heisenberg = propagated(observable, circuit, policy, direction="heisenberg")
+forward = propagated(observable, circuit, policy, direction="forward")
 ```
 
 **The default is `"forward"`, and most examples on this site do not use it.**
@@ -51,9 +50,8 @@ both.rx(0.9, 2)
 both.cnot(1, 2)
 
 exact = truncation.coeff(1e-12)
-heisenberg, forward = observable.copy(), observable.copy()
-heisenberg.propagate(both, exact, direction="heisenberg")
-forward.propagate(both, exact, direction="forward")
+heisenberg = propagated(observable, both, exact, direction="heisenberg")
+forward = propagated(observable, both, exact, direction="forward")
 
 print("heisenberg", heisenberg.expectation("x+").real)
 print("forward   ", forward.expectation("x+").real)

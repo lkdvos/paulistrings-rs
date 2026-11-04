@@ -87,6 +87,7 @@ from common import circuits, harness, observables, oracles, report  # noqa: E402
 
 import julia_baseline as jb  # noqa: E402
 from test_julia_parity import compare as jl_compare  # noqa: E402
+from paulistrings import propagated_with_stats
 
 #: Fixed seed for every `random_su4_staircase` draw in this benchmark. Record
 #: it wherever a number from this file is quoted.
@@ -195,8 +196,7 @@ def term_growth() -> list[report.RunRecord]:
         for depth in depths:
             circuit = build(N_HEADLINE, depth)
             t0 = time.perf_counter()
-            evolved = obs.copy()
-            stats = evolved.propagate_with_stats(circuit, policy, direction="heisenberg")
+            evolved, stats = propagated_with_stats(obs, circuit, policy, direction="heisenberg")
             elapsed = time.perf_counter() - t0
             expectation = evolved.expectation("z+").real
             prov = report.collect_provenance(
@@ -337,8 +337,7 @@ def check_determinism(n: int = 16, depth: int = 6, eps: float = 1e-4) -> None:
     def run_once():
         obs = observables.single_z(q, n)
         circuit = build(n, depth)
-        evolved = obs.copy()
-        stats = evolved.propagate_with_stats(circuit, policy, direction="heisenberg")
+        evolved, stats = propagated_with_stats(obs, circuit, policy, direction="heisenberg")
         return stats.final_terms, stats.peak_terms, evolved.expectation("z+")
 
     terms_a, peak_a, exp_a = run_once()

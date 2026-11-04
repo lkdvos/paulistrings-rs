@@ -34,7 +34,7 @@ from pathlib import Path
 
 import pytest
 
-from paulistrings import truncation
+from paulistrings import propagated, truncation
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
@@ -46,9 +46,7 @@ from common import circuits, observables  # noqa: E402
 
 def _heisenberg(observable, circuit, policy=None):
     """`observable` Heisenberg-evolved through `circuit`, leaving `observable` untouched."""
-    evolved = observable.copy()
-    evolved.propagate(circuit, policy, direction="heisenberg")
-    return evolved
+    return propagated(observable, circuit, policy, direction="heisenberg")
 
 
 # Eagle r3, as asserted by examples/data/generate_heavy_hex.py.
@@ -186,8 +184,7 @@ def test_kicked_ising_at_theta_h_zero_leaves_a_z_observable_untouched():
     n = EAGLE_QUBITS
     z62 = observables.single_z(62, n)
     circuit = circuits.heavy_hex_kicked_ising(n, trotter_steps=5, theta_h=0.0)
-    evolved = z62.copy()
-    evolved.propagate(circuit=circuit, direction="heisenberg")
+    evolved = propagated(z62, circuit=circuit, direction="heisenberg")
     assert len(evolved) == 1
     assert complex(evolved.coefficients_array()[0]) == pytest.approx(1.0 + 0j, abs=1e-12)
 
@@ -201,10 +198,7 @@ def test_kicked_ising_at_theta_h_half_pi_stays_a_single_pauli_string():
     n = EAGLE_QUBITS
     z62 = observables.single_z(62, n)
     circuit = circuits.heavy_hex_kicked_ising(n, trotter_steps=5, theta_h=math.pi / 2)
-    evolved = z62.copy()
-    evolved.propagate(
-        circuit=circuit, policy=truncation.coeff(1e-12), direction="heisenberg"
-    )
+    evolved = propagated(z62, circuit=circuit, policy=truncation.coeff(1e-12), direction="heisenberg")
     assert len(evolved) == 1
     assert abs(complex(evolved.coefficients_array()[0])) == pytest.approx(1.0, abs=1e-12)
 
@@ -215,10 +209,7 @@ def test_kicked_ising_clifford_point_on_an_anticommuting_observable():
     n = 20
     x5 = observables.pauli_sum_from_support({5: "X"}, n)
     circuit = circuits.heavy_hex_kicked_ising(n, trotter_steps=3, theta_h=math.pi / 2)
-    evolved = x5.copy()
-    evolved.propagate(
-        circuit=circuit, policy=truncation.coeff(1e-12), direction="heisenberg"
-    )
+    evolved = propagated(x5, circuit=circuit, policy=truncation.coeff(1e-12), direction="heisenberg")
     assert len(evolved) == 1
     assert abs(complex(evolved.coefficients_array()[0])) == pytest.approx(1.0, abs=1e-12)
 
@@ -233,10 +224,8 @@ def test_kicked_ising_zz_ordering_does_not_change_the_result():
         n, trotter_steps=2, theta_h=0.4, color_layers=False
     )
     assert len(colored) == len(plain)
-    a = obs.copy()
-    a.propagate(circuit=colored, direction="heisenberg")
-    b = obs.copy()
-    b.propagate(circuit=plain, direction="heisenberg")
+    a = propagated(obs, circuit=colored, direction="heisenberg")
+    b = propagated(obs, circuit=plain, direction="heisenberg")
     _assert_sums_close(a, b)
 
 
@@ -362,14 +351,8 @@ def test_su4_staircase_is_deterministic_given_the_seed():
 def test_su4_staircase_differs_between_seeds():
     n = 8
     obs = observables.pauli_sum_from_support({0: "Z"}, n)
-    a = obs.copy()
-    a.propagate(
-        circuit=circuits.random_su4_staircase(n, 3, seed=1), direction="heisenberg"
-    )
-    b = obs.copy()
-    b.propagate(
-        circuit=circuits.random_su4_staircase(n, 3, seed=2), direction="heisenberg"
-    )
+    a = propagated(obs, circuit=circuits.random_su4_staircase(n, 3, seed=1), direction="heisenberg")
+    b = propagated(obs, circuit=circuits.random_su4_staircase(n, 3, seed=2), direction="heisenberg")
     assert _as_dict(a) != _as_dict(b)
 
 
@@ -429,8 +412,7 @@ def test_hardware_efficient_ansatz_at_zero_angles_is_clifford():
     n_params = circuits.hardware_efficient_ansatz_num_params(n, 2)
     circuit = circuits.hardware_efficient_ansatz(n, 2, [0.0] * n_params)
     obs = observables.single_z(3, n)
-    evolved = obs.copy()
-    evolved.propagate(circuit=circuit, direction="heisenberg")
+    evolved = propagated(obs, circuit=circuit, direction="heisenberg")
     assert len(evolved) == 1
 
 
@@ -613,10 +595,7 @@ def test_published_supports_are_reproduced_by_the_stabilizer_relation():
             {origin["seed_qubit"]: origin["seed_operator"]}, EAGLE_QUBITS
         )
         # U Q U-dagger is the forward direction (see test_pauli_rotation.py).
-        evolved = seed.copy()
-        evolved.propagate(
-            circuit=circuit, policy=truncation.coeff(1e-9), direction="forward"
-        )
+        evolved = propagated(seed, circuit=circuit, policy=truncation.coeff(1e-9), direction="forward")
         assert len(evolved) == 1, f"{name}: Clifford point must give one string"
         assert _support_of(evolved) == {
             int(q): op for q, op in entry["support"].items()
@@ -671,10 +650,7 @@ def test_zz_then_x_order_does_not_reproduce_the_published_stabilizer():
         EAGLE_QUBITS, trotter_steps=5, theta_h=math.pi / 2, order="zz-then-x"
     )
     seed = observables.pauli_sum_from_support({13: "Z"}, EAGLE_QUBITS)
-    evolved = seed.copy()
-    evolved.propagate(
-        circuit=circuit, policy=truncation.coeff(1e-9), direction="forward"
-    )
+    evolved = propagated(seed, circuit=circuit, policy=truncation.coeff(1e-9), direction="forward")
     assert len(evolved) == 1
     assert len(_support_of(evolved)) != 10
 

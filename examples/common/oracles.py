@@ -120,7 +120,7 @@ from typing import Any
 
 import numpy as np
 
-from paulistrings import Circuit, PauliSum, interop
+from paulistrings import Circuit, PauliSum, interop, propagated
 
 __all__ = [
     "CLIFFORD_ANGLE_ATOL",
@@ -1294,8 +1294,7 @@ def _pauli_propagation_exact(
     observable = PauliSum.from_strings(
         {label: coefficient for label, coefficient in terms}, num_qubits=spec.num_qubits
     )
-    evolved = observable.copy()
-    evolved.propagate(spec.to_circuit(), None, direction="heisenberg")
+    evolved = propagated(observable, spec.to_circuit(), None, direction="heisenberg")
     return complex(evolved.expectation(_engine_state_argument(labels)))
 
 

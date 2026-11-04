@@ -14,11 +14,12 @@ sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len
                           comm=None, result="gather", device=None)
     -> PropagationStats
 
-sum.copy() -> PauliSum
+paulistrings.propagated(sum, circuit, ...) -> PauliSum
+paulistrings.propagated_with_stats(sum, circuit, ...) -> (PauliSum, PropagationStats)
 ```
 
-Both evolve `sum` in place: the engine takes its terms over instead of copying them, so no second copy of the input is alive during the run.
-Propagate a `sum.copy()` (or `copy.copy(sum)`) to keep the input.
+Both methods evolve `sum` in place: the engine takes its terms over instead of copying them, so no second copy of the input is alive during the run.
+`propagated` and `propagated_with_stats` take the same arguments after `sum` and return an evolved copy, leaving `sum` untouched, at the cost of that copy.
 A call that raises before the first layer, on a bad keyword or a mismatched circuit, leaves `sum` untouched; one that fails during the run leaves it empty.
 `propagate_with_stats` takes the same arguments and evolves `sum` the same way (to floating-point tolerance) as `propagate`, and returns a `PropagationStats` recording per-layer counts.
 The GIL is released for the duration of both calls.

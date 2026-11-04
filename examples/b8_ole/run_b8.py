@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE.parent))
 import ole  # noqa: E402
 from common.harness import make_policy, peak_memory_kb  # noqa: E402
 from common.report import collect_provenance  # noqa: E402
+from paulistrings import propagated_with_stats
 
 
 def _seeds(text: str) -> list[int]:
@@ -114,10 +115,7 @@ def main(argv=None) -> int:
             stats = split.propagate_with_stats(circuit, build_policy(args, seed), direction="heisenberg")
             result = split.local()
         else:
-            result = obs.copy()
-            stats = result.propagate_with_stats(
-                circuit, build_policy(args, seed), direction="heisenberg", **kwargs
-            )
+            result, stats = propagated_with_stats(obs, circuit, build_policy(args, seed), direction="heisenberg", **kwargs)
         t_prop = time.perf_counter() - t0
         hist = ole.anticommute_histogram(result, sites, "x", comm=comm)
         record = {

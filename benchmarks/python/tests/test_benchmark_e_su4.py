@@ -30,6 +30,7 @@ if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
 
 from common import circuits, harness, observables, oracles  # noqa: E402
+from paulistrings import propagated, propagated_with_stats
 
 SEED = 20260831
 
@@ -61,8 +62,7 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
     oracle = oracles.statevector_expectation(spec, obs, "z+").real
 
     circuit = spec.to_circuit()
-    evolved = obs.copy()
-    evolved.propagate(circuit, None, direction="heisenberg")
+    evolved = propagated(obs, circuit, None, direction="heisenberg")
     engine = complex(evolved.expectation("z+")).real
 
     assert engine == pytest.approx(oracle, abs=1e-10)
@@ -79,8 +79,7 @@ def test_su4_staircase_matches_statevector_for_every_uniform_state(state):
     oracle = oracles.statevector_expectation(spec, obs, state).real
 
     circuit = spec.to_circuit()
-    evolved = obs.copy()
-    evolved.propagate(circuit, None, direction="heisenberg")
+    evolved = propagated(obs, circuit, None, direction="heisenberg")
     engine = complex(evolved.expectation(state)).real
 
     assert engine == pytest.approx(oracle, abs=1e-10)
@@ -103,10 +102,7 @@ def test_su4_staircase_matches_statevector_with_truncation():
     oracle = oracles.statevector_expectation(spec, obs, "z+").real
 
     circuit = spec.to_circuit()
-    evolved = obs.copy()
-    stats = evolved.propagate_with_stats(
-        circuit, truncation.coeff(eps), direction="heisenberg"
-    )
+    evolved, stats = propagated_with_stats(obs, circuit, truncation.coeff(eps), direction="heisenberg")
     engine = complex(evolved.expectation("z+")).real
 
     assert stats.final_terms <= stats.peak_terms
@@ -129,8 +125,7 @@ def test_same_seed_twice_gives_identical_term_counts_and_expectation():
         obs = observables.single_z(q, n)
         circuit = circuits.random_su4_staircase(n, depth, SEED)
         policy = harness.make_policy(min_abs_coeff=eps)
-        evolved = obs.copy()
-        stats = evolved.propagate_with_stats(circuit, policy, direction="heisenberg")
+        evolved, stats = propagated_with_stats(obs, circuit, policy, direction="heisenberg")
         return stats.final_terms, stats.peak_terms, complex(evolved.expectation("z+"))
 
     terms_a, peak_a, exp_a = run_once()

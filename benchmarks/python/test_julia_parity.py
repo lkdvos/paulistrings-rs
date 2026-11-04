@@ -56,6 +56,7 @@ from julia_baseline import (  # noqa: E402  (path shim above)
     make_task,
     run_task,
 )
+from paulistrings import propagated
 
 # Expectations must agree to this; the plan's bar.
 EXPECTATION_TOL = 1e-12
@@ -188,10 +189,7 @@ def run_rust(task: Task | Mapping[str, Any]) -> dict[str, Any]:
     logger.addHandler(collector)
     ps.reset_log_cache()
     try:
-        evolved = observable.copy()
-        evolved.propagate(
-            circuit=circuit, policy=policy, direction=direction
-        )
+        evolved = propagated(observable, circuit=circuit, policy=policy, direction=direction)
     finally:
         logger.removeHandler(collector)
         logger.setLevel(old_level)

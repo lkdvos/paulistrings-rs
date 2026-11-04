@@ -8,7 +8,7 @@ import copy
 
 import pytest
 
-from paulistrings import Circuit, PauliSum
+from paulistrings import Circuit, PauliSum, propagated, propagated_with_stats
 
 
 def test_from_strings_round_trip_w1():
@@ -102,3 +102,11 @@ def test_a_rejected_propagate_leaves_the_sum_untouched():
     with pytest.raises(ValueError):
         s.propagate(Circuit(2))
     assert s.x_array().tolist() == [[1]] and s.coefficients() == [1.0 + 0j]
+
+
+def test_propagated_returns_the_evolution_and_keeps_the_input():
+    s, circuit = _h_on_x()
+    evolved = propagated(s, circuit, direction="heisenberg")
+    assert evolved.z_array().tolist() == [[1]] and s.x_array().tolist() == [[1]]
+    evolved, stats = propagated_with_stats(s, circuit, direction="heisenberg")
+    assert stats.final_terms == 1 and s.x_array().tolist() == [[1]]

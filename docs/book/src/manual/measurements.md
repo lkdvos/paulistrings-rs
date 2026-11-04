@@ -7,15 +7,14 @@ The state is either a uniform shorthand — `"x+"`, `"y+"`, `"z+"`, the `+1` eig
 The default is `"x+"`, which is the state most pages on this site read against.
 
 ```python
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings(
     {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4
 )
 circuit = Circuit(4)
 circuit.rz(0.3, 0)
-evolved = observable.copy()
-evolved.propagate(circuit, truncation.coeff(1e-10), direction="heisenberg")
+evolved = propagated(observable, circuit, truncation.coeff(1e-10), direction="heisenberg")
 
 print(evolved.expectation("x+"))        # |++++>
 print(evolved.expectation("z+").real)   # |0000>
@@ -51,11 +50,8 @@ One `rx` rotation on `Z`, read against the `Y` eigenstate `"r"`, shows the two a
 z0 = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
 rotate = Circuit(1)
 rotate.rx(0.7, 0)
-heisenberg, forward = z0.copy(), z0.copy()
-heisenberg.propagate(rotate, direction="heisenberg")
-forward.propagate(rotate, direction="forward")
-print(heisenberg.expectation("r").real)
-print(forward.expectation("r").real)
+print(propagated(z0, rotate, direction="heisenberg").expectation("r").real)
+print(propagated(z0, rotate, direction="forward").expectation("r").real)
 ```
 
 ```text
@@ -111,8 +107,7 @@ Its two everyday uses are the norm `Σ|c|²` as `a.overlap(a)`, introduced under
 `identity_coefficient()` is the coefficient of `I…I`, or `0` when the sum has no identity term, which equals `tr(O) / 2^n` and hence the expectation of `O` in the maximally mixed state.
 
 ```python
-truncated = observable.copy()
-truncated.propagate(circuit, truncation.coeff(1e-1), direction="heisenberg")
+truncated = propagated(observable, circuit, truncation.coeff(1e-1), direction="heisenberg")
 print(evolved.overlap(evolved).real, truncated.overlap(evolved).real)
 print(evolved.identity_coefficient())
 ```

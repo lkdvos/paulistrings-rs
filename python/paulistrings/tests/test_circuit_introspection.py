@@ -18,9 +18,7 @@ import math
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, interop, noise
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, gates, interop, noise, propagated
 
 TOL = 1e-12
 

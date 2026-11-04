@@ -8,9 +8,7 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, noise
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, gates, noise, propagated
 
 TOL = 1e-12
 

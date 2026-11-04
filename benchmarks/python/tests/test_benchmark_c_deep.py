@@ -94,6 +94,7 @@ for _extra_path in (_REPO_ROOT / "examples", _REPO_ROOT / "benchmarks" / "python
 import bench_b_theta_sweep as bench_b  # noqa: E402
 import bench_c_deep_trotter as driver  # noqa: E402
 from common import circuits, harness, observables, oracles, report  # noqa: E402
+from paulistrings import propagated_with_stats
 
 #: The sublattice size. 20 gives a connected induced heavy-hex subgraph (19
 #: edges, 3 colour classes — `heavy_hex_sublattice` *computes* connectivity and
@@ -204,12 +205,9 @@ def _exact(theta: float, steps: int = DEEP_STEPS) -> float:
 def _propagate(theta: float, eps: float, *, steps: int = DEEP_STEPS, n: int = N):
     """One truncated Heisenberg propagation; returns `(value, stats)`."""
     observable = _observable(n)
-    evolved = observable.copy()
-    stats = evolved.propagate_with_stats(
-        _spec(theta, steps, n).to_circuit(),
+    evolved, stats = propagated_with_stats(observable, _spec(theta, steps, n).to_circuit(),
         harness.make_policy(min_abs_coeff=eps),
-        direction=DIRECTION,
-    )
+        direction=DIRECTION,)
     return complex(evolved.expectation(STATE)).real, stats
 
 
@@ -807,10 +805,7 @@ def test_loose_cutoff_sanity_on_the_full_lattice(theta_label, theta):
     started = time.perf_counter()
     peaks, finals, values = [], [], []
     for eps in LOOSE_COEFFS:
-        evolved = observable.copy()
-        stats = evolved.propagate_with_stats(
-            circuit, harness.make_policy(min_abs_coeff=eps), direction=DIRECTION
-        )
+        evolved, stats = propagated_with_stats(observable, circuit, harness.make_policy(min_abs_coeff=eps), direction=DIRECTION)
         peaks.append(stats.peak_terms)
         finals.append(stats.final_terms)
         values.append(complex(evolved.expectation(STATE)).real)

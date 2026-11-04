@@ -9,7 +9,7 @@ This one is about watching it run: the per-layer counters, how to turn a term co
 Enabling it does not change the propagated sum.
 
 ```python
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, propagated_with_stats, truncation
 
 observable = PauliSum.from_strings({"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4)
 circuit = Circuit(4)
@@ -18,8 +18,7 @@ circuit.cnot(0, 1)
 circuit.depolarize(0.01, [0, 1])
 policy = truncation.coeff(1e-10)
 
-evolved = observable.copy()
-stats = evolved.propagate_with_stats(circuit, policy, direction="heisenberg")
+evolved, stats = propagated_with_stats(observable, circuit, policy, direction="heisenberg")
 
 print(stats.layers, stats.peak_terms, stats.final_terms)
 print(stats.terms_in, stats.terms_out)   # one entry per layer, post-truncation
@@ -132,8 +131,7 @@ Term counts, on the other hand, are exact integers and are the load-independent 
 The result is the exact evolved operator, and it is the reference the [cutoff sweep](validation.md#score-against-an-exact-reference-where-you-can) is scored against wherever the problem is small enough to afford it.
 
 ```python
-exact = observable.copy()
-exact.propagate(circuit, None, direction="heisenberg")
+exact = propagated(observable, circuit, None, direction="heisenberg")
 print(len(exact), "terms untruncated")
 ```
 

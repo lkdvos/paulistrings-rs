@@ -4,9 +4,7 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, gates, noise, p, truncation
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, gates, noise, p, propagated, truncation
 
 DTYPES = [np.float64, np.float32, np.complex128, np.complex64]
 REAL = [np.float64, np.float32]

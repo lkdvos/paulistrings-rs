@@ -7,9 +7,14 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import (
+    Circuit,
+    PauliSum,
+    propagated,
+    propagated_with_stats,
+    truncation,
+)
 
-from ._evolved import propagated, propagated_with_stats
 from ._runs_agree import (
     assert_runs_agree,
     assert_runs_agree_count_only,

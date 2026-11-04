@@ -7,9 +7,8 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import PauliSum, hashes, numa_nodes
+from paulistrings import PauliSum, hashes, numa_nodes, propagated
 
-from ._evolved import propagated
 from .test_bucket_knobs import _assert_terms_close, _fanout_circuit
 
 N = 20

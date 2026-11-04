@@ -49,6 +49,7 @@ for _p in (_EXAMPLES_DIR, _DRIVER_DIR):
 
 import run_benchmark_d as driver
 from common import circuits, observables
+from paulistrings import propagated
 
 DT = driver.DT
 DIRECTION = driver.DIRECTION
@@ -95,8 +96,7 @@ def test_matches_statevector(oracles, Jz, steps):
     policy = truncation.coeff(driver.TIGHT_EPS)
     for name, obs in _observables(n).items():
         exact = oracles.statevector_expectation(spec, obs, state)
-        evolved = obs.copy()
-        evolved.propagate(circuit, policy, direction=DIRECTION)
+        evolved = propagated(obs, circuit, policy, direction=DIRECTION)
         got = complex(evolved.expectation(state))
         assert abs(got - exact) < TOL, (
             f"Jz={Jz} steps={steps} {name}: paulistrings={got!r} "
@@ -117,8 +117,7 @@ def test_domain_wall_state_is_not_an_eigenstate(oracles):
     state = driver.domain_wall_state(n)
     obs = observables.single_z(driver.center(n), n)
     zero_steps = circuits.xxz_chain_trotter(n, 0, Jz=driver.JZ_INTERACTING, dt=DT)
-    unevolved = obs.copy()
-    unevolved.propagate(zero_steps, None, direction=DIRECTION)
+    unevolved = propagated(obs, zero_steps, None, direction=DIRECTION)
     initial = complex(unevolved.expectation(state)).real
     assert initial == pytest.approx(-1.0, abs=1e-12)
 
@@ -135,8 +134,7 @@ def _untruncated_counts(n, max_steps, Jz, obs):
     counts = []
     for s in range(1, max_steps + 1):
         circuit = circuits.xxz_chain_trotter(n, s, Jz=Jz, dt=DT)
-        evolved = obs.copy()
-        evolved.propagate(circuit, None, direction=DIRECTION)
+        evolved = propagated(obs, circuit, None, direction=DIRECTION)
         counts.append(len(evolved))
     return counts
 
@@ -216,8 +214,7 @@ def test_free_regime_growth_is_independent_of_dt_and_seed_site():
         obs = observables.single_z(driver.center(n), n)
         for s in range(1, steps + 1):
             circuit = circuits.xxz_chain_trotter(n, s, Jz=driver.JZ_FREE, dt=dt)
-            evolved = obs.copy()
-            evolved.propagate(circuit, None, direction=DIRECTION)
+            evolved = propagated(obs, circuit, None, direction=DIRECTION)
             counts.append(len(evolved))
         assert counts == base, f"dt={dt} changed the counts: {counts} != {base}"
 

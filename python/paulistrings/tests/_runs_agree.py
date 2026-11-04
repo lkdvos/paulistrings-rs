@@ -5,9 +5,7 @@ import re
 
 import numpy as np
 
-from paulistrings import Circuit, PauliSum
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, propagated
 
 
 def _terms(sum_):

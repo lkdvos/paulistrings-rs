@@ -7,9 +7,15 @@ import sys
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, _paulistrings, truncation
+from paulistrings import (
+    Circuit,
+    PauliSum,
+    _paulistrings,
+    propagated,
+    propagated_with_stats,
+    truncation,
+)
 
-from ._evolved import propagated, propagated_with_stats
 from .test_from_arrays import _as_dict
 
 TOL = 1e-12

@@ -10,7 +10,7 @@ Propagating through `a` and then `b` applies the same sequence of (apply, merge,
 
 ```python
 import numpy as np
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings({"ZIII": 1.0}, num_qubits=4)
 policy = truncation.coeff(1e-10)
@@ -22,10 +22,9 @@ front.cnot(0, 1)
 back = Circuit(4)
 back.rz(0.3, 1)
 
-split, whole = observable.copy(), observable.copy()
-split.propagate(front, policy, direction="forward")
+split = propagated(observable, front, policy, direction="forward")
 split.propagate(back, policy, direction="forward")
-whole.propagate(front + back, policy, direction="forward")
+whole = propagated(observable, front + back, policy, direction="forward")
 
 assert len(split) == len(whole)
 assert np.allclose(split.coefficients_array(), whole.coefficients_array())

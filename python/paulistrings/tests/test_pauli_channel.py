@@ -17,9 +17,7 @@ Note CI does not run these (see CLAUDE.md); run them locally with
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, noise
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, noise, propagated
 
 TOL = 1e-12
 

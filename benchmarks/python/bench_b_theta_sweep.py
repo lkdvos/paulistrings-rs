@@ -120,6 +120,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 from common import circuits, harness, observables, oracles, report  # noqa: E402
+from paulistrings import propagated_with_stats
 
 # --------------------------------------------------------------------------
 # The benchmark's fixed parameters
@@ -491,10 +492,7 @@ def self_converged_reference(
     for eps in grid:
         policy = harness.make_policy(min_abs_coeff=eps)
         start = time.perf_counter()
-        evolved = observable.copy()
-        stats = evolved.propagate_with_stats(
-            circuit, policy, direction=direction
-        )
+        evolved, stats = propagated_with_stats(observable, circuit, policy, direction=direction)
         value = complex(evolved.expectation(state)).real
         seconds = time.perf_counter() - start
         total_seconds += seconds

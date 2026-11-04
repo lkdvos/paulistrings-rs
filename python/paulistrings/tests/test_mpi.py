@@ -69,7 +69,7 @@ mpi4py.rc.thread_level = "serialized"
 
 from mpi4py import MPI  # noqa: E402
 
-from ._evolved import propagated, propagated_with_stats
+from paulistrings import propagated, propagated_with_stats
 
 COMM = MPI.COMM_WORLD
 RANK = COMM.Get_rank()

@@ -5,9 +5,7 @@ import random
 
 import pytest
 
-from paulistrings import Circuit, PauliSum
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, propagated
 
 TOL = 1e-12
 

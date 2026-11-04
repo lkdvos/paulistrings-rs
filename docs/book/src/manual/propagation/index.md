@@ -28,7 +28,7 @@ Three arguments carry the physics and one carries the cost.
 `circuit` is the channel list to apply, and it must share `num_qubits` with the sum.
 `direction` chooses between `U†OU` and `UOU†`, which are different operators and answer different questions — [Direction](direction.md).
 `policy` is the truncation applied after every channel, and it is the only argument that trades accuracy for time — [Truncation](truncation.md).
-`propagate` evolves the sum **in place** and returns `None`, so no second copy of a large sum is alive during the run; propagate a `copy()` to keep the input, e.g. to propagate one observable several ways and compare.
+`propagate` evolves the sum **in place** and returns `None`, so no second copy of a large sum is alive during the run; `paulistrings.propagated(observable, circuit, ...)` returns an evolved copy instead, e.g. to propagate one observable several ways and compare.
 The GIL is released for the duration of the call.
 
 `propagate_with_stats` takes the same arguments, evolves the sum the same way and returns a `PropagationStats` with per-layer term counts and timings; enabling it does not change the evolved sum — [Stats, memory and logging](settings.md#stats).

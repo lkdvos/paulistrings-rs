@@ -13,6 +13,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "b8_ole"))
 
 import ole  # noqa: E402
+from paulistrings import propagated
 
 ps = pytest.importorskip("paulistrings")
 
@@ -41,8 +42,7 @@ def _materialized(A, sites, delta, axis):
     circuit = ps.Circuit(A.num_qubits)
     for q in sites:
         (circuit.rx if axis == "x" else circuit.rz)(2.0 * delta, q)
-    rotated = A.copy()
-    rotated.propagate(circuit, direction="heisenberg")
+    rotated = propagated(A, circuit, direction="heisenberg")
     return A.overlap(rotated)
 
 

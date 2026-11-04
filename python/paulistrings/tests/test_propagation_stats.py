@@ -14,9 +14,7 @@ import math
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, truncation
-
-from ._evolved import propagated_with_stats
+from paulistrings import Circuit, PauliSum, propagated_with_stats, truncation
 
 # cos 0.3 = 0.955336..., sin 0.3 = 0.295520...: no count below rests on a
 # cancellation.

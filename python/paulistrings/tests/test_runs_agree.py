@@ -5,9 +5,8 @@ import math
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
-from ._evolved import propagated
 from ._runs_agree import (
     _terms,
     assert_runs_agree,

@@ -18,9 +18,14 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import (
+    Circuit,
+    PauliSum,
+    propagated,
+    propagated_with_stats,
+    truncation,
+)
 
-from ._evolved import propagated, propagated_with_stats
 from .test_from_arrays import _as_dict, _assert_close
 
 TOL = 1e-12

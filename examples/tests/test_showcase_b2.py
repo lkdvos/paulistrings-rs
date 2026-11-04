@@ -51,7 +51,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from paulistrings import PauliSum, truncation
+from paulistrings import PauliSum, propagated, propagated_with_stats, truncation
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
@@ -64,9 +64,7 @@ from common import circuits, observables, oracles  # noqa: E402
 
 def _heisenberg(observable, circuit, policy=None):
     """`observable` Heisenberg-evolved through `circuit`, leaving `observable` untouched."""
-    evolved = observable.copy()
-    evolved.propagate(circuit, policy, direction="heisenberg")
-    return evolved
+    return propagated(observable, circuit, policy, direction="heisenberg")
 
 TOLERANCE = 1e-10
 
@@ -482,8 +480,7 @@ def test_validation_spec_with_no_noise_emits_only_unitary_gates():
 
 
 def _evolved_terms(circuit, observable, policy=None, direction="heisenberg"):
-    evolved = observable.copy()
-    evolved.propagate(circuit, policy, direction=direction)
+    evolved = propagated(observable, circuit, policy, direction=direction)
     return sorted(oracles.pauli_terms(evolved))
 
 
@@ -651,10 +648,7 @@ def test_more_noise_keeps_a_strictly_smaller_tracked_set():
     peaks, weights = [], []
     for p in (0.0, 5e-3, 3e-2, 1e-1):
         circuit = run_b2.noisy_kicked_ising(n, steps, theta_h, run_b2.depolarizing(p))
-        evolved = observable.copy()
-        stats = evolved.propagate_with_stats(
-            circuit, truncation.coeff(eps), direction="heisenberg"
-        )
+        evolved, stats = propagated_with_stats(observable, circuit, truncation.coeff(eps), direction="heisenberg")
         peaks.append(stats.peak_terms)
         stats_dict = run_b2.weight_stats(evolved)
         weights.append(stats_dict["max_weight"])

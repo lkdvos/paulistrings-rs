@@ -16,9 +16,7 @@ import math
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, noise
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, gates, noise, propagated
 
 H = np.array([[1, 1], [1, -1]], dtype=complex) / math.sqrt(2.0)
 CNOT = np.array(

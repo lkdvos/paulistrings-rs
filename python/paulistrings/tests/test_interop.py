@@ -15,9 +15,7 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, interop
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, interop, propagated
 
 TOL = 1e-10
 

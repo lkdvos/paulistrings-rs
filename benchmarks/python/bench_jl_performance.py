@@ -111,6 +111,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from paulistrings import propagated
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = Path(__file__).resolve().parent / "jl_performance"
@@ -710,12 +711,9 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     logger.addHandler(collector)
     ps.reset_log_cache()
     try:
-        evolved = task.observable.copy()
-        evolved.propagate(
-            circuit=task.circuit,
+        evolved = propagated(task.observable, circuit=task.circuit,
             policy=task.truncation,
-            direction=task.direction,
-        )
+            direction=task.direction,)
     finally:
         logger.removeHandler(collector)
         logger.setLevel(old_level)

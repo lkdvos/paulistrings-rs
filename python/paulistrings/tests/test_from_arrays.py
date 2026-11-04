@@ -12,9 +12,7 @@ an evolved observable can cross a process boundary (the B5 motivating flow).
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, io
-
-from ._evolved import propagated
+from paulistrings import Circuit, PauliSum, io, propagated
 
 
 def _as_dict(sum_):

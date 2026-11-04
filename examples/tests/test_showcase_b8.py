@@ -16,6 +16,7 @@ sys.path.insert(0, str(HERE.parent))
 import ole  # noqa: E402
 from common.circuits import _adjacency  # noqa: E402
 from common.observables import pauli_sum_from_support  # noqa: E402
+from paulistrings import propagated
 
 PATCH_ROOT = 132
 PATCH_SIZE = 9
@@ -125,8 +126,7 @@ def test_exact_echo_matches_dense_on_a_patch(L, alpha):
     ps, qubits, ops, obs_q, probe_q, obs, circuit, sites = _engine_patch(L, eta)
     assert probe_q and obs_q
     delta = ole.spec()["delta"]
-    A = obs.copy()
-    A.propagate(circuit, direction="heisenberg")
+    A = propagated(obs, circuit, direction="heisenberg")
     want = _dense_echo(ops, qubits, obs_q, probe_q, delta)
     assert ole.rotated_overlap(A, sites, delta, "x") == pytest.approx(want, abs=1e-10)
     hist = ole.anticommute_histogram(A, sites, "x")
@@ -136,23 +136,19 @@ def test_exact_echo_matches_dense_on_a_patch(L, alpha):
 
 def test_no_scattering_is_a_perfect_echo():
     ps, *_, obs, circuit, sites = _engine_patch(2, 0.0)
-    A = obs.copy()
-    A.propagate(circuit, direction="heisenberg")
+    A = propagated(obs, circuit, direction="heisenberg")
     assert ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3) == pytest.approx(1.0, abs=1e-12)
     assert ole.rotated_overlap(A, sites, 0.3, "x") == pytest.approx(1.0, abs=1e-12)
 
 
 def test_ppmc_with_a_large_cache_is_exact_and_a_small_one_collapses():
     ps, *_, obs, circuit, sites = _engine_patch(2, ole.eta_of_alpha(0.15))
-    exact = obs.copy()
-    exact.propagate(circuit, direction="heisenberg")
-    big = obs.copy()
-    big.propagate(circuit, ps.truncation.collapse_sample(10**9, 7), direction="heisenberg")
+    exact = propagated(obs, circuit, direction="heisenberg")
+    big = propagated(obs, circuit, ps.truncation.collapse_sample(10**9, 7), direction="heisenberg")
     assert np.allclose(ole.anticommute_histogram(big, sites, "x"), ole.anticommute_histogram(exact, sites, "x"), atol=1e-12)
     runs = []
     for s in (1, 1, 2):
-        sampled = obs.copy()
-        sampled.propagate(circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg")
+        sampled = propagated(obs, circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg")
         runs.append(ole.diagonal_echo(ole.anticommute_histogram(sampled, sites, "x"), 0.3))
     assert runs[0] == runs[1]
     assert all(0.0 <= r <= 1.0 + 1e-12 for r in runs)

@@ -9,9 +9,9 @@
 //! placement itself is covered by `engine::partitioned::topology`'s own tests.
 
 use paulistrings::test_support::{
-    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, heavy_cut,
-    propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
+    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts,
+    spread_magnitudes, trotter_circuit, unpinned_partitions, KeepAll, PlainApproxTopN,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -121,41 +121,128 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// `ApproxTopN` with rescale layers between rotations: the deferred cut is applied by the next coset loop, a rescale, an exchange's export, a rebucket, or the end of the call.
+/// Two calls of fused `ApproxTopN(n)` on one split, each partition against the same split under [`PlainApproxTopN`]: the plain pass decides each partition's kept set from all-reduced counts and the partition rows alone, so the fused pass must keep the same set on every partition after every call, and `len()` must count the terms the split holds.
+fn check_fused_keeps_the_plain_set<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    n: usize,
+    name: &str,
+) {
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        for p in PS {
+            let scatter =
+                || PartitionedSum::scatter(sum.clone(), &config(p)).expect("topology resolves");
+            let (mut got, mut want) = (scatter(), scatter());
+            for call in 0..2 {
+                got.propagate(circuit, &ApproxTopN(n), direction);
+                want.propagate(circuit, &PlainApproxTopN(n), direction);
+                let what = format!("{name} P={p} {direction:?} call {call}");
+                assert_eq!(want.len(), n, "{what}: the plain run must cut");
+                for r in 0..p {
+                    assert_same_terms(
+                        got.partition(r),
+                        want.partition(r),
+                        &format!("{what} partition {r}"),
+                    );
+                }
+                let held: usize = (0..p).map(|r| got.partition(r).len()).sum();
+                assert_eq!(got.len(), held, "{what}: len() after the call");
+            }
+        }
+    }
+}
+
+/// The 64-channel TFIM Trotter step, both widths, the fused pass against the plain one on the same partitions.
 #[test]
-fn approx_top_n_through_rescale_layers_matches_propagate() {
-    let mut circuit = Circuit::<1>::new(32);
-    for q in 0..32 {
-        circuit.push(paulistrings::test_support::zz_rotation::<1>(q, (q + 1) % 32, 2.0 * THETA));
+fn fused_approx_top_n_keeps_the_plain_set_partitioned() {
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A0), 40, 0x71A0);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "trotter w1");
+    let circuit = trotter_circuit::<2>(70, THETA);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 70, 0x71A1), 40, 0x71A1);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "trotter w2");
+}
+
+/// ZZ bonds with a depolarizing layer every seventh, then an X field, on `num_qubits` qubits.
+fn trotter_with_rescales<const W: usize>(num_qubits: usize) -> Circuit<W> {
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for q in 0..num_qubits {
+        let bond =
+            paulistrings::test_support::zz_rotation::<W>(q, (q + 1) % num_qubits, 2.0 * THETA);
+        circuit.push(bond);
         if q % 7 == 6 {
             circuit.push(paulistrings::PtmChannel::depolarizing(q, 0.02));
         }
     }
-    for q in 0..32 {
-        let generator = paulistrings::PauliString::<1>::x(q);
+    for q in 0..num_qubits {
+        let generator = paulistrings::PauliString::<W>::x(q);
         circuit.push(paulistrings::PauliRotation::new(generator, 2.0 * THETA));
     }
+    circuit
+}
+
+/// `ApproxTopN` with rescale layers between rotations: the deferred cut is applied by the next coset loop, a rescale, an exchange's export, a rebucket, or the end of the call.
+#[test]
+fn approx_top_n_through_rescale_layers_matches_propagate() {
+    let circuit = trotter_with_rescales::<1>(32);
     let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A3), 40, 0x71A3);
-    check(&circuit, &sum, &ApproxTopN(6_000), "trotter rescale", &PS);
+    check(&circuit, &sum, &ApproxTopN(6_000), "trotter rescale w1", &PS);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "trotter rescale w1");
+    let circuit = trotter_with_rescales::<2>(32);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A3), 40, 0x71A3);
+    check(&circuit, &sum, &ApproxTopN(4_000), "trotter rescale w2", &PS);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "trotter rescale w2");
+}
+
+/// Three kicked-Ising steps: Clifford ZZ bonds, then an X kick, on `num_qubits` qubits.
+fn kicked_ising<const W: usize>(num_qubits: usize) -> Circuit<W> {
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for _ in 0..3 {
+        for q in 0..num_qubits - 1 {
+            let quarter = std::f64::consts::FRAC_PI_2;
+            circuit.push(paulistrings::test_support::zz_rotation::<W>(q, q + 1, quarter));
+        }
+        for q in 0..num_qubits {
+            let generator = paulistrings::PauliString::<W>::x(q);
+            circuit.push(paulistrings::PauliRotation::new(generator, THETA));
+        }
+    }
+    circuit
 }
 
 /// A kicked Ising chain whose Clifford bond layers cannot grow the sum, so every partition skips their layer pass on the agreed bound.
 #[test]
 fn approx_top_n_skipping_clifford_layers_matches_propagate() {
-    let mut circuit = Circuit::<1>::new(32);
-    for _ in 0..3 {
-        for q in 0..31 {
-            let bond =
-                paulistrings::test_support::zz_rotation::<1>(q, q + 1, std::f64::consts::FRAC_PI_2);
-            circuit.push(bond);
-        }
-        for q in 0..32 {
-            let generator = paulistrings::PauliString::<1>::x(q);
-            circuit.push(paulistrings::PauliRotation::new(generator, THETA));
-        }
-    }
+    let circuit = kicked_ising::<1>(32);
     let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x71A4), 40, 0x71A4);
-    check(&circuit, &sum, &ApproxTopN(6_000), "kicked ising", &PS);
+    check(&circuit, &sum, &ApproxTopN(6_000), "kicked ising w1", &PS);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "kicked ising w1");
+    let circuit = kicked_ising::<2>(32);
+    let sum = spread_magnitudes(&rand_sum_real::<2>(1_500, 32, 0x71A4), 40, 0x71A4);
+    check(&circuit, &sum, &ApproxTopN(4_000), "kicked ising w2", &PS);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "kicked ising w2");
+}
+
+/// Amplitude damping at `gamma = 1 - 2^-40` after a Trotter step scales every non-identity coefficient on its qubit down by at least `2^-40` in `|c|²`, pushing the boundary out of the window the last pass centred, so those passes fall back to the plain one.
+fn trotter_then_damping<const W: usize>(num_qubits: usize) -> Circuit<W> {
+    let mut circuit = trotter_circuit::<W>(num_qubits, THETA);
+    for q in 0..4 {
+        circuit.push(paulistrings::PtmChannel::amplitude_damping(q, 1.0 - 2f64.powi(-40)));
+        let generator = paulistrings::PauliString::<W>::x(q);
+        circuit.push(paulistrings::PauliRotation::new(generator, THETA));
+    }
+    circuit
+}
+
+/// The fused pass falls back to the plain pass where the boundary leaves the window, and still keeps the plain set.
+#[test]
+fn approx_top_n_window_miss_keeps_the_plain_set() {
+    let circuit = trotter_then_damping::<1>(32);
+    let sum = rand_sum_real::<1>(2_000, 32, 0x71A5);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 3_000, "damping w1");
+    let circuit = trotter_then_damping::<2>(70);
+    let sum = rand_sum_real::<2>(1_500, 70, 0x71A5);
+    check_fused_keeps_the_plain_set(&circuit, &sum, 2_500, "damping w2");
 }
 
 /// One cut that splits a boundary group, dropping little weight.

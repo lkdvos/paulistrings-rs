@@ -9,6 +9,7 @@ use super::DistributedSum;
 use crate::coefficient::Coefficient;
 use crate::engine::backend::HostPartition;
 use crate::engine::partitioned::operator_products::pair_share_into;
+use crate::engine::trace::assemble;
 use crate::engine::transport::Transport;
 use crate::pauli_sum::product::{Pairing, Weights};
 use crate::pauli_sum::PauliSum;
@@ -81,7 +82,7 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
             .expect("an infinite tolerance always converts")
     }
 
-    /// `self ← weights.alpha · pairing(generator, operand) + weights.beta · self` over this sum's group. **Collective.**
+    /// `self ← weights.alpha · pairing(generator, operand) + weights.beta · self` over this sum's group; a traced sum records this rank's row of the call as one layer. **Collective.**
     fn add_paired<P>(
         &mut self,
         generator: &PauliSum<W, C>,
@@ -94,7 +95,7 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
     {
         self.assert_aligned(operand, "add_paired");
         let (dest, rows, transport) = (&mut self.local.sum, &self.rows, &self.transport);
-        self.runtime.install(|| {
+        let row = self.runtime.install(|| {
             pair_share_into(
                 dest,
                 generator,
@@ -105,6 +106,9 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
                 policy,
             )
         });
+        if let Some(trace) = self.trace.as_mut() {
+            assemble(trace, vec![vec![row]], transport.size() as usize);
+        }
     }
 
     /// `self ← alpha · i[generator, operand] + beta · self`, truncated by `policy` as one layer, with `operand` split by the same rows; `beta = 0` ignores `self`'s terms. **Collective** over this sum's group.

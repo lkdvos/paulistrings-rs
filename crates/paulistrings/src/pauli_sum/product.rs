@@ -30,6 +30,15 @@ pub(crate) enum Pairing {
 }
 
 impl Pairing {
+    /// The name a trace records the call under.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Pairing::Product => "product",
+            Pairing::Liouvillian => "liouvillian",
+            Pairing::Anticommutator => "anticommutator",
+        }
+    }
+
     /// The term `(a·P_a)·(b·P_b)` contributes, or `None` when the pairing drops the pair.
     #[inline(always)]
     fn term<const W: usize, C: Coefficient>(

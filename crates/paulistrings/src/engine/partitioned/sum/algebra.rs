@@ -8,6 +8,7 @@ use super::PartitionedSum;
 use crate::coefficient::Coefficient;
 use crate::engine::backend::HostPartition;
 use crate::engine::partitioned::operator_products::pair_share_into;
+use crate::engine::trace::assemble;
 use crate::pauli_sum::product::{Pairing, Weights};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
@@ -91,7 +92,7 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         }
     }
 
-    /// `self ← weights.alpha · pairing(generator, operand) + weights.beta · self`, every partition on its own pool with its own endpoint of one transport group.
+    /// `self ← weights.alpha · pairing(generator, operand) + weights.beta · self`, every partition on its own pool with its own endpoint of one transport group; a traced split records the call as one layer.
     fn add_paired<P>(
         &mut self,
         generator: &PauliSum<W, C>,
@@ -106,9 +107,13 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         let rows = &self.rows;
         let items: Vec<_> =
             self.parts.iter_mut().zip(&operand.parts).map(|(d, o)| (&mut d.sum, &o.sum)).collect();
-        self.runtime.map_partitions(items, |_, (dest, share), transport| {
-            pair_share_into(dest, generator, share, rows, transport, (pairing, weights), policy)
+        let traced = self.runtime.map_partitions(items, |_, (dest, share), transport| {
+            vec![pair_share_into(dest, generator, share, rows, transport, (pairing, weights), policy)]
         });
+        if let Some(trace) = self.trace.as_mut() {
+            let partners = traced.len();
+            assemble(trace, traced, partners);
+        }
     }
 
     /// `self ← alpha · i[generator, operand] + beta · self`, truncated by `policy` as one layer; `beta = 0` ignores `self`'s terms.

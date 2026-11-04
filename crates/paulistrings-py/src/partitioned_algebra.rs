@@ -109,17 +109,28 @@ impl<const W: usize, C: PyCoefficient> Split<W, C> {
         policy: &BuiltinTruncation,
     ) {
         match (self, operand) {
-            (Split::Process(d), Split::Process(o)) => match pairing {
-                Pairing::Product => d.add_product(generator, o, alpha, beta, policy),
-                Pairing::Liouvillian => d.add_liouvillian(generator, o, alpha, beta, policy),
-                Pairing::Anticommutator => d.add_anticommutator(generator, o, alpha, beta, policy),
-            },
+            // A held split traces only for `propagate_with_stats`, so the product's own record is dropped.
+            (Split::Process(d), Split::Process(o)) => {
+                match pairing {
+                    Pairing::Product => d.add_product(generator, o, alpha, beta, policy),
+                    Pairing::Liouvillian => d.add_liouvillian(generator, o, alpha, beta, policy),
+                    Pairing::Anticommutator => {
+                        d.add_anticommutator(generator, o, alpha, beta, policy)
+                    }
+                }
+                let _ = d.take_trace();
+            }
             #[cfg(feature = "mpi")]
-            (Split::Ranks(d), Split::Ranks(o)) => match pairing {
-                Pairing::Product => d.add_product(generator, o, alpha, beta, policy),
-                Pairing::Liouvillian => d.add_liouvillian(generator, o, alpha, beta, policy),
-                Pairing::Anticommutator => d.add_anticommutator(generator, o, alpha, beta, policy),
-            },
+            (Split::Ranks(d), Split::Ranks(o)) => {
+                match pairing {
+                    Pairing::Product => d.add_product(generator, o, alpha, beta, policy),
+                    Pairing::Liouvillian => d.add_liouvillian(generator, o, alpha, beta, policy),
+                    Pairing::Anticommutator => {
+                        d.add_anticommutator(generator, o, alpha, beta, policy)
+                    }
+                }
+                let _ = d.take_trace();
+            }
             #[cfg(feature = "mpi")]
             _ => unreachable!("checked by misaligned"),
         }

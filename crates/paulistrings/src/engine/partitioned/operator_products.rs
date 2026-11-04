@@ -4,11 +4,13 @@
 //! Partner `r ⊕ δ` sends rank `r` the operand terms `H_δ` can reach, only the anticommuting ones for a Liouvillian, so operands cross the wire and products never do.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use rayon::prelude::*;
 
 use super::distributed::{decode_rank, group_bits, identity_fingerprint};
 use crate::coefficient::Coefficient;
+use crate::engine::trace::{LayerClock, LayerPhases, PartitionLayerRow};
 use crate::engine::transport::{ByteParts, Transport};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::PartitionRows;
@@ -111,7 +113,7 @@ fn encode_reachable<const W: usize, C: Coefficient>(
     ])
 }
 
-/// `dest ← alpha · pairing(generator, operand) + beta · dest` on this rank, where `share` is this rank's share of the operand under `rows`, `dest` holds only this rank's keys and `generator` is the same on every rank. **Collective.**
+/// `dest ← alpha · pairing(generator, operand) + beta · dest` on this rank, where `share` is this rank's share of the operand under `rows`, `dest` holds only this rank's keys and `generator` is the same on every rank, returning the call as one trace row. **Collective.**
 pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     dest: &mut PauliSum<W, C>,
     generator: &PauliSum<W, C>,
@@ -120,11 +122,15 @@ pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     transport: &X,
     (pairing, weights): (Pairing, Weights<C>),
     policy: &P,
-) where
+) -> PartitionLayerRow
+where
     C: Coefficient,
     X: Transport,
     P: TruncationPolicy<W, C> + ?Sized,
 {
+    let started = Instant::now();
+    let mut clock = LayerClock::new(Some(started));
+    let mut phases = LayerPhases::default();
     if pairing == Pairing::Product {
         assert!(
             !C::IS_REAL,
@@ -147,6 +153,7 @@ pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     );
 
     let bits = transport.allreduce_max_u8(share.hash().bits());
+    clock.lap(&mut phases.collective_ns);
     let refined;
     let share = if share.hash().bits() < bits {
         let mut copy = share.clone();
@@ -158,6 +165,7 @@ pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     } else {
         share
     };
+    clock.lap(&mut phases.rebucket_ns);
 
     let mut by_delta: ByDelta<W, C> = BTreeMap::new();
     for (x, z, c) in generator.iter() {
@@ -169,12 +177,21 @@ pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     let rank = transport.rank();
     // Built once: the sends filter by it and the local job reads by it.
     let mut index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(share));
+    clock.lap(&mut phases.prepare_ns);
     // Every rank holds every delta, so each sends to exactly the partners it receives from, an empty payload included.
     let mut send: Vec<Option<ByteParts>> = (0..size).map(|_| None).collect();
     for &delta in &remote {
         send[(rank ^ delta) as usize] =
             Some(encode_reachable(share, index.as_ref(), &by_delta[&delta]));
     }
+    let (mut rows_sent, mut bytes_sent) = (vec![0u64; size], vec![0u64; size]);
+    for (to, payload) in send.iter().enumerate() {
+        if let Some(ByteParts(parts)) = payload {
+            rows_sent[to] = bytemuck::cast_slice::<u8, u64>(&parts[0]).iter().sum();
+            bytes_sent[to] = parts.iter().map(|part| part.len() as u64).sum();
+        }
+    }
+    clock.lap(&mut phases.export_ns);
     let mut received = transport.exchange(send, &mut Vec::new());
     let slices: Vec<(u32, PauliSum<W, C>)> = remote
         .iter()
@@ -186,6 +203,8 @@ pub(crate) fn pair_share_into<const W: usize, C, X, P>(
             (delta, decode_rank(&payload.0, share.hash().clone(), num_qubits, from))
         })
         .collect();
+    clock.lap(&mut phases.exchange_ns);
+    let rows_received = slices.iter().map(|(_, slice)| slice.len() as u64).sum();
 
     let mut jobs = Vec::with_capacity(slices.len() + 1);
     if let Some(local) = by_delta.get(&0) {
@@ -198,10 +217,27 @@ pub(crate) fn pair_share_into<const W: usize, C, X, P>(
     accumulate_into(dest, weights.beta, &jobs, pairing, &|x, z, c| policy.keep_term(x, z, c));
     drop(jobs);
     drop(slices);
+    clock.lap(&mut phases.coset_loop_ns);
     if policy.finalizes_layer() {
         policy.finalize_layer_partitioned(dest, transport);
     }
+    clock.lap(&mut phases.finalize_ns);
     dest.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+    clock.lap(&mut phases.rebucket_ns);
+    PartitionLayerRow {
+        bits,
+        remote_deltas: remote.len() as u32,
+        collectives: 2 + u32::from(policy.finalizes_layer()),
+        gate_name: pairing.name(),
+        terms_in: share.len(),
+        terms_out: dest.len(),
+        rows_sent,
+        bytes_sent,
+        rows_received,
+        nanos: started.elapsed().as_nanos() as u64,
+        phases,
+        ..PartitionLayerRow::default()
+    }
 }
 
 /// This rank's share of `pairing(generator, operand)` as a fresh sum. **Collective.**
@@ -219,7 +255,7 @@ where
     P: TruncationPolicy<W, C> + ?Sized,
 {
     let mut out = PauliSum::empty_with_hash(share.num_qubits(), share.hash().clone());
-    pair_share_into(
+    let _ = pair_share_into(
         &mut out,
         generator,
         share,

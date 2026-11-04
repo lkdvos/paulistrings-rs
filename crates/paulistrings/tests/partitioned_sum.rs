@@ -247,3 +247,27 @@ fn lanczos_coefficients_agree_split_in_process() {
         assert!((g - w).abs() < 1e-9 * w, "b_{}: {g} vs {w}", n + 1);
     }
 }
+
+#[test]
+fn a_traced_split_records_each_product_as_one_layer() {
+    let generator = low_weight_sum::<1>(24, NQ, 2, 0x61);
+    let operand = low_weight_sum::<1>(3_000, NQ, 3, 0x62);
+    let split =
+        PartitionedSum::scatter(operand.clone(), &config(4)).expect("an unpinned config resolves");
+    let mut dest = split.liouvillian_with(&generator, &KeepAll);
+    dest.enable_trace();
+    dest.add_liouvillian(&generator, &split, 1.0.into(), (-0.5).into(), &KeepAll);
+    let trace = dest.take_trace().expect("tracing was enabled");
+    assert_eq!(trace.layers.len(), 1);
+    let layer = &trace.layers[0];
+    assert_eq!(layer.gate_name, "liouvillian");
+    assert_eq!(layer.terms_in.iter().sum::<usize>(), operand.len());
+    assert_eq!(layer.terms_out.iter().sum::<usize>(), dest.len());
+    let sent: u64 = layer.rows_sent.iter().flatten().sum();
+    assert_eq!(sent, layer.rows_received.iter().sum::<u64>());
+    assert!(sent > 0 && layer.remote_deltas > 0, "a nonlocal generator ships terms");
+    for (rank, row) in layer.rows_sent.iter().enumerate() {
+        assert_eq!(row[rank], 0, "partition {rank} sent to itself");
+    }
+    assert!(layer.bytes_sent.iter().flatten().sum::<u64>() > sent * 16);
+}

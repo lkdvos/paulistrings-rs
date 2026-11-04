@@ -314,6 +314,10 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
             };
             let all = 0..self.local.bucket_len(source);
             let marked = self.ahead.and_then(|octaves| octaves.bucket_ahead(source));
+            #[cfg(debug_assertions)]
+            if let Some(marked) = marked {
+                marked.debug_assert_marks_match(all.len(), source);
+            }
             written += match (self.cut, marked) {
                 (None, None) => self.fill_rows(source, all, |_, _, _| true, out),
                 (Some(cut), None) => self.fill_rows(source, all, cut.filter(source), out),

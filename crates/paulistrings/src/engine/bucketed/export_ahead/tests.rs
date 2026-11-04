@@ -131,3 +131,34 @@ fn a_nan_term_is_counted_only_without_a_cut() {
     octaves.defer(BoundaryCut { bin, quotas: vec![1], kept: 3 });
     assert_eq!(octaves.rows_ahead(0), Some(2));
 }
+
+/// A bucket of three terms, the first and third emitting, both in slot 3.
+#[cfg(debug_assertions)]
+fn two_of_three_marked() -> BucketAhead {
+    let mut ahead = BucketAhead::default();
+    ahead.emitting[3] = 2;
+    ahead.marks = vec![0b101];
+    ahead
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn marks_one_per_counted_term_pass_the_debug_check() {
+    two_of_three_marked().debug_assert_marks_match(3, 0);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "bucket 7: 1 rows marked where the counts ahead count 2")]
+fn a_missing_mark_fails_the_debug_check() {
+    let mut ahead = two_of_three_marked();
+    ahead.marks = vec![0b001];
+    ahead.debug_assert_marks_match(3, 7);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "bucket 7: 1 mark words for a bucket of 65 terms")]
+fn marks_for_another_bucket_length_fail_the_debug_check() {
+    two_of_three_marked().debug_assert_marks_match(65, 7);
+}

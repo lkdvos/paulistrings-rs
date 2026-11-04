@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-a6374f75.js";
+            window.path_to_searchindex_js = "searchindex-f6f3a6f5.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -4808,7 +4808,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 The coarse phases are disjoint wall-clock spans recorded on every run, so they sum to at most <code>nanos[k][r]</code>.
 The fine phases are busy time summed over worker threads, so they can exceed <code>coset_loop_ns</code> under parallelism; they are <code>None</code> unless the extension was built with the <code>phase-timing</code> feature (<code>MATURIN_PEP517_ARGS="--features phase-timing"</code>).</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
+<pre><code class="language-python">stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 part = stats.partition
 waiting = [max(part.exchange_ns[k][r] + part.collective_ns[k][r] for r in range(part.partitions)) for k in range(stats.layers)]
 </code></pre>

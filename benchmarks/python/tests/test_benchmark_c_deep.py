@@ -94,7 +94,6 @@ for _extra_path in (_REPO_ROOT / "examples", _REPO_ROOT / "benchmarks" / "python
 import bench_b_theta_sweep as bench_b  # noqa: E402
 import bench_c_deep_trotter as driver  # noqa: E402
 from common import circuits, harness, observables, oracles, report  # noqa: E402
-from paulistrings import propagated_with_stats
 
 #: The sublattice size. 20 gives a connected induced heavy-hex subgraph (19
 #: edges, 3 colour classes — `heavy_hex_sublattice` *computes* connectivity and
@@ -204,6 +203,7 @@ def _exact(theta: float, steps: int = DEEP_STEPS) -> float:
 
 def _propagate(theta: float, eps: float, *, steps: int = DEEP_STEPS, n: int = N):
     """One truncated Heisenberg propagation; returns `(value, stats)`."""
+    from paulistrings import propagated_with_stats
     observable = _observable(n)
     evolved, stats = propagated_with_stats(observable, _spec(theta, steps, n).to_circuit(),
         harness.make_policy(min_abs_coeff=eps),
@@ -791,6 +791,7 @@ def test_loose_cutoff_sanity_on_the_full_lattice(theta_label, theta):
     tracked set grows steeply with the cutoff at all, and that the peak, not the
     final count, is the large number.
     """
+    from paulistrings import propagated_with_stats
     import time
 
     observable = observables.canonical_z_127()

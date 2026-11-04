@@ -49,7 +49,6 @@ for _p in (_EXAMPLES_DIR, _DRIVER_DIR):
 
 import run_benchmark_d as driver
 from common import circuits, observables
-from paulistrings import propagated
 
 DT = driver.DT
 DIRECTION = driver.DIRECTION
@@ -87,6 +86,7 @@ def oracles():
 @pytest.mark.parametrize("steps", [1, 2, 3])
 def test_matches_statevector(oracles, Jz, steps):
     """Both observables, both regimes, three depths: exact to ~1e-15."""
+    from paulistrings import propagated
     from paulistrings import truncation
 
     n = CHECK_N
@@ -113,6 +113,7 @@ def test_domain_wall_state_is_not_an_eigenstate(oracles):
     evolves (and that the initial value is the exact `-1` the state prescribes,
     since qubit `c = n//2` is in `|1>`).
     """
+    from paulistrings import propagated
     n = CHECK_N
     state = driver.domain_wall_state(n)
     obs = observables.single_z(driver.center(n), n)
@@ -131,6 +132,7 @@ def test_domain_wall_state_is_not_an_eigenstate(oracles):
 
 
 def _untruncated_counts(n, max_steps, Jz, obs):
+    from paulistrings import propagated
     counts = []
     for s in range(1, max_steps + 1):
         circuit = circuits.xxz_chain_trotter(n, s, Jz=Jz, dt=DT)
@@ -202,6 +204,7 @@ def test_free_regime_growth_is_independent_of_dt_and_seed_site():
     count; moving the seed off center changes neither, as long as the cone
     still fits. A cancellation-sensitive count would fail this.
     """
+    from paulistrings import propagated
     n = 40
     steps = 4
     base = _untruncated_counts(

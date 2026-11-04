@@ -66,7 +66,6 @@ for _extra_path in (_REPO_ROOT / "examples", _REPO_ROOT / "benchmarks" / "python
 
 import bench_b_theta_sweep as driver  # noqa: E402
 from common import circuits, harness, observables, oracles  # noqa: E402
-from paulistrings import propagated_with_stats
 
 #: The sublattice size. 20 gives a connected induced heavy-hex subgraph (19
 #: edges, 3 colour classes — `heavy_hex_sublattice` *computes* connectivity and
@@ -175,6 +174,7 @@ def _exact(name: str, theta: float) -> float:
 
 def _propagate(name: str, theta: float, *, min_abs_coeff=None, max_weight=None):
     """One truncated Heisenberg propagation; returns `(value, stats)`."""
+    from paulistrings import propagated_with_stats
     observable = _observable(name)
     policy = harness.make_policy(max_weight=max_weight, min_abs_coeff=min_abs_coeff)
     evolved, stats = propagated_with_stats(observable, _spec(theta).to_circuit(), policy, direction=DIRECTION)
@@ -298,6 +298,7 @@ def test_clifford_endpoints_are_exact_integers(name, theta_label, theta):
     is the same assertion Benchmark A makes at `n = 127`; the diagnostic below
     distinguishes its two failure modes.
     """
+    from paulistrings import propagated_with_stats
     observable = _observable(name)
     evolved, stats = propagated_with_stats(observable, _spec(theta).to_circuit(),
         harness.make_policy(min_abs_coeff=driver.MIN_SAFE_COEFF),

@@ -87,7 +87,6 @@ from common import circuits, harness, observables, oracles, report  # noqa: E402
 
 import julia_baseline as jb  # noqa: E402
 from test_julia_parity import compare as jl_compare  # noqa: E402
-from paulistrings import propagated_with_stats
 
 #: Fixed seed for every `random_su4_staircase` draw in this benchmark. Record
 #: it wherever a number from this file is quoted.
@@ -187,6 +186,7 @@ TERM_GROWTH_GRID: tuple[tuple[float, tuple[int, ...]], ...] = (
 
 
 def term_growth() -> list[report.RunRecord]:
+    from paulistrings import propagated_with_stats
     print(f"\n== term_growth: n={N_HEADLINE}, eps/depth grid {TERM_GROWTH_GRID} ==")
     q = central_qubit(N_HEADLINE)
     obs = observables.single_z(q, N_HEADLINE)
@@ -330,6 +330,7 @@ def size_scaling() -> list[report.RunRecord]:
 
 
 def check_determinism(n: int = 16, depth: int = 6, eps: float = 1e-4) -> None:
+    from paulistrings import propagated_with_stats
     print(f"\n== check_determinism: n={n}, depth={depth}, eps={eps:g}, same seed twice ==")
     q = central_qubit(n)
     policy = harness.make_policy(min_abs_coeff=eps)

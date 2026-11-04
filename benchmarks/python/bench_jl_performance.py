@@ -111,7 +111,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from paulistrings import propagated
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = Path(__file__).resolve().parent / "jl_performance"
@@ -678,6 +677,7 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     filter costs a clock read per layer, which is exactly why this is a
     separate, untimed process and never folded into a timed leg.
     """
+    from paulistrings import propagated
     import logging
     import re
 

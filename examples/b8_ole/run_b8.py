@@ -24,7 +24,6 @@ sys.path.insert(0, str(HERE.parent))
 import ole  # noqa: E402
 from common.harness import make_policy, peak_memory_kb  # noqa: E402
 from common.report import collect_provenance  # noqa: E402
-from paulistrings import propagated_with_stats
 
 
 def _seeds(text: str) -> list[int]:
@@ -69,6 +68,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    from paulistrings import propagated_with_stats
     args = parse_args(argv)
     delta = ole.spec()["delta"] if args.delta is None else args.delta
     eta = ole.eta_of_alpha(args.alpha) if args.alpha is not None else args.eta

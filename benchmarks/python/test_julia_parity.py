@@ -56,7 +56,6 @@ from julia_baseline import (  # noqa: E402  (path shim above)
     make_task,
     run_task,
 )
-from paulistrings import propagated
 
 # Expectations must agree to this; the plan's bar.
 EXPECTATION_TOL = 1e-12
@@ -178,6 +177,7 @@ def run_rust(task: Task | Mapping[str, Any]) -> dict[str, Any]:
     DEBUG filter costs a clock read per layer — never leave it on for a timed
     run (CLAUDE.md §Performance discipline).
     """
+    from paulistrings import propagated
     import paulistrings as ps
 
     observable, circuit, policy, direction, state = _build_rust(task)

@@ -30,7 +30,6 @@ if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
 
 from common import circuits, harness, observables, oracles  # noqa: E402
-from paulistrings import propagated, propagated_with_stats
 
 SEED = 20260831
 
@@ -55,6 +54,7 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
     the same "independent-path" argument `test_examples_oracles.py` makes for
     the shared oracle module itself.
     """
+    from paulistrings import propagated
     pytest.importorskip("qiskit_aer")
     q = central_qubit(n)
     obs = observables.single_z(q, n)
@@ -71,6 +71,7 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
 @pytest.mark.parametrize("state", ("z+", "x+", "y+"))
 def test_su4_staircase_matches_statevector_for_every_uniform_state(state):
     """The three uniform product states, not just `|0...0>`."""
+    from paulistrings import propagated
     pytest.importorskip("qiskit_aer")
     n, depth = 6, 3
     q = central_qubit(n)
@@ -92,6 +93,7 @@ def test_su4_staircase_matches_statevector_with_truncation():
     `PropagationStats`/`min_abs_coeff` together on the SU(4) vocabulary, which
     the untruncated checks (`policy=None`) do not touch at all.
     """
+    from paulistrings import propagated_with_stats
     pytest.importorskip("qiskit_aer")
     from paulistrings import truncation
 
@@ -118,6 +120,7 @@ def test_same_seed_twice_gives_identical_term_counts_and_expectation():
     """"same seed twice -> identical term counts and expectation to 1e-12"
     (plan §6, Benchmark E). No optional dependency, so this always runs in CI.
     """
+    from paulistrings import propagated_with_stats
     n, depth, eps = 16, 4, 1e-4
     q = central_qubit(n)
 

@@ -120,7 +120,6 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 from common import circuits, harness, observables, oracles, report  # noqa: E402
-from paulistrings import propagated_with_stats
 
 # --------------------------------------------------------------------------
 # The benchmark's fixed parameters
@@ -476,6 +475,7 @@ def self_converged_reference(
     and weight-10 at `n = 127`) and by `test_benchmark_b_sweep.py` on the
     20-qubit sublattice.
     """
+    from paulistrings import propagated_with_stats
     if any(eps < MIN_SAFE_COEFF for eps in grid):
         raise ValueError(
             f"self-convergence grid {list(grid)} goes below MIN_SAFE_COEFF="

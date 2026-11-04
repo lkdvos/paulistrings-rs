@@ -1,0 +1,317 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `crates/paulistrings/src/pauli_sum/product.rs`."><title>product.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="paulistrings" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0 (4a4ef493e 2026-03-02)" data-channel="1.94.0" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">paulistrings/pauli_sum/</div>product.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Operator products of two [`PauliSum`]s: [`PauliSum::product`], [`PauliSum::liouvillian`] and [`PauliSum::anticommutator`].
+<a href=#2 id=2 data-nosnippet>2</a>//!
+<a href=#3 id=3 data-nosnippet>3</a>//! A string product XORs keys and the bucket hash is GF(2)-linear, so output bucket `β′` reads only the larger operand's buckets `β′ ⊕ h(s)` over the smaller operand's terms `s`.
+<a href=#4 id=4 data-nosnippet>4</a>//! Each output bucket is therefore one task that accumulates into its own [`Table`], and no two tasks write the same key.
+<a href=#5 id=5 data-nosnippet>5</a>//! A Liouvillian visits only the pairs whose supports meet, through a [`support::SupportIndex`] of the larger operand.
+<a href=#6 id=6 data-nosnippet>6</a>
+<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>rayon::prelude::<span class="kw-2">*</span>;
+<a href=#8 id=8 data-nosnippet>8</a>
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span><span class="kw">super</span>::hash::Gf2Hash;
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span><span class="kw">super</span>::storage::{
+<a href=#11 id=11 data-nosnippet>11</a>    desired_bits, merge_summed, scaled_terms, BucketColumns, PauliSum, DEFAULT_MIN_BUCKETS,
+<a href=#12 id=12 data-nosnippet>12</a>    DEFAULT_TARGET_BUCKET_LEN,
+<a href=#13 id=13 data-nosnippet>13</a>};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="kw">super</span>::table::Entry;
+<a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span><span class="kw">super</span>::table::Table;
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">crate</span>::coefficient::Coefficient;
+<a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span><span class="kw">crate</span>::pauli_string::PauliString;
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span><span class="kw">crate</span>::phase::Phase;
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>support::{SupportIndex, SCAN_ABOVE_WEIGHT};
+<a href=#20 id=20 data-nosnippet>20</a>
+<a href=#21 id=21 data-nosnippet>21</a><span class="doccomment">/// Which pairs a product keeps and the factor it puts on them.
+<a href=#22 id=22 data-nosnippet>22</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+<a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">enum </span>Pairing {
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// `A·B`: every pair, at `i^k`.
+<a href=#25 id=25 data-nosnippet>25</a>    </span>Product,
+<a href=#26 id=26 data-nosnippet>26</a>    <span class="doccomment">/// `i[A, B]`: anticommuting pairs, at `2·i^(k+1)`, which is real.
+<a href=#27 id=27 data-nosnippet>27</a>    </span>Liouvillian,
+<a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// `{A, B}`: commuting pairs, at `2·i^k`, which is real.
+<a href=#29 id=29 data-nosnippet>29</a>    </span>Anticommutator,
+<a href=#30 id=30 data-nosnippet>30</a>}
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a><span class="kw">impl </span>Pairing {
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// The term `(a·P_a)·(b·P_b)` contributes, or `None` when the pairing drops the pair.
+<a href=#34 id=34 data-nosnippet>34</a>    </span><span class="attr">#[inline(always)]
+<a href=#35 id=35 data-nosnippet>35</a>    </span><span class="kw">fn </span>term&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt;(
+<a href=#36 id=36 data-nosnippet>36</a>        <span class="self">self</span>,
+<a href=#37 id=37 data-nosnippet>37</a>        left: <span class="kw-2">&amp;</span>Entry&lt;W, C&gt;,
+<a href=#38 id=38 data-nosnippet>38</a>        right: <span class="kw-2">&amp;</span>Entry&lt;W, C&gt;,
+<a href=#39 id=39 data-nosnippet>39</a>    ) -&gt; <span class="prelude-ty">Option</span>&lt;Entry&lt;W, C&gt;&gt; {
+<a href=#40 id=40 data-nosnippet>40</a>        <span class="kw">let </span><span class="kw-2">mut </span>key = PauliString { x: left.x, z: left.z };
+<a href=#41 id=41 data-nosnippet>41</a>        <span class="kw">let </span>other = PauliString { x: right.x, z: right.z };
+<a href=#42 id=42 data-nosnippet>42</a>        <span class="kw">let </span>(keep, extra) = <span class="kw">match </span><span class="self">self </span>{
+<a href=#43 id=43 data-nosnippet>43</a>            Pairing::Product =&gt; (<span class="bool-val">true</span>, Phase::ONE),
+<a href=#44 id=44 data-nosnippet>44</a>            Pairing::Liouvillian =&gt; (!key.commutes_with(<span class="kw-2">&amp;</span>other), Phase::I),
+<a href=#45 id=45 data-nosnippet>45</a>            Pairing::Anticommutator =&gt; (key.commutes_with(<span class="kw-2">&amp;</span>other), Phase::ONE),
+<a href=#46 id=46 data-nosnippet>46</a>        };
+<a href=#47 id=47 data-nosnippet>47</a>        <span class="kw">if </span>!keep {
+<a href=#48 id=48 data-nosnippet>48</a>            <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#49 id=49 data-nosnippet>49</a>        }
+<a href=#50 id=50 data-nosnippet>50</a>        <span class="kw">let </span>phase = key.mul_assign(<span class="kw-2">&amp;</span>other) + extra;
+<a href=#51 id=51 data-nosnippet>51</a>        <span class="kw">let </span><span class="kw-2">mut </span>c = left.c * right.c;
+<a href=#52 id=52 data-nosnippet>52</a>        <span class="kw">if </span><span class="self">self </span>!= Pairing::Product {
+<a href=#53 id=53 data-nosnippet>53</a>            c = c * C::real(<span class="number">2.0</span>);
+<a href=#54 id=54 data-nosnippet>54</a>        }
+<a href=#55 id=55 data-nosnippet>55</a>        <span class="prelude-val">Some</span>(Entry { x: key.x, z: key.z, c: c.mul_phase(phase) })
+<a href=#56 id=56 data-nosnippet>56</a>    }
+<a href=#57 id=57 data-nosnippet>57</a>}
+<a href=#58 id=58 data-nosnippet>58</a>
+<a href=#59 id=59 data-nosnippet>59</a><span class="doccomment">/// A generator's terms sorted by their bucket under the output hash, with the run boundaries.
+<a href=#60 id=60 data-nosnippet>60</a></span><span class="kw">struct </span>Groups&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt; {
+<a href=#61 id=61 data-nosnippet>61</a>    terms: Vec&lt;Entry&lt;W, C&gt;&gt;,
+<a href=#62 id=62 data-nosnippet>62</a>    <span class="doccomment">/// The bucket of each run, ascending.
+<a href=#63 id=63 data-nosnippet>63</a>    </span>buckets: Vec&lt;u32&gt;,
+<a href=#64 id=64 data-nosnippet>64</a>    <span class="doccomment">/// Run `g` is `terms[starts[g]..starts[g + 1]]`.
+<a href=#65 id=65 data-nosnippet>65</a>    </span>starts: Vec&lt;usize&gt;,
+<a href=#66 id=66 data-nosnippet>66</a>}
+<a href=#67 id=67 data-nosnippet>67</a>
+<a href=#68 id=68 data-nosnippet>68</a><span class="kw">impl</span>&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt; Groups&lt;W, C&gt; {
+<a href=#69 id=69 data-nosnippet>69</a>    <span class="kw">fn </span>new(terms: <span class="kw">impl </span>Iterator&lt;Item = Entry&lt;W, C&gt;&gt;, hash: <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;) -&gt; <span class="self">Self </span>{
+<a href=#70 id=70 data-nosnippet>70</a>        <span class="kw">let </span><span class="kw-2">mut </span>keyed: Vec&lt;(u32, Entry&lt;W, C&gt;)&gt; =
+<a href=#71 id=71 data-nosnippet>71</a>            terms.map(|e| (hash.bucket_of(<span class="kw-2">&amp;</span>e.x, <span class="kw-2">&amp;</span>e.z), e)).collect();
+<a href=#72 id=72 data-nosnippet>72</a>        keyed.sort_unstable_by_key(|(bucket, <span class="kw">_</span>)| <span class="kw-2">*</span>bucket);
+<a href=#73 id=73 data-nosnippet>73</a>        <span class="kw">let </span><span class="kw-2">mut </span>buckets = Vec::new();
+<a href=#74 id=74 data-nosnippet>74</a>        <span class="kw">let </span><span class="kw-2">mut </span>starts = Vec::new();
+<a href=#75 id=75 data-nosnippet>75</a>        <span class="kw">for </span>(i, (bucket, <span class="kw">_</span>)) <span class="kw">in </span>keyed.iter().enumerate() {
+<a href=#76 id=76 data-nosnippet>76</a>            <span class="kw">if </span>buckets.last() != <span class="prelude-val">Some</span>(bucket) {
+<a href=#77 id=77 data-nosnippet>77</a>                buckets.push(<span class="kw-2">*</span>bucket);
+<a href=#78 id=78 data-nosnippet>78</a>                starts.push(i);
+<a href=#79 id=79 data-nosnippet>79</a>            }
+<a href=#80 id=80 data-nosnippet>80</a>        }
+<a href=#81 id=81 data-nosnippet>81</a>        starts.push(keyed.len());
+<a href=#82 id=82 data-nosnippet>82</a>        <span class="self">Self </span>{ terms: keyed.into_iter().map(|(<span class="kw">_</span>, e)| e).collect(), buckets, starts }
+<a href=#83 id=83 data-nosnippet>83</a>    }
+<a href=#84 id=84 data-nosnippet>84</a>}
+<a href=#85 id=85 data-nosnippet>85</a>
+<a href=#86 id=86 data-nosnippet>86</a><span class="doccomment">/// One generator against one operand, as an output pass reads them.
+<a href=#87 id=87 data-nosnippet>87</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>Job&lt;<span class="lifetime">'a</span>, <span class="kw">const </span>W: usize, C: Coefficient&gt; {
+<a href=#88 id=88 data-nosnippet>88</a>    groups: Groups&lt;W, C&gt;,
+<a href=#89 id=89 data-nosnippet>89</a>    operand: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>PauliSum&lt;W, C&gt;,
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="doccomment">/// Built for a Liouvillian only, since disjoint supports always commute.
+<a href=#91 id=91 data-nosnippet>91</a>    </span>index: <span class="prelude-ty">Option</span>&lt;SupportIndex&gt;,
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// Whether the generator is the left factor of each pair.
+<a href=#93 id=93 data-nosnippet>93</a>    </span>generator_left: bool,
+<a href=#94 id=94 data-nosnippet>94</a>}
+<a href=#95 id=95 data-nosnippet>95</a>
+<a href=#96 id=96 data-nosnippet>96</a><span class="kw">impl</span>&lt;<span class="lifetime">'a</span>, <span class="kw">const </span>W: usize, C: Coefficient&gt; Job&lt;<span class="lifetime">'a</span>, W, C&gt; {
+<a href=#97 id=97 data-nosnippet>97</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(
+<a href=#98 id=98 data-nosnippet>98</a>        generator: <span class="kw">impl </span>Iterator&lt;Item = Entry&lt;W, C&gt;&gt;,
+<a href=#99 id=99 data-nosnippet>99</a>        operand: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>PauliSum&lt;W, C&gt;,
+<a href=#100 id=100 data-nosnippet>100</a>        pairing: Pairing,
+<a href=#101 id=101 data-nosnippet>101</a>        generator_left: bool,
+<a href=#102 id=102 data-nosnippet>102</a>    ) -&gt; <span class="self">Self </span>{
+<a href=#103 id=103 data-nosnippet>103</a>        <span class="kw">let </span>index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(operand));
+<a href=#104 id=104 data-nosnippet>104</a>        <span class="self">Self</span>::with_index(generator, operand, index, generator_left)
+<a href=#105 id=105 data-nosnippet>105</a>    }
+<a href=#106 id=106 data-nosnippet>106</a>
+<a href=#107 id=107 data-nosnippet>107</a>    <span class="doccomment">/// [`Job::new`] with `operand`'s support index already built, which must be `Some` exactly for a Liouvillian.
+<a href=#108 id=108 data-nosnippet>108</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>with_index(
+<a href=#109 id=109 data-nosnippet>109</a>        generator: <span class="kw">impl </span>Iterator&lt;Item = Entry&lt;W, C&gt;&gt;,
+<a href=#110 id=110 data-nosnippet>110</a>        operand: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>PauliSum&lt;W, C&gt;,
+<a href=#111 id=111 data-nosnippet>111</a>        index: <span class="prelude-ty">Option</span>&lt;SupportIndex&gt;,
+<a href=#112 id=112 data-nosnippet>112</a>        generator_left: bool,
+<a href=#113 id=113 data-nosnippet>113</a>    ) -&gt; <span class="self">Self </span>{
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="self">Self </span>{ groups: Groups::new(generator, <span class="kw-2">&amp;</span>operand.hash), operand, index, generator_left }
+<a href=#115 id=115 data-nosnippet>115</a>    }
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a>    <span class="doccomment">/// Every pair of this job landing in output bucket `out`, accumulated into `table`.
+<a href=#118 id=118 data-nosnippet>118</a>    </span><span class="attr">#[inline]
+<a href=#119 id=119 data-nosnippet>119</a>    </span><span class="kw">fn </span>accumulate_into(
+<a href=#120 id=120 data-nosnippet>120</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#121 id=121 data-nosnippet>121</a>        out: usize,
+<a href=#122 id=122 data-nosnippet>122</a>        pairing: Pairing,
+<a href=#123 id=123 data-nosnippet>123</a>        table: <span class="kw-2">&amp;mut </span>Table&lt;W, C&gt;,
+<a href=#124 id=124 data-nosnippet>124</a>        candidates: <span class="kw-2">&amp;mut </span>Vec&lt;u64&gt;,
+<a href=#125 id=125 data-nosnippet>125</a>    ) {
+<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">for </span>(g, <span class="kw-2">&amp;</span>delta) <span class="kw">in </span><span class="self">self</span>.groups.buckets.iter().enumerate() {
+<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw">let </span>b = out ^ delta <span class="kw">as </span>usize;
+<a href=#128 id=128 data-nosnippet>128</a>            <span class="kw">let </span>input = <span class="kw-2">&amp;</span><span class="self">self</span>.operand.buckets[b];
+<a href=#129 id=129 data-nosnippet>129</a>            <span class="kw">let </span><span class="kw-2">mut </span>emit = |i: usize, s: <span class="kw-2">&amp;</span>Entry&lt;W, C&gt;| {
+<a href=#130 id=130 data-nosnippet>130</a>                <span class="kw">let </span>l = Entry { x: input.x[i], z: input.z[i], c: input.coeff[i] };
+<a href=#131 id=131 data-nosnippet>131</a>                <span class="kw">let </span>term =
+<a href=#132 id=132 data-nosnippet>132</a>                    <span class="kw">if </span><span class="self">self</span>.generator_left { pairing.term(s, <span class="kw-2">&amp;</span>l) } <span class="kw">else </span>{ pairing.term(<span class="kw-2">&amp;</span>l, s) };
+<a href=#133 id=133 data-nosnippet>133</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(t) = term {
+<a href=#134 id=134 data-nosnippet>134</a>                    table.accumulate(t.x, t.z, t.c);
+<a href=#135 id=135 data-nosnippet>135</a>                }
+<a href=#136 id=136 data-nosnippet>136</a>            };
+<a href=#137 id=137 data-nosnippet>137</a>            <span class="kw">for </span>s <span class="kw">in </span><span class="kw-2">&amp;</span><span class="self">self</span>.groups.terms[<span class="self">self</span>.groups.starts[g]..<span class="self">self</span>.groups.starts[g + <span class="number">1</span>]] {
+<a href=#138 id=138 data-nosnippet>138</a>                <span class="kw">let </span>support: [u64; W] = std::array::from_fn(|w| s.x[w] | s.z[w]);
+<a href=#139 id=139 data-nosnippet>139</a>                <span class="kw">let </span>weight: u32 = support.iter().map(|w| w.count_ones()).sum();
+<a href=#140 id=140 data-nosnippet>140</a>                <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.index {
+<a href=#141 id=141 data-nosnippet>141</a>                    <span class="prelude-val">Some</span>(index) <span class="kw">if </span>weight &lt;= SCAN_ABOVE_WEIGHT =&gt; {
+<a href=#142 id=142 data-nosnippet>142</a>                        index.candidates(b, <span class="kw-2">&amp;</span>support, candidates);
+<a href=#143 id=143 data-nosnippet>143</a>                        <span class="kw">for </span>(w, <span class="kw-2">&amp;</span>word) <span class="kw">in </span>candidates.iter().enumerate() {
+<a href=#144 id=144 data-nosnippet>144</a>                            <span class="kw">let </span><span class="kw-2">mut </span>bits = word;
+<a href=#145 id=145 data-nosnippet>145</a>                            <span class="kw">while </span><span class="macro">bits !</span>= <span class="number">0 </span>{
+<a href=#146 id=146 data-nosnippet>146</a>                                emit(w * <span class="number">64 </span>+ bits.trailing_zeros() <span class="kw">as </span>usize, s);
+<a href=#147 id=147 data-nosnippet>147</a>                                bits &amp;= bits - <span class="number">1</span>;
+<a href=#148 id=148 data-nosnippet>148</a>                            }
+<a href=#149 id=149 data-nosnippet>149</a>                        }
+<a href=#150 id=150 data-nosnippet>150</a>                    }
+<a href=#151 id=151 data-nosnippet>151</a>                    <span class="kw">_ </span>=&gt; (<span class="number">0</span>..input.len()).for_each(|i| emit(i, s)),
+<a href=#152 id=152 data-nosnippet>152</a>                }
+<a href=#153 id=153 data-nosnippet>153</a>            }
+<a href=#154 id=154 data-nosnippet>154</a>        }
+<a href=#155 id=155 data-nosnippet>155</a>    }
+<a href=#156 id=156 data-nosnippet>156</a>}
+<a href=#157 id=157 data-nosnippet>157</a>
+<a href=#158 id=158 data-nosnippet>158</a><span class="doccomment">/// The factors of `dest ← alpha · pairs + beta · dest`.
+<a href=#159 id=159 data-nosnippet>159</a></span><span class="attr">#[derive(Clone, Copy, Debug)]
+<a href=#160 id=160 data-nosnippet>160</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>Weights&lt;C&gt; {
+<a href=#161 id=161 data-nosnippet>161</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) alpha: C,
+<a href=#162 id=162 data-nosnippet>162</a>    <span class="kw">pub</span>(<span class="kw">crate</span>) beta: C,
+<a href=#163 id=163 data-nosnippet>163</a>}
+<a href=#164 id=164 data-nosnippet>164</a>
+<a href=#165 id=165 data-nosnippet>165</a><span class="kw">impl</span>&lt;C: Coefficient&gt; Weights&lt;C&gt; {
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// A fresh result: `alpha = 1`, `beta = 0`.
+<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>fresh() -&gt; <span class="self">Self </span>{
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="self">Self </span>{ alpha: C::ONE, beta: C::ZERO }
+<a href=#169 id=169 data-nosnippet>169</a>    }
+<a href=#170 id=170 data-nosnippet>170</a>}
+<a href=#171 id=171 data-nosnippet>171</a>
+<a href=#172 id=172 data-nosnippet>172</a><span class="doccomment">/// The table's terms merged with `beta · dest`, key-sorted, keeping the nonzero sums `keep` accepts.
+<a href=#173 id=173 data-nosnippet>173</a></span><span class="kw">fn </span>drained_into&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt;(
+<a href=#174 id=174 data-nosnippet>174</a>    table: <span class="kw-2">&amp;</span>Table&lt;W, C&gt;,
+<a href=#175 id=175 data-nosnippet>175</a>    dest: <span class="kw-2">&amp;</span>BucketColumns&lt;W, C&gt;,
+<a href=#176 id=176 data-nosnippet>176</a>    beta: C,
+<a href=#177 id=177 data-nosnippet>177</a>    keep: <span class="kw-2">&amp;</span><span class="kw">impl </span>Fn(<span class="kw-2">&amp;</span>[u64; W], <span class="kw-2">&amp;</span>[u64; W], C) -&gt; bool,
+<a href=#178 id=178 data-nosnippet>178</a>) -&gt; BucketColumns&lt;W, C&gt; {
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">let </span><span class="kw-2">mut </span>entries: Vec&lt;<span class="kw-2">&amp;</span>Entry&lt;W, C&gt;&gt; = table.entries().iter().collect();
+<a href=#180 id=180 data-nosnippet>180</a>    entries.sort_unstable_by(|a, b| (<span class="kw-2">&amp;</span>a.x, <span class="kw-2">&amp;</span>a.z).cmp(<span class="kw-2">&amp;</span>(<span class="kw-2">&amp;</span>b.x, <span class="kw-2">&amp;</span>b.z)));
+<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">let </span>held = <span class="kw">if </span>beta == C::ZERO { <span class="number">0 </span>} <span class="kw">else </span>{ dest.len() };
+<a href=#182 id=182 data-nosnippet>182</a>    merge_summed(
+<a href=#183 id=183 data-nosnippet>183</a>        entries.iter().map(|e| (e.x, e.z, e.c)),
+<a href=#184 id=184 data-nosnippet>184</a>        scaled_terms(dest, beta).take(held),
+<a href=#185 id=185 data-nosnippet>185</a>        entries.len() + held,
+<a href=#186 id=186 data-nosnippet>186</a>        keep,
+<a href=#187 id=187 data-nosnippet>187</a>    )
+<a href=#188 id=188 data-nosnippet>188</a>}
+<a href=#189 id=189 data-nosnippet>189</a>
+<a href=#190 id=190 data-nosnippet>190</a><span class="doccomment">/// `dest ← alpha · Σ pairs + beta · dest` over every pair of every job, where the jobs' generators already carry `alpha` and `dest` is partitioned exactly as the operands; one bucket of `dest` is replaced at a time, keeping the summed terms `keep` accepts.
+<a href=#191 id=191 data-nosnippet>191</a>///
+<a href=#192 id=192 data-nosnippet>192</a>/// # Panics
+<a href=#193 id=193 data-nosnippet>193</a>///
+<a href=#194 id=194 data-nosnippet>194</a>/// If `dest` or an operand is partitioned differently from `hash`, or the qubit counts differ.
+<a href=#195 id=195 data-nosnippet>195</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>accumulate_into&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt;(
+<a href=#196 id=196 data-nosnippet>196</a>    dest: <span class="kw-2">&amp;mut </span>PauliSum&lt;W, C&gt;,
+<a href=#197 id=197 data-nosnippet>197</a>    beta: C,
+<a href=#198 id=198 data-nosnippet>198</a>    jobs: <span class="kw-2">&amp;</span>[Job&lt;<span class="lifetime">'_</span>, W, C&gt;],
+<a href=#199 id=199 data-nosnippet>199</a>    pairing: Pairing,
+<a href=#200 id=200 data-nosnippet>200</a>    keep: <span class="kw-2">&amp;</span>(<span class="kw">impl </span>Fn(<span class="kw-2">&amp;</span>[u64; W], <span class="kw-2">&amp;</span>[u64; W], C) -&gt; bool + Sync),
+<a href=#201 id=201 data-nosnippet>201</a>) {
+<a href=#202 id=202 data-nosnippet>202</a>    <span class="kw">for </span>job <span class="kw">in </span>jobs {
+<a href=#203 id=203 data-nosnippet>203</a>        <span class="macro">assert!</span>(
+<a href=#204 id=204 data-nosnippet>204</a>            job.operand.hash.same_rows_as(<span class="kw-2">&amp;</span>dest.hash) &amp;&amp; job.operand.hash.bits() == dest.hash.bits(),
+<a href=#205 id=205 data-nosnippet>205</a>            <span class="string">"accumulate_into: operands partitioned differently from the destination"</span>,
+<a href=#206 id=206 data-nosnippet>206</a>        );
+<a href=#207 id=207 data-nosnippet>207</a>        <span class="macro">assert_eq!</span>(job.operand.num_qubits, dest.num_qubits, <span class="string">"accumulate_into: num_qubits mismatch"</span>);
+<a href=#208 id=208 data-nosnippet>208</a>    }
+<a href=#209 id=209 data-nosnippet>209</a>    dest.buckets.par_iter_mut().enumerate().for_each_init(
+<a href=#210 id=210 data-nosnippet>210</a>        || (Table::&lt;W, C&gt;::default(), Vec::new()),
+<a href=#211 id=211 data-nosnippet>211</a>        |(table, candidates), (out, columns)| {
+<a href=#212 id=212 data-nosnippet>212</a>            table.clear();
+<a href=#213 id=213 data-nosnippet>213</a>            <span class="kw">for </span>job <span class="kw">in </span>jobs {
+<a href=#214 id=214 data-nosnippet>214</a>                job.accumulate_into(out, pairing, table, candidates);
+<a href=#215 id=215 data-nosnippet>215</a>            }
+<a href=#216 id=216 data-nosnippet>216</a>            <span class="kw-2">*</span>columns = drained_into(table, columns, beta, keep);
+<a href=#217 id=217 data-nosnippet>217</a>        },
+<a href=#218 id=218 data-nosnippet>218</a>    );
+<a href=#219 id=219 data-nosnippet>219</a>    dest.recount();
+<a href=#220 id=220 data-nosnippet>220</a>}
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a><span class="kw">impl</span>&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt; PauliSum&lt;W, C&gt; {
+<a href=#223 id=223 data-nosnippet>223</a>    <span class="doccomment">/// `self ← weights.alpha · pairing(generator, operand) + weights.beta · self`, keeping the summed terms `keep` accepts; `self` ends partitioned under the larger operand's hash rows.
+<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>pair_into(
+<a href=#225 id=225 data-nosnippet>225</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
+<a href=#226 id=226 data-nosnippet>226</a>        generator: <span class="kw-2">&amp;</span><span class="self">Self</span>,
+<a href=#227 id=227 data-nosnippet>227</a>        operand: <span class="kw-2">&amp;</span><span class="self">Self</span>,
+<a href=#228 id=228 data-nosnippet>228</a>        pairing: Pairing,
+<a href=#229 id=229 data-nosnippet>229</a>        weights: Weights&lt;C&gt;,
+<a href=#230 id=230 data-nosnippet>230</a>        keep: <span class="kw-2">&amp;</span>(<span class="kw">impl </span>Fn(<span class="kw-2">&amp;</span>[u64; W], <span class="kw-2">&amp;</span>[u64; W], C) -&gt; bool + Sync),
+<a href=#231 id=231 data-nosnippet>231</a>    ) {
+<a href=#232 id=232 data-nosnippet>232</a>        <span class="macro">assert!</span>(
+<a href=#233 id=233 data-nosnippet>233</a>            generator.num_qubits == operand.num_qubits &amp;&amp; <span class="self">self</span>.num_qubits == operand.num_qubits,
+<a href=#234 id=234 data-nosnippet>234</a>            <span class="string">"PauliSum::{pairing:?}: num_qubits mismatch (generator {}, operand {}, destination {})"</span>,
+<a href=#235 id=235 data-nosnippet>235</a>            generator.num_qubits,
+<a href=#236 id=236 data-nosnippet>236</a>            operand.num_qubits,
+<a href=#237 id=237 data-nosnippet>237</a>            <span class="self">self</span>.num_qubits,
+<a href=#238 id=238 data-nosnippet>238</a>        );
+<a href=#239 id=239 data-nosnippet>239</a>        <span class="kw">let </span>generator_is_large = generator.len &gt; operand.len;
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="kw">let </span>(large, small) =
+<a href=#241 id=241 data-nosnippet>241</a>            <span class="kw">if </span>generator_is_large { (generator, operand) } <span class="kw">else </span>{ (operand, generator) };
+<a href=#242 id=242 data-nosnippet>242</a>
+<a href=#243 id=243 data-nosnippet>243</a>        <span class="comment">// The large operand's own bucket count, raised to the parallelism floor when the pair count warrants it; only a sum below that floor is refined, so the copy is small.
+<a href=#244 id=244 data-nosnippet>244</a>        </span><span class="kw">let </span>pairs = large.len.saturating_mul(small.len);
+<a href=#245 id=245 data-nosnippet>245</a>        <span class="kw">let </span>floor = desired_bits(pairs, DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS)
+<a href=#246 id=246 data-nosnippet>246</a>            .min(DEFAULT_MIN_BUCKETS.trailing_zeros() <span class="kw">as </span>u8)
+<a href=#247 id=247 data-nosnippet>247</a>            .min(large.hash.max_bits());
+<a href=#248 id=248 data-nosnippet>248</a>        <span class="kw">let </span>refined;
+<a href=#249 id=249 data-nosnippet>249</a>        <span class="kw">let </span>large = <span class="kw">if </span>floor &gt; large.hash.bits() {
+<a href=#250 id=250 data-nosnippet>250</a>            <span class="kw">let </span><span class="kw-2">mut </span>copy = large.clone();
+<a href=#251 id=251 data-nosnippet>251</a>            <span class="kw">while </span>copy.hash.bits() &lt; floor {
+<a href=#252 id=252 data-nosnippet>252</a>                copy.refine();
+<a href=#253 id=253 data-nosnippet>253</a>            }
+<a href=#254 id=254 data-nosnippet>254</a>            refined = copy;
+<a href=#255 id=255 data-nosnippet>255</a>            <span class="kw-2">&amp;</span>refined
+<a href=#256 id=256 data-nosnippet>256</a>        } <span class="kw">else </span>{
+<a href=#257 id=257 data-nosnippet>257</a>            large
+<a href=#258 id=258 data-nosnippet>258</a>        };
+<a href=#259 id=259 data-nosnippet>259</a>
+<a href=#260 id=260 data-nosnippet>260</a>        <span class="self">self</span>.align_destination(<span class="kw-2">&amp;</span>large.hash, weights.beta);
+<a href=#261 id=261 data-nosnippet>261</a>        <span class="kw">let </span>alpha = weights.alpha;
+<a href=#262 id=262 data-nosnippet>262</a>        <span class="kw">let </span>scaled = small.iter().map(|(x, z, c)| Entry { x: <span class="kw-2">*</span>x, z: <span class="kw-2">*</span>z, c: c * alpha });
+<a href=#263 id=263 data-nosnippet>263</a>        <span class="kw">let </span>job = Job::new(scaled, large, pairing, !generator_is_large);
+<a href=#264 id=264 data-nosnippet>264</a>        accumulate_into(<span class="self">self</span>, weights.beta, <span class="kw-2">&amp;</span>[job], pairing, keep);
+<a href=#265 id=265 data-nosnippet>265</a>        <span class="self">self</span>.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+<a href=#266 id=266 data-nosnippet>266</a>    }
+<a href=#267 id=267 data-nosnippet>267</a>
+<a href=#268 id=268 data-nosnippet>268</a>    <span class="doccomment">/// `pairing(self, other)` as a new sum, keeping every summed term.
+<a href=#269 id=269 data-nosnippet>269</a>    </span><span class="kw">fn </span>paired(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>, pairing: Pairing) -&gt; <span class="self">Self </span>{
+<a href=#270 id=270 data-nosnippet>270</a>        <span class="kw">let </span><span class="kw-2">mut </span>out = <span class="self">Self</span>::empty_with_hash(<span class="self">self</span>.num_qubits, other.hash.clone());
+<a href=#271 id=271 data-nosnippet>271</a>        out.pair_into(<span class="self">self</span>, other, pairing, Weights::fresh(), <span class="kw-2">&amp;</span>|<span class="kw">_</span>, <span class="kw">_</span>, <span class="kw">_</span>| <span class="bool-val">true</span>);
+<a href=#272 id=272 data-nosnippet>272</a>        out
+<a href=#273 id=273 data-nosnippet>273</a>    }
+<a href=#274 id=274 data-nosnippet>274</a>
+<a href=#275 id=275 data-nosnippet>275</a>    <span class="doccomment">/// The operator product `self · other`; terms summing to exactly zero are dropped.
+<a href=#276 id=276 data-nosnippet>276</a>    ///
+<a href=#277 id=277 data-nosnippet>277</a>    /// The result is partitioned under the larger operand's hash rows, at the bucket count its size asks for.
+<a href=#278 id=278 data-nosnippet>278</a>    ///
+<a href=#279 id=279 data-nosnippet>279</a>    /// # Panics
+<a href=#280 id=280 data-nosnippet>280</a>    ///
+<a href=#281 id=281 data-nosnippet>281</a>    /// If the two sums disagree about `num_qubits`, or if `C` is real: a product of anticommuting Hermitian strings carries an odd phase that no real coefficient holds.
+<a href=#282 id=282 data-nosnippet>282</a>    </span><span class="kw">pub fn </span>product(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; <span class="self">Self </span>{
+<a href=#283 id=283 data-nosnippet>283</a>        <span class="macro">assert!</span>(
+<a href=#284 id=284 data-nosnippet>284</a>            !C::IS_REAL,
+<a href=#285 id=285 data-nosnippet>285</a>            <span class="string">"PauliSum::product: a product is not Hermitian, so a real coefficient type ({}) cannot hold it; cast to a complex type first"</span>,
+<a href=#286 id=286 data-nosnippet>286</a>            C::NAME,
+<a href=#287 id=287 data-nosnippet>287</a>        );
+<a href=#288 id=288 data-nosnippet>288</a>        <span class="self">self</span>.paired(other, Pairing::Product)
+<a href=#289 id=289 data-nosnippet>289</a>    }
+<a href=#290 id=290 data-nosnippet>290</a>
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="doccomment">/// The Liouvillian `i[self, other] = i(self · other − other · self)`, Hermitian whenever both operands are, so a real coefficient type stays exact.
+<a href=#292 id=292 data-nosnippet>292</a>    ///
+<a href=#293 id=293 data-nosnippet>293</a>    /// Only anticommuting string pairs contribute; terms summing to exactly zero are dropped, and the result is partitioned as [`Self::product`]'s.
+<a href=#294 id=294 data-nosnippet>294</a>    ///
+<a href=#295 id=295 data-nosnippet>295</a>    /// # Panics
+<a href=#296 id=296 data-nosnippet>296</a>    ///
+<a href=#297 id=297 data-nosnippet>297</a>    /// If the two sums disagree about `num_qubits`.
+<a href=#298 id=298 data-nosnippet>298</a>    </span><span class="kw">pub fn </span>liouvillian(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; <span class="self">Self </span>{
+<a href=#299 id=299 data-nosnippet>299</a>        <span class="self">self</span>.paired(other, Pairing::Liouvillian)
+<a href=#300 id=300 data-nosnippet>300</a>    }
+<a href=#301 id=301 data-nosnippet>301</a>
+<a href=#302 id=302 data-nosnippet>302</a>    <span class="doccomment">/// The anticommutator `{self, other} = self · other + other · self`, Hermitian whenever both operands are.
+<a href=#303 id=303 data-nosnippet>303</a>    ///
+<a href=#304 id=304 data-nosnippet>304</a>    /// Only commuting string pairs contribute; terms summing to exactly zero are dropped, and the result is partitioned as [`Self::product`]'s.
+<a href=#305 id=305 data-nosnippet>305</a>    ///
+<a href=#306 id=306 data-nosnippet>306</a>    /// # Panics
+<a href=#307 id=307 data-nosnippet>307</a>    ///
+<a href=#308 id=308 data-nosnippet>308</a>    /// If the two sums disagree about `num_qubits`.
+<a href=#309 id=309 data-nosnippet>309</a>    </span><span class="kw">pub fn </span>anticommutator(<span class="kw-2">&amp;</span><span class="self">self</span>, other: <span class="kw-2">&amp;</span><span class="self">Self</span>) -&gt; <span class="self">Self </span>{
+<a href=#310 id=310 data-nosnippet>310</a>        <span class="self">self</span>.paired(other, Pairing::Anticommutator)
+<a href=#311 id=311 data-nosnippet>311</a>    }
+<a href=#312 id=312 data-nosnippet>312</a>}
+<a href=#313 id=313 data-nosnippet>313</a>
+<a href=#314 id=314 data-nosnippet>314</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">mod </span>support;
+<a href=#315 id=315 data-nosnippet>315</a><span class="attr">#[cfg(test)]
+<a href=#316 id=316 data-nosnippet>316</a></span><span class="kw">mod </span>tests;
+</code></pre></div></section></main></body></html>

@@ -253,11 +253,21 @@ Rejected: sending each chunk as soon as it is filled (branch `stream-sends`, `19
 ### `ApproxTopN`'s layer pass fused into the coset loop
 
 At saturation `ApproxTopN`'s layer pass was three passes over the sum (octave histogram, per-bucket boundary count, retain): on ccqlin038 at `atopn:2e6` it was **48%** of wall on 24-qubit `tfim_step` and 28% on `heavyhex_step` at P = 1, 32–35% at P = 2, split histogram 26% / boundary count 22% / retain 52%.
-Now the coset loop counts each output bucket into a 64-octave window around the last boundary while the bucket is in cache (`truncation/octave_window.rs`), the pass decides the edge and per-bucket quotas from those counts, and the cut is deferred to the next coset loop, which applies it to each bucket as it swaps it in (`LayerOctaves`); a rescale, an exchanging layer's export, a rebucket and the end of a call apply it whole.
+Now the coset loop counts each output bucket into a 64-octave window around the last boundary while the bucket is in cache (`truncation/octave_window.rs`), the pass decides the edge and per-bucket quotas from those counts, and the cut is deferred to the next coset loop, which applies it to each bucket as it swaps it in (`LayerOctaves`); a rescale, a rebucket and the end of a call apply it whole, and an exchanging layer's export reads around it (§Exchanging layers count and mark their rows a layer ahead).
 A layer whose agreed bound on the sum's length times its fan-out (one for a Clifford rotation, a permutation or a rescale) stays within `n` takes no counts and skips the pass, collectives included.
 Code A/B against `6a2e9e4a` on ccqlin038 (shared, load 3–27, alternated, 2–6 pairs): `tfim_step` P = 1 wall **−40%** (2.11 → 1.25 s), P = 2 **−19% / −26%**; `heavyhex_step` P = 1 **−21% to −28%** (7.9 → 5.9 s), P = 2 **−19% / −21%**; finalize falls to 1–2% of wall at P = 1 and 4–6% at P = 2, where the remaining cost is the exchanging layers' whole-sum cut and the per-layer all-reduce wait.
 Counting alone (without the deferral) raised the coset loop 3–11%, which on `heavyhex_step` P = 1 cancelled its gain (its Clifford bond layers counted without cutting); the deferral and the skip removed that.
 The untouched `coeff:` path moved −4.8% to +5.4% across pairs, within this host's layout and load noise.
+Quiet-node A/B pending.
+
+### Exchanging layers count and mark their rows a layer ahead
+
+An exchanging layer made three passes over the sum before its coset loop: the deferred `ApproxTopN` cut applied whole, the export's count pass, and a fill scanning every bucket that exports anything.
+Now the export reads around the pending cut (`CutFilter`, branch-free) and the coset loop applies it as on a local layer; when the next layer has exactly one remote delta, the coset loop also counts the terms it emits for per bucket and octave slot and marks them one bit per term (`engine/bucketed/export_ahead.rs`), so the count pass reads those counts and the fill visits only the marked rows, except in the one bucket a boundary quota splits.
+`paulistrings-sim` `weak_scaling` `ccqlin038_ab` (16×16 TFIM, `approx_topn` 2e6 per rank, 2 MPI ranks on ccqlin038, code A/B against `ad9d358d`, base/new/new/base): x-only rows **−23.2%** (13.82 → 10.61 s/step, 2/2 pairs), export 2.24 → 0.33 s, exchange 0.65 → 0.06 s, coset loop 11.24 → 9.96 s; cut rows −1.5% (10.43 → 10.28 s); one rank +0.5% (8.98 → 9.03 s).
+By step on the x-only cell: reading around the cut alone −8.2% (13.92 → 12.79 s), with the count pass replaced −16.0% (13.88 → 11.65 s), with the marked fill −23.2%.
+The 24-qubit `tfim_step` probe at `atopn:2e6`, P = 2 random rows (half an exporting bucket's terms emit, `W = 1`): wall **−7.1%** median (1791 → 1661 ms, 5/6 pairs, load 16–21), export −13%, coset loop +14% for the counting and marking; reading around the cut alone was flat there (export +100–140 ms against the 180 ms whole-sum cut, 4/6 pairs negative).
+Rejected: the cut filter and the count with branches, export +35% and wall +2–4% on the probe.
 Quiet-node A/B pending.
 
 ## GPU spike

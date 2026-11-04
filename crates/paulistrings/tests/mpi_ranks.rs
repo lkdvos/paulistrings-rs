@@ -32,15 +32,16 @@ use num_complex::Complex64;
 use paulistrings::mpi::{propagate_mpi, rsmpi, MpiTransport};
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, haar_su4_matrix,
-    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts, spread_magnitudes,
-    trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll,
+    heavy_cut, low_weight_sum, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
+    spread_magnitudes, trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation,
+    KeepAll,
 };
 use paulistrings::test_support::{
     count_remote_deltas, mpi_build_library_version, mpi_with_chunk_bytes, BITS_AGREE_EVERY,
 };
 use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
-    PropagateOptions, TruncationPolicy,
+    anticommutator_share, liouvillian_share, product_share, propagate, BuildAccumulator, Circuit,
+    Direction, PartitionRows, PauliString, PauliSum, PropagateOptions, TruncationPolicy,
 };
 use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, WeightCutoff};
 use paulistrings::{
@@ -868,6 +869,34 @@ fn run_host_cases(r: &mut Runner) {
         // rank — `len` is the whole sum's, `local().len()` this rank's share.
         assert_eq!(split.len(), oracle.len(), "rank {}: collective len", r.rank);
         assert!(split.local().len() <= split.len());
+    });
+
+    // ---- operator products of a replicated generator ----------------------
+    r.case("operator products of a replicated generator match one process", |r| {
+        let nq = 24;
+        let generator = low_weight_sum::<1>(30, nq, 2, 0xA0F1);
+        let operand = low_weight_sum::<1>(4_000, nq, 4, 0xA0F3);
+        let transport = MpiTransport::from_communicator(r.world);
+        let split =
+            DistributedSum::scatter_with(operand.clone(), transport, unpinned_scatter(1, 2, SEED));
+        let (share, rows, transport) = (split.local(), split.rows(), split.transport());
+        let own = |sum: PauliSum<1>| {
+            let mut sum = sum;
+            sum.retain(|x, z, _| rows.partition_of(x, z) == r.rank);
+            sum
+        };
+        let policy = CoefficientThreshold(1e-2);
+        let got = liouvillian_share(&generator, share, rows, transport, &policy);
+        assert_terms_close(
+            &got,
+            &own(generator.liouvillian_with(&operand, &policy)),
+            TOL,
+            "liouvillian",
+        );
+        let got = product_share(&generator, share, rows, transport, &KeepAll);
+        assert_terms_close(&got, &own(generator.product(&operand)), TOL, "product");
+        let got = anticommutator_share(&generator, share, rows, transport, &KeepAll);
+        assert_terms_close(&got, &own(generator.anticommutator(&operand)), TOL, "anticommutator");
     });
 }
 

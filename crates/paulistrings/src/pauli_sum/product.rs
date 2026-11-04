@@ -6,10 +6,12 @@
 
 use rayon::prelude::*;
 
+use super::hash::Gf2Hash;
 use super::storage::{
     desired_bits, BucketColumns, PauliSum, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
 };
-use super::table::{Entry, Table};
+pub(crate) use super::table::Entry;
+use super::table::Table;
 use crate::coefficient::Coefficient;
 use crate::pauli_string::PauliString;
 use crate::phase::Phase;
@@ -53,7 +55,7 @@ impl Pairing {
     }
 }
 
-/// The smaller operand's terms sorted by their bucket under the output hash, with the run boundaries.
+/// A generator's terms sorted by their bucket under the output hash, with the run boundaries.
 struct Groups<const W: usize, C: Coefficient> {
     terms: Vec<Entry<W, C>>,
     /// The bucket of each run, ascending.
@@ -63,9 +65,9 @@ struct Groups<const W: usize, C: Coefficient> {
 }
 
 impl<const W: usize, C: Coefficient> Groups<W, C> {
-    fn new(sum: &PauliSum<W, C>, hash: &super::Gf2Hash<W>) -> Self {
+    fn new(terms: impl Iterator<Item = Entry<W, C>>, hash: &Gf2Hash<W>) -> Self {
         let mut keyed: Vec<(u32, Entry<W, C>)> =
-            sum.iter().map(|(x, z, c)| (hash.bucket_of(x, z), Entry { x: *x, z: *z, c })).collect();
+            terms.map(|e| (hash.bucket_of(&e.x, &e.z), e)).collect();
         keyed.sort_unstable_by_key(|(bucket, _)| *bucket);
         let mut buckets = Vec::new();
         let mut starts = Vec::new();
@@ -77,6 +79,72 @@ impl<const W: usize, C: Coefficient> Groups<W, C> {
         }
         starts.push(keyed.len());
         Self { terms: keyed.into_iter().map(|(_, e)| e).collect(), buckets, starts }
+    }
+}
+
+/// One generator against one operand, as an output pass reads them.
+pub(crate) struct Job<'a, const W: usize, C: Coefficient> {
+    groups: Groups<W, C>,
+    operand: &'a PauliSum<W, C>,
+    /// Built for a Liouvillian only, since disjoint supports always commute.
+    index: Option<SupportIndex>,
+    /// Whether the generator is the left factor of each pair.
+    generator_left: bool,
+}
+
+impl<'a, const W: usize, C: Coefficient> Job<'a, W, C> {
+    pub(crate) fn new(
+        generator: impl Iterator<Item = Entry<W, C>>,
+        operand: &'a PauliSum<W, C>,
+        pairing: Pairing,
+        generator_left: bool,
+    ) -> Self {
+        Self {
+            groups: Groups::new(generator, &operand.hash),
+            operand,
+            index: (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(operand)),
+            generator_left,
+        }
+    }
+
+    /// Every pair of this job landing in output bucket `out`, accumulated into `table`.
+    #[inline]
+    fn accumulate_into(
+        &self,
+        out: usize,
+        pairing: Pairing,
+        table: &mut Table<W, C>,
+        candidates: &mut Vec<u64>,
+    ) {
+        for (g, &delta) in self.groups.buckets.iter().enumerate() {
+            let b = out ^ delta as usize;
+            let input = &self.operand.buckets[b];
+            let mut emit = |i: usize, s: &Entry<W, C>| {
+                let l = Entry { x: input.x[i], z: input.z[i], c: input.coeff[i] };
+                let term =
+                    if self.generator_left { pairing.term(s, &l) } else { pairing.term(&l, s) };
+                if let Some(t) = term {
+                    table.accumulate(t.x, t.z, t.c);
+                }
+            };
+            for s in &self.groups.terms[self.groups.starts[g]..self.groups.starts[g + 1]] {
+                let support: [u64; W] = std::array::from_fn(|w| s.x[w] | s.z[w]);
+                let weight: u32 = support.iter().map(|w| w.count_ones()).sum();
+                match &self.index {
+                    Some(index) if weight <= SCAN_ABOVE_WEIGHT => {
+                        index.candidates(b, &support, candidates);
+                        for (w, &word) in candidates.iter().enumerate() {
+                            let mut bits = word;
+                            while bits != 0 {
+                                emit(w * 64 + bits.trailing_zeros() as usize, s);
+                                bits &= bits - 1;
+                            }
+                        }
+                    }
+                    _ => (0..input.len()).for_each(|i| emit(i, s)),
+                }
+            }
+        }
     }
 }
 
@@ -93,6 +161,42 @@ fn sorted_columns<const W: usize, C: Coefficient>(
         columns.push(e.x, e.z, e.c);
     }
     columns
+}
+
+/// Every pair of every job, summed per key into one sum partitioned as the operands are, keeping the summed terms `keep` accepts.
+///
+/// # Panics
+///
+/// If the operands disagree about their hash rows, bucket count or `num_qubits`.
+pub(crate) fn accumulate<const W: usize, C: Coefficient>(
+    jobs: &[Job<'_, W, C>],
+    pairing: Pairing,
+    keep: &(impl Fn(&[u64; W], &[u64; W], C) -> bool + Sync),
+) -> PauliSum<W, C> {
+    let first = jobs.first().expect("accumulate: no jobs").operand;
+    for job in jobs {
+        assert!(
+            job.operand.hash.same_rows_as(&first.hash)
+                && job.operand.hash.bits() == first.hash.bits(),
+            "accumulate: operands partitioned differently",
+        );
+        assert_eq!(job.operand.num_qubits, first.num_qubits, "accumulate: num_qubits mismatch");
+    }
+    let buckets: Vec<BucketColumns<W, C>> = (0..first.buckets.len())
+        .into_par_iter()
+        .map_init(
+            || (Table::<W, C>::default(), Vec::new()),
+            |(table, candidates), out| {
+                table.clear();
+                for job in jobs {
+                    job.accumulate_into(out, pairing, table, candidates);
+                }
+                sorted_columns(table, keep)
+            },
+        )
+        .collect();
+    let len = buckets.iter().map(BucketColumns::len).sum();
+    PauliSum { buckets, hash: first.hash.clone(), num_qubits: first.num_qubits, len }
 }
 
 impl<const W: usize, C: Coefficient> PauliSum<W, C> {
@@ -128,54 +232,9 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
             large
         };
 
-        let groups = Groups::new(small, &large.hash);
-        // Disjoint supports always commute, so only a Liouvillian can skip them.
-        let index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(large));
-        let buckets: Vec<BucketColumns<W, C>> = (0..large.buckets.len())
-            .into_par_iter()
-            .map_init(
-                || (Table::<W, C>::default(), Vec::new()),
-                |(table, candidates), out| {
-                    table.clear();
-                    for (g, &delta) in groups.buckets.iter().enumerate() {
-                        let b = out ^ delta as usize;
-                        let input = &large.buckets[b];
-                        let mut emit = |i: usize, s: &Entry<W, C>| {
-                            let l = Entry { x: input.x[i], z: input.z[i], c: input.coeff[i] };
-                            let term = if self_is_large {
-                                pairing.term(&l, s)
-                            } else {
-                                pairing.term(s, &l)
-                            };
-                            if let Some(t) = term {
-                                table.accumulate(t.x, t.z, t.c);
-                            }
-                        };
-                        for s in &groups.terms[groups.starts[g]..groups.starts[g + 1]] {
-                            let support: [u64; W] = std::array::from_fn(|w| s.x[w] | s.z[w]);
-                            let weight: u32 = support.iter().map(|w| w.count_ones()).sum();
-                            match &index {
-                                Some(index) if weight <= SCAN_ABOVE_WEIGHT => {
-                                    index.candidates(b, &support, candidates);
-                                    for (w, &word) in candidates.iter().enumerate() {
-                                        let mut bits = word;
-                                        while bits != 0 {
-                                            emit(w * 64 + bits.trailing_zeros() as usize, s);
-                                            bits &= bits - 1;
-                                        }
-                                    }
-                                }
-                                _ => (0..input.len()).for_each(|i| emit(i, s)),
-                            }
-                        }
-                    }
-                    sorted_columns(table, keep)
-                },
-            )
-            .collect();
-
-        let len = buckets.iter().map(BucketColumns::len).sum();
-        let mut out = Self { buckets, hash: large.hash.clone(), num_qubits: self.num_qubits, len };
+        let generator = small.iter().map(|(x, z, c)| Entry { x: *x, z: *z, c });
+        let job = Job::new(generator, large, pairing, !self_is_large);
+        let mut out = accumulate(&[job], pairing, keep);
         out.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
         out
     }
@@ -219,6 +278,6 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     }
 }
 
-mod support;
+pub(crate) mod support;
 #[cfg(test)]
 mod tests;

@@ -583,7 +583,10 @@ fn encode_split<const W: usize, C: Coefficient>(
 }
 
 /// What every rank must agree on before terms move by `rows`: the partition rows and the bucket hash's rows.
-fn identity_fingerprint<const W: usize>(rows: &PartitionRows<W>, bucket_hash: &Gf2Hash<W>) -> u64 {
+pub(super) fn identity_fingerprint<const W: usize>(
+    rows: &PartitionRows<W>,
+    bucket_hash: &Gf2Hash<W>,
+) -> u64 {
     rows_identity(rows.rows()) ^ rows_identity(bucket_hash.rows()).rotate_left(1)
 }
 
@@ -654,7 +657,7 @@ fn decode_rows<const W: usize>(bytes: &[u8], rows: usize, what: &str) -> Vec<[u6
 }
 
 /// Rebuild one rank's share from the [`GATHER_PARTS`] parts it shipped; panics on contradictory lengths.
-fn decode_rank<const W: usize, C: Coefficient>(
+pub(super) fn decode_rank<const W: usize, C: Coefficient>(
     parts: &[Vec<u8>],
     hash: crate::pauli_sum::hash::Gf2Hash<W>,
     num_qubits: usize,

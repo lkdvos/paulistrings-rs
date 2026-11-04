@@ -13,6 +13,7 @@ pub(crate) mod in_process;
 pub(crate) mod layer;
 #[cfg(feature = "mpi")]
 pub mod mpi;
+pub(crate) mod operator_products;
 pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;
@@ -21,6 +22,7 @@ pub use distributed::{
     repartition_share, DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows,
 };
 pub use driver::propagate_partitioned;
+pub use operator_products::{anticommutator_share, liouvillian_share, product_share};
 pub use runtime::PartitionRuntime;
 pub use sum::PartitionedSum;
 pub use topology::{numa_nodes, CpuSet, PartitionConfig, Placement, TopologyError};

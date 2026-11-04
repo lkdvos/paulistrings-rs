@@ -11,6 +11,8 @@ use super::distributed::{repartition_share, PartitionRowPolicy, ScatterOptions, 
 #[cfg(feature = "phase-timing")]
 use super::driver::DriverLaps;
 use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
+use super::in_process::InProcessTransport;
+use super::operator_products::{anticommutator_share, liouvillian_share, product_share};
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use crate::circuit::Circuit;
@@ -227,6 +229,68 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
             #[cfg(feature = "phase-timing")]
             laps: DriverLaps::new(started.elapsed().as_nanos() as u64),
         }
+    }
+
+    /// A split on the same runtime and rows whose partition `r` is `f` of partition `r`'s sum, every partition on its own pool with its own endpoint of one transport group.
+    fn map_shares(
+        &self,
+        f: impl Fn(&PauliSum<W, C>, &InProcessTransport) -> PauliSum<W, C> + Send + Sync,
+    ) -> Self {
+        let shares: Vec<&PauliSum<W, C>> = self.parts.iter().map(|part| &part.sum).collect();
+        let sums = self.runtime.map_partitions(shares, |_, share, transport| f(share, transport));
+        Self {
+            parts: sums.into_iter().map(HostPartition::new).collect(),
+            coefficient: PhantomData,
+            rows: self.rows.clone(),
+            runtime: Arc::clone(&self.runtime),
+            trace: None,
+            #[cfg(feature = "phase-timing")]
+            laps: DriverLaps::new(0),
+        }
+    }
+
+    /// The Liouvillian `i[generator, self]` as a new split on the same runtime and rows, truncated by `policy` as one layer.
+    ///
+    /// Each partition receives from a partner only the terms a generator term moving between the two can anticommute with ([`liouvillian_share`]).
+    ///
+    /// # Panics
+    ///
+    /// As [`liouvillian_share`]; a panic in any partition is re-raised on the calling thread.
+    pub fn liouvillian_with<P>(&self, generator: &PauliSum<W, C>, policy: &P) -> Self
+    where
+        P: TruncationPolicy<W, C> + ?Sized,
+    {
+        self.map_shares(|share, transport| {
+            liouvillian_share(generator, share, &self.rows, transport, policy)
+        })
+    }
+
+    /// The anticommutator `{generator, self}` as a new split, as [`liouvillian_with`](Self::liouvillian_with) takes its arguments.
+    ///
+    /// # Panics
+    ///
+    /// As [`anticommutator_share`].
+    pub fn anticommutator_with<P>(&self, generator: &PauliSum<W, C>, policy: &P) -> Self
+    where
+        P: TruncationPolicy<W, C> + ?Sized,
+    {
+        self.map_shares(|share, transport| {
+            anticommutator_share(generator, share, &self.rows, transport, policy)
+        })
+    }
+
+    /// The operator product `generator · self` as a new split, as [`liouvillian_with`](Self::liouvillian_with) takes its arguments.
+    ///
+    /// # Panics
+    ///
+    /// As [`product_share`].
+    pub fn product_with<P>(&self, generator: &PauliSum<W, C>, policy: &P) -> Self
+    where
+        P: TruncationPolicy<W, C> + ?Sized,
+    {
+        self.map_shares(|share, transport| {
+            product_share(generator, share, &self.rows, transport, policy)
+        })
     }
 
     /// Move every term to the partition `rows` assigns it and split by `rows` from here on, keeping the bucket hash; each partition exchanges with every other once, with no gather.

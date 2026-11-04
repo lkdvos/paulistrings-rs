@@ -6,10 +6,10 @@ use crate::coefficient::Coefficient;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 
 /// Above this weight a term's candidate mask costs more to assemble than scanning the bucket.
-pub(super) const SCAN_ABOVE_WEIGHT: u32 = 64;
+pub(crate) const SCAN_ABOVE_WEIGHT: u32 = 64;
 
 /// Per bucket, row `q` is a bitset over the bucket's terms with bit `i` set iff term `i` acts on qubit `q`.
-pub(super) struct SupportIndex {
+pub(crate) struct SupportIndex {
     /// Bucket `b`'s rows, `num_qubits` of `words[b]` words each.
     rows: Vec<Vec<u64>>,
     words: Vec<usize>,
@@ -35,7 +35,7 @@ fn bucket_rows<const W: usize, C: Coefficient>(
 }
 
 impl SupportIndex {
-    pub(super) fn new<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> Self {
+    pub(crate) fn new<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> Self {
         let (rows, words) =
             sum.buckets().par_iter().map(|columns| bucket_rows(columns, sum.num_qubits())).unzip();
         Self { rows, words }
@@ -43,7 +43,7 @@ impl SupportIndex {
 
     /// Overwrite `candidates` with the bitset of bucket `b`'s terms acting on some qubit of `support`.
     #[inline]
-    pub(super) fn candidates<const W: usize>(
+    pub(crate) fn candidates<const W: usize>(
         &self,
         b: usize,
         support: &[u64; W],

@@ -91,17 +91,17 @@ for spec in $MODELS; do
     else
         run 1 1 "$cpus" "$tag-whole-node" "${args[@]}"
     fi
-    cells+=("$tag-whole-node")
+    cells+=("$out/$tag-whole-node.jsonl")
     for rows in $ROWS; do
         for n in $NODE_COUNTS; do
             ranks=$(( n * per_node ))
             [ "${SMOKE:-0}" = 1 ] && ranks=2
             cell="$tag-$rows-r$ranks"
             run "$n" "$ranks" "$cpus_per_rank" "$cell" "${args[@]}" --rows "$rows"
-            cells+=("$cell")
+            cells+=("$out/$cell.jsonl")
         done
     done
 done
 
 echo "== summary ($out)"
-python3 scripts/lanczos-report.py "${cells[@]/#/$out/}"
+python3 scripts/lanczos-report.py "${cells[@]}"

@@ -212,18 +212,15 @@ fn count_bucket<const W: usize, C: Coefficient, K: TermFilter>(
             }
             let mut kept = 0u32;
             for term in 0..len {
-                if !filter.keep(bucket_coeff[term]) {
-                    continue;
-                }
-                kept += 1;
+                let keep = filter.keep(bucket_coeff[term]);
+                kept += u32::from(keep);
                 if all_dense {
                     continue;
                 }
                 let support = ptm.support_bits(&bucket_x[term], &bucket_z[term]);
                 for (i, remote) in plan.remote.iter().enumerate() {
-                    if !dense[i] && ptm.deltas()[remote.entry].amplitude[support] != C::ZERO {
-                        out[i] += 1;
-                    }
+                    let emits = ptm.deltas()[remote.entry].amplitude[support] != C::ZERO;
+                    out[i] += u32::from(keep & !dense[i] & emits);
                 }
             }
             for (slot, &is_dense) in out.iter_mut().zip(dense) {
@@ -236,13 +233,9 @@ fn count_bucket<const W: usize, C: Coefficient, K: TermFilter>(
             debug_assert_eq!(out.len(), 1, "a rotation has at most one remote delta");
             let mut anticommuting = 0u32;
             for term in 0..len {
-                if !filter.keep(bucket_coeff[term]) {
-                    continue;
-                }
+                let keep = filter.keep(bucket_coeff[term]);
                 let string = PauliString::<W> { x: bucket_x[term], z: bucket_z[term] };
-                if !string.commutes_with(&rotation.generator) {
-                    anticommuting += 1;
-                }
+                anticommuting += u32::from(keep & !string.commutes_with(&rotation.generator));
             }
             out[0] = anticommuting;
         }
@@ -312,11 +305,9 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
         let (bucket_x, bucket_z, bucket_coeff) = self.local.bucket(source);
         let mut written = 0usize;
         for term in 0..bucket_coeff.len() {
-            if !filter.keep(bucket_coeff[term]) {
-                continue;
-            }
-            if let Some((out_x, out_z, out_coeff)) =
-                self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term])
+            let keep = filter.keep(bucket_coeff[term]);
+            if let (true, Some((out_x, out_z, out_coeff))) =
+                (keep, self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term]))
             {
                 x[written] = out_x;
                 z[written] = out_z;

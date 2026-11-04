@@ -14,7 +14,6 @@ use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
-use core::cmp::Ordering;
 
 /// Octaves a window resolves.
 pub(crate) const WINDOW_OCTAVES: usize = 64;
@@ -146,16 +145,15 @@ pub(crate) struct CutFilter {
 impl TermFilter for CutFilter {
     const KEEPS_ALL: bool = false;
 
+    /// Branch-free, since which side of the boundary a term falls is unpredictable; `classify_octave`'s order, NaN below every octave.
     #[inline(always)]
     fn keep<C: Coefficient>(&mut self, coeff: C) -> bool {
-        match classify_octave(coeff.norm_sqr(), self.bin) {
-            Ordering::Greater => true,
-            Ordering::Equal if self.remaining > 0 => {
-                self.remaining -= 1;
-                true
-            }
-            Ordering::Equal | Ordering::Less => false,
-        }
+        let norm_sqr = coeff.norm_sqr();
+        let bin = octave(norm_sqr);
+        let valid = !norm_sqr.is_nan();
+        let at = valid & (bin == self.bin) & (self.remaining > 0);
+        self.remaining -= usize::from(at);
+        (valid & (bin > self.bin)) | at
     }
 }
 

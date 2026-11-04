@@ -167,3 +167,17 @@ fn a_cut_applies_alike_per_bucket_and_whole() {
         assert_eq!(storage_triples(&each), storage_triples(&whole), "n={n}");
     }
 }
+
+/// A bucket's filter keeps every term `classify_octave` puts above the boundary and the first `quota` at it, a NaN never.
+#[test]
+fn a_bucket_filter_keeps_what_classify_octave_keeps() {
+    use num_complex::Complex64;
+    let bin = octave(1.0);
+    let cut = BoundaryCut { bin, quotas: vec![2], kept: 0 };
+    let norms = [f64::NAN, 1.0, 4.0, 1.5, 0.25, 1.0, f64::INFINITY, f64::NAN, 1.0];
+    let want = [false, true, true, true, false, false, true, false, false];
+    let mut filter = cut.bucket_filter(0);
+    for (&norm_sqr, &keep) in norms.iter().zip(&want) {
+        assert_eq!(filter.keep(Complex64::new(norm_sqr.sqrt(), 0.0)), keep, "|c|² = {norm_sqr}");
+    }
+}

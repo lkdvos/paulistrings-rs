@@ -38,7 +38,7 @@ def cpu_lists(partitions: int) -> list[list[int]]:
 def run(circuit, observable, policy, partitions: int, row_seed: int | None) -> dict:
     kwargs = {} if partitions == 1 else {"partitions": cpu_lists(partitions), "partition_row_seed": row_seed}
     start = time.perf_counter()
-    evolved, stats = observable.propagate_with_stats(circuit, policy, direction="heisenberg", **kwargs)
+    evolved, stats = paulistrings.propagated_with_stats(observable, circuit, policy, direction="heisenberg", **kwargs)
     wall = time.perf_counter() - start
     value = evolved.expectation("z+")
     part = stats.partition

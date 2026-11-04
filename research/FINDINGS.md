@@ -264,6 +264,11 @@ Code A/B against `23c15ce4` plus the probe's `patopn:` spelling on ccqlin038 (sh
 At P = 2 the barrier wait fell 39% and the exchange wait rose 35%: the partitions no longer meet at the layer pass, so the wait moves to the next exchange.
 Quiet-node A/B pending.
 
+The decision itself was a serial pass over every bucket's 66 window counts, twice, which at 2^14 buckets is 6–9% of a genoa step.
+Now each coset-loop worker sums the counts it takes (`WindowTotals`), the pass reads the reduced totals, and a cut keeps one split bucket and its quota, found by a parallel chunked scan of the boundary slot only when the quota splits the partition's boundary terms (`quota_split`).
+Code A/B against `727d58b2` on ccqlin038 (shared, load 3–28, abba, 4 pairs each), 24-qubit `tfim_step` at 32 threads: finalize per layer **−72%** at `atopn:1e7` P = 1 (0.57 → 0.16 ms, wall −2.1%, 4/4), **−69%** at `atopn:2e6` P = 1 (0.058 → 0.018 ms, wall no consistent change), **−21%** at `atopn:2e6` P = 2 (0.27 → 0.21 ms, the all-reduce wait remains) and **−76%** at `patopn:2e6` P = 2 (0.058 → 0.014 ms); the coset loop shows no consistent change in any cell.
+Quiet-node A/B pending.
+
 ### Exchanging layers count and mark their rows a layer ahead
 
 An exchanging layer made three passes over the sum before its coset loop: the deferred `ApproxTopN` cut applied whole, the export's count pass, and a fill scanning every bucket that exports anything.

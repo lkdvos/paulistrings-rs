@@ -40,6 +40,23 @@ impl BucketAhead {
             })
         })
     }
+
+    /// Panics unless the marks are sized for a bucket of `len` terms and mark as many rows as the counts ahead count, so a fill reading them visits every row the export counted.
+    #[cfg(debug_assertions)]
+    pub(crate) fn debug_assert_marks_match(&self, len: usize, bucket: usize) {
+        debug_assert_eq!(
+            self.marks.len(),
+            len.div_ceil(64),
+            "bucket {bucket}: {} mark words for a bucket of {len} terms",
+            self.marks.len()
+        );
+        let marked: u32 = self.marks.iter().map(|word| word.count_ones()).sum();
+        let counted: u32 = self.emitting.iter().sum();
+        debug_assert_eq!(
+            marked, counted,
+            "bucket {bucket}: {marked} rows marked where the counts ahead count {counted}"
+        );
+    }
 }
 
 /// Which terms one remote delta of a layer emits a row for, the test the export's count pass applies per term.

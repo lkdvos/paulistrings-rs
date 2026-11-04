@@ -369,6 +369,8 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
     ) -> usize {
         let ColumnsMut { x, z, coeff } = out;
         let (bucket_x, bucket_z, bucket_coeff) = self.local.bucket(source);
+        #[cfg(debug_assertions)]
+        marked.debug_assert_marks_match(bucket_coeff.len(), source);
         let mut written = 0usize;
         for term in marked.marked_rows() {
             let keep = filter.keep(bucket_coeff[term]);

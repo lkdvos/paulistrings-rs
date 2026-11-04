@@ -1238,6 +1238,7 @@ mod finalize_tests {
             window.count(b.bucket(bucket).2, &mut want);
             assert_eq!(counts, &want, "bucket {bucket}");
         }
+        assert_eq!(scratch.octaves.totals, WindowTotals::of(&scratch.octaves.per_bucket));
 
         let mut unarmed = LayerScratch::<1>::new();
         unarmed.octaves.window = Some(window);

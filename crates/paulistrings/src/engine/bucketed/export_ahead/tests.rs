@@ -4,6 +4,7 @@ use crate::channel::rotation::PauliRotation;
 use crate::engine::plan::PartitionPlan;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::PauliSum;
+use crate::truncation::builtin::QuotaSplit;
 use crate::truncation::octave_window::BoundaryCut;
 use num_complex::Complex64;
 
@@ -40,7 +41,7 @@ fn a_nan_term_is_counted_only_without_a_cut() {
     octaves.ahead.push(ahead);
     octaves.ahead_window = Some(window);
     assert_eq!(octaves.rows_ahead(0), Some(4));
-    octaves.defer(BoundaryCut { bin, quotas: vec![1], kept: 3 });
+    octaves.defer(BoundaryCut { bin, split: QuotaSplit { bucket: 0, remaining: 1 }, kept: 3 });
     assert_eq!(octaves.rows_ahead(0), Some(2));
 }
 

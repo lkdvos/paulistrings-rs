@@ -5,8 +5,8 @@
 #[cfg(doc)]
 use super::builtin::{approx_top_n_pass, ApproxTopN};
 use super::builtin::{
-    boundary_filter, bucket_quotas, classify_octave, local_boundary_quota, octave,
-    octave_edge_within, EdgeDecision, APPROX_BINS,
+    boundary_filter, classify_octave, local_boundary_quota, octave, octave_edge_within,
+    EdgeDecision, QuotaSplit, APPROX_BINS,
 };
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
@@ -46,11 +46,44 @@ impl OctaveWindow {
     }
 }
 
-/// A boundary cut decided but not yet applied: bucket `b` keeps its terms above octave `bin` and the first `quotas[b]` at it.
+/// Buckets' [`BucketOctaves`] summed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowTotals(pub(crate) [u64; WINDOW_OCTAVES + 2]);
+
+impl Default for WindowTotals {
+    fn default() -> Self {
+        Self([0; WINDOW_OCTAVES + 2])
+    }
+}
+
+impl WindowTotals {
+    pub(crate) fn of(per_bucket: &[BucketOctaves]) -> Self {
+        let mut totals = Self::default();
+        for counts in per_bucket {
+            totals.add(counts);
+        }
+        totals
+    }
+
+    #[inline]
+    pub(crate) fn add(&mut self, counts: &BucketOctaves) {
+        for (total, &count) in self.0.iter_mut().zip(counts) {
+            *total += u64::from(count);
+        }
+    }
+
+    pub(crate) fn merge(&mut self, other: &Self) {
+        for (total, &count) in self.0.iter_mut().zip(&other.0) {
+            *total += count;
+        }
+    }
+}
+
+/// A boundary cut decided but not yet applied: bucket `b` keeps its terms above octave `bin` and the first [`split.quota(b)`](QuotaSplit::quota) at it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BoundaryCut {
     pub(crate) bin: usize,
-    pub(crate) quotas: Vec<usize>,
+    pub(crate) split: QuotaSplit,
     /// The partition's terms after the cut, fewer only by NaN coefficients.
     pub(crate) kept: usize,
 }
@@ -62,7 +95,7 @@ impl BoundaryCut {
         b: usize,
     ) -> impl FnMut(&[u64; W], &[u64; W], C) -> bool {
         let bin = self.bin;
-        boundary_filter(move |m| classify_octave(m, bin), self.quotas[b])
+        boundary_filter(move |m| classify_octave(m, bin), self.split.quota(b))
     }
 
     pub(crate) fn apply<const W: usize, C: Coefficient>(&self, local: &mut PauliSum<W, C>) {
@@ -82,6 +115,7 @@ impl BoundaryCut {
 
 /// [`approx_top_n_pass`]'s decision, the whole sum's length and, at a boundary, this partition's cut, from the window counts alone; `None` when the boundary octave lies outside the window.
 ///
+/// `totals` sums `per_bucket`, whose boundary slot only places the split.
 /// One `allreduce_sum_u64` of `[len, window counts…]`, and at an in-window boundary one more of the per-rank boundary counts; every partition answers `None` alike, from the reduced counts.
 pub(crate) fn decide_from_window(
     local_len: usize,
@@ -89,14 +123,12 @@ pub(crate) fn decide_from_window(
     n: usize,
     window: OctaveWindow,
     per_bucket: &[BucketOctaves],
+    totals: &WindowTotals,
 ) -> Option<(EdgeDecision, usize, Option<BoundaryCut>)> {
+    debug_assert_eq!(*totals, WindowTotals::of(per_bucket), "the totals sum the bucket counts");
     let mut packed = [0u64; WINDOW_OCTAVES + 3];
     packed[0] = local_len as u64;
-    for counts in per_bucket {
-        for (slot, &count) in packed[1..].iter_mut().zip(counts) {
-            *slot += u64::from(count);
-        }
-    }
+    packed[1..].copy_from_slice(&totals.0);
     debug_assert_eq!(packed[1..].iter().sum::<u64>(), packed[0], "the window counts every term");
     if collectives.size() > 1 {
         collectives.allreduce_sum_u64(&mut packed);
@@ -107,19 +139,16 @@ pub(crate) fn decide_from_window(
     let cut = match edge {
         EdgeDecision::Boundary { bin, quota, .. } => {
             let slot = window.slot(bin);
-            let boundary_counts: Vec<usize> =
-                per_bucket.iter().map(|counts| counts[slot] as usize).collect();
-            let local_quota =
-                local_boundary_quota(collectives, boundary_counts.iter().sum(), quota);
-            let local_above: usize = per_bucket
-                .iter()
-                .map(|counts| counts[slot + 1..].iter().map(|&count| count as usize).sum::<usize>())
-                .sum();
-            Some(BoundaryCut {
-                bin,
-                quotas: bucket_quotas(&boundary_counts, local_quota),
-                kept: local_above + local_quota,
-            })
+            let local_count = totals.0[slot] as usize;
+            let local_quota = local_boundary_quota(collectives, local_count, quota);
+            let local_above = totals.0[slot + 1..].iter().sum::<u64>() as usize;
+            let split = QuotaSplit::new(
+                |b| per_bucket[b][slot] as usize,
+                per_bucket.len(),
+                local_count,
+                local_quota,
+            );
+            Some(BoundaryCut { bin, split, kept: local_above + local_quota })
         }
         EdgeDecision::KeepAll | EdgeDecision::Clear => None,
     };

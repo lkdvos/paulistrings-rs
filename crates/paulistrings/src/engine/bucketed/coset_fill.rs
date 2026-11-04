@@ -8,6 +8,7 @@ use crate::engine::merge::{merge_identity_and_rest, SortKernel, SortScratch};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 use crate::phase::Phase;
+use crate::truncation::octave_window::WindowTotals;
 use crate::truncation::TruncationPolicy;
 
 #[cfg(feature = "phase-timing")]
@@ -27,6 +28,8 @@ pub(in crate::engine) struct CosetScratch<const W: usize, C: Coefficient = num_c
     pub(super) members: Vec<BucketColumns<W, C>>,
     /// The coset's bucket indices, member `j` at index `j`.
     pub(super) betas: Vec<u32>,
+    /// The window counts this slot took since its coset loop last drained it.
+    pub(super) octave_totals: WindowTotals,
     /// The rotation layer's merges done in place, and through `old[0]`.
     #[cfg(test)]
     pub(super) rotation_merges: (usize, usize),

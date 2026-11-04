@@ -86,7 +86,14 @@ fn finalize_from_window<const W: usize>(
     window: OctaveWindow,
 ) {
     let counts = per_bucket(local, window);
-    match decide_from_window(local.len(), collectives, n, window, &counts) {
+    match decide_from_window(
+        local.len(),
+        collectives,
+        n,
+        window,
+        &counts,
+        &WindowTotals::of(&counts),
+    ) {
         None => {
             approx_top_n_pass(local, collectives, n);
         }
@@ -144,7 +151,7 @@ fn the_window_pass_is_the_plain_pass() {
 fn a_bucket_filter_keeps_what_classify_octave_keeps() {
     use num_complex::Complex64;
     let bin = octave(1.0);
-    let cut = BoundaryCut { bin, quotas: vec![2], kept: 0 };
+    let cut = BoundaryCut { bin, split: QuotaSplit { bucket: 0, remaining: 2 }, kept: 0 };
     let norms = [f64::NAN, 1.0, 4.0, 1.5, 0.25, 1.0, f64::INFINITY, f64::NAN, 1.0];
     let want = [false, true, true, true, false, false, true, false, false];
     let mut filter = cut.filter::<1, Complex64>(0);

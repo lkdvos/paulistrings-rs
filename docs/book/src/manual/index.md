@@ -16,8 +16,8 @@ circuit.rz(math.pi / 8, 0)
 circuit.cnot(0, 1)
 circuit.h(2)
 
-evolved = observable.propagate(circuit, direction="heisenberg")
-print(len(evolved), evolved.expectation("x+").real)
+observable.propagate(circuit, direction="heisenberg")
+print(len(observable), observable.expectation("x+").real)
 ```
 
 ![Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle](../assets/quickstart/circuit.svg)

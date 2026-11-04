@@ -17,8 +17,7 @@ Note CI does not run these (see CLAUDE.md); run them locally with
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, noise
-
+from paulistrings import Circuit, PauliSum, noise, propagated
 
 TOL = 1e-12
 
@@ -69,10 +68,11 @@ def test_pauli_channel_scale_factors_are_hand_computed():
     ch = noise.pauli_channel(0.1, 0.2, 0.3, 0)
     c = _one_channel(1, ch)
 
-    assert len(_sum(1, {"X": 1.0}).propagate(circuit=c, direction="forward")) == 0
+    assert len(propagated(_sum(1, {"X": 1.0}), circuit=c, direction="forward")) == 0
 
     for pauli, want in (("I", 1.0), ("Y", 0.2), ("Z", 0.4)):
-        out = _sum(1, {pauli: 1.0}).propagate(circuit=c, direction="forward")
+        out = _sum(1, {pauli: 1.0})
+        out.propagate(circuit=c, direction="forward")
         assert len(out) == 1, pauli
         assert abs(out.coefficients()[0] - complex(want, 0.0)) < TOL, pauli
 
@@ -82,10 +82,12 @@ def test_pauli_channel_only_touches_its_support_qubit():
     c = _one_channel(3, ch)
     # Z on qubit 1 is scaled by 0.4; the Y on qubit 0 and the X on qubit 2 are
     # off-support and do not enter the factor.
-    out = _sum(3, {"YZX": 1.0}).propagate(circuit=c, direction="forward")
+    out = _sum(3, {"YZX": 1.0})
+    out.propagate(circuit=c, direction="forward")
     _assert_close(out, _sum(3, {"YZX": 0.4}))
     # A term that is the identity on qubit 1 is untouched.
-    out = _sum(3, {"YIX": 1.0}).propagate(circuit=c, direction="forward")
+    out = _sum(3, {"YIX": 1.0})
+    out.propagate(circuit=c, direction="forward")
     _assert_close(out, _sum(3, {"YIX": 1.0}))
 
 
@@ -93,7 +95,8 @@ def test_pauli_channel_at_a_word_boundary():
     n = 70
     ch = noise.pauli_channel(0.1, 0.2, 0.3, 64)
     c = _one_channel(n, ch)
-    out = _sum(n, {_string(n, {64: "Z"}): 1.0}).propagate(circuit=c, direction="forward")
+    out = _sum(n, {_string(n, {64: "Z"}): 1.0})
+    out.propagate(circuit=c, direction="forward")
     _assert_close(out, _sum(n, {_string(n, {64: "Z"}): 0.4}))
 
 
@@ -101,8 +104,8 @@ def test_pauli_channel_is_self_adjoint_through_propagate():
     ch = noise.pauli_channel(0.05, 0.15, 0.25, 0)
     c = _one_channel(2, ch)
     initial = _sum(2, {"ZI": 1.0, "YX": 0.5, "II": 2.0})
-    fwd = initial.propagate(circuit=c, direction="forward")
-    back = initial.propagate(circuit=c, direction="heisenberg")
+    fwd = propagated(initial, circuit=c, direction="forward")
+    back = propagated(initial, circuit=c, direction="heisenberg")
     _assert_close(fwd, back)
 
 
@@ -116,8 +119,8 @@ def test_uniform_pauli_channel_equals_depolarize():
     via_pauli = _one_channel(3, noise.pauli_channel(p / 3, p / 3, p / 3, 0))
     via_depol = _one_channel(3, noise.depolarize(p, 0))
     _assert_close(
-        initial.propagate(circuit=via_pauli, direction="forward"),
-        initial.propagate(circuit=via_depol, direction="forward"),
+        propagated(initial, circuit=via_pauli, direction="forward"),
+        propagated(initial, circuit=via_depol, direction="forward"),
     )
 
 
@@ -128,8 +131,8 @@ def test_z_only_pauli_channel_equals_dephase():
     via_pauli = _one_channel(3, noise.pauli_channel(0.0, 0.0, p, 0))
     via_dephase = _one_channel(3, noise.dephase(p, 0))
     _assert_close(
-        initial.propagate(circuit=via_pauli, direction="forward"),
-        initial.propagate(circuit=via_dephase, direction="forward"),
+        propagated(initial, circuit=via_pauli, direction="forward"),
+        propagated(initial, circuit=via_dephase, direction="forward"),
     )
 
 
@@ -142,11 +145,13 @@ def test_depolarize2_scale_factor_is_hand_computed():
     # is the easy thing to get wrong.
     c = _one_channel(3, noise.depolarize2(0.3, 0, 1))
     for label in ("XII", "IZI", "YXI", "ZZI", "XYI"):
-        out = _sum(3, {label: 1.0}).propagate(circuit=c, direction="forward")
+        out = _sum(3, {label: 1.0})
+        out.propagate(circuit=c, direction="forward")
         _assert_close(out, _sum(3, {label: 0.68}))
     # Identity on the pair: untouched, whatever happens off the pair.
     for label in ("III", "IIZ", "IIY"):
-        out = _sum(3, {label: 1.0}).propagate(circuit=c, direction="forward")
+        out = _sum(3, {label: 1.0})
+        out.propagate(circuit=c, direction="forward")
         _assert_close(out, _sum(3, {label: 1.0}))
 
 
@@ -154,8 +159,9 @@ def test_depolarize2_at_fifteen_sixteenths_annihilates_the_pair():
     # 1 - 16·(15/16)/15 = 0 exactly in binary floating point, so the term is
     # dropped by the merge, while the identity on the pair is preserved.
     c = _one_channel(2, noise.depolarize2(15.0 / 16.0, 0, 1))
-    assert len(_sum(2, {"XZ": 1.0}).propagate(circuit=c, direction="forward")) == 0
-    out = _sum(2, {"II": 2.0}).propagate(circuit=c, direction="forward")
+    assert len(propagated(_sum(2, {"XZ": 1.0}), circuit=c, direction="forward")) == 0
+    out = _sum(2, {"II": 2.0})
+    out.propagate(circuit=c, direction="forward")
     _assert_close(out, _sum(2, {"II": 2.0}))
 
 
@@ -164,11 +170,13 @@ def test_depolarize2_across_a_word_boundary():
     c = _one_channel(n, noise.depolarize2(0.3, 63, 64))
     for ops in ({63: "X"}, {64: "Z"}, {63: "Y", 64: "Y"}):
         label = _string(n, ops)
-        out = _sum(n, {label: 1.0}).propagate(circuit=c, direction="forward")
+        out = _sum(n, {label: 1.0})
+        out.propagate(circuit=c, direction="forward")
         _assert_close(out, _sum(n, {label: 0.68}))
     # Qubit 62 is not in the pair.
     label = _string(n, {62: "X"})
-    out = _sum(n, {label: 1.0}).propagate(circuit=c, direction="forward")
+    out = _sum(n, {label: 1.0})
+    out.propagate(circuit=c, direction="forward")
     _assert_close(out, _sum(n, {label: 1.0}))
 
 
@@ -176,8 +184,8 @@ def test_depolarize2_is_self_adjoint_through_propagate():
     c = _one_channel(2, noise.depolarize2(0.2, 0, 1))
     initial = _sum(2, {"XZ": 1.0, "II": 2.0, "IY": 0.5})
     _assert_close(
-        initial.propagate(circuit=c, direction="forward"),
-        initial.propagate(circuit=c, direction="heisenberg"),
+        propagated(initial, circuit=c, direction="forward"),
+        propagated(initial, circuit=c, direction="heisenberg"),
     )
 
 
@@ -208,8 +216,8 @@ def test_broadcast_methods_agree_with_the_factories():
     via_factories.append(noise.depolarize2(0.3, 0, 1))
 
     _assert_close(
-        initial.propagate(circuit=via_methods, direction="forward"),
-        initial.propagate(circuit=via_factories, direction="forward"),
+        propagated(initial, circuit=via_methods, direction="forward"),
+        propagated(initial, circuit=via_factories, direction="forward"),
     )
 
 

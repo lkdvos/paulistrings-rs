@@ -29,6 +29,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 |---|---|
 | `.num_qubits` | qubit count |
 | `.dtype` | coefficient type, a `numpy.dtype` |
+| `.copy()`, `copy.copy(sum)`, `copy.deepcopy(sum)` | an independent copy; [`propagated`](propagate.md) propagates one |
 | `.astype(dtype)` | a copy at another coefficient type; `ValueError` when going real would drop a nonzero imaginary part |
 | `.width` | active compile-time width tier (words per term) |
 | `len(sum)` | term count |

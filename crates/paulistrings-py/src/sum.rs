@@ -536,7 +536,7 @@ impl RunMode {
     fn run<const W: usize, C: PyCoefficient>(
         self,
         circuit: &CoreCircuit<W>,
-        sum: &CorePauliSum<W, C>,
+        sum: CorePauliSum<W, C>,
         policy: &BuiltinTruncation,
         direction: Direction,
         options: PropagateOptions,
@@ -551,7 +551,7 @@ impl RunMode {
                 }
                 let out = with_lowered_policy!(policy, |lowered| propagate_with(
                     circuit,
-                    sum.clone(),
+                    sum,
                     lowered,
                     direction,
                     &mut scratch,
@@ -570,7 +570,7 @@ impl RunMode {
                 // a Trotter loop of many short calls builds it once.
                 let runtime = runtime_for(&config).map_err(PropagateFailure::Topology)?;
                 let mut split = PartitionedSum::scatter_with(
-                    sum.clone(),
+                    sum,
                     ScatterOptions { runtime, rows: ScatterRows::Policy(rows.clone()) },
                 );
                 if traced {
@@ -619,14 +619,14 @@ impl RunMode {
     }
 }
 
-/// Scatter `sum` over the device partitions `config` places by `rows`, propagate, and gather.
+/// Scatter `sum` over the device partitions `config` places by `rows`, dropping the host copy once uploaded, propagate, and gather.
 #[cfg(feature = "cuda")]
 #[allow(clippy::too_many_arguments)]
 fn run_devices<const W: usize, C: PyCoefficient>(
     config: &PartitionConfig,
     rows: &PartitionRowPolicy,
     circuit: &CoreCircuit<W>,
-    sum: &CorePauliSum<W, C>,
+    sum: CorePauliSum<W, C>,
     policy: &BuiltinTruncation,
     direction: Direction,
     options: PropagateOptions,
@@ -636,13 +636,14 @@ fn run_devices<const W: usize, C: PyCoefficient>(
     // Cached like a host runtime: each slot's pool binds its device context once, not per call.
     let runtime = runtime_for(config).map_err(PropagateFailure::Topology)?;
     let split = GpuPartitionedSum::scatter_to_devices_with(
-        sum,
+        &sum,
         GpuScatterOptions {
             devices: runtime,
             rows: ScatterRows::Policy(rows.clone()),
             layer: GpuLayerOptions::default(),
         },
     );
+    drop(sum);
     let mut split = split.map_err(PropagateFailure::Gpu)?;
     if traced {
         split.enable_trace();
@@ -1566,6 +1567,19 @@ impl PauliSum {
         })
     }
 
+    /// An independent copy, to keep an input that `propagate` would otherwise evolve in place.
+    fn copy(&self) -> Self {
+        Self::plain(self.inner.clone())
+    }
+
+    fn __copy__(&self) -> Self {
+        self.copy()
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> Self {
+        self.copy()
+    }
+
     #[getter]
     fn num_qubits(&self) -> usize {
         self.inner.num_qubits()
@@ -1781,11 +1795,12 @@ impl PauliSum {
         self.inner.xz_flat().0
     }
 
-    /// Propagate `self` through `circuit`.
+    /// Propagate `self` through `circuit`, in place.
     ///
+    /// The engine takes the terms over instead of copying them, so propagate a `copy()` to keep the input; if the run raises, `self` is left empty.
     /// `direction` is `"forward"` (default) or `"heisenberg"`. `policy` is an optional `Truncation`; `None` applies no per-term filtering beyond the engine's own exact-zero drop.
     /// `target_bucket_len` (at least 1) and `min_buckets` (at least 16) are the engine's per-layer bucket-sizing knobs, raising `ValueError` below those bounds. `PauliSum.num_buckets` reads back the realized count, which can differ from a request since the count moves only outside a gap of 8× around the target.
-    /// The result keeps the sum's dtype; a real dtype raises `ValueError` unless every channel of `circuit` preserves Hermiticity, as every `gates` and `noise` factory does.
+    /// The sum keeps its dtype; a real dtype raises `ValueError` unless every channel of `circuit` preserves Hermiticity, as every `gates` and `noise` factory does.
     /// The GIL is released for the duration.
     ///
     /// `partitions` splits the sum across NUMA domains: `None`/`1` (default) is unpartitioned; `"auto"` is one partition per NUMA node; an `int` power of two caps it at that many nodes; `list[list[int]]` gives explicit disjoint CPU lists. `pin_memory` (default `True`) binds each partition's allocations to its node.
@@ -1798,7 +1813,7 @@ impl PauliSum {
     /// Rows that leave partitions unreachable run with a `RuntimeWarning`; rows that overlap the span of the bucket hash's active rows are logged as a warning (`paulistrings` logger) at the layer whose bucket count reaches the overlap.
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
-    /// `result="gather"` (default) returns the whole sum on rank 0 and an empty one elsewhere; `"local"` returns each rank's own disjoint share. Raises `RuntimeError` without the `mpi` feature.
+    /// `result="gather"` (default) leaves the whole sum on rank 0 and an empty one elsewhere; `"local"` leaves each rank its own disjoint share. Raises `RuntimeError` without the `mpi` feature.
     ///
     /// `device` runs the propagation on CUDA devices: an `int` ordinal holds the whole sum on that device, uploaded before the first layer and downloaded after the last.
     /// A `list[int]` of a power-of-two length places one partition per entry, split and exchanged like `partitions=` (`partition_row_seed`/`partition_row_blocks` apply, and a repeated ordinal puts several partitions on one device); `"auto"` takes devices `0..k` for the largest power of two `k` visible.
@@ -1806,12 +1821,12 @@ impl PauliSum {
     /// `device` is an alternative to `partitions`, runs `complex128` sums only (`TypeError` for another dtype), and raises `RuntimeError` without the `cuda` feature. `truncation.topn` runs exactly when `device` resolves to one device (an `int`, or `"auto"`/a one-entry list on a one-GPU box); a device list of more than one entry or `comm=` with `device=` raises `NotImplementedError` (use `approx_topn`), since the `n`-th largest of a split sum has no collective form. `PauliSum.to_device` keeps a one-device sum resident across calls instead.
     ///
     /// ```python
-    /// evolved = observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
+    /// observable.propagate(circuit, policy, direction="heisenberg", partitions="auto")
     /// ```
     #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate(
-        &self,
+        &mut self,
         py: Python<'_>,
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
@@ -1827,7 +1842,7 @@ impl PauliSum {
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Self> {
+    ) -> PyResult<()> {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
@@ -1857,20 +1872,20 @@ impl PauliSum {
             &policy,
             &self.inner,
         )?;
-        let (sum, _, _) = self.run(py, circuit, mode, &policy, dir, options, false)?;
-        Ok(sum)
+        self.run(py, circuit, mode, &policy, dir, options, false)?;
+        Ok(())
     }
 
-    /// Propagate `self` through `circuit`, returning `(evolved, PropagationStats)`.
+    /// Propagate `self` through `circuit` in place, returning a `PropagationStats`.
     ///
-    /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so `evolved` agrees with `propagate`'s result to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
+    /// Arguments and semantics are `propagate`'s; the only difference is that the engine also records per-layer term counts (before each layer, and after its truncation), so the evolved sum agrees with `propagate`'s to floating-point tolerance. See `PropagationStats.peak_terms` for what "peak" does and does not mean.
     /// `PropagationStats.partition` holds the per-partition detail, summed to the layer-level `terms_in`/`terms_out`; an unpartitioned call reports one partition.
     /// A distributed (`comm=`) call fills it too, but its per-layer lists hold **this rank's entry only** — gathering the group's counters would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture.
     /// A device (`device=`) call fills it with one partition per device, `PartitionStats.devices` naming them; under `comm=` it is this rank's record with this rank's device.
     #[pyo3(signature = (circuit, policy=None, direction=None, target_bucket_len=1024, min_buckets=128, partitions=None, pin_memory=true, partition_row_seed=None, partition_row_blocks=None, partition_row_exclude=None, partition_rows=None, comm=None, result="gather", device=None))]
     #[allow(clippy::too_many_arguments)]
     fn propagate_with_stats(
-        &self,
+        &mut self,
         py: Python<'_>,
         circuit: &crate::circuit::Circuit,
         policy: Option<&PyTruncation>,
@@ -1886,7 +1901,7 @@ impl PauliSum {
         comm: Option<&Bound<'_, PyAny>>,
         result: &str,
         device: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<(Self, PropagationStats)> {
+    ) -> PyResult<PropagationStats> {
         let dir = parse_direction(direction)?;
         let options = propagate_options(target_bucket_len, min_buckets)?;
         let gather = parse_result(result)?;
@@ -1916,13 +1931,12 @@ impl PauliSum {
             &policy,
             &self.inner,
         )?;
-        let (sum, trace, collapses) = self.run(py, circuit, mode, &policy, dir, options, true)?;
-        let stats = PropagationStats::from_run_trace(
+        let (trace, collapses) = self.run(py, circuit, mode, &policy, dir, options, true)?;
+        Ok(PropagationStats::from_run_trace(
             trace.expect("a traced run always records a trace"),
-            sum.inner.len(),
+            self.inner.len(),
             collapses,
-        );
-        Ok((sum, stats))
+        ))
     }
 
     /// Split `self` into a `PartitionedPauliSum` that stays split between calls, so a run can change its partition or bucket rows mid-circuit without gathering; `self` is left untouched.
@@ -1964,10 +1978,11 @@ impl PauliSum {
 }
 
 impl PauliSum {
-    /// The GIL-released half of both propagate entry points: run `mode` over `self` and wrap the result, with its place in a distributed split.
+    /// The GIL-released half of both propagate entry points: move the sum out of `self`, run `mode` over it and put the result back, so no copy of the input stays alive.
+    /// `self` is left empty if the run fails.
     #[allow(clippy::too_many_arguments)]
     fn run(
-        &self,
+        &mut self,
         py: Python<'_>,
         circuit: &crate::circuit::Circuit,
         mode: RunMode,
@@ -1975,7 +1990,10 @@ impl PauliSum {
         dir: Direction,
         options: PropagateOptions,
         traced: bool,
-    ) -> PyResult<(Self, Option<RunTrace>, Option<u64>)> {
+    ) -> PyResult<(Option<RunTrace>, Option<u64>)> {
+        let empty = PauliSumImpl::empty_for(self.inner.num_qubits(), self.inner.dtype())
+            .expect("the sum's own width and dtype");
+        let input = std::mem::replace(&mut self.inner, empty);
         // The whole simulation runs without the GIL: everything the engine
         // touches is plain Rust data (`PauliSumImpl`, `CircuitImpl` and
         // `BuiltinTruncation` are all `Send + Sync`), so nothing here needs Python.
@@ -1990,7 +2008,7 @@ impl PauliSum {
         let (mut trace, mut collapses) = (None, None);
         let slots = (&mut trace, &mut collapses);
         let inner = py.allow_threads(move || -> Result<PauliSumImpl, PropagateFailure> {
-            Ok(for_each_dtype_convert!(PauliSumImpl => PauliSumImpl, &self.inner, |sum| {
+            Ok(for_each_dtype_convert!(PauliSumImpl => PauliSumImpl, input, |sum| {
                 for_each_width_propagate!(
                     WidthSum,
                     sum,
@@ -2007,7 +2025,8 @@ impl PauliSum {
                 )
             }))
         })?;
-        Ok((Self::plain(inner), trace, collapses))
+        self.inner = inner;
+        Ok((trace, collapses))
     }
 }
 

@@ -14,7 +14,7 @@ import math
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated_with_stats, truncation
 
 # cos 0.3 = 0.955336..., sin 0.3 = 0.295520...: no count below rests on a
 # cancellation.
@@ -54,14 +54,13 @@ def test_propagation_stats_is_exported():
     assert hasattr(paulistrings, "PropagationStats")
 
 
-def test_returns_the_pair_and_the_same_sum_as_propagate():
+def test_returns_the_stats_and_evolves_like_propagate():
     circuit = _three_layer_circuit()
-    plain = _x0().propagate(circuit)
+    plain = _x0()
+    assert plain.propagate(circuit) is None
 
-    result = _x0().propagate_with_stats(circuit)
-    assert isinstance(result, tuple) and len(result) == 2
-    evolved, stats = result
-    assert isinstance(evolved, PauliSum)
+    evolved = _x0()
+    stats = evolved.propagate_with_stats(circuit)
     assert isinstance(stats, paulistrings.PropagationStats)
 
     got, want = _as_dict(evolved), _as_dict(plain)
@@ -71,7 +70,8 @@ def test_returns_the_pair_and_the_same_sum_as_propagate():
 
 
 def test_hand_computed_counts():
-    evolved, stats = _x0().propagate_with_stats(_three_layer_circuit())
+    evolved = _x0()
+    stats = evolved.propagate_with_stats(_three_layer_circuit())
 
     assert stats.layers == 3
     assert stats.terms_in == [1, 2, 2]
@@ -84,7 +84,7 @@ def test_hand_computed_counts():
 
 def test_plain_run_reports_a_one_partition_record():
     # A plain host run is one partition underneath, as a `device=0` run is.
-    _, stats = _x0().propagate_with_stats(_three_layer_circuit())
+    stats = _x0().propagate_with_stats(_three_layer_circuit())
     part = stats.partition
     assert isinstance(part, paulistrings.PartitionStats)
     assert part.partitions == 1
@@ -100,7 +100,7 @@ def test_plain_run_reports_a_one_partition_record():
 
 
 def test_empty_circuit_reports_a_one_partition_record():
-    _, stats = _x0().propagate_with_stats(Circuit(NUM_QUBITS))
+    stats = _x0().propagate_with_stats(Circuit(NUM_QUBITS))
     assert stats.partition.partitions == 1
     assert stats.partition.terms_in == []
 
@@ -109,9 +109,8 @@ def test_counts_are_post_truncation():
     # Layer 3's third key is X₀ with coefficient sin²θ·cos θ = 0.0873..., which
     # a 0.1 threshold drops (|c| <= eps is dropped); the surviving keys carry
     # 0.9553... (Z₀) and 0.2823... (Y₀).
-    evolved, stats = _x0().propagate_with_stats(
-        _three_layer_circuit(), policy=truncation.coeff(0.1)
-    )
+    evolved = _x0()
+    stats = evolved.propagate_with_stats(_three_layer_circuit(), policy=truncation.coeff(0.1))
 
     assert stats.terms_in == [1, 2, 2]
     assert stats.terms_out == [2, 2, 2]
@@ -126,7 +125,7 @@ def test_counts_are_post_truncation():
 
 def test_empty_circuit_reports_zero_layers():
     source = _x0()
-    evolved, stats = source.propagate_with_stats(Circuit(NUM_QUBITS))
+    evolved, stats = propagated_with_stats(source, Circuit(NUM_QUBITS))
 
     assert stats.layers == 0
     assert stats.terms_in == []
@@ -138,8 +137,10 @@ def test_empty_circuit_reports_zero_layers():
 
 def test_heisenberg_direction_matches_propagate():
     circuit = _three_layer_circuit()
-    plain = _x0().propagate(circuit, direction="heisenberg")
-    evolved, stats = _x0().propagate_with_stats(circuit, direction="heisenberg")
+    plain = _x0()
+    plain.propagate(circuit, direction="heisenberg")
+    evolved = _x0()
+    stats = evolved.propagate_with_stats(circuit, direction="heisenberg")
 
     assert stats.layers == 3
     assert stats.final_terms == len(evolved) == len(plain)
@@ -150,7 +151,7 @@ def test_heisenberg_direction_matches_propagate():
 
 
 def test_terms_in_chains_with_terms_out():
-    _, stats = _x0().propagate_with_stats(_three_layer_circuit())
+    stats = _x0().propagate_with_stats(_three_layer_circuit())
     assert stats.terms_in[1:] == stats.terms_out[:-1]
 
 
@@ -165,7 +166,7 @@ def test_qubit_count_mismatch_rejected():
 
 
 def test_gate_trace_fields_forward():
-    _, stats = _x0().propagate_with_stats(_three_layer_circuit())
+    stats = _x0().propagate_with_stats(_three_layer_circuit())
 
     assert stats.circuit_index == [0, 1, 2]
     assert stats.application_index == [0, 1, 2]
@@ -178,9 +179,7 @@ def test_gate_trace_circuit_index_reverses_under_heisenberg():
     """`application_index` still runs `0, 1, 2` in application order;
     `circuit_index` is reversed, since Heisenberg applies `rz(θ), h, rz(θ)`
     from the last channel first."""
-    _, stats = _x0().propagate_with_stats(
-        _three_layer_circuit(), direction="heisenberg"
-    )
+    stats = _x0().propagate_with_stats(_three_layer_circuit(), direction="heisenberg")
 
     assert stats.application_index == [0, 1, 2]
     assert stats.circuit_index == [2, 1, 0]
@@ -189,7 +188,7 @@ def test_gate_trace_circuit_index_reverses_under_heisenberg():
 def test_stats_repr_names_all_fields():
     circuit = Circuit(NUM_QUBITS)
     circuit.h(0)
-    _, stats = _x0().propagate_with_stats(circuit)
+    stats = _x0().propagate_with_stats(circuit)
     text = repr(stats)
     assert text.startswith("PropagationStats(")
     for field in ("layers=", "terms_in=", "terms_out=", "peak_terms=", "final_terms="):

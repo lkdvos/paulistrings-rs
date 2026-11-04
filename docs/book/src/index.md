@@ -29,8 +29,8 @@ circuit.rz(math.pi / 8, 0)
 circuit.cnot(0, 1)
 circuit.h(2)
 
-evolved = observable.propagate(circuit, direction="heisenberg")
-print(len(evolved), evolved.expectation("x+").real)
+observable.propagate(circuit, direction="heisenberg")
+print(len(observable), observable.expectation("x+").real)
 ```
 
 
@@ -95,7 +95,7 @@ dt = 0.1
 step_circuit = trotter_step(lx, ly, dt)
 observable = x_magnetization(lx, ly)
 for k in range(1, 6):
-    observable = observable.propagate(step_circuit, truncation.coeff(1e-6), direction="heisenberg")
+    observable.propagate(step_circuit, truncation.coeff(1e-6), direction="heisenberg")
     print(f"t={k * dt:.2f}  <X>={observable.expectation('x+').real:+.6f}  terms={len(observable)}")
 ```
 

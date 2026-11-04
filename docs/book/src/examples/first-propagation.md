@@ -6,7 +6,7 @@ This walks through one Heisenberg-picture propagation end to end: build an obser
 
 ```python
 import math
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
 # Observable: average X magnetization on 4 qubits. Coefficients multiply the
 # literal Hermitian Pauli string — `Y` carries no phase of its own.
@@ -19,7 +19,8 @@ circuit.rz(math.pi / 8, 0)
 circuit.cnot(0, 1)
 circuit.h(2)
 
-evolved = observable.propagate(
+evolved = propagated(
+    observable,
     circuit,
     truncation.coeff(1e-10),      # drop |c| <= 1e-10 after every channel
     direction="heisenberg",       # U† O U — always pass this explicitly
@@ -44,7 +45,7 @@ Here it is the average X magnetization on 4 qubits: a quarter weight on each sin
 `circuit.h(2)` pushes a Hadamard on qubit 2.
 Each call appends one gate, so the circuit is exactly the three-gate sequence written above, in that order.
 
-`observable.propagate(...)` evolves the observable through the circuit.
+`propagated(observable, ...)` returns the observable evolved through the circuit and keeps `observable` for the cutoff check below; `observable.propagate(...)` would evolve it in place instead.
 `truncation.coeff(1e-10)` is the truncation policy: after every channel, drop any term with `|c| <= 1e-10`.
 `direction="heisenberg"` says to compute `U† O U`, walking the circuit in reverse and applying each channel's adjoint — pass this explicitly, since the two directions answer different questions.
 
@@ -94,7 +95,7 @@ Run the same propagation at a few looser cutoffs and watch the term count, the a
 norm_in = float(np.sum(np.abs(observable.coefficients_array()) ** 2))
 
 for eps in [1e-1, 1e-2, 1e-10]:
-    trial = observable.propagate(circuit, truncation.coeff(eps), direction="heisenberg")
+    trial = propagated(observable, circuit, truncation.coeff(eps), direction="heisenberg")
     retained = float(np.sum(np.abs(trial.coefficients_array()) ** 2)) / norm_in
     print(f"{eps:7.0e}  terms={len(trial):3d}  <O>={trial.expectation('x+').real:+.9f}  retained={retained:.6f}")
 ```

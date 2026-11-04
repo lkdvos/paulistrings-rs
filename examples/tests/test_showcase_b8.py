@@ -121,11 +121,12 @@ def _engine_patch(L, eta):
 
 @pytest.mark.parametrize("L,alpha", [(2, 0.15), (3, 0.25)])
 def test_exact_echo_matches_dense_on_a_patch(L, alpha):
+    from paulistrings import propagated
     eta = ole.eta_of_alpha(alpha)
     ps, qubits, ops, obs_q, probe_q, obs, circuit, sites = _engine_patch(L, eta)
     assert probe_q and obs_q
     delta = ole.spec()["delta"]
-    A = obs.propagate(circuit, direction="heisenberg")
+    A = propagated(obs, circuit, direction="heisenberg")
     want = _dense_echo(ops, qubits, obs_q, probe_q, delta)
     assert ole.rotated_overlap(A, sites, delta, "x") == pytest.approx(want, abs=1e-10)
     hist = ole.anticommute_histogram(A, sites, "x")
@@ -134,21 +135,23 @@ def test_exact_echo_matches_dense_on_a_patch(L, alpha):
 
 
 def test_no_scattering_is_a_perfect_echo():
+    from paulistrings import propagated
     ps, *_, obs, circuit, sites = _engine_patch(2, 0.0)
-    A = obs.propagate(circuit, direction="heisenberg")
+    A = propagated(obs, circuit, direction="heisenberg")
     assert ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3) == pytest.approx(1.0, abs=1e-12)
     assert ole.rotated_overlap(A, sites, 0.3, "x") == pytest.approx(1.0, abs=1e-12)
 
 
 def test_ppmc_with_a_large_cache_is_exact_and_a_small_one_collapses():
+    from paulistrings import propagated
     ps, *_, obs, circuit, sites = _engine_patch(2, ole.eta_of_alpha(0.15))
-    exact = obs.propagate(circuit, direction="heisenberg")
-    big = obs.propagate(circuit, ps.truncation.collapse_sample(10**9, 7), direction="heisenberg")
+    exact = propagated(obs, circuit, direction="heisenberg")
+    big = propagated(obs, circuit, ps.truncation.collapse_sample(10**9, 7), direction="heisenberg")
     assert np.allclose(ole.anticommute_histogram(big, sites, "x"), ole.anticommute_histogram(exact, sites, "x"), atol=1e-12)
-    runs = [
-        ole.diagonal_echo(ole.anticommute_histogram(obs.propagate(circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg"), sites, "x"), 0.3)
-        for s in (1, 1, 2)
-    ]
+    runs = []
+    for s in (1, 1, 2):
+        sampled = propagated(obs, circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg")
+        runs.append(ole.diagonal_echo(ole.anticommute_histogram(sampled, sites, "x"), 0.3))
     assert runs[0] == runs[1]
     assert all(0.0 <= r <= 1.0 + 1e-12 for r in runs)
 
@@ -157,7 +160,8 @@ def test_quarter_turn_rotations_produce_a_single_clifford_term():
     """`PauliRotation` snaps `rz(pi/2)` etc. to an exact Clifford (fanout 1); skip until the built extension does so."""
     one = pauli_sum_from_support({0: "X"}, 1)
     c = ole.to_circuit([("rz", math.pi / 2, (0,))], index={0: 0})
-    n = len(one.propagate(c, direction="heisenberg"))
+    one.propagate(c, direction="heisenberg")
+    n = len(one)
     if n == 2:
         pytest.skip("extension predates core snapping")
     assert n == 1

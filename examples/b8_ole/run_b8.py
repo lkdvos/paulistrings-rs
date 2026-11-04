@@ -68,6 +68,7 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    from paulistrings import propagated_with_stats
     args = parse_args(argv)
     delta = ole.spec()["delta"] if args.delta is None else args.delta
     eta = ole.eta_of_alpha(args.alpha) if args.alpha is not None else args.eta
@@ -114,9 +115,7 @@ def main(argv=None) -> int:
             stats = split.propagate_with_stats(circuit, build_policy(args, seed), direction="heisenberg")
             result = split.local()
         else:
-            result, stats = obs.propagate_with_stats(
-                circuit, build_policy(args, seed), direction="heisenberg", **kwargs
-            )
+            result, stats = propagated_with_stats(obs, circuit, build_policy(args, seed), direction="heisenberg", **kwargs)
         t_prop = time.perf_counter() - t0
         hist = ole.anticommute_histogram(result, sites, "x", comm=comm)
         record = {

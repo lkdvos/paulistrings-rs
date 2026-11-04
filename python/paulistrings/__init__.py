@@ -9,7 +9,8 @@ re-exports the high-level classes and exposes the ``gates``, ``noise``, and
 ``PauliString`` is one ``IXYZ`` string with no coefficient attached, and
 ``p(label)`` is the shorthand that builds one from its label.
 
-``PauliSum.propagate`` also runs the sum split across partitions: ``partitions=``
+``PauliSum.propagate`` evolves a sum in place; ``propagated`` and ``propagated_with_stats`` are its copying forms.
+It also runs the sum split across partitions: ``partitions=``
 places one pinned thread pool per NUMA domain in this process, ``comm=`` takes
 an ``mpi4py`` communicator and places one partition per rank. ``device=`` runs
 it on CUDA devices instead (one partition per listed device, or with ``comm=``
@@ -37,6 +38,7 @@ from ._paulistrings import (
     p,
     reset_log_cache,
 )
+from ._propagated import propagated, propagated_with_stats
 from . import gates, hashes, noise, truncation
 from . import interop
 from . import io
@@ -51,6 +53,8 @@ __all__ = [
     "p",
     "PropagationStats",
     "PartitionStats",
+    "propagated",
+    "propagated_with_stats",
     "gates",
     "noise",
     "truncation",

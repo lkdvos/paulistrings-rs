@@ -174,11 +174,10 @@ def _exact(name: str, theta: float) -> float:
 
 def _propagate(name: str, theta: float, *, min_abs_coeff=None, max_weight=None):
     """One truncated Heisenberg propagation; returns `(value, stats)`."""
+    from paulistrings import propagated_with_stats
     observable = _observable(name)
     policy = harness.make_policy(max_weight=max_weight, min_abs_coeff=min_abs_coeff)
-    evolved, stats = observable.propagate_with_stats(
-        _spec(theta).to_circuit(), policy, direction=DIRECTION
-    )
+    evolved, stats = propagated_with_stats(observable, _spec(theta).to_circuit(), policy, direction=DIRECTION)
     return complex(evolved.expectation(STATE)).real, stats
 
 
@@ -299,12 +298,11 @@ def test_clifford_endpoints_are_exact_integers(name, theta_label, theta):
     is the same assertion Benchmark A makes at `n = 127`; the diagnostic below
     distinguishes its two failure modes.
     """
+    from paulistrings import propagated_with_stats
     observable = _observable(name)
-    evolved, stats = observable.propagate_with_stats(
-        _spec(theta).to_circuit(),
+    evolved, stats = propagated_with_stats(observable, _spec(theta).to_circuit(),
         harness.make_policy(min_abs_coeff=driver.MIN_SAFE_COEFF),
-        direction=DIRECTION,
-    )
+        direction=DIRECTION,)
     assert stats.final_terms == 1, (
         f"{name} at theta_h={theta_label}: a Clifford circuit must map one Pauli "
         f"string to one, but {stats.final_terms} terms survived. More than one term "

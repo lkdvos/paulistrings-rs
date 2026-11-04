@@ -259,7 +259,7 @@ def evolve_series(
     out: list[StepData] = []
     for step in range(1, steps + 1):
         start = time.perf_counter()
-        evolved, stats = evolved.propagate_with_stats(
+        stats = evolved.propagate_with_stats(
             step_circuit, policy, direction="heisenberg"
         )
         seconds = time.perf_counter() - start
@@ -324,7 +324,8 @@ def run_validation() -> dict[str, float]:
     dense_norm = sc.dense_hs_norm(dense)
     dense_profile = sc.dense_support_profile(dense, n)
 
-    evolved = observables.single_z(center, n).propagate(
+    evolved = observables.single_z(center, n)
+    evolved.propagate(
         spec.to_circuit(), None, direction="heisenberg"
     )
     sums, profile, _otoc_x, correlator, norm, _support = measure(evolved)
@@ -391,7 +392,8 @@ def run_validation() -> dict[str, float]:
     # (g) the same comparison with truncation on: now the gap is the truncation
     # error, and it must be *bounded by the norm it deleted*, which is the whole
     # justification for using 1 - N(t) as the convergence diagnostic.
-    truncated = observables.single_z(center, n).propagate(
+    truncated = observables.single_z(center, n)
+    truncated.propagate(
         spec.to_circuit(), truncation.coeff(VALIDATION_EPS), direction="heisenberg"
     )
     _t_sums, t_profile, _t_otoc, _t_corr, t_norm, _ = measure(truncated)
@@ -457,7 +459,7 @@ def run_clifford_cone() -> list[tuple[int, int, int]]:
     evolved = observables.single_z(center, n)
     rows: list[tuple[int, int, int]] = []
     for t in range(1, CLIFFORD_STEPS + 1):
-        evolved = evolved.propagate(step, dust, direction="heisenberg")
+        evolved.propagate(step, dust, direction="heisenberg")
         profile = sc.support_profile(evolved)
         assert len(evolved) == 1, (
             f"a Clifford circuit must map one Pauli string to one Pauli string, got "

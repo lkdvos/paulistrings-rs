@@ -16,7 +16,7 @@ The [cost model](index.md#cost-model) is terms, and the policy is the knob on it
 ## Choosing a policy {#choosing-a-policy}
 
 ```python
-from paulistrings import truncation
+from paulistrings import propagated, truncation
 
 policy = truncation.coeff(1e-10)
 ```
@@ -83,8 +83,8 @@ fused = Circuit(1)
 fused.unitary_1q(0, rz(0.15) @ rx(1.0))
 
 for policy in (None, truncation.coeff(0.1)):
-    a = observable.propagate(two_gates, policy, direction="heisenberg")
-    b = observable.propagate(fused, policy, direction="heisenberg")
+    a = propagated(observable, two_gates, policy, direction="heisenberg")
+    b = propagated(observable, fused, policy, direction="heisenberg")
     print(f"{str(policy):22s} two gates: {len(a)} terms  <Z>={a.expectation('z+').real:+.6f}   fused: {len(b)} terms  <Z>={b.expectation('z+').real:+.6f}")
 ```
 

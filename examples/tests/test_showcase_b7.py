@@ -41,7 +41,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from paulistrings import PauliSum, truncation
+from paulistrings import PauliSum, propagated, truncation
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EXAMPLES_DIR = _REPO_ROOT / "examples"
@@ -99,7 +99,8 @@ def _estimate(n, edges, adjacency, q, steps, theta_h, generators=None):
     """`<K_q>` after `steps` Trotter steps, by the showcase's own pipeline."""
     if generators is None:
         generators = sp.cluster_state_stabilizers(n, edges)
-    evolved = _stabilizer_observable(n, adjacency, q).propagate(
+    evolved = _stabilizer_observable(n, adjacency, q)
+    evolved.propagate(
         _tail(n, edges, steps, theta_h), truncation.coeff(DUST_CUTOFF), direction="heisenberg"
     )
     return evolved.expectation_stabilizer(generators)
@@ -180,9 +181,7 @@ def test_pipeline_matches_a_dense_state_vector(rows, cols, steps, theta_h):
     preparation = sp.cluster_prep_circuit(n, edges)
     tail = _tail(n, edges, steps, theta_h)
 
-    evolved = observable.propagate(
-        tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
-    )
+    evolved = propagated(observable, tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg")
     got = evolved.expectation_stabilizer(sp.cluster_state_stabilizers(n, edges))
     want = sp.dense_expectation(preparation + tail, observable)
     assert abs(got - want) < TOL, f"{got} vs dense {want}"
@@ -208,9 +207,7 @@ def test_zero_state_generators_reproduce_the_product_state_path():
     observable = PauliSum.from_strings(
         {sp.pauli_label({5: "Z"}, n): 1.0}, num_qubits=n
     )
-    evolved = observable.propagate(
-        _tail(n, edges, 2, 0.6), truncation.coeff(DUST_CUTOFF), direction="heisenberg"
-    )
+    evolved = propagated(observable, _tail(n, edges, 2, 0.6), truncation.coeff(DUST_CUTOFF), direction="heisenberg")
     product = complex(evolved.expectation("z+"))
     generators = evolved.expectation_stabilizer(sp.single_z_generators(n))
     assert abs(product) > 0.1, "the probe must not be vacuously zero"
@@ -348,9 +345,7 @@ def test_a_clifford_tail_matches_stim_on_the_composed_circuit(theta_h, steps):
     prep_circuit, _ = interop.circuit_from_stim(preparation)
     tail = _tail(n, edges, steps, theta_h)
 
-    evolved = observable.propagate(
-        tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg"
-    )
+    evolved = propagated(observable, tail, truncation.coeff(DUST_CUTOFF), direction="heisenberg")
     got = evolved.expectation_stabilizer(generators)
     want = oracles.stim_clifford_exact(prep_circuit + tail, observable)
     assert abs(got - want) < CLOSED_FORM_TOL, f"{got} vs stim {want}"
@@ -367,9 +362,7 @@ def test_identity_padding_changes_neither_the_generators_nor_the_estimate():
     n, edges, adjacency = _lattice(3, 4)
     q = _even_degree_sites(adjacency)[-1]
     observable = _stabilizer_observable(n, adjacency, q)
-    evolved = observable.propagate(
-        _tail(n, edges, 2, 0.6), truncation.coeff(DUST_CUTOFF), direction="heisenberg"
-    )
+    evolved = propagated(observable, _tail(n, edges, 2, 0.6), truncation.coeff(DUST_CUTOFF), direction="heisenberg")
     base = sp.cluster_prep_stim(n, edges)
 
     reference_generators = interop.stabilizers_from_stim(base, num_qubits=n)

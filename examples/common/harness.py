@@ -558,7 +558,8 @@ def run_propagation(
     baseline_peak_kb = peak_memory_kb()
 
     if warmup:
-        warm_evolved, _ = observable.propagate_with_stats(
+        warm_evolved = observable.copy()
+        warm_evolved.propagate_with_stats(
             circuit, policy_obj, direction=direction
         )
         if state is not None:
@@ -567,8 +568,9 @@ def run_propagation(
             contract(warm_evolved)
         del warm_evolved
 
+    evolved = observable.copy()
     start = time.perf_counter()
-    evolved, stats = observable.propagate_with_stats(
+    stats = evolved.propagate_with_stats(
         circuit, policy_obj, direction=direction
     )
     propagation_time_s = time.perf_counter() - start

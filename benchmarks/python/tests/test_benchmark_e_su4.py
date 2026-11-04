@@ -54,6 +54,7 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
     the same "independent-path" argument `test_examples_oracles.py` makes for
     the shared oracle module itself.
     """
+    from paulistrings import propagated
     pytest.importorskip("qiskit_aer")
     q = central_qubit(n)
     obs = observables.single_z(q, n)
@@ -61,7 +62,7 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
     oracle = oracles.statevector_expectation(spec, obs, "z+").real
 
     circuit = spec.to_circuit()
-    evolved = obs.propagate(circuit, None, direction="heisenberg")
+    evolved = propagated(obs, circuit, None, direction="heisenberg")
     engine = complex(evolved.expectation("z+")).real
 
     assert engine == pytest.approx(oracle, abs=1e-10)
@@ -70,6 +71,7 @@ def test_su4_staircase_matches_statevector_untruncated(n, depth):
 @pytest.mark.parametrize("state", ("z+", "x+", "y+"))
 def test_su4_staircase_matches_statevector_for_every_uniform_state(state):
     """The three uniform product states, not just `|0...0>`."""
+    from paulistrings import propagated
     pytest.importorskip("qiskit_aer")
     n, depth = 6, 3
     q = central_qubit(n)
@@ -78,7 +80,7 @@ def test_su4_staircase_matches_statevector_for_every_uniform_state(state):
     oracle = oracles.statevector_expectation(spec, obs, state).real
 
     circuit = spec.to_circuit()
-    evolved = obs.propagate(circuit, None, direction="heisenberg")
+    evolved = propagated(obs, circuit, None, direction="heisenberg")
     engine = complex(evolved.expectation(state)).real
 
     assert engine == pytest.approx(oracle, abs=1e-10)
@@ -91,6 +93,7 @@ def test_su4_staircase_matches_statevector_with_truncation():
     `PropagationStats`/`min_abs_coeff` together on the SU(4) vocabulary, which
     the untruncated checks (`policy=None`) do not touch at all.
     """
+    from paulistrings import propagated_with_stats
     pytest.importorskip("qiskit_aer")
     from paulistrings import truncation
 
@@ -101,9 +104,7 @@ def test_su4_staircase_matches_statevector_with_truncation():
     oracle = oracles.statevector_expectation(spec, obs, "z+").real
 
     circuit = spec.to_circuit()
-    evolved, stats = obs.propagate_with_stats(
-        circuit, truncation.coeff(eps), direction="heisenberg"
-    )
+    evolved, stats = propagated_with_stats(obs, circuit, truncation.coeff(eps), direction="heisenberg")
     engine = complex(evolved.expectation("z+")).real
 
     assert stats.final_terms <= stats.peak_terms
@@ -119,6 +120,7 @@ def test_same_seed_twice_gives_identical_term_counts_and_expectation():
     """"same seed twice -> identical term counts and expectation to 1e-12"
     (plan §6, Benchmark E). No optional dependency, so this always runs in CI.
     """
+    from paulistrings import propagated_with_stats
     n, depth, eps = 16, 4, 1e-4
     q = central_qubit(n)
 
@@ -126,7 +128,7 @@ def test_same_seed_twice_gives_identical_term_counts_and_expectation():
         obs = observables.single_z(q, n)
         circuit = circuits.random_su4_staircase(n, depth, SEED)
         policy = harness.make_policy(min_abs_coeff=eps)
-        evolved, stats = obs.propagate_with_stats(circuit, policy, direction="heisenberg")
+        evolved, stats = propagated_with_stats(obs, circuit, policy, direction="heisenberg")
         return stats.final_terms, stats.peak_terms, complex(evolved.expectation("z+"))
 
     terms_a, peak_a, exp_a = run_once()
@@ -148,8 +150,11 @@ def test_different_seeds_give_different_circuits():
     circuit_a = circuits.random_su4_staircase(n, depth, seed=1)
     circuit_b = circuits.random_su4_staircase(n, depth, seed=2)
 
-    exp_a = complex(obs.propagate(circuit_a, None, direction="heisenberg").expectation("z+"))
-    exp_b = complex(obs.propagate(circuit_b, None, direction="heisenberg").expectation("z+"))
+    evolved_a, evolved_b = obs.copy(), obs.copy()
+    evolved_a.propagate(circuit_a, None, direction="heisenberg")
+    evolved_b.propagate(circuit_b, None, direction="heisenberg")
+    exp_a = complex(evolved_a.expectation("z+"))
+    exp_b = complex(evolved_b.expectation("z+"))
 
     assert abs(exp_a - exp_b) > 1e-6
 

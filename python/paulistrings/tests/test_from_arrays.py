@@ -8,12 +8,11 @@ Design source: ``research/FINDINGS.md`` §Python API extensions.
 an evolved observable can cross a process boundary (the B5 motivating flow).
 """
 
-import math
 
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, io
+from paulistrings import Circuit, PauliSum, io, propagated
 
 
 def _as_dict(sum_):
@@ -307,14 +306,15 @@ def test_b5_save_load_mid_propagation_matches_doing_it_in_one_go(tmp_path):
     second_half.rz(0.13, 2)
 
     # One go: propagate through both halves back-to-back.
-    one_go = initial.propagate(first_half).propagate(second_half)
+    one_go = propagated(initial, first_half)
+    one_go.propagate(second_half)
 
     # Split across a file boundary: propagate the first half, save, load,
     # then propagate the second half on the reloaded sum.
-    mid = initial.propagate(first_half)
+    mid = propagated(initial, first_half)
     path = tmp_path / "mid.npz"
     io.save(path, mid)
     reloaded = io.load(path)
-    split = reloaded.propagate(second_half)
+    split = propagated(reloaded, second_half)
 
     _assert_close(split, one_go)

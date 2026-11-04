@@ -5,7 +5,7 @@ import re
 
 import numpy as np
 
-from paulistrings import Circuit, PauliSum
+from paulistrings import Circuit, PauliSum, propagated
 
 
 def _terms(sum_):
@@ -39,10 +39,11 @@ def discarded_norm(sum_, circuit, policy, direction="forward"):
     direction = direction or "forward"
     order = range(len(circuit)) if direction == "forward" else reversed(range(len(circuit)))
     discarded = 0.0
+    sum_ = sum_.copy()
     for i in order:
         layer = circuit[i : i + 1]
-        full = _terms(sum_.propagate(layer, direction=direction))
-        sum_ = sum_.propagate(layer, policy, direction=direction)
+        full = _terms(propagated(sum_, layer, direction=direction))
+        sum_.propagate(layer, policy, direction=direction)
         kept = _terms(sum_)
         discarded += math.sqrt(sum(abs(c) ** 2 for k, c in full.items() if k not in kept))
     return discarded

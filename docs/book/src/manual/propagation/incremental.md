@@ -1,6 +1,6 @@
 # Incremental propagation
 
-`propagate` returns a new sum, and that sum is a perfectly good input to another `propagate` call.
+`propagate` evolves a sum in place, and the evolved sum is a perfectly good input to another `propagate` call.
 Because truncation runs after every layer rather than once per call, chaining calls costs nothing in accuracy, and that identity is what turns a time series from one run per time point into a single pass read out along the way.
 It also has one trap, which follows directly from [push order](direction.md#push-order).
 
@@ -10,7 +10,7 @@ Propagating through `a` and then `b` applies the same sequence of (apply, merge,
 
 ```python
 import numpy as np
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings({"ZIII": 1.0}, num_qubits=4)
 policy = truncation.coeff(1e-10)
@@ -22,10 +22,9 @@ front.cnot(0, 1)
 back = Circuit(4)
 back.rz(0.3, 1)
 
-split = observable.propagate(front, policy, direction="forward").propagate(
-    back, policy, direction="forward"
-)
-whole = observable.propagate(front + back, policy, direction="forward")
+split = propagated(observable, front, policy, direction="forward")
+split.propagate(back, policy, direction="forward")
+whole = propagated(observable, front + back, policy, direction="forward")
 
 assert len(split) == len(whole)
 assert np.allclose(split.coefficients_array(), whole.coefficients_array())
@@ -57,11 +56,10 @@ for q in range(n):
 observable = PauliSum.from_strings({"Z" + "I" * (n - 1): 1.0}, num_qubits=n)
 policy = truncation.coeff(1e-4)
 
-evolved = observable
-series = [(0, len(evolved), evolved.expectation("z+").real)]
+series = [(0, len(observable), observable.expectation("z+").real)]
 for k in range(1, steps + 1):
-    evolved = evolved.propagate(step, policy, direction="heisenberg")
-    series.append((k, len(evolved), evolved.expectation("z+").real))
+    observable.propagate(step, policy, direction="heisenberg")
+    series.append((k, len(observable), observable.expectation("z+").real))
 
 for k, terms, value in series:
     print(f"step {k}  terms {terms:5d}  <Z0> {value:+.6f}")

@@ -86,7 +86,7 @@ def oracles():
 @pytest.mark.parametrize("steps", [1, 2, 3])
 def test_matches_statevector(oracles, Jz, steps):
     """Both observables, both regimes, three depths: exact to ~1e-15."""
-    from paulistrings import truncation
+    from paulistrings import propagated, truncation
 
     n = CHECK_N
     state = driver.domain_wall_state(n)
@@ -95,9 +95,8 @@ def test_matches_statevector(oracles, Jz, steps):
     policy = truncation.coeff(driver.TIGHT_EPS)
     for name, obs in _observables(n).items():
         exact = oracles.statevector_expectation(spec, obs, state)
-        got = complex(
-            obs.propagate(circuit, policy, direction=DIRECTION).expectation(state)
-        )
+        evolved = propagated(obs, circuit, policy, direction=DIRECTION)
+        got = complex(evolved.expectation(state))
         assert abs(got - exact) < TOL, (
             f"Jz={Jz} steps={steps} {name}: paulistrings={got!r} "
             f"statevector={exact!r}"
@@ -113,19 +112,18 @@ def test_domain_wall_state_is_not_an_eigenstate(oracles):
     evolves (and that the initial value is the exact `-1` the state prescribes,
     since qubit `c = n//2` is in `|1>`).
     """
+    from paulistrings import propagated
     n = CHECK_N
     state = driver.domain_wall_state(n)
     obs = observables.single_z(driver.center(n), n)
     zero_steps = circuits.xxz_chain_trotter(n, 0, Jz=driver.JZ_INTERACTING, dt=DT)
-    initial = complex(
-        obs.propagate(zero_steps, None, direction=DIRECTION).expectation(state)
-    ).real
+    unevolved = propagated(obs, zero_steps, None, direction=DIRECTION)
+    initial = complex(unevolved.expectation(state)).real
     assert initial == pytest.approx(-1.0, abs=1e-12)
 
-    evolved = circuits.xxz_chain_trotter(n, 3, Jz=driver.JZ_INTERACTING, dt=DT)
-    later = complex(
-        obs.propagate(evolved, None, direction=DIRECTION).expectation(state)
-    ).real
+    three_steps = circuits.xxz_chain_trotter(n, 3, Jz=driver.JZ_INTERACTING, dt=DT)
+    obs.propagate(three_steps, None, direction=DIRECTION)
+    later = complex(obs.expectation(state)).real
     assert abs(later - initial) > 1e-3, "the domain wall did not melt at all"
 
 
@@ -133,10 +131,12 @@ def test_domain_wall_state_is_not_an_eigenstate(oracles):
 
 
 def _untruncated_counts(n, max_steps, Jz, obs):
+    from paulistrings import propagated
     counts = []
     for s in range(1, max_steps + 1):
         circuit = circuits.xxz_chain_trotter(n, s, Jz=Jz, dt=DT)
-        counts.append(len(obs.propagate(circuit, None, direction=DIRECTION)))
+        evolved = propagated(obs, circuit, None, direction=DIRECTION)
+        counts.append(len(evolved))
     return counts
 
 
@@ -203,6 +203,7 @@ def test_free_regime_growth_is_independent_of_dt_and_seed_site():
     count; moving the seed off center changes neither, as long as the cone
     still fits. A cancellation-sensitive count would fail this.
     """
+    from paulistrings import propagated
     n = 40
     steps = 4
     base = _untruncated_counts(
@@ -215,7 +216,8 @@ def test_free_regime_growth_is_independent_of_dt_and_seed_site():
         obs = observables.single_z(driver.center(n), n)
         for s in range(1, steps + 1):
             circuit = circuits.xxz_chain_trotter(n, s, Jz=driver.JZ_FREE, dt=dt)
-            counts.append(len(obs.propagate(circuit, None, direction=DIRECTION)))
+            evolved = propagated(obs, circuit, None, direction=DIRECTION)
+            counts.append(len(evolved))
         assert counts == base, f"dt={dt} changed the counts: {counts} != {base}"
 
     off_center = _untruncated_counts(

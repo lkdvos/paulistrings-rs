@@ -203,12 +203,11 @@ def _exact(theta: float, steps: int = DEEP_STEPS) -> float:
 
 def _propagate(theta: float, eps: float, *, steps: int = DEEP_STEPS, n: int = N):
     """One truncated Heisenberg propagation; returns `(value, stats)`."""
+    from paulistrings import propagated_with_stats
     observable = _observable(n)
-    evolved, stats = observable.propagate_with_stats(
-        _spec(theta, steps, n).to_circuit(),
+    evolved, stats = propagated_with_stats(observable, _spec(theta, steps, n).to_circuit(),
         harness.make_policy(min_abs_coeff=eps),
-        direction=DIRECTION,
-    )
+        direction=DIRECTION,)
     return complex(evolved.expectation(STATE)).real, stats
 
 
@@ -794,6 +793,8 @@ def test_loose_cutoff_sanity_on_the_full_lattice(theta_label, theta):
     """
     import time
 
+    from paulistrings import propagated_with_stats
+
     observable = observables.canonical_z_127()
     circuit = circuits.heavy_hex_kicked_ising(
         driver.N_QUBITS, trotter_steps=DEEP_STEPS, theta_h=theta
@@ -806,9 +807,7 @@ def test_loose_cutoff_sanity_on_the_full_lattice(theta_label, theta):
     started = time.perf_counter()
     peaks, finals, values = [], [], []
     for eps in LOOSE_COEFFS:
-        evolved, stats = observable.propagate_with_stats(
-            circuit, harness.make_policy(min_abs_coeff=eps), direction=DIRECTION
-        )
+        evolved, stats = propagated_with_stats(observable, circuit, harness.make_policy(min_abs_coeff=eps), direction=DIRECTION)
         peaks.append(stats.peak_terms)
         finals.append(stats.final_terms)
         values.append(complex(evolved.expectation(STATE)).real)

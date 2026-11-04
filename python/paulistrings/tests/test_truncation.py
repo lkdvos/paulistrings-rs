@@ -18,10 +18,15 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, truncation
+from paulistrings import (
+    Circuit,
+    PauliSum,
+    propagated,
+    propagated_with_stats,
+    truncation,
+)
 
 from .test_from_arrays import _as_dict, _assert_close
-
 
 TOL = 1e-12
 
@@ -39,8 +44,8 @@ def test_coefficient_threshold_drops_subthreshold_as_dict():
     s = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.rz(0.1, 0)
-    assert len(s.propagate(c).coefficients()) == 2
-    (only,) = s.propagate(c, policy=truncation.coeff(0.5)).coefficients()
+    assert len(propagated(s, c).coefficients()) == 2
+    (only,) = propagated(s, c, policy=truncation.coeff(0.5)).coefficients()
     assert abs(only - math.cos(0.1)) < TOL
 
 
@@ -51,7 +56,7 @@ def test_weight_cutoff_drops_higher_weight_as_dict():
         {"II": 1.0, "XI": 2.0, "XX": 3.0},
         num_qubits=2,
     )
-    out = s.propagate(_probe_circuit(2), policy=truncation.weight(1))
+    out = propagated(s, _probe_circuit(2), policy=truncation.weight(1))
     coeffs = out.coefficients()
     assert len(coeffs) == 2
     # Magnitudes 1.0 (II) and 2.0 (XI). XX (3.0) dropped.
@@ -64,7 +69,7 @@ def test_topn_keeps_largest_after_layer():
         {"II": 0.1, "XI": 0.5, "ZI": 1.0, "XX": 0.2},
         num_qubits=2,
     )
-    out = s.propagate(_probe_circuit(2), policy=truncation.topn(2))
+    out = propagated(s, _probe_circuit(2), policy=truncation.topn(2))
     coeffs = out.coefficients()
     assert len(coeffs) == 2
     mags = sorted((abs(c) for c in coeffs), reverse=True)
@@ -84,8 +89,8 @@ def test_approx_topn_matches_topn_on_a_well_separated_spectrum():
         num_qubits=2,
     )
     for n in (1, 2, 3, 4):
-        approx = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
-        exact = s.propagate(_probe_circuit(2), policy=truncation.topn(n))
+        approx = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(n))
+        exact = propagated(s, _probe_circuit(2), policy=truncation.topn(n))
         assert len(approx.coefficients()) == n
         assert _mags(approx) == pytest.approx(_mags(exact))
 
@@ -99,7 +104,7 @@ _CLUSTERED = {"II": 1.0, "XI": 0.9, "ZI": 0.7, "XX": 0.6, "YI": 0.5}
 @pytest.mark.parametrize("n", [0, 1, 2, 3, 4, 5, 6])
 def test_approx_topn_keeps_exactly_n(n):
     s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
-    out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
+    out = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(n))
     assert len(out.coefficients()) == min(n, len(_CLUSTERED))
 
 
@@ -109,8 +114,8 @@ def test_approx_topn_fills_the_boundary_octave():
     # boundary octave [0.25, 0.5) of |c|² fill the rest, whichever come first in
     # bucket order — not necessarily 0.7 and 0.6, which TopN(4) keeps.
     s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
-    approx = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(4))
-    exact = s.propagate(_probe_circuit(2), policy=truncation.topn(4))
+    approx = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(4))
+    exact = propagated(s, _probe_circuit(2), policy=truncation.topn(4))
     mags = _mags(approx)
     assert len(mags) == 4
     assert mags[:2] == pytest.approx([1.0, 0.9])
@@ -124,7 +129,7 @@ def test_approx_topn_splits_a_tie_group_to_keep_exactly_n():
         num_qubits=2,
     )
     for n in range(5):
-        out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(n))
+        out = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(n))
         assert _mags(out) == pytest.approx([1.0, 0.5, 0.5, 0.5][:n]), f"n={n}"
 
 
@@ -134,7 +139,7 @@ def test_topn_splits_a_tie_group_to_keep_exactly_n():
         num_qubits=2,
     )
     for n in range(5):
-        out = s.propagate(_probe_circuit(2), policy=truncation.topn(n))
+        out = propagated(s, _probe_circuit(2), policy=truncation.topn(n))
         assert _mags(out) == pytest.approx([1.0, 0.5, 0.5, 0.5][:n]), f"n={n}"
 
 
@@ -145,9 +150,9 @@ def test_approx_topn_keeps_n_of_a_single_octave_sum():
         {"II": 1.0, "XI": 1.1, "ZI": 1.2, "XX": 1.3},
         num_qubits=2,
     )
-    out = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(3))
+    out = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(3))
     assert len(out.coefficients()) == 3
-    kept = s.propagate(_probe_circuit(2), policy=truncation.approx_topn(4))
+    kept = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(4))
     assert len(kept.coefficients()) == 4
 
 
@@ -158,9 +163,7 @@ def test_approx_topn_composes_with_the_operators():
     )
     # And: the weight cutoff drops XX per term, then approx_topn(2) cuts the
     # rest to the top two octaves.
-    out = s.propagate(
-        _probe_circuit(2), policy=truncation.approx_topn(2) & truncation.weight(1)
-    )
+    out = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(2) & truncation.weight(1))
     assert _mags(out) == pytest.approx([1.0, 0.25])
 
 
@@ -199,7 +202,7 @@ def test_and_combinator_requires_both_to_keep():
         num_qubits=2,
     )
     policy = truncation.coeff(0.3) & truncation.weight(1)
-    out = s.propagate(_probe_circuit(2), policy=policy)
+    out = propagated(s, _probe_circuit(2), policy=policy)
     coeffs = out.coefficients()
     assert len(coeffs) == 2
     mags = sorted(abs(c) for c in coeffs)
@@ -217,7 +220,7 @@ def test_or_combinator_keeps_if_either_passes():
         num_qubits=2,
     )
     policy = truncation.coeff(0.5) | truncation.weight(0)
-    out = s.propagate(_probe_circuit(2), policy=policy)
+    out = propagated(s, _probe_circuit(2), policy=policy)
     coeffs = out.coefficients()
     assert len(coeffs) == 2
     mags = sorted(abs(c) for c in coeffs)
@@ -237,7 +240,7 @@ def test_nested_and_or_composition():
         num_qubits=2,
     )
     policy = (truncation.coeff(0.2) & truncation.weight(1)) | truncation.weight(0)
-    out = s.propagate(_probe_circuit(2), policy=policy)
+    out = propagated(s, _probe_circuit(2), policy=policy)
     coeffs = out.coefficients()
     assert len(coeffs) == 2
     mags = sorted(abs(c) for c in coeffs)
@@ -279,15 +282,15 @@ def _fanout_case():
 
 def test_collapse_sample_above_the_final_size_is_a_no_op():
     s, c = _fanout_case()
-    want = s.propagate(c, direction="heisenberg")
-    got, stats = s.propagate_with_stats(c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
+    want = propagated(s, c, direction="heisenberg")
+    got, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
     _assert_close(got, want)
     assert stats.collapses == 0
 
 
 def test_collapse_sample_collapses_on_every_oversized_layer():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
-    out, stats = s.propagate_with_stats(_splitting_circuit(6), truncation.collapse_sample(1, 3))
+    out, stats = propagated_with_stats(s, _splitting_circuit(6), truncation.collapse_sample(1, 3))
     assert stats.collapses == 6
     assert stats.terms_out == [1] * 6
     (coeff,) = out.coefficients()
@@ -296,7 +299,7 @@ def test_collapse_sample_collapses_on_every_oversized_layer():
 
 def test_collapse_sample_bounds_every_layer_by_the_cache():
     s, c = _fanout_case()
-    _, stats = s.propagate_with_stats(c, truncation.collapse_sample(20, 1), direction="heisenberg")
+    stats = s.copy().propagate_with_stats(c, truncation.collapse_sample(20, 1), direction="heisenberg")
     assert stats.collapses >= 1
     assert all(t <= 20 for t in stats.terms_out)
     assert stats.terms_out.count(1) >= stats.collapses
@@ -305,7 +308,7 @@ def test_collapse_sample_bounds_every_layer_by_the_cache():
 def test_collapse_sample_is_reproducible_per_seed():
     s, c = _fanout_case()
     runs = {
-        seed: [s.propagate(c, truncation.collapse_sample(20, seed), direction="heisenberg") for _ in range(2)]
+        seed: [propagated(s, c, truncation.collapse_sample(20, seed), direction="heisenberg") for _ in range(2)]
         for seed in range(6)
     }
     for first, second in runs.values():
@@ -318,13 +321,14 @@ def test_collapse_sample_counts_per_call_and_continues_its_sequence():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     circuit = _splitting_circuit(4)
     policy = truncation.collapse_sample(1, 11)
-    _, first = s.propagate_with_stats(circuit, policy)
-    _, second = s.propagate_with_stats(circuit, policy)
+    first = s.copy().propagate_with_stats(circuit, policy)
+    second = s.copy().propagate_with_stats(circuit, policy)
     assert first.collapses == second.collapses == 4
     # Two four-layer calls on one object draw what one eight-layer call draws.
     policy = truncation.collapse_sample(1, 11)
-    chained = s.propagate(circuit, policy).propagate(circuit, policy)
-    _assert_close(chained, s.propagate(_splitting_circuit(8), truncation.collapse_sample(1, 11)))
+    chained = propagated(s, circuit, policy)
+    chained.propagate(circuit, policy)
+    _assert_close(chained, propagated(s, _splitting_circuit(8), truncation.collapse_sample(1, 11)))
 
 
 def test_collapse_sample_draws_by_squared_magnitude():
@@ -335,7 +339,7 @@ def test_collapse_sample_draws_by_squared_magnitude():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     seeds = 2000
     kept_z = sum(
-        s.propagate(c, truncation.collapse_sample(1, seed)).x_array()[0, 0] == 0 for seed in range(seeds)
+        propagated(s, c, truncation.collapse_sample(1, seed)).x_array()[0, 0] == 0 for seed in range(seeds)
     )
     p = math.cos(theta) ** 2
     assert abs(kept_z / seeds - p) < 5 * math.sqrt(p * (1 - p) / seeds)
@@ -345,9 +349,9 @@ def test_collapse_sample_composes_and_reports_none_without_a_sampler():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     policy = truncation.collapse_sample(1, 0) & truncation.coeff(1e-12)
     assert "CollapseSample" in repr(policy)
-    _, stats = s.propagate_with_stats(_splitting_circuit(3), policy)
+    stats = s.copy().propagate_with_stats(_splitting_circuit(3), policy)
     assert stats.collapses == 3
-    _, stats = s.propagate_with_stats(_splitting_circuit(3), truncation.coeff(1e-12))
+    stats = s.copy().propagate_with_stats(_splitting_circuit(3), truncation.coeff(1e-12))
     assert stats.collapses is None
-    _, stats = s.propagate_with_stats(_splitting_circuit(3))
+    stats = s.copy().propagate_with_stats(_splitting_circuit(3))
     assert stats.collapses is None

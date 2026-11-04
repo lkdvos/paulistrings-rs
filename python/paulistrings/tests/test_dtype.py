@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, gates, noise, p, truncation
+from paulistrings import Circuit, PauliSum, gates, noise, p, propagated, truncation
 
 DTYPES = [np.float64, np.float32, np.complex128, np.complex64]
 REAL = [np.float64, np.float32]
@@ -147,8 +147,10 @@ def test_binary_operations_promote_as_numpy_does(a, b):
 def test_every_dtype_propagates_a_hermitian_observable_like_complex128(dtype):
     circuit = noisy_circuit()
     policy = truncation.coeff(1e-9)
-    reference = hamiltonian().propagate(circuit, policy, direction="heisenberg")
-    evolved = hamiltonian(dtype).propagate(circuit, policy, direction="heisenberg")
+    reference = hamiltonian()
+    reference.propagate(circuit, policy, direction="heisenberg")
+    evolved = hamiltonian(dtype)
+    evolved.propagate(circuit, policy, direction="heisenberg")
     assert evolved.dtype == dtype
     rtol = rtol_of(dtype)
     for state in ("z+", "x+", "0110", "+-rl"):
@@ -166,17 +168,19 @@ def test_every_dtype_propagates_a_hermitian_observable_like_complex128(dtype):
 def test_every_propagation_path_and_save_keep_the_dtype(dtype, tmp_path):
     circuit = noisy_circuit()
     policy = truncation.weight(2) & truncation.approx_topn(20)
-    assert hamiltonian(dtype).propagate(circuit, policy).dtype == dtype
-    evolved, stats = hamiltonian(dtype).propagate_with_stats(circuit)
+    assert propagated(hamiltonian(dtype), circuit, policy).dtype == dtype
+    evolved = hamiltonian(dtype)
+    stats = evolved.propagate_with_stats(circuit)
     assert evolved.dtype == dtype and stats.final_terms == len(evolved)
-    assert hamiltonian(dtype).propagate(circuit, partitions=[[0], [1]]).dtype == dtype
+    assert propagated(hamiltonian(dtype), circuit, partitions=[[0], [1]]).dtype == dtype
 
     split = hamiltonian(dtype).partition(partitions=[[0]])
     assert split.dtype == dtype
     split.propagate(circuit, direction="heisenberg")
     value = split.expectation("z+")
     assert type(value) is scalar_type(dtype)
-    reference = hamiltonian().propagate(circuit, direction="heisenberg")
+    reference = hamiltonian()
+    reference.propagate(circuit, direction="heisenberg")
     assert value == pytest.approx(reference.expectation("z+").real, rel=rtol_of(dtype))
     assert split.gather().dtype == dtype and split.local().dtype == dtype
 

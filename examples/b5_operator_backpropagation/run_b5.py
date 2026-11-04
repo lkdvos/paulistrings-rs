@@ -66,7 +66,7 @@ _EXAMPLES_DIR = _REPO_ROOT / "examples"
 if str(_EXAMPLES_DIR) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES_DIR))
 
-from paulistrings import interop, truncation  # noqa: E402
+from paulistrings import interop, propagated, truncation  # noqa: E402
 from paulistrings import io as psio  # noqa: E402
 
 from common import circuits, harness, observables, oracles, report  # noqa: E402
@@ -205,12 +205,12 @@ def run_validation() -> float:
     tail_circuit = tail.to_circuit()
 
     # (a) the full-circuit reference, no truncation.
-    full_evolved = observable.propagate(full_circuit, None, direction="heisenberg")
+    full_evolved = propagated(observable, full_circuit, None, direction="heisenberg")
     full_expectation = complex(full_evolved.expectation("z+")).real
 
     # (b) back-propagate the observable through only the tail (the classical
     # half of the split), exactly.
-    tail_evolved = observable.propagate(tail_circuit, None, direction="heisenberg")
+    tail_evolved = propagated(observable, tail_circuit, None, direction="heisenberg")
 
     npz_path = OUT_DIR / "evolved_observable_exact.npz"
     psio.save(npz_path, tail_evolved)
@@ -224,9 +224,7 @@ def run_validation() -> float:
     write_json(task_path, task)
 
     loaded = interop.load_task(task_path)
-    composed_evolved = loaded.observable.propagate(
-        loaded.circuit, loaded.truncation, direction=loaded.direction
-    )
+    composed_evolved = propagated(loaded.observable, loaded.circuit, loaded.truncation, direction=loaded.direction)
     composed_expectation = complex(composed_evolved.expectation(loaded.state)).real
 
     round_trip_gap = abs(composed_expectation - full_expectation)
@@ -255,8 +253,8 @@ def run_validation() -> float:
     def build_run(spec_knobs: harness.TruncationSpec) -> report.RunRecord:
         policy = spec_knobs.policy()
         start = time.perf_counter()
-        tail_eps = observable.propagate(tail_circuit, policy, direction="heisenberg")
-        composed_eps = tail_eps.propagate(front_circuit, policy, direction="heisenberg")
+        tail_eps = propagated(observable, tail_circuit, policy, direction="heisenberg")
+        composed_eps = propagated(tail_eps, front_circuit, policy, direction="heisenberg")
         elapsed = time.perf_counter() - start
         value = complex(composed_eps.expectation("z+")).real
         provenance = report.collect_provenance(repo_root=_REPO_ROOT)
@@ -302,7 +300,7 @@ def run_validation() -> float:
     # A second task-file artifact with the truncation field populated, built
     # at one representative point of the sweep above.
     trunc_policy = truncation.coeff(TRUNCATED_ARTIFACT_EPS)
-    tail_trunc = observable.propagate(tail_circuit, trunc_policy, direction="heisenberg")
+    tail_trunc = propagated(observable, tail_circuit, trunc_policy, direction="heisenberg")
     trunc_task = build_task(
         front,
         tail_trunc,
@@ -344,7 +342,7 @@ def run_depth_sweep() -> None:
     for k in range(DEMO_STEPS + 1):
         front, tail = split_by_depth(spec, DEMO_STEPS, k)
         tail_circuit = tail.to_circuit()
-        tail_evolved = observable.propagate(tail_circuit, policy, direction="heisenberg")
+        tail_evolved = propagated(observable, tail_circuit, policy, direction="heisenberg")
         rows.append((k, DEMO_STEPS - k, len(front), len(tail_evolved)))
 
     print(f"{'k (tail steps)':>15} {'front layers':>13} {'front gates':>12} {'tail terms':>11}")

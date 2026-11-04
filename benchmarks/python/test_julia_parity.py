@@ -178,6 +178,7 @@ def run_rust(task: Task | Mapping[str, Any]) -> dict[str, Any]:
     run (CLAUDE.md §Performance discipline).
     """
     import paulistrings as ps
+    from paulistrings import propagated
 
     observable, circuit, policy, direction, state = _build_rust(task)
 
@@ -188,9 +189,7 @@ def run_rust(task: Task | Mapping[str, Any]) -> dict[str, Any]:
     logger.addHandler(collector)
     ps.reset_log_cache()
     try:
-        evolved = observable.propagate(
-            circuit=circuit, policy=policy, direction=direction
-        )
+        evolved = propagated(observable, circuit=circuit, policy=policy, direction=direction)
     finally:
         logger.removeHandler(collector)
         logger.setLevel(old_level)

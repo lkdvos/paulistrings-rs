@@ -8,8 +8,7 @@ import math
 
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, noise
-
+from paulistrings import Circuit, PauliSum, gates, noise, propagated
 
 TOL = 1e-12
 
@@ -25,7 +24,7 @@ def test_circuit_h_conjugates_z_to_x():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.h(0)
-    out = s.propagate(c)
+    out = propagated(s, c)
     assert out.num_qubits == 1
     # X on qubit 0 has key (x=1, z=0).
     assert coeffs_close(out.coefficients(), [1 + 0j])
@@ -33,7 +32,7 @@ def test_circuit_h_conjugates_z_to_x():
     c2 = Circuit(1)
     c2.h(0)
     c2.h(0)
-    out2 = s.propagate(c2)
+    out2 = propagated(s, c2)
     assert coeffs_close(out2.coefficients(), [1 + 0j])
 
 
@@ -43,7 +42,7 @@ def test_gates_factories_via_append():
     c = Circuit(1)
     c.append(gates.h(0))
     assert len(c) == 1
-    out = s.propagate(c)
+    out = propagated(s, c)
     assert coeffs_close(out.coefficients(), [1 + 0j])
 
 
@@ -53,7 +52,7 @@ def test_cnot_propagates_z_i_to_z_z():
     s = PauliSum.from_strings({"IZ": 1.0}, num_qubits=2)
     c = Circuit(2)
     c.cnot(0, 1)
-    out = s.propagate(c)
+    out = propagated(s, c)
     assert coeffs_close(out.coefficients(), [1 + 0j])
     # The output should be the single key Z⊗Z = "ZZ" = (x=0, z=3); just
     # assert length and coefficient here — see test_numpy.py for the
@@ -66,7 +65,7 @@ def test_rz_pi_flips_x_to_minus_x():
     s = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.rz(math.pi, 0)
-    out = s.propagate(c)
+    out = propagated(s, c)
     (dom,) = out.coefficients()
     assert abs(dom - (-1 + 0j)) < TOL
 
@@ -76,14 +75,14 @@ def test_rx_and_ry_factories():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.append(gates.rx(math.pi, 0))
-    out = s.propagate(c)
+    out = propagated(s, c)
     (dom,) = out.coefficients()
     assert abs(dom - (-1 + 0j)) < TOL
 
     # ry(π) sends Z → -Z as well (R_y(π) Z R_y(-π) = -Z).
     c2 = Circuit(1)
     c2.append(gates.ry(math.pi, 0))
-    out2 = s.propagate(c2)
+    out2 = propagated(s, c2)
     (dom2,) = out2.coefficients()
     assert abs(dom2 - (-1 + 0j)) < TOL
 
@@ -94,8 +93,8 @@ def test_heisenberg_direction_reverses_a_pauli_rotation():
     s = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.rz(0.7, 0)
-    fwd = s.propagate(c)
-    rev = fwd.propagate(c, direction="heisenberg")
+    fwd = propagated(s, c)
+    rev = propagated(fwd, c, direction="heisenberg")
     assert coeffs_close(rev.coefficients(), [1 + 0j])
 
 
@@ -117,7 +116,7 @@ def test_noise_factories_via_append():
     # Depolarizing with p=0 is the identity.
     c = Circuit(1)
     c.append(noise.depolarize(0.0, 0))
-    out = s.propagate(c)
+    out = propagated(s, c)
     assert coeffs_close(out.coefficients(), [1 + 0j])
 
     # Depolarizing on a Z with p=3/4 zeros out (1 - 4·(3/4)/3 = 0). Exact zero
@@ -125,7 +124,7 @@ def test_noise_factories_via_append():
     s_z = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     c2 = Circuit(1)
     c2.append(noise.depolarize(0.75, 0))
-    out2 = s_z.propagate(c2)
+    out2 = propagated(s_z, c2)
     assert len(out2) == 0
 
 
@@ -134,12 +133,12 @@ def test_dephase_and_amplitude_damping_factories():
     s_x = PauliSum.from_strings({"X": 1.0}, num_qubits=1)
     c = Circuit(1)
     c.append(noise.dephase(0.5, 0))
-    out = s_x.propagate(c)
+    out = propagated(s_x, c)
     assert len(out) == 0
 
     # AmplitudeDamping(γ=0) is the identity on Z.
     s_z = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     c2 = Circuit(1)
     c2.append(noise.amplitude_damping(0.0, 0))
-    out2 = s_z.propagate(c2)
+    out2 = propagated(s_z, c2)
     assert coeffs_close(out2.coefficients(), [1 + 0j])

@@ -21,7 +21,7 @@ The snippets below are skipped by the doc checker because they need a multi-node
 
 <!-- doctest: skip -->
 ```python
-evolved = observable.propagate(
+observable.propagate(
     circuit,
     truncation.approx_topn(1_000_000),
     direction="heisenberg",
@@ -48,7 +48,7 @@ An unpartitioned run reports one partition.
 
 <!-- doctest: skip -->
 ```python
-_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
+stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
 print(stats.partition.rows_exported)   # rows sent across a boundary, per layer
 print(stats.partition.local)           # True where the rows keep a layer local
 ```

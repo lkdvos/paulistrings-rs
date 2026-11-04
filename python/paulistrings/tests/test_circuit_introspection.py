@@ -18,8 +18,7 @@ import math
 import numpy as np
 import pytest
 
-from paulistrings import Circuit, PauliSum, gates, interop, noise
-
+from paulistrings import Circuit, PauliSum, gates, interop, noise, propagated
 
 TOL = 1e-12
 
@@ -190,8 +189,8 @@ def test_gates_round_trip_through_task_json():
 
     observable = _sum(c.num_qubits, {"ZIIX": 1.0, "IXYI": 0.5j})
     _assert_close(
-        observable.propagate(reloaded, None, direction="heisenberg"),
-        observable.propagate(c, None, direction="heisenberg"),
+        propagated(observable, reloaded, None, direction="heisenberg"),
+        propagated(observable, c, None, direction="heisenberg"),
     )
 
 
@@ -206,8 +205,8 @@ def test_gates_round_trip_of_a_noisy_circuit():
     reloaded = interop.circuit_from_json({"gates": c.gates}, 2)
     observable = _sum(2, {"XZ": 1.0, "YY": 0.25})
     _assert_close(
-        observable.propagate(reloaded, None, direction="forward"),
-        observable.propagate(c, None, direction="forward"),
+        propagated(observable, reloaded, None, direction="forward"),
+        propagated(observable, c, None, direction="forward"),
     )
 
 
@@ -245,21 +244,21 @@ def test_s_and_sdg_conjugate_x_with_opposite_signs():
 
     forward_s = Circuit(1)
     forward_s.s(0)
-    assert _as_dict(x.propagate(forward_s, None, direction="forward")) == {
+    assert _as_dict(propagated(x, forward_s, None, direction="forward")) == {
         y_key: 1.0 + 0j
     }
 
     forward_sdg = Circuit(1)
     forward_sdg.sdg(0)
-    assert _as_dict(x.propagate(forward_sdg, None, direction="forward")) == {
+    assert _as_dict(propagated(x, forward_sdg, None, direction="forward")) == {
         y_key: -1.0 + 0j
     }
 
     # And the Heisenberg direction swaps the two, since S^dagger is S's adjoint.
-    assert _as_dict(x.propagate(forward_s, None, direction="heisenberg")) == {
+    assert _as_dict(propagated(x, forward_s, None, direction="heisenberg")) == {
         y_key: -1.0 + 0j
     }
-    assert _as_dict(x.propagate(forward_sdg, None, direction="heisenberg")) == {
+    assert _as_dict(propagated(x, forward_sdg, None, direction="heisenberg")) == {
         y_key: 1.0 + 0j
     }
 
@@ -269,7 +268,7 @@ def test_s_then_sdg_is_the_identity():
     c.s(0)
     c.sdg(0)
     initial = _sum(1, {"X": 1.0, "Y": 0.5, "Z": 0.25})
-    _assert_close(initial.propagate(c, None, direction="forward"), initial)
+    _assert_close(propagated(initial, c, None, direction="forward"), initial)
 
 
 def test_sdg_factory_and_method_agree():
@@ -294,8 +293,8 @@ def test_sdg_survives_the_task_json_round_trip():
     reloaded = interop.circuit_from_json(json.loads(json.dumps({"gates": c.gates})), 1)
     x = _sum(1, {"X": 1.0})
     _assert_close(
-        x.propagate(reloaded, None, direction="forward"),
-        x.propagate(c, None, direction="forward"),
+        propagated(x, reloaded, None, direction="forward"),
+        propagated(x, c, None, direction="forward"),
     )
 
 
@@ -326,16 +325,16 @@ def test_front_and_tail_slices_recompose_to_the_whole_circuit():
     """B5's front/tail split, which used to be rebuilt gate by gate."""
     c = _unitary_circuit()
     observable = _sum(c.num_qubits, {"ZIIZ": 1.0})
-    whole = observable.propagate(c, None, direction="heisenberg")
+    whole = propagated(observable, c, None, direction="heisenberg")
     for k in (0, 1, 7, len(c)):
         # Heisenberg through the whole circuit == Heisenberg through the tail,
         # then Heisenberg through the front.
-        via_split = observable.propagate(c[k:], None, direction="heisenberg")
-        via_split = via_split.propagate(c[:k], None, direction="heisenberg")
+        via_split = propagated(observable, c[k:], None, direction="heisenberg")
+        via_split.propagate(c[:k], None, direction="heisenberg")
         _assert_close(via_split, whole)
         # ... and the two halves concatenate back to the original.
         _assert_close(
-            observable.propagate(c[:k] + c[k:], None, direction="heisenberg"), whole
+            propagated(observable, c[:k] + c[k:], None, direction="heisenberg"), whole
         )
 
 
@@ -404,13 +403,13 @@ def test_adjoint_forward_equals_heisenberg():
     c = _unitary_circuit()
     observable = _sum(c.num_qubits, {"XIZI": 1.0, "IYIZ": -0.5, "ZZZZ": 0.25j})
     _assert_close(
-        observable.propagate(c.adjoint(), None, direction="forward"),
-        observable.propagate(c, None, direction="heisenberg"),
+        propagated(observable, c.adjoint(), None, direction="forward"),
+        propagated(observable, c, None, direction="heisenberg"),
     )
     # ... and symmetrically, since adjoint() is an involution.
     _assert_close(
-        observable.propagate(c.adjoint(), None, direction="heisenberg"),
-        observable.propagate(c, None, direction="forward"),
+        propagated(observable, c.adjoint(), None, direction="heisenberg"),
+        propagated(observable, c, None, direction="forward"),
     )
 
 

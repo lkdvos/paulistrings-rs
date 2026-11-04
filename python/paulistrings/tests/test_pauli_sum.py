@@ -4,11 +4,11 @@
 through an empty circuit (a no-op).
 """
 
-import math
+import copy
 
 import pytest
 
-from paulistrings import Circuit, PauliSum
+from paulistrings import Circuit, PauliSum, propagated, propagated_with_stats
 
 
 def test_from_strings_round_trip_w1():
@@ -49,7 +49,8 @@ def test_from_strings_rejects_invalid_char():
 def test_propagate_through_empty_circuit_is_identity():
     s = PauliSum.from_strings({"XII": 1.0, "ZII": 0.5}, num_qubits=3)
     c = Circuit(3)
-    out = s.propagate(c)
+    out = s.copy()
+    out.propagate(c)
     assert out.num_qubits == 3
     assert len(out) == 2
     assert out.coefficients() == s.coefficients()
@@ -63,10 +64,49 @@ def test_width_dispatch_handles_all_widths(num_qubits):
     s = PauliSum.from_strings({s_str: 2.0}, num_qubits=num_qubits)
     assert s.num_qubits == num_qubits
     assert s.coefficients() == [2 + 0j]
-    out = s.propagate(Circuit(num_qubits))
+    out = s.copy()
+    out.propagate(Circuit(num_qubits))
     assert out.coefficients() == [2 + 0j]
 
 
 def test_width_dispatch_rejects_above_1024_qubits():
     with pytest.raises(ValueError, match="1024"):
         PauliSum(1025)
+
+
+def _h_on_x():
+    """``X`` on one qubit and a Hadamard, which maps it to ``Z``."""
+    circuit = Circuit(1)
+    circuit.h(0)
+    return PauliSum.from_strings({"X": 1.0}, num_qubits=1), circuit
+
+
+def test_propagate_evolves_the_sum_in_place():
+    s, circuit = _h_on_x()
+    assert s.propagate(circuit, direction="heisenberg") is None
+    assert s.coefficients() == [1.0 + 0j]
+    assert s.z_array().tolist() == [[1]] and s.x_array().tolist() == [[0]]
+
+
+@pytest.mark.parametrize("make_copy", [PauliSum.copy, copy.copy, copy.deepcopy])
+def test_a_copy_keeps_the_input_through_propagate(make_copy):
+    s, circuit = _h_on_x()
+    kept = make_copy(s)
+    s.propagate(circuit, direction="heisenberg")
+    assert kept.x_array().tolist() == [[1]] and kept.z_array().tolist() == [[0]]
+    assert kept.dtype == s.dtype
+
+
+def test_a_rejected_propagate_leaves_the_sum_untouched():
+    s, _ = _h_on_x()
+    with pytest.raises(ValueError):
+        s.propagate(Circuit(2))
+    assert s.x_array().tolist() == [[1]] and s.coefficients() == [1.0 + 0j]
+
+
+def test_propagated_returns_the_evolution_and_keeps_the_input():
+    s, circuit = _h_on_x()
+    evolved = propagated(s, circuit, direction="heisenberg")
+    assert evolved.z_array().tolist() == [[1]] and s.x_array().tolist() == [[1]]
+    evolved, stats = propagated_with_stats(s, circuit, direction="heisenberg")
+    assert stats.final_terms == 1 and s.x_array().tolist() == [[1]]

@@ -38,10 +38,12 @@ def _rand_sum_on(m: int, num_qubits: int, window, seed: int):
 
 def _materialized(A, sites, delta, axis):
     """`2^-n Tr(A^dagger V^dagger A V)` by brute force: `V^dagger A V` propagated, then `overlap`."""
+    from paulistrings import propagated
     circuit = ps.Circuit(A.num_qubits)
     for q in sites:
         (circuit.rx if axis == "x" else circuit.rz)(2.0 * delta, q)
-    return A.overlap(A.propagate(circuit, direction="heisenberg"))
+    rotated = propagated(A, circuit, direction="heisenberg")
+    return A.overlap(rotated)
 
 
 @pytest.mark.parametrize(

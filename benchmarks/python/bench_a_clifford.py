@@ -129,13 +129,10 @@ def _observable_dict(observable):
 
 @pytest.mark.benchmark(group="clifford_weight_10")
 def test_bench_paulistrings_weight_10(benchmark, kicked_ising_circuit, weight_10_observable):
-    pytest.importorskip("paulistrings")
+    ps = pytest.importorskip("paulistrings")
     policy = _make_policy()
     result = benchmark(
-        weight_10_observable.propagate,
-        circuit=kicked_ising_circuit,
-        policy=policy,
-        direction="heisenberg",
+        ps.propagated, weight_10_observable, circuit=kicked_ising_circuit, policy=policy, direction="heisenberg"
     )
     assert len(result) == 1
     coeff = complex(result.coefficients_array()[0])
@@ -144,13 +141,10 @@ def test_bench_paulistrings_weight_10(benchmark, kicked_ising_circuit, weight_10
 
 @pytest.mark.benchmark(group="clifford_weight_17")
 def test_bench_paulistrings_weight_17(benchmark, kicked_ising_circuit, weight_17_observable):
-    pytest.importorskip("paulistrings")
+    ps = pytest.importorskip("paulistrings")
     policy = _make_policy()
     result = benchmark(
-        weight_17_observable.propagate,
-        circuit=kicked_ising_circuit,
-        policy=policy,
-        direction="heisenberg",
+        ps.propagated, weight_17_observable, circuit=kicked_ising_circuit, policy=policy, direction="heisenberg"
     )
     assert len(result) == 1
     coeff = complex(result.coefficients_array()[0])

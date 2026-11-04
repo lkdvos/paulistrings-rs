@@ -74,7 +74,8 @@ def evolved_and_dense():
     Returns `(evolved PauliSum, dense 2^n x 2^n operator, CircuitSpec)`.
     """
     spec = _chain_spec(N_QUBITS, STEPS, THETA_H)
-    evolved = observables.single_z(CENTER, N_QUBITS).propagate(
+    evolved = observables.single_z(CENTER, N_QUBITS)
+    evolved.propagate(
         spec.to_circuit(), None, direction="heisenberg"
     )
     dense = sc.dense_heisenberg(
@@ -191,7 +192,7 @@ def test_clifford_circuit_gives_a_sharp_cone():
     evolved = observables.single_z(center, n)
     radii = []
     for t in range(1, steps + 1):
-        evolved = evolved.propagate(step, dust, direction="heisenberg")
+        evolved.propagate(step, dust, direction="heisenberg")
         assert len(evolved) == 1, f"Clifford step {t} produced {len(evolved)} strings"
         profile = sc.support_profile(evolved)
         occupied = profile > 1e-9
@@ -273,7 +274,8 @@ def test_2d_lattice_evolution_matches_dense():
         0.3,
         edges=sc.square_lattice_edges(rows, cols),
     )
-    evolved = observables.single_z(center, n).propagate(
+    evolved = observables.single_z(center, n)
+    evolved.propagate(
         spec.to_circuit(), None, direction="heisenberg"
     )
     dense = sc.dense_heisenberg(spec, observables.pauli_string({center: "Z"}, n))

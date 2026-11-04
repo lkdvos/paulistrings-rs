@@ -475,6 +475,7 @@ def self_converged_reference(
     and weight-10 at `n = 127`) and by `test_benchmark_b_sweep.py` on the
     20-qubit sublattice.
     """
+    from paulistrings import propagated_with_stats
     if any(eps < MIN_SAFE_COEFF for eps in grid):
         raise ValueError(
             f"self-convergence grid {list(grid)} goes below MIN_SAFE_COEFF="
@@ -491,9 +492,7 @@ def self_converged_reference(
     for eps in grid:
         policy = harness.make_policy(min_abs_coeff=eps)
         start = time.perf_counter()
-        evolved, stats = observable.propagate_with_stats(
-            circuit, policy, direction=direction
-        )
+        evolved, stats = propagated_with_stats(observable, circuit, policy, direction=direction)
         value = complex(evolved.expectation(state)).real
         seconds = time.perf_counter() - start
         total_seconds += seconds
@@ -1008,7 +1007,7 @@ def julia_parity(
             "warm": True,
         },
     )
-    _, rust_stats = observable.propagate_with_stats(
+    rust_stats = observable.copy().propagate_with_stats(
         circuit, harness.make_policy(min_abs_coeff=min_abs_coeff), direction=DIRECTION
     )
     rust_layers = list(rust_stats.terms_out)

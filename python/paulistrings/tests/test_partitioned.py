@@ -35,7 +35,14 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, numa_nodes, truncation
+from paulistrings import (
+    Circuit,
+    PauliSum,
+    numa_nodes,
+    propagated,
+    propagated_with_stats,
+    truncation,
+)
 
 from ._runs_agree import (
     assert_runs_agree,
@@ -181,13 +188,13 @@ def test_none_and_one_are_the_classic_path(partitions):
     """``partitions=None``/``1`` is the unpartitioned path: the kwargs are
     additive, and ``1`` short-circuits before any pool is built."""
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    _assert_terms_close(s.propagate(c, partitions=partitions), s.propagate(c))
+    _assert_terms_close(propagated(s, c, partitions=partitions), propagated(s, c))
 
 
 def test_unpartitioned_stats_report_one_partition():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
     for partitions in (None, 1):
-        _, stats = s.propagate_with_stats(c, partitions=partitions)
+        stats = s.copy().propagate_with_stats(c, partitions=partitions)
         assert stats.partition.partitions == 1
         assert stats.partition.devices is None
 
@@ -199,10 +206,8 @@ def test_unpartitioned_stats_report_one_partition():
 @pytest.mark.parametrize("num_qubits, direction", list(zip(WIDTHS, ["forward", "heisenberg"])))
 def test_two_partitions_match_unpartitioned(num_qubits, direction):
     s, c = _observable(num_qubits), _clifford_circuit(num_qubits)
-    want, want_stats = s.propagate_with_stats(c, direction=direction)
-    got, got_stats = s.propagate_with_stats(
-        c, direction=direction, partitions=_cpu_sets()
-    )
+    want, want_stats = propagated_with_stats(s, c, direction=direction)
+    got, got_stats = propagated_with_stats(s, c, direction=direction, partitions=_cpu_sets())
     _assert_terms_close(got, want)
     # The whole per-layer vectors, not just the totals: the partitioned layer
     # loop must apply the same truncation at the same points.
@@ -216,10 +221,8 @@ def test_two_partitions_match_unpartitioned_with_fanout():
     num_qubits, direction = WIDTHS[0], "heisenberg"
     s, c = _observable(num_qubits, light=True), _mixed_circuit(num_qubits, scale=LIGHT)
     policy = truncation.approx_topn(NUM_TERMS)
-    want, want_stats = s.propagate_with_stats(c, policy, direction=direction)
-    got, got_stats = s.propagate_with_stats(
-        c, policy, direction=direction, partitions=_cpu_sets()
-    )
+    want, want_stats = propagated_with_stats(s, c, policy, direction=direction)
+    got, got_stats = propagated_with_stats(s, c, policy, direction=direction, partitions=_cpu_sets())
     discarded = discarded_norm(s, c, policy, direction)
     _assert_agree(got, want, policy, discarded, got_stats, want_stats)
 
@@ -229,8 +232,8 @@ def test_two_partitions_match_unpartitioned_after_a_single_cut():
     direction = "forward"
     for name, c, s, n in single_cuts(16):
         policy = truncation.approx_topn(n)
-        want = s.propagate(c, policy, direction=direction)
-        got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
+        want = propagated(s, c, policy, direction=direction)
+        got = propagated(s, c, policy, direction=direction, partitions=_cpu_sets())
         assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL, name)
 
 
@@ -239,8 +242,8 @@ def test_two_partitions_keep_the_count_through_heavy_cuts():
     c, s = heavy_cut(12)
     direction = "heisenberg"
     policy = truncation.approx_topn(400)
-    want = s.propagate(c, policy, direction=direction)
-    got = s.propagate(c, policy, direction=direction, partitions=_cpu_sets())
+    want = propagated(s, c, policy, direction=direction)
+    got = propagated(s, c, policy, direction=direction, partitions=_cpu_sets())
     assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
 
 
@@ -248,15 +251,15 @@ def test_pin_memory_false_matches():
     """``pin_memory=False`` pins threads but not allocations — a placement
     knob, never a semantic one."""
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    want = s.propagate(c)
-    got = s.propagate(c, partitions=_cpu_sets(), pin_memory=False)
+    want = propagated(s, c)
+    got = propagated(s, c, partitions=_cpu_sets(), pin_memory=False)
     _assert_terms_close(got, want)
 
 
 def test_auto_places_one_partition_per_numa_node():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    got, stats = s.propagate_with_stats(c, partitions="auto")
-    _assert_terms_close(got, s.propagate(c))
+    got, stats = propagated_with_stats(s, c, partitions="auto")
+    _assert_terms_close(got, propagated(s, c))
     # A single-node box (or an affinity mask inside one node) runs the classic
     # path and reports one partition; anything else places one partition per
     # node, rounded down to a power of two.
@@ -270,12 +273,10 @@ def test_auto_places_one_partition_per_numa_node():
 
 def test_the_kwargs_are_accepted_positionally_after_min_buckets():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    positional = s.propagate(c, None, "forward", 1024, 128, _cpu_sets(), False)
-    keyword = s.propagate(
-        c,
+    positional = propagated(s, c, None, "forward", 1024, 128, _cpu_sets(), False)
+    keyword = propagated(s, c,
         partitions=_cpu_sets(),
-        pin_memory=False,
-    )
+        pin_memory=False,)
     _assert_terms_close(positional, keyword)
 
 
@@ -286,11 +287,11 @@ def test_a_trotter_loop_reuses_the_runtime():
     keeps the unpartitioned answer's count."""
     s, c = _observable(WIDTHS[0], light=True), _mixed_circuit(WIDTHS[0], layers=1, scale=LIGHT)
     policy = truncation.approx_topn(16_000)
-    partitioned, plain, discarded = s, s, 0.0
+    partitioned, plain, discarded = s.copy(), s.copy(), 0.0
     for _ in range(3):
-        partitioned = partitioned.propagate(c, policy, partitions=_cpu_sets())
+        partitioned.propagate(c, policy, partitions=_cpu_sets())
         discarded += discarded_norm(plain, c, policy)
-        plain = plain.propagate(c, policy)
+        plain.propagate(c, policy)
     _assert_agree(partitioned, plain, policy, discarded)
 
 
@@ -303,8 +304,8 @@ def test_approx_topn_agrees_with_unpartitioned():
     exactly as many terms as one partition holding everything."""
     s, c = _observable(WIDTHS[0], light=True), _mixed_circuit(WIDTHS[0], scale=LIGHT)
     policy = truncation.coeff(1e-12) & truncation.approx_topn(16_000)
-    want, want_stats = s.propagate_with_stats(c, policy)
-    got, got_stats = s.propagate_with_stats(c, policy, partitions=_cpu_sets())
+    want, want_stats = propagated_with_stats(s, c, policy)
+    got, got_stats = propagated_with_stats(s, c, policy, partitions=_cpu_sets())
     assert max(want_stats.terms_out) == 16_000, "the policy must actually bite"
     _assert_agree(got, want, policy, discarded_norm(s, c, policy), got_stats, want_stats)
     assert got_stats.terms_out == want_stats.terms_out
@@ -328,7 +329,7 @@ def test_exact_topn_is_rejected_in_partitioned_mode(policy):
     # accepted unpartitioned. (Only the `&` and bare forms truncate there —
     # `Or`'s layer pass is the no-op default in both modes, which is exactly
     # why `spec_has_exact_topn` refuses it rather than honouring it in one.)
-    assert len(s.propagate(c, policy)) > 0
+    assert len(propagated(s, c, policy)) > 0
 
 
 # --------------------------------------------------------------------------
@@ -377,7 +378,7 @@ def test_bad_partitions_types_are_type_errors(partitions):
 
 def test_partition_stats_are_self_consistent():
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    _, stats = s.propagate_with_stats(c, partitions=_cpu_sets())
+    stats = s.copy().propagate_with_stats(c, partitions=_cpu_sets())
     part = stats.partition
 
     assert part.partitions == 2
@@ -422,7 +423,7 @@ def test_partition_stats_are_self_consistent():
 
 def test_partition_stats_repr_names_all_fields():
     s, c = _observable(WIDTHS[0], terms=64), _clifford_circuit(WIDTHS[0], layers=1)
-    _, stats = s.propagate_with_stats(c, partitions=_cpu_sets())
+    stats = s.copy().propagate_with_stats(c, partitions=_cpu_sets())
     text = repr(stats.partition)
     assert text.startswith("PartitionStats(")
     for field in (
@@ -447,7 +448,7 @@ def test_propagation_stats_repr_is_unchanged_by_a_partitioned_run():
     s = PauliSum.from_strings({"X" + "I" * 7: 1.0}, num_qubits=8)
     c = Circuit(8)
     c.h(0)
-    _, stats = s.propagate_with_stats(c, partitions=_cpu_sets())
+    stats = s.copy().propagate_with_stats(c, partitions=_cpu_sets())
     assert repr(stats) == (
         "PropagationStats(layers=1, terms_in=[1], terms_out=[1], "
         "peak_terms=1, final_terms=1)"
@@ -490,8 +491,8 @@ def test_default_partition_rows_are_unchanged():
     """Neither new kwarg touches the result when both are left at `None` —
     the additive-kwarg contract every other partitioned knob already has."""
     s, c = _observable(WIDTHS[0]), _clifford_circuit(WIDTHS[0])
-    want = s.propagate(c, partitions=_cpu_sets())
-    got = s.propagate(c, partitions=_cpu_sets(), partition_row_seed=None, partition_row_blocks=None)
+    want = propagated(s, c, partitions=_cpu_sets())
+    got = propagated(s, c, partitions=_cpu_sets(), partition_row_seed=None, partition_row_blocks=None)
     _assert_terms_close(got, want)
 
 
@@ -501,12 +502,8 @@ def test_distinct_seeds_move_different_rows():
     the engine (it used to be silently dropped)."""
     s, c = _observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0])
     policy = truncation.approx_topn(NUM_TERMS)
-    _, stats_a = s.propagate_with_stats(
-        c, policy, partitions=_cpu_sets(), partition_row_seed=1
-    )
-    _, stats_b = s.propagate_with_stats(
-        c, policy, partitions=_cpu_sets(), partition_row_seed=2
-    )
+    stats_a = s.copy().propagate_with_stats(c, policy, partitions=_cpu_sets(), partition_row_seed=1)
+    stats_b = s.copy().propagate_with_stats(c, policy, partitions=_cpu_sets(), partition_row_seed=2)
     assert stats_a.partition.rows_exported != stats_b.partition.rows_exported
 
 
@@ -517,19 +514,15 @@ def test_seeded_and_cut_rows_agree_with_unpartitioned():
     num_qubits = WIDTHS[0]
     s, c = _observable(num_qubits, light=True), _mixed_circuit(num_qubits, scale=LIGHT)
     policy = truncation.approx_topn(NUM_TERMS)
-    want, want_stats = s.propagate_with_stats(c, policy)
+    want, want_stats = propagated_with_stats(s, c, policy)
     discarded = discarded_norm(s, c, policy)
 
     half = num_qubits // 2
     blocks = [list(range(half)), list(range(half, num_qubits))]
-    got_cut, stats_cut = s.propagate_with_stats(
-        c, policy, partitions=_cpu_sets(), partition_row_blocks=blocks
-    )
+    got_cut, stats_cut = propagated_with_stats(s, c, policy, partitions=_cpu_sets(), partition_row_blocks=blocks)
     _assert_agree(got_cut, want, policy, discarded, stats_cut, want_stats)
 
-    got_seed, stats_seed = s.propagate_with_stats(
-        c, policy, partitions=_cpu_sets(), partition_row_seed=7
-    )
+    got_seed, stats_seed = propagated_with_stats(s, c, policy, partitions=_cpu_sets(), partition_row_seed=7)
     _assert_agree(got_seed, want, policy, discarded, stats_seed, want_stats)
 
 
@@ -548,9 +541,7 @@ def test_cut_blocks_round_trip_to_the_named_partition():
     s = PauliSum.from_strings({"Z" + "I" * (n - 1): 1.0}, num_qubits=n)
     c = Circuit(n)
     c.rz(0.3, 0)  # Z survives an RZ unchanged; keeps the term in one bucket.
-    _, stats = s.propagate_with_stats(
-        c, partitions=_cpu_sets(), partition_row_blocks=blocks
-    )
+    stats = s.copy().propagate_with_stats(c, partitions=_cpu_sets(), partition_row_blocks=blocks)
     assert stats.partition.rows_exported == [0]
 
 
@@ -613,10 +604,8 @@ def _real_observable(num_qubits, terms=2_000, seed=20260926):
 def test_excluding_rows_match_the_unpartitioned_run(axis):
     s, c = _real_observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0])
     policy = truncation.coeff(1e-6)
-    want = s.propagate(c, policy, direction="heisenberg")
-    got = s.propagate(
-        c, policy, direction="heisenberg", partitions=_cpu_sets(), partition_row_exclude={axis: _SITES}
-    )
+    want = propagated(s, c, policy, direction="heisenberg")
+    got = propagated(s, c, policy, direction="heisenberg", partitions=_cpu_sets(), partition_row_exclude={axis: _SITES})
     _assert_terms_close(got, want)
 
 
@@ -627,9 +616,9 @@ def test_excluded_coordinates_are_read_by_no_row():
     c = Circuit(n)
     for q in range(n):
         c.rx(0.4, q)
-    _, excluded = s.propagate_with_stats(c, partitions=_cpu_sets(), partition_row_exclude={"x": list(range(n))})
+    excluded = s.copy().propagate_with_stats(c, partitions=_cpu_sets(), partition_row_exclude={"x": list(range(n))})
     assert excluded.partition.rows_exported == [0] * n
-    _, default = s.propagate_with_stats(c, partitions=_cpu_sets())
+    default = s.copy().propagate_with_stats(c, partitions=_cpu_sets())
     assert sum(default.partition.rows_exported) > 0
 
 
@@ -637,9 +626,7 @@ def test_partition_row_exclude_takes_the_seed():
     s, c = _real_observable(WIDTHS[0]), _mixed_circuit(WIDTHS[0])
     policy = truncation.coeff(1e-6)
     runs = [
-        s.propagate_with_stats(
-            c, policy, partitions=_cpu_sets(), partition_row_seed=seed, partition_row_exclude={"z": _SITES}
-        )
+        propagated_with_stats(s, c, policy, partitions=_cpu_sets(), partition_row_seed=seed, partition_row_exclude={"z": _SITES})
         for seed in (1, 2)
     ]
     _assert_terms_close(runs[0][0], runs[1][0])
@@ -682,25 +669,21 @@ def _collapse_case(num_qubits=WIDTHS[0]):
 def test_collapse_sample_at_one_partition_is_the_unpartitioned_trajectory():
     s, c = _collapse_case()
     for seed in range(4):
-        want, want_stats = s.propagate_with_stats(c, truncation.collapse_sample(8, seed), direction="heisenberg")
-        got, got_stats = s.propagate_with_stats(
-            c, truncation.collapse_sample(8, seed), direction="heisenberg", partitions=_cpu_sets(1)
-        )
+        want, want_stats = propagated_with_stats(s, c, truncation.collapse_sample(8, seed), direction="heisenberg")
+        got, got_stats = propagated_with_stats(s, c, truncation.collapse_sample(8, seed), direction="heisenberg", partitions=_cpu_sets(1))
         _assert_terms_close(got, want)
         assert got_stats.collapses == want_stats.collapses >= 1
 
 
 def test_collapse_sample_across_partitions_keeps_one_string_per_collapse():
     s, c = _collapse_case()
-    want = s.propagate(c, direction="heisenberg")
-    big, stats = s.propagate_with_stats(
-        c, truncation.collapse_sample(10**9, 0), direction="heisenberg", partitions=_cpu_sets()
-    )
+    want = propagated(s, c, direction="heisenberg")
+    big, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 0), direction="heisenberg", partitions=_cpu_sets())
     _assert_terms_close(big, want)
     assert stats.collapses == 0
 
     policy = truncation.collapse_sample(8, 3) & truncation.coeff(1e-12)
-    _, stats = s.propagate_with_stats(c, policy, direction="heisenberg", partitions=_cpu_sets())
+    stats = s.copy().propagate_with_stats(c, policy, direction="heisenberg", partitions=_cpu_sets())
     assert stats.collapses >= 1
     assert all(t <= 8 for t in stats.terms_out)
     assert stats.terms_out.count(1) >= stats.collapses

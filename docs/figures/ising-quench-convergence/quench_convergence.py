@@ -89,7 +89,7 @@ def run_series(h: float, n_cap: int) -> tuple[list[float], list[float]]:
     ts = [0.0]
     xs = [observable.expectation("x+").real]
     for k in range(1, N_STEPS + 1):
-        observable = observable.propagate(step_circuit, policy, direction="heisenberg")
+        observable.propagate(step_circuit, policy, direction="heisenberg")
         ts.append(k * DT)
         xs.append(observable.expectation("x+").real)
     print(f"h={h} topn={n_cap}: terms={len(observable)} <X>_final={xs[-1]:+.6f}")

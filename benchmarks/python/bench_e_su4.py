@@ -186,6 +186,7 @@ TERM_GROWTH_GRID: tuple[tuple[float, tuple[int, ...]], ...] = (
 
 
 def term_growth() -> list[report.RunRecord]:
+    from paulistrings import propagated_with_stats
     print(f"\n== term_growth: n={N_HEADLINE}, eps/depth grid {TERM_GROWTH_GRID} ==")
     q = central_qubit(N_HEADLINE)
     obs = observables.single_z(q, N_HEADLINE)
@@ -195,7 +196,7 @@ def term_growth() -> list[report.RunRecord]:
         for depth in depths:
             circuit = build(N_HEADLINE, depth)
             t0 = time.perf_counter()
-            evolved, stats = obs.propagate_with_stats(circuit, policy, direction="heisenberg")
+            evolved, stats = propagated_with_stats(obs, circuit, policy, direction="heisenberg")
             elapsed = time.perf_counter() - t0
             expectation = evolved.expectation("z+").real
             prov = report.collect_provenance(
@@ -329,6 +330,7 @@ def size_scaling() -> list[report.RunRecord]:
 
 
 def check_determinism(n: int = 16, depth: int = 6, eps: float = 1e-4) -> None:
+    from paulistrings import propagated_with_stats
     print(f"\n== check_determinism: n={n}, depth={depth}, eps={eps:g}, same seed twice ==")
     q = central_qubit(n)
     policy = harness.make_policy(min_abs_coeff=eps)
@@ -336,7 +338,7 @@ def check_determinism(n: int = 16, depth: int = 6, eps: float = 1e-4) -> None:
     def run_once():
         obs = observables.single_z(q, n)
         circuit = build(n, depth)
-        evolved, stats = obs.propagate_with_stats(circuit, policy, direction="heisenberg")
+        evolved, stats = propagated_with_stats(obs, circuit, policy, direction="heisenberg")
         return stats.final_terms, stats.peak_terms, evolved.expectation("z+")
 
     terms_a, peak_a, exp_a = run_once()

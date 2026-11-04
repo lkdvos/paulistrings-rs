@@ -682,6 +682,7 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
 
     sys.path.insert(0, str(REPO_ROOT / "examples"))
     import paulistrings as ps
+    from paulistrings import propagated
     from paulistrings.interop import load_task
 
     layer_re = re.compile(
@@ -710,11 +711,9 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     logger.addHandler(collector)
     ps.reset_log_cache()
     try:
-        evolved = task.observable.propagate(
-            circuit=task.circuit,
+        evolved = propagated(task.observable, circuit=task.circuit,
             policy=task.truncation,
-            direction=task.direction,
-        )
+            direction=task.direction,)
     finally:
         logger.removeHandler(collector)
         logger.setLevel(old_level)

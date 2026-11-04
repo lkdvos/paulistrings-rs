@@ -214,7 +214,7 @@ def evolve_series(
     out: list[StepData] = []
     for step in range(1, steps + 1):
         start = time.perf_counter()
-        evolved, stats = evolved.propagate_with_stats(
+        stats = evolved.propagate_with_stats(
             step_circuit, policy, direction="heisenberg"
         )
         seconds = time.perf_counter() - start
@@ -273,7 +273,8 @@ def run_validation() -> dict[str, float]:
     label = observables.pauli_string({center: "Z"}, n)
 
     dense = sc.dense_heisenberg(spec, label)
-    evolved = observables.single_z(center, n).propagate(
+    evolved = observables.single_z(center, n)
+    evolved.propagate(
         spec.to_circuit(), None, direction="heisenberg"
     )
     sums = sc.site_sums(evolved)
@@ -379,7 +380,7 @@ def run_weight_cap_probe() -> list[tuple[int, int, int, float]]:
         evolved = observables.single_z(CENTER, n)
         policy = truncation.weight(cap) & truncation.coeff(1e-8)
         for t in range(1, 5):
-            evolved = evolved.propagate(step, policy, direction="heisenberg")
+            evolved.propagate(step, policy, direction="heisenberg")
             rows.append((cap, t, len(evolved), sc.hs_norm(evolved)))
         for cap_seen, t, terms, norm in rows[-4:]:
             print(f"  max_weight={cap_seen:2d}  step {t}: terms {terms:6d}, retained norm {norm:.6f}")
@@ -497,7 +498,7 @@ def run_3d_pilot() -> dict[float, list[tuple[int, int, float, float]]]:
         rows: list[tuple[int, int, float, float]] = []
         for t in range(1, PILOT_3D_STEPS + 1):
             start = time.perf_counter()
-            evolved = evolved.propagate(step, truncation.coeff(eps), direction="heisenberg")
+            evolved.propagate(step, truncation.coeff(eps), direction="heisenberg")
             seconds = time.perf_counter() - start
             norm = sc.hs_norm(evolved)
             magnetization = complex(evolved.expectation("z+")).real

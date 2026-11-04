@@ -180,10 +180,10 @@ def qiskit_h_cnot_clifford():
 @pytest.mark.parametrize("n", TERM_SIZES)
 @pytest.mark.benchmark(group="conjugate_clifford")
 def test_conjugate_paulistrings(benchmark, labels_by_size, coeffs_by_size, paulistrings_h_cnot_circuit, n):
-    pytest.importorskip("paulistrings")
+    ps = pytest.importorskip("paulistrings")
     sum_in = _build_paulistrings_sum(n, labels_by_size, coeffs_by_size)
     circuit = paulistrings_h_cnot_circuit
-    result = benchmark(sum_in.propagate, circuit=circuit, direction="heisenberg")
+    result = benchmark(ps.propagated, sum_in, circuit=circuit, direction="heisenberg")
     # H + CNOT is unitary: term count is preserved on random inputs (no
     # cancellation expected).
     assert len(result) == n

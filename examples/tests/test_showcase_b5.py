@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from paulistrings import interop
+from paulistrings import interop, propagated
 from paulistrings import io as psio
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -80,10 +80,10 @@ def test_backpropagated_task_reproduces_full_circuit_expectation(tmp_path):
     front_circuit = front.to_circuit()
     tail_circuit = tail.to_circuit()
 
-    full_evolved = observable.propagate(full_circuit, None, direction="heisenberg")
+    full_evolved = propagated(observable, full_circuit, None, direction="heisenberg")
     full_expectation = complex(full_evolved.expectation("z+"))
 
-    tail_evolved = observable.propagate(tail_circuit, None, direction="heisenberg")
+    tail_evolved = propagated(observable, tail_circuit, None, direction="heisenberg")
 
     # Round-trip the evolved observable through the paulistrings.io npz format
     # (A3) -- the "save the evolved observable" half of the showcase.
@@ -108,9 +108,7 @@ def test_backpropagated_task_reproduces_full_circuit_expectation(tmp_path):
     assert loaded.truncation is None
     assert loaded.state == "z+"
 
-    composed_evolved = loaded.observable.propagate(
-        loaded.circuit, loaded.truncation, direction=loaded.direction
-    )
+    composed_evolved = propagated(loaded.observable, loaded.circuit, loaded.truncation, direction=loaded.direction)
     composed_expectation = complex(composed_evolved.expectation(loaded.state))
 
     assert abs(composed_expectation.imag) < 1e-12
@@ -141,10 +139,11 @@ def test_backpropagated_task_reproduces_full_circuit_under_a_shared_policy():
 
     policy = truncation.coeff(1e-3)
 
-    composed = observable.propagate(tail_circuit, policy, direction="heisenberg").propagate(
+    composed = propagated(observable, tail_circuit, policy, direction="heisenberg")
+    composed.propagate(
         front_circuit, policy, direction="heisenberg"
     )
-    one_shot = observable.propagate(full_circuit, policy, direction="heisenberg")
+    one_shot = propagated(observable, full_circuit, policy, direction="heisenberg")
 
     composed_value = complex(composed.expectation("z+"))
     one_shot_value = complex(one_shot.expectation("z+"))

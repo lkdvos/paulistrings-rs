@@ -7,7 +7,13 @@ import numpy as np
 import pytest
 
 import paulistrings
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import (
+    Circuit,
+    PauliSum,
+    propagated,
+    propagated_with_stats,
+    truncation,
+)
 
 from ._runs_agree import (
     assert_runs_agree,
@@ -120,27 +126,17 @@ def test_device_without_cuda_is_a_runtime_error():
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_device_matches_host(num_qubits, direction):
     s, c = _observable(num_qubits), _circuit(num_qubits)
-    want = s.propagate(c, direction=direction)
-    got = s.propagate(c, direction=direction, device=0)
+    want = propagated(s, c, direction=direction)
+    got = propagated(s, c, direction=direction, device=0)
     assert len(got) > len(s), "the circuit must actually fan out"
     _assert_terms_close(got, want)
 
 
 @needs_cuda
-def test_device_leaves_the_input_untouched():
-    s, c = _observable(8), _circuit(8)
-    before = _sorted_arrays(s)
-    s.propagate(c, device=0)
-    after = _sorted_arrays(s)
-    for a, b in zip(before, after):
-        assert np.array_equal(a, b)
-
-
-@needs_cuda
 def test_bucket_knobs_pass_through():
     s, c = _observable(68), _circuit(68)
-    want = s.propagate(c, direction="heisenberg")
-    got = s.propagate(c, direction="heisenberg", device=0, target_bucket_len=64, min_buckets=16)
+    want = propagated(s, c, direction="heisenberg")
+    got = propagated(s, c, direction="heisenberg", device=0, target_bucket_len=64, min_buckets=16)
     _assert_terms_close(got, want)
 
 
@@ -175,9 +171,9 @@ def test_policies_match_host_term_for_term(name, num_qubits):
     with the host's (``assert_runs_agree``)."""
     policy = POLICIES[name](num_qubits)
     s, c = _observable(num_qubits, light=True), _circuit(num_qubits)
-    untruncated = s.propagate(c, direction="heisenberg")
-    want = s.propagate(c, policy, direction="heisenberg")
-    got = s.propagate(c, policy, direction="heisenberg", device=0)
+    untruncated = propagated(s, c, direction="heisenberg")
+    want = propagated(s, c, policy, direction="heisenberg")
+    got = propagated(s, c, policy, direction="heisenberg", device=0)
     assert len(want) < len(untruncated), f"{name} must actually truncate"
     discarded = discarded_norm(s, c, policy, "heisenberg")
     assert_runs_agree(got, want, policy, discarded, TOL, name)
@@ -189,8 +185,8 @@ def test_policies_match_host_term_for_term(name, num_qubits):
 def test_device_matches_host_after_a_single_cut(num_qubits, policy):
     """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(num_qubits):
-        want = s.propagate(c, policy(n), direction="heisenberg")
-        got = s.propagate(c, policy(n), direction="heisenberg", device=0)
+        want = propagated(s, c, policy(n), direction="heisenberg")
+        got = propagated(s, c, policy(n), direction="heisenberg", device=0)
         discarded = discarded_norm(s, c, policy(n), "heisenberg")
         assert_runs_agree(got, want, policy(n), discarded, TOL, name)
 
@@ -204,7 +200,8 @@ def test_device_matches_host_after_a_single_cut(num_qubits, policy):
 def test_resident_sum_steps_like_two_host_calls(num_qubits):
     s, c = _observable(num_qubits, terms=500), _circuit(num_qubits)
     policy = truncation.coeff(1e-6)
-    want = s.propagate(c, policy, direction="heisenberg").propagate(
+    want = propagated(s, c, policy, direction="heisenberg")
+    want.propagate(
         c, policy, direction="heisenberg"
     )
 
@@ -259,7 +256,7 @@ def test_resident_exact_topn_matches_the_host():
     """A resident sum is always one device, so exact `topn` runs there directly (unlike a device list or `comm=`) and agrees with the host (``assert_runs_agree``)."""
     s, c = _observable(8, terms=500, light=True), _circuit(8)
     policy = truncation.topn(300)
-    want = s.propagate(c, policy, direction="heisenberg")
+    want = propagated(s, c, policy, direction="heisenberg")
     resident = s.to_device()
     resident.propagate(c, policy, direction="heisenberg")
     assert len(want) == 300
@@ -283,8 +280,8 @@ def test_to_device_rejects_a_bad_ordinal():
 @needs_cuda
 def test_stats_name_the_device():
     s, c = _observable(68), _circuit(68)
-    want, host_stats = s.propagate_with_stats(c, direction="heisenberg")
-    got, stats = s.propagate_with_stats(c, direction="heisenberg", device=0)
+    want, host_stats = propagated_with_stats(s, c, direction="heisenberg")
+    got, stats = propagated_with_stats(s, c, direction="heisenberg", device=0)
     _assert_terms_close(got, want)
     assert stats.layers == len(c)
     assert stats.terms_in == host_stats.terms_in
@@ -305,7 +302,7 @@ def test_stats_name_the_device():
 @pytest.mark.parametrize("device", [0, [0, 0]], ids=["one", "list"])
 def test_zero_layer_circuit_on_device(device):
     s = _observable(8, terms=64)
-    got, stats = s.propagate_with_stats(Circuit(8), device=device)
+    got, stats = propagated_with_stats(s, Circuit(8), device=device)
     _assert_terms_close(got, s)
     assert stats.layers == 0
     devices = device if isinstance(device, list) else [device]
@@ -351,8 +348,8 @@ def test_device_with_comm_names_the_missing_feature():
 @needs_cuda
 def test_device_spellings():
     s, c = _observable(8, terms=64), _circuit(8)
-    want = s.propagate(c)
-    _assert_terms_close(s.propagate(c, device=[0]), want)
+    want = propagated(s, c)
+    _assert_terms_close(propagated(s, c, device=[0]), want)
     with pytest.raises(TypeError, match="bool"):
         s.propagate(c, device=True)
     with pytest.raises(ValueError, match="auto"):
@@ -368,8 +365,8 @@ def test_device_spellings():
 def _auto():
     """``device="auto"``'s stats on a small run, and the host answer."""
     s, c = _observable(8, terms=64), _circuit(8)
-    got, stats = s.propagate_with_stats(c, device="auto")
-    _assert_terms_close(got, s.propagate(c))
+    got, stats = propagated_with_stats(s, c, device="auto")
+    _assert_terms_close(got, propagated(s, c))
     return stats
 
 
@@ -400,8 +397,8 @@ def test_auto_on_several_devices_takes_a_power_of_two():
 def test_device_keeps_the_host_count_through_heavy_cuts(policy, direction):
     """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the device keeps the host's count."""
     c, s = heavy_cut(12)
-    want = s.propagate(c, policy(400), direction=direction)
-    got = s.propagate(c, policy(400), direction=direction, device=0)
+    want = propagated(s, c, policy(400), direction=direction)
+    got = propagated(s, c, policy(400), direction=direction, device=0)
     assert_runs_agree_count_only(got, want, policy(400), discarded_norm(s, c, policy(400), direction))
 
 
@@ -453,9 +450,9 @@ def test_device_list_matches_host_on_a_truncated_trotter_circuit(devices, direct
     """``approx_topn`` all-reduces its histogram and boundary counts over the partitions, so the kept count is the host's exactly (``assert_runs_agree``)."""
     s, c = _real_observable(68, terms=2_000, light=True), _trotter_circuit(68, steps=1, dt=0.003)
     policy = truncation.approx_topn(6_000)
-    looser = s.propagate(c, truncation.approx_topn(24_000), direction=direction)
-    want = s.propagate(c, policy, direction=direction)
-    got = s.propagate(c, policy, direction=direction, device=devices)
+    looser = propagated(s, c, truncation.approx_topn(24_000), direction=direction)
+    want = propagated(s, c, policy, direction=direction)
+    got = propagated(s, c, policy, direction=direction, device=devices)
     assert len(want) < len(looser), "approx_topn must actually truncate"
     assert_runs_agree(got, want, policy, discarded_norm(s, c, policy, direction), TOL)
 
@@ -467,8 +464,8 @@ def test_device_list_keeps_the_host_count_through_heavy_cuts(devices, direction)
     """Every layer of ``heavy_cut`` cuts through ties or an octave, too heavily for ``assert_runs_agree`` (``assert_runs_agree_count_only`` asserts so): the device partitions keep the host's count."""
     c, s = heavy_cut(12)
     policy = truncation.approx_topn(400)
-    want = s.propagate(c, policy, direction=direction)
-    got = s.propagate(c, policy, direction=direction, device=devices)
+    want = propagated(s, c, policy, direction=direction)
+    got = propagated(s, c, policy, direction=direction, device=devices)
     assert_runs_agree_count_only(got, want, policy, discarded_norm(s, c, policy, direction))
 
 
@@ -478,8 +475,8 @@ def test_device_list_matches_host_after_a_single_cut(devices):
     """One cut that splits a boundary group, dropping little weight."""
     for name, c, s, n in single_cuts(68):
         policy = truncation.approx_topn(n)
-        want = s.propagate(c, policy)
-        got = s.propagate(c, policy, device=devices)
+        want = propagated(s, c, policy)
+        got = propagated(s, c, policy, device=devices)
         assert_runs_agree(got, want, policy, discarded_norm(s, c, policy), TOL, name)
 
 
@@ -488,8 +485,8 @@ def test_device_list_matches_host_after_a_single_cut(devices):
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_device_list_matches_host_and_names_every_partition(devices, direction):
     s, c = _observable(8, terms=1_000), _dense_circuit(8)
-    want, host_stats = s.propagate_with_stats(c, direction=direction)
-    got, stats = s.propagate_with_stats(c, direction=direction, device=devices)
+    want, host_stats = propagated_with_stats(s, c, direction=direction)
+    got, stats = propagated_with_stats(s, c, direction=direction, device=devices)
     assert len(got) > len(s), "the circuit must actually fan out"
     _assert_terms_close(got, want)
     assert stats.terms_in == host_stats.terms_in
@@ -507,18 +504,18 @@ def test_device_list_matches_host_and_names_every_partition(devices, direction):
 @needs_cuda
 def test_device_list_runs_twice_on_the_cached_runtime():
     s, c = _observable(8, terms=500), _dense_circuit(8, layers=2)
-    want = s.propagate(c, direction="heisenberg")
+    want = propagated(s, c, direction="heisenberg")
     for _ in range(2):
-        _assert_terms_close(s.propagate(c, direction="heisenberg", device=[0, 0]), want)
+        _assert_terms_close(propagated(s, c, direction="heisenberg", device=[0, 0]), want)
 
 
 @needs_cuda
 def test_a_row_seed_moves_rows_but_not_the_answer():
     s, c = _observable(8, terms=1_000), _dense_circuit(8)
-    want = s.propagate(c)
+    want = propagated(s, c)
     splits = []
     for seed in (1, 2):
-        got, stats = s.propagate_with_stats(c, device=[0, 0], partition_row_seed=seed)
+        got, stats = propagated_with_stats(s, c, device=[0, 0], partition_row_seed=seed)
         _assert_terms_close(got, want)
         splits.append(stats.partition.terms_in[0])
     assert splits[0] != splits[1], "two seeds drew the same partition rows"
@@ -531,8 +528,8 @@ def test_partition_row_blocks_cut_the_device_partitions():
     s = PauliSum.from_strings(terms, num_qubits=8)
     c = Circuit(8)
     c.rz(0.3, 0)
-    got, stats = s.propagate_with_stats(c, device=[0, 0], partition_row_blocks=[[0], list(range(1, 8))])
-    _assert_terms_close(got, s.propagate(c))
+    got, stats = propagated_with_stats(s, c, device=[0, 0], partition_row_blocks=[[0], list(range(1, 8))])
+    _assert_terms_close(got, propagated(s, c))
     assert stats.partition.terms_in[0] == [1, 7]
 
 
@@ -540,8 +537,8 @@ def test_partition_row_blocks_cut_the_device_partitions():
 @pytest.mark.parametrize("direction", ["forward", "heisenberg"])
 def test_partition_row_blocks_match_host_on_a_dense_circuit(direction):
     s, c = _observable(8, terms=1_000), _dense_circuit(8)
-    want = s.propagate(c, direction=direction)
-    got = s.propagate(c, direction=direction, device=[0, 0], partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]])
+    want = propagated(s, c, direction=direction)
+    got = propagated(s, c, direction=direction, device=[0, 0], partition_row_blocks=[[0, 1, 2, 3], [4, 5, 6, 7]])
     _assert_terms_close(got, want)
 
 
@@ -576,11 +573,12 @@ def _hermitian_observable(num_qubits):
 @pytest.mark.parametrize("dtype,tol", DTYPES)
 def test_device_runs_keep_the_dtype_and_agree_with_the_host(dtype, tol):
     s, c = _hermitian_observable(8).astype(dtype), _circuit(8)
-    want = _hermitian_observable(8).propagate(c, direction="heisenberg")
+    want = _hermitian_observable(8)
+    want.propagate(c, direction="heisenberg")
     resident = s.to_device(0)
     assert resident.dtype == np.dtype(dtype)
     assert (dtype in repr(resident)) == (dtype != "complex128")
     resident.propagate(c, direction="heisenberg")
-    for got in (s.propagate(c, direction="heisenberg", device=0), resident.to_host()):
+    for got in (propagated(s, c, direction="heisenberg", device=0), resident.to_host()):
         assert got.dtype == np.dtype(dtype)
         _assert_terms_close(got.astype("complex128"), want, tol=tol)

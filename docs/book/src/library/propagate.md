@@ -5,17 +5,23 @@ sum.propagate(circuit, policy=None, direction=None, target_bucket_len=1024,
                min_buckets=128, partitions=None, pin_memory=True,
                partition_row_seed=None, partition_row_blocks=None,
                partition_row_exclude=None, partition_rows=None,
-               comm=None, result="gather", device=None) -> PauliSum
+               comm=None, result="gather", device=None) -> None
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
                           min_buckets=128, partitions=None, pin_memory=True,
                           partition_row_seed=None, partition_row_blocks=None,
                           partition_row_exclude=None, partition_rows=None,
                           comm=None, result="gather", device=None)
-    -> (PauliSum, PropagationStats)
+    -> PropagationStats
+
+paulistrings.propagated(sum, circuit, ...) -> PauliSum
+paulistrings.propagated_with_stats(sum, circuit, ...) -> (PauliSum, PropagationStats)
 ```
 
-`propagate_with_stats` takes the same arguments and returns the same evolved sum (to floating-point tolerance) as `propagate`, plus a `PropagationStats` recording per-layer counts.
+Both methods evolve `sum` in place: the engine takes its terms over instead of copying them, so no second copy of the input is alive during the run.
+`propagated` and `propagated_with_stats` take the same arguments after `sum` and return an evolved copy, leaving `sum` untouched, at the cost of that copy.
+A call that raises before the first layer, on a bad keyword or a mismatched circuit, leaves `sum` untouched; one that fails during the run leaves it empty.
+`propagate_with_stats` takes the same arguments and evolves `sum` the same way (to floating-point tolerance) as `propagate`, and returns a `PropagationStats` recording per-layer counts.
 The GIL is released for the duration of both calls.
 
 ## Parameters
@@ -34,7 +40,7 @@ The GIL is released for the duration of both calls.
 | `partition_row_exclude` | `dict[str, list[int]] \| None` | `None` | `{"x": [...], "z": [...]}`: the seeded draw with these qubits' x-bits / z-bits read by no row |
 | `partition_rows` | `bool array \| None` | `None` | the rows outright, shape `(log2(P), 2 * num_qubits)`, x-bits first, as `PauliSum.hash_rows()` lays them out and [`paulistrings.hashes`](#paulistringshashes) builds them |
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
-| `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` returns the whole sum on rank 0 and empty elsewhere; `"local"`, each rank's own share as a plain `PauliSum`, is deprecated in favour of [`PauliSum.partition`](#partitionedpaulisum) |
+| `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` leaves the whole sum on rank 0 and an empty one elsewhere; `"local"`, each rank's own share as a plain `PauliSum`, is deprecated in favour of [`PauliSum.partition`](#partitionedpaulisum) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
 
 `PauliSum.num_buckets` reads back the realized bucket count, which can differ from `target_bucket_len`/`min_buckets` since bucketing only ever grows.

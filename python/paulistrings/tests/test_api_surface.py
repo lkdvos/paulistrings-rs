@@ -23,6 +23,8 @@ def test_top_level_names():
     assert hasattr(paulistrings, "numa_nodes")
     assert hasattr(paulistrings, "mpi_available")
     assert hasattr(paulistrings, "cuda_available")
+    assert hasattr(paulistrings, "propagated")
+    assert hasattr(paulistrings, "propagated_with_stats")
     assert hasattr(PauliSum, "to_device")
     assert hasattr(PauliSum, "dtype")
     assert hasattr(PauliSum, "astype")

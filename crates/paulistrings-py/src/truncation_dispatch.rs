@@ -82,6 +82,7 @@ fn filter_leaves(
     use BuiltinTruncation as T;
     match tree {
         T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::CollapseSample(_) => true,
+        T::PerPartition(inner) => filter_leaves(inner, coefficient, weight),
         T::Coefficient(eps) => coefficient.replace(*eps).is_none(),
         T::Weight(k) => weight.replace(*k).is_none(),
         T::And(a, b) => {

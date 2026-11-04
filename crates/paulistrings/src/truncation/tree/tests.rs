@@ -39,6 +39,11 @@ fn keep_term_and_the_layer_hint_equal_the_builtin_each_variant_names() {
     assert_keeps_like(&T::TopN(3), &TopN(3), "topn");
     assert_keeps_like(&T::ApproxTopN(3), &ApproxTopN(3), "approx");
     assert_keeps_like(
+        &T::from(PerPartition(And(WeightCutoff(1), TopN(3)))),
+        &PerPartition(And(WeightCutoff(1), TopN(3))),
+        "per partition",
+    );
+    assert_keeps_like(
         &and(T::Coefficient(0.1), T::Weight(1)),
         &And(CoefficientThreshold(0.1), WeightCutoff(1)),
         "and",
@@ -67,6 +72,8 @@ fn finalizes_layer_truth_table() {
     assert!(!f(&T::Weight(4)));
     assert!(f(&T::TopN(4)));
     assert!(f(&T::ApproxTopN(4)));
+    assert!(f(&T::from(PerPartition(TopN(4)))));
+    assert!(!f(&T::from(PerPartition(WeightCutoff(4)))));
     assert!(f(&and(T::Coefficient(1e-3), T::ApproxTopN(4))));
     assert!(f(&and(T::ApproxTopN(4), T::Weight(2))));
     assert!(f(&and(T::ApproxTopN(4), T::ApproxTopN(2))));
@@ -85,6 +92,8 @@ fn every_builtin_converts_node_for_node() {
     assert_eq!(T::from(&builtin), tree);
     assert_eq!(T::from(builtin), tree);
     assert_eq!(T::from(TopN(10)), T::TopN(10));
+    assert_eq!(T::from(PerPartition(TopN(10))), T::PerPartition(Box::new(T::TopN(10))));
+    assert!(and(T::Coefficient(1e-3), T::from(PerPartition(TopN(10)))).supports_partitioned());
     assert_eq!(T::from(&tree), tree);
     assert_eq!(T::from(KeepAll), T::Keep);
 }

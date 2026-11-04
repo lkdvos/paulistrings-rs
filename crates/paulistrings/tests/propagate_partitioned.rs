@@ -19,7 +19,7 @@ use paulistrings::{
 use paulistrings::{
     propagate_partitioned, Gf2Hash, PartitionConfig, PartitionRows, PartitionedSum, Placement,
 };
-use paulistrings::{And, ApproxTopN, CoefficientThreshold, TopN, WeightCutoff};
+use paulistrings::{And, ApproxTopN, CoefficientThreshold, PerPartition, TopN, WeightCutoff};
 
 const TOL: f64 = 1e-11;
 /// The Trotter angle every `trotter_circuit` fixture here rotates by.
@@ -157,6 +157,30 @@ fn random_circuit_matches_propagate_w2() {
     check(&circuit, &sum, &WeightCutoff(2), "w2 weight", &PS);
     check(&circuit, &sum, &ApproxTopN(4_000), "w2 approx", &PS);
     check(&circuit, &sum, &And(CoefficientThreshold(1e-9), ApproxTopN(4_000)), "w2 and", &PS);
+}
+
+/// `PerPartition` of `TopN(n)` or `ApproxTopN(n)` holds every partition to `n` terms after every layer, remote ones included, alone and under a global `ApproxTopN`.
+#[test]
+fn per_partition_caps_every_partition_on_every_layer() {
+    let circuit = trotter_circuit::<1>(32, 0.3);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(2_000, 32, 0x9A29), 40, 0x9A29);
+    const N: usize = 700;
+    let policies: [(BuiltinTruncation, &str); 3] = [
+        (PerPartition(TopN(N)).into(), "topn"),
+        (PerPartition(ApproxTopN(N)).into(), "approx"),
+        (And(ApproxTopN(3 * N), PerPartition(TopN(N))).into(), "topn under approx"),
+    ];
+    for (policy, name) in policies {
+        for &p in &PS {
+            let mut split = PartitionedSum::scatter(sum.clone(), &config(p)).expect("topology");
+            split.enable_trace();
+            split.propagate(&circuit, &policy, Direction::Forward);
+            let trace = split.take_trace().expect("tracing on");
+            assert!(p == 1 || trace.layers.iter().any(|layer| layer.remote_deltas > 0));
+            let largest = trace.layers.iter().flat_map(|layer| &layer.terms_out).max();
+            assert_eq!(largest, Some(&N), "{name} P={p}: the cap must bind and hold");
+        }
+    }
 }
 
 /// `PropagateOptions` reaches the partitioned layer loop: a coarse bucket

@@ -16,7 +16,9 @@ use paulistrings::{
     propagate, propagate_with, Circuit, Coefficient, Direction, LayerScratch, PartitionRows,
     PauliSum, PropagateOptions, TruncationPolicy,
 };
-use paulistrings::{And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
+use paulistrings::{
+    And, ApproxTopN, BuiltinTruncation, CoefficientThreshold, PerPartition, TopN, WeightCutoff,
+};
 use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
 use paulistrings::{PartitionRowPolicy, PtmChannel, ScatterRows};
 
@@ -115,6 +117,25 @@ fn heavy_cuts_keep_the_host_count() {
                 assert_runs_agree_count_only(policy.clone(), discarded, &got, &want, &what);
             }
         }
+    }
+}
+
+/// `PerPartition` of `TopN(n)` or `ApproxTopN(n)` on device: no partition holds more than `n` terms after any layer.
+#[test]
+fn per_partition_caps_every_device_partition() {
+    require_cuda!();
+    let circuit = trotter_circuit::<1>(32, THETA);
+    let sum = spread_magnitudes(&rand_sum_real::<1>(300, 32, 0x9A2A), 40, 0x9A2A);
+    const N: usize = 700;
+    let policies: [BuiltinTruncation; 2] =
+        [PerPartition(TopN(N)).into(), PerPartition(ApproxTopN(N)).into()];
+    for (policy, p) in policies.iter().flat_map(|policy| PS.map(|p| (policy, p))) {
+        let mut device = split_of(&sum, p);
+        device.enable_trace();
+        device.propagate(&circuit, policy.clone(), Direction::Forward).expect("device");
+        let trace = device.take_trace().expect("tracing on");
+        let largest = trace.layers.iter().flat_map(|layer| &layer.terms_out).max();
+        assert_eq!(largest, Some(&N), "{policy:?} P={p}: the cap must bind and hold");
     }
 }
 

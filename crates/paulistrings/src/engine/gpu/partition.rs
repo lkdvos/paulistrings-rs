@@ -18,7 +18,7 @@ use crate::engine::plan::PartitionPlan;
 use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;
 use crate::engine::trace::{DeviceLayerRecord, PartitionLayerRow};
-use crate::engine::transport::Transport;
+use crate::engine::transport::{SoloTransport, Transport};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::desired_bits;
 use crate::truncation::BuiltinTruncation;
@@ -154,6 +154,37 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
                 self.failed_layer = Some(self.layers_applied.saturating_sub(1));
             }
         }
+    }
+
+    /// The sum and its scratch, unless the partition has failed.
+    fn healthy_parts(&mut self) -> Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)> {
+        match (self.sum.as_mut(), self.scratch.as_mut()) {
+            (Some(sum), Some(scratch)) if self.error.is_none() => Some((sum, scratch)),
+            _ => None,
+        }
+    }
+
+    /// `tree`'s layer pass over `collectives`; a group above one partition reports exact `TopN` `Unsupported`, every group `CollapseSample`, and a `PerPartition` runs as a group of one.
+    fn layer_pass(&mut self, tree: &BuiltinTruncation, collectives: &dyn Collectives) {
+        layer_pass_leaves(tree, &mut |leaf| {
+            let result = match leaf {
+                BuiltinTruncation::ApproxTopN(n) => {
+                    approx_top_n_device(self.healthy_parts(), *n, collectives)
+                }
+                BuiltinTruncation::TopN(n) if collectives.size() == 1 => self
+                    .healthy_parts()
+                    .map_or(Ok(()), |(sum, scratch)| top_n_device(sum, scratch, *n)),
+                BuiltinTruncation::PerPartition(inner) => {
+                    self.layer_pass(inner, &SoloTransport);
+                    Ok(())
+                }
+                BuiltinTruncation::CollapseSample(_) => {
+                    Err(GpuError::Unsupported("CollapseSample on device"))
+                }
+                _ => Err(GpuError::Unsupported("exact TopN on device")),
+            };
+            self.record(result);
+        });
     }
 }
 
@@ -292,34 +323,9 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         }
     }
 
-    /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host's; a group member (`group_size > 1`) reports exact `TopN` `Unsupported`, and every member reports `CollapseSample` so.
+    /// The lowered tree's layer pass in the host's order, so the collectives issued equal the host's.
     fn finalize_layer(&mut self, policy: &BuiltinTruncation, collectives: &dyn Collectives) {
-        let single = self.group_size == 1;
-        layer_pass_leaves(policy, &mut |leaf| {
-            let result = match leaf {
-                BuiltinTruncation::ApproxTopN(n) => {
-                    let healthy = self.error.is_none();
-                    let parts = match (self.sum.as_mut(), self.scratch.as_mut()) {
-                        (Some(sum), Some(scratch)) if healthy => Some((sum, scratch)),
-                        _ => None,
-                    };
-                    approx_top_n_device(parts, *n, collectives)
-                }
-                BuiltinTruncation::TopN(n) if single => {
-                    match (self.sum.as_mut(), self.scratch.as_mut()) {
-                        (Some(sum), Some(scratch)) if self.error.is_none() => {
-                            top_n_device(sum, scratch, *n)
-                        }
-                        _ => Ok(()),
-                    }
-                }
-                BuiltinTruncation::CollapseSample(_) => {
-                    Err(GpuError::Unsupported("CollapseSample on device"))
-                }
-                _ => Err(GpuError::Unsupported("exact TopN on device")),
-            };
-            self.record(result);
-        });
+        self.layer_pass(policy, collectives);
         // The driver's `finalize_ns` lap is the wall of this pass; the events only need reading so the kernel counters stay complete.
         if let (Some(sum), Some(scratch)) = (self.sum.as_ref(), self.scratch.as_mut()) {
             let result = scratch.resolve(sum);

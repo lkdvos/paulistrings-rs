@@ -36,7 +36,7 @@ use crate::engine::LOG_TARGET;
 /// Several partitions may share one device (`per_device > 1`), which is a testing shape; one partition per device is the production one.
 /// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) or [`scatter_to_devices_with`](Self::scatter_to_devices_with) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
 ///
-/// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, and an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form.
+/// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form, and a `PerPartition` as its policy on each device alone.
 ///
 /// `C` is the per-term [`Coefficient`], `Complex64` by default; the device stores it natively, so a real `f32` sum moves 4 bytes of coefficient a term.
 ///

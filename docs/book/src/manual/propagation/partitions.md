@@ -89,6 +89,7 @@ The variable still governs an unpartitioned run ([Stats, memory and logging](set
 **Exact `topn` is unavailable.**
 Choosing the `n`-th largest magnitude across partitions is a distributed selection, and the engine has no collective form for it, so a partitioned run raises `NotImplementedError` on `truncation.topn`.
 Use `truncation.approx_topn(n)`, which is *partition-exact*: its histogram is all-reduced, so the retained set is exactly the set the single-partition run would have kept.
+An `approx_topn(n)` budget bounds the whole sum, not a partition's share of it; [`partition_topn(n)` and `partition_approx_topn(n)`](truncation.md) bound each partition's.
 `coeff` and `weight` are per-term filters and need nothing.
 
 ## Limits

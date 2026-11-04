@@ -1,6 +1,6 @@
 # Truncation policies
 
-All five live in the `paulistrings.truncation` module and run after every channel.
+All seven live in the `paulistrings.truncation` module and run after every channel.
 
 | Policy | Keeps |
 |---|---|
@@ -8,6 +8,8 @@ All five live in the `paulistrings.truncation` module and run after every channe
 | `truncation.weight(k)` | Pauli weight `<= k` |
 | `truncation.topn(k)` | exactly `k` terms (all of a smaller sum), largest `\|c\|` first; no partitioned form |
 | `truncation.approx_topn(k)` | exactly `k` terms, ranked by octave of `\|c\|**2`; partition/comm-safe |
+| `truncation.partition_topn(k)` | `topn(k)` on each partition separately; partition/comm-safe |
+| `truncation.partition_approx_topn(k)` | `approx_topn(k)` on each partition separately; partition/comm-safe |
 | `truncation.collapse_sample(cache, seed)` | everything up to `cache` terms; above it, one string drawn by `\|c\|**2` with coefficient `1`; partition/comm-safe |
 
 ## Combinators
@@ -15,7 +17,7 @@ All five live in the `paulistrings.truncation` module and run after every channe
 | Expression | Keeps |
 |---|---|
 | `a & b` | both |
-| `a \| b` | either; per-term filters only (`coeff`, `weight` and their compositions), so a `topn`, `approx_topn` or `collapse_sample` on either side raises `ValueError` |
+| `a \| b` | either; per-term filters only (`coeff`, `weight` and their compositions), so a `topn`, `approx_topn`, their `partition_` forms or `collapse_sample` on either side raises `ValueError` |
 
 ## `topn` vs. `approx_topn`
 

@@ -575,9 +575,43 @@ where
     }
 }
 
+/// The wrapped policy run on each partition's own slice as if it were the whole sum, with no collective.
+///
+/// `PerPartition(TopN(n))` holds every partition to `n` terms between layers however unevenly the partition rows split the sum; above one partition it keeps up to `P·n`, the locally rather than the globally largest.
+/// At one partition it is the wrapped policy; a policy that counts its passes, such as [`CollapseSample`], counts every partition's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerPartition<P>(
+    /// The policy each partition runs alone.
+    pub P,
+);
+
+impl<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>> TruncationPolicy<W, C>
+    for PerPartition<P>
+{
+    fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
+        self.0.keep_term(x, z, c)
+    }
+
+    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
+        self.0.finalize_layer(sum);
+    }
+
+    fn finalizes_layer(&self) -> bool {
+        self.0.finalizes_layer()
+    }
+
+    fn finalize_layer_partitioned(&self, local: &mut PauliSum<W, C>, _: &dyn Collectives) {
+        self.0.finalize_layer(local);
+    }
+
+    fn supports_partitioned(&self) -> bool {
+        true
+    }
+}
+
 /// Either of two per-term filters: a term is kept if either keeps it.
 ///
-/// `Or` combines per-term filters only: an operand with a layer pass ([`TopN`], [`ApproxTopN`], [`CollapseSample`], or an [`And`] containing one) is rejected, since "either keeps" has no meaning for a pass over the whole sum.
+/// `Or` combines per-term filters only: an operand with a layer pass ([`TopN`], [`ApproxTopN`], [`CollapseSample`], or an [`And`] or [`PerPartition`] containing one) is rejected, since "either keeps" has no meaning for a pass over the whole sum.
 /// Use [`And`] to add a filter to a layer pass.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Or<A, B>(pub(crate) A, pub(crate) B);
@@ -601,7 +635,7 @@ pub(crate) fn or_operand_error(first_has_pass: bool, second_has_pass: bool) -> O
     };
     Some(format!(
         "Or combines per-term filters only, but {which} a layer pass (TopN, ApproxTopN or \
-         CollapseSample, alone or inside an And); use And to add a filter to a layer pass"
+         CollapseSample, alone or inside an And or PerPartition); use And to add a filter to a layer pass"
     ))
 }
 

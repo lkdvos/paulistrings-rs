@@ -3,7 +3,7 @@
 //! Python composition is via the `&` and `|` operators on the returned objects; `|` combines per-term filters only.
 
 use crate::truncation_spec::PyTruncation;
-use paulistrings::{BuiltinTruncation, CollapseSample};
+use paulistrings::{ApproxTopN, BuiltinTruncation, CollapseSample, PerPartition, TopN};
 use pyo3::prelude::*;
 
 #[pyfunction]
@@ -33,6 +33,20 @@ fn approx_topn(n: usize) -> PyTruncation {
     PyTruncation::new(BuiltinTruncation::ApproxTopN(n))
 }
 
+/// ``topn(n)`` on **each partition** separately, without communicating: no partition holds more than ``n`` terms between layers, however unevenly the sum splits.
+///
+/// Above one partition it keeps up to ``partitions * n`` terms, the locally rather than the globally largest; ``approx_topn(total) & partition_topn(n)`` adds a global budget.
+#[pyfunction]
+fn partition_topn(n: usize) -> PyTruncation {
+    PyTruncation::new(PerPartition(TopN(n)).into())
+}
+
+/// ``approx_topn(n)`` on **each partition** separately, as ``partition_topn`` is ``topn``.
+#[pyfunction]
+fn partition_approx_topn(n: usize) -> PyTruncation {
+    PyTruncation::new(PerPartition(ApproxTopN(n)).into())
+}
+
 /// Replace the sum by **one** Pauli string with coefficient ``1``, drawn with probability ``|c|**2 / sum |c|**2``, after any layer that leaves more than ``cache`` terms.
 ///
 /// One ``seed`` is one Monte Carlo trajectory: the draw at the ``k``-th layer pass is a pure function of ``(seed, k)``, independent of the thread count, so ``collapse_sample(cache, seed)`` repeats a trajectory exactly.
@@ -48,6 +62,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(weight, m)?)?;
     m.add_function(wrap_pyfunction!(topn, m)?)?;
     m.add_function(wrap_pyfunction!(approx_topn, m)?)?;
+    m.add_function(wrap_pyfunction!(partition_topn, m)?)?;
+    m.add_function(wrap_pyfunction!(partition_approx_topn, m)?)?;
     m.add_function(wrap_pyfunction!(collapse_sample, m)?)?;
     Ok(())
 }

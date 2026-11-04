@@ -6,7 +6,7 @@ use crate::test_support::{
     storage_triples, tie_heavy_sum,
 };
 use crate::truncation::builtin::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, TopN, WeightCutoff,
+    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition, TopN, WeightCutoff,
 };
 use num_complex::Complex64;
 
@@ -311,6 +311,7 @@ fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
     assert!(supports(CoefficientThreshold(1e-3)));
     assert!(supports(WeightCutoff(3)));
     assert!(supports(ApproxTopN(10)));
+    assert!(supports(PerPartition(TopN(10))));
     assert!(supports(CollapseSample::new(10, 1)));
     assert!(supports(And(CoefficientThreshold(1e-3), ApproxTopN(10))));
     assert!(supports(Or::new(WeightCutoff(10), CoefficientThreshold(1e-3))));
@@ -330,4 +331,28 @@ fn assert_supports_partitions_rejects_exact_top_n_above_one_partition() {
     .expect_err("TopN on two partitions must panic");
     let message = panic.downcast_ref::<String>().expect("a formatted message");
     assert!(message.contains("not yet supported") && message.contains("ApproxTopN"), "{message}");
+}
+
+/// `PerPartition(policy)` is the policy's single-partition pass on each partition's own slice.
+fn assert_per_partition<T: TruncationPolicy<1> + Copy + std::fmt::Debug>(
+    policy: T,
+    input: &PauliSum<1>,
+    pbits: u8,
+) {
+    let mut parts = split(input, pbits);
+    parts.iter_mut().for_each(|part| policy.finalize_layer(part));
+    let want = PauliSum::<1>::merge_partitions(parts);
+    let got = partitioned_finalize(&PerPartition(policy), input, pbits);
+    assert_same_terms(&got, &want, &format!("{policy:?} P=2^{pbits}"));
+}
+
+#[test]
+fn per_partition_runs_the_policy_on_each_slice_alone() {
+    let input = rand_sum_real::<1>(2000, 32, 0x9A27);
+    for pbits in [0u8, 1, 2] {
+        for n in [0usize, 1, 300, input.len()] {
+            assert_per_partition(TopN(n), &input, pbits);
+            assert_per_partition(ApproxTopN(n), &input, pbits);
+        }
+    }
 }

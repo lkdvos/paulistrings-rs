@@ -1,5 +1,5 @@
 //! `PyTruncation` — opaque, width-erased truncation policy handle over a core [`BuiltinTruncation`] tree.
-//! Free factories `truncation.coeff/weight/topn/approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`, and `|` takes per-term filters only.
+//! Free factories `truncation.coeff/weight/topn/approx_topn/partition_topn/partition_approx_topn/collapse_sample(...)` return one; `&`/`|` compose via `And`/`Or`, and `|` takes per-term filters only.
 
 use paulistrings::{BuiltinTruncation, CollapseSample};
 use pyo3::exceptions::PyValueError;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 /// Why a policy containing an exact `topn` cannot run partitioned, worded for the Python `NotImplementedError`.
 pub(crate) const TOPN_PARTITIONED_MSG: &str =
     "exact truncation.topn is not supported in partitioned mode; use \
-     truncation.approx_topn or partitions=None";
+     truncation.approx_topn, truncation.partition_topn or partitions=None";
 
 /// Why a policy containing a `collapse_sample` cannot run on a CUDA device, worded for the Python `NotImplementedError`.
 #[cfg(feature = "cuda")]
@@ -35,6 +35,7 @@ pub(crate) fn collapse_count(tree: &BuiltinTruncation) -> Option<u64> {
                 walk(a, out);
                 walk(b, out);
             }
+            BuiltinTruncation::PerPartition(inner) => walk(inner, out),
             BuiltinTruncation::Keep
             | BuiltinTruncation::Coefficient(_)
             | BuiltinTruncation::Weight(_)
@@ -74,7 +75,7 @@ impl PyTruncation {
         ))
     }
 
-    /// Either of two per-term filters (`coeff`, `weight`, or a composition of them); raises `ValueError` if either side has a layer pass (`topn`, `approx_topn`, `collapse_sample`).
+    /// Either of two per-term filters (`coeff`, `weight`, or a composition of them); raises `ValueError` if either side has a layer pass (`topn`, `approx_topn`, their `partition_` forms, `collapse_sample`).
     fn __or__(&self, other: &PyTruncation) -> PyResult<PyTruncation> {
         BuiltinTruncation::try_or(self.tree.clone(), other.tree.clone())
             .map(PyTruncation::new)
@@ -92,6 +93,7 @@ fn tree_repr(tree: &BuiltinTruncation) -> String {
         BuiltinTruncation::Coefficient(eps) => format!("Coeff({eps:?})"),
         BuiltinTruncation::And(a, b) => format!("And({}, {})", tree_repr(a), tree_repr(b)),
         BuiltinTruncation::Or(a, b) => format!("Or({}, {})", tree_repr(a), tree_repr(b)),
+        BuiltinTruncation::PerPartition(inner) => format!("PerPartition({})", tree_repr(inner)),
         other => format!("{other:?}"),
     }
 }

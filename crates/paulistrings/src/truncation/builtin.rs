@@ -171,9 +171,7 @@ pub(crate) fn retain_with_boundary_quota<const W: usize, C: Coefficient>(
     sum.retain_per_bucket(|b| boundary_filter(&classify, quotas[b]));
 }
 
-/// Accepts, over one bucket in order, every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`).
-///
-/// Branch-free, since which side of the boundary a term falls is unpredictable.
+/// Accepts, over one bucket in order, every term `classify` puts above the boundary (`Greater`) and the first `quota` it puts at it (`Equal`), branch-free since the side is unpredictable.
 pub(crate) fn boundary_filter<const W: usize, C: Coefficient>(
     classify: impl Fn(f64) -> core::cmp::Ordering,
     mut quota: usize,

@@ -75,7 +75,7 @@ pub(crate) struct LayerOctaves {
     armed: bool,
     /// Whether this layer's output is known to fit in `n`, so its layer pass is skipped on every partition alike.
     within: bool,
-    /// Per bucket, the terms the next layer's remote delta emits for, the `export_ahead` counts.
+    /// Per bucket, the counts ahead of the next layer's export.
     ahead: Vec<BucketAhead>,
     /// The window `ahead` is binned under; `None` when there are no counts ahead.
     ahead_window: Option<OctaveWindow>,
@@ -440,8 +440,8 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum.assert_invariants();
 }
 
+/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and the octave counts and counts ahead it takes after, with their windows.
 #[derive(Clone, Copy)]
-/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and each bucket's slot in the octave counts and the counts ahead it takes after, with their windows.
 struct LayerOctaveIo<'s, 'a, 't, const W: usize, C: Coefficient> {
     cut: Option<&'s BoundaryCut>,
     count: Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>,

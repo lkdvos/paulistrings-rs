@@ -41,7 +41,7 @@ impl BucketAhead {
         })
     }
 
-    /// Panics unless the marks are sized for a bucket of `len` terms and mark as many rows as the counts ahead count, so a fill reading them visits every row the export counted.
+    /// Panics unless the marks fit a bucket of `len` terms and mark as many rows as the counts ahead count.
     #[cfg(debug_assertions)]
     pub(crate) fn debug_assert_marks_match(&self, len: usize, bucket: usize) {
         debug_assert_eq!(
@@ -185,7 +185,7 @@ impl OctaveWindow {
 }
 
 impl LayerOctaves {
-    /// Forget the counts ahead; whatever changes the sum or its buckets outside a coset loop calls it.
+    /// Forget the counts ahead.
     pub(crate) fn drop_ahead(&mut self) {
         self.ahead_window = None;
     }
@@ -216,7 +216,7 @@ impl LayerOctaves {
         }
     }
 
-    /// Bucket `b`'s counts ahead where [`rows_ahead`](Self::rows_ahead) answers for it: there the pending cut keeps every boundary term of `b` or none, so its [`BoundaryCut::filter`](crate::truncation::octave_window::BoundaryCut::filter) asked of the marked rows alone keeps what it keeps asked of every row.
+    /// Bucket `b`'s counts ahead where [`rows_ahead`](Self::rows_ahead) answers: there the pending cut keeps all of `b`'s boundary terms or none, so its filter keeps the same terms asked of the marked rows alone.
     pub(crate) fn bucket_ahead(&self, b: usize) -> Option<&BucketAhead> {
         self.rows_ahead(b).map(|_| &self.ahead[b])
     }

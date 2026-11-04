@@ -122,9 +122,7 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// Two calls of fused `ApproxTopN(n)` on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds.
-///
-/// Returns the fewest buckets any split above one partition exported from the counts ahead under a pending cut, which the plain pass never leaves.
+/// Two calls of fused `ApproxTopN(n)` on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds; returns the fewest buckets any split above one partition exported from the counts ahead under a pending cut, which the plain pass never leaves.
 fn check_fused_keeps_the_plain_set<const W: usize>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,

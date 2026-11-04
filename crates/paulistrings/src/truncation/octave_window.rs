@@ -1,7 +1,9 @@
-//! [`ApproxTopN`]'s layer pass from per-bucket octave counts the coset loop takes while each bucket is still in cache, so the pass itself only reads the sum to retain.
+//! [`ApproxTopN`]'s layer pass decided from per-bucket octave counts the coset loop takes while each bucket is in cache, and the cut it decides, which the engine applies bucket by bucket.
 //!
-//! Contract: [`finalize_from_window`] keeps exactly the set [`approx_top_n_pass`] keeps, and falls back to it when the boundary octave lies outside the window; a [`BoundaryCut`] applied bucket by bucket keeps the same set as applied at once.
+//! Contract: [`decide_from_window`] decides the cut [`approx_top_n_pass`] makes, or answers `None` when the boundary octave lies outside the window, and a [`BoundaryCut`] applied bucket by bucket keeps the same set as applied at once.
 
+#[cfg(doc)]
+use super::builtin::approx_top_n_pass;
 #[cfg(doc)]
 use super::builtin::ApproxTopN;
 use super::builtin::{

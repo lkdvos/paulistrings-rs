@@ -2,6 +2,7 @@
 //!
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
+//! A pending `ApproxTopN` cut is not applied here: both passes skip the terms it drops, and the coset loop applies it as it swaps each bucket in.
 
 use crate::coefficient::Coefficient;
 use rayon::prelude::*;
@@ -13,6 +14,7 @@ use crate::engine::coset::CosetOrder;
 use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
+use crate::truncation::octave_window::BoundaryCut;
 
 /// Scanned input terms below which a block's fill stays on one thread.
 const FILL_PARALLEL_MIN_TERMS: usize = 16384;
@@ -53,23 +55,26 @@ impl<const W: usize, C: Coefficient> RowEmitter<'_, W, C> {
     }
 }
 
-/// This partition's outgoing payloads for one layer, one slot per partner rank.
+/// This partition's outgoing payloads for one layer, one slot per partner rank, from `local` as `cut` leaves it.
 ///
 /// A partner's blocks are one per remote delta destined for it in ascending order, empty ones included, since the receiver indexes blocks positionally.
 pub(crate) fn export_layer<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
+    cut: Option<&BoundaryCut>,
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
     order: &CosetOrder,
     scratch: &mut ExportScratch<W, C>,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
-    export_layer_with(local, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
+    export_layer_with(local, cut, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
 }
 
 /// [`export_layer`] with the fill's leaf size in scanned input terms.
+#[allow(clippy::too_many_arguments)]
 fn export_layer_with<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
+    cut: Option<&BoundaryCut>,
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     size: u32,
@@ -110,15 +115,20 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             Prepared::Rotation(_) => false,
         })
         .collect();
+    let all_dense =
+        matches!(prepared, Prepared::Local(_)) && dense.iter().all(|&is_dense| is_dense);
 
     // Pass 1: bucket-major counts, `counts[β * num_remote + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
     scratch.counts.resize(num_buckets * num_remote, 0);
-    scratch
-        .counts
-        .par_chunks_mut(num_remote)
-        .enumerate()
-        .for_each(|(bucket, slot)| count_bucket(local, prepared, plan, &dense, bucket, slot));
+    scratch.counts.par_chunks_mut(num_remote).enumerate().for_each(|(bucket, slot)| {
+        let terms = local.bucket(bucket);
+        match cut {
+            None if all_dense => slot.fill(terms.2.len() as u32),
+            None => count_bucket(terms, prepared, plan, &dense, |_, _, _| true, slot),
+            Some(cut) => count_bucket(terms, prepared, plan, &dense, cut.filter(bucket), slot),
+        }
+    });
 
     // Pass 2: one block per remote delta, written by index into pooled storage that is neither allocated nor zeroed here.
     debug_assert_eq!(
@@ -161,6 +171,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
                 ColumnsMut { x: &mut x[..rows], z: &mut z[..rows], coeff: &mut coeff[..rows] };
             let fill = Fill {
                 local,
+                cut,
                 emitter: &emitters[i],
                 offsets,
                 source_of: &scratch.source_of,
@@ -182,32 +193,29 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     (send, counts)
 }
 
-/// Count one source bucket's exported rows, one slot per remote delta.
+/// Count one source bucket's exported rows among the terms `keep` keeps, one slot per remote delta.
 fn count_bucket<const W: usize, C: Coefficient>(
-    local: &PauliSum<W, C>,
+    (bucket_x, bucket_z, bucket_coeff): (&[[u64; W]], &[[u64; W]], &[C]),
     prepared: &Prepared<W, C>,
     plan: &PartitionPlan,
     dense: &[bool],
-    bucket: usize,
+    mut keep: impl FnMut(&[u64; W], &[u64; W], C) -> bool,
     out: &mut [u32],
 ) {
-    let (bucket_x, bucket_z, bucket_coeff) = local.bucket(bucket);
     let len = bucket_coeff.len();
     match prepared {
         Prepared::Local(ptm) => {
-            let mut all_dense = true;
-            for (i, &is_dense) in dense.iter().enumerate() {
-                if is_dense {
-                    out[i] = len as u32;
-                } else {
-                    out[i] = 0;
-                    all_dense = false;
-                }
-            }
-            if all_dense {
-                return;
-            }
+            let all_dense = dense.iter().all(|&is_dense| is_dense);
+            out.fill(0);
+            let mut kept = 0u32;
             for term in 0..len {
+                if !keep(&bucket_x[term], &bucket_z[term], bucket_coeff[term]) {
+                    continue;
+                }
+                kept += 1;
+                if all_dense {
+                    continue;
+                }
                 let support = ptm.support_bits(&bucket_x[term], &bucket_z[term]);
                 for (i, remote) in plan.remote.iter().enumerate() {
                     if !dense[i] && ptm.deltas()[remote.entry].amplitude[support] != C::ZERO {
@@ -215,11 +223,19 @@ fn count_bucket<const W: usize, C: Coefficient>(
                     }
                 }
             }
+            for (slot, &is_dense) in out.iter_mut().zip(dense) {
+                if is_dense {
+                    *slot = kept;
+                }
+            }
         }
         Prepared::Rotation(rotation) => {
             debug_assert_eq!(out.len(), 1, "a rotation has at most one remote delta");
             let mut anticommuting = 0u32;
             for term in 0..len {
+                if !keep(&bucket_x[term], &bucket_z[term], bucket_coeff[term]) {
+                    continue;
+                }
                 let string = PauliString::<W> { x: bucket_x[term], z: bucket_z[term] };
                 if !string.commutes_with(&rotation.generator) {
                     anticommuting += 1;
@@ -233,6 +249,7 @@ fn count_bucket<const W: usize, C: Coefficient>(
 /// One block's pass-2 inputs, shared by every task of its fill.
 struct Fill<'a, 'p, const W: usize, C: Coefficient> {
     local: &'a PauliSum<W, C>,
+    cut: Option<&'a BoundaryCut>,
     emitter: &'a RowEmitter<'p, W, C>,
     offsets: &'a [u32],
     source_of: &'a [u32],
@@ -260,18 +277,16 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
             if offsets[position] == offsets[position + 1] {
                 continue;
             }
-            let (bucket_x, bucket_z, bucket_coeff) =
-                self.local.bucket(self.source_of[position] as usize);
-            for term in 0..bucket_coeff.len() {
-                if let Some((out_x, out_z, out_coeff)) =
-                    self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term])
-                {
-                    x[written] = out_x;
-                    z[written] = out_z;
-                    coeff[written] = out_coeff;
-                    written += 1;
-                }
-            }
+            let source = self.source_of[position] as usize;
+            let out = ColumnsMut {
+                x: &mut x[written..],
+                z: &mut z[written..],
+                coeff: &mut coeff[written..],
+            };
+            written += match self.cut {
+                None => self.fill_bucket(source, |_, _, _| true, out),
+                Some(cut) => self.fill_bucket(source, cut.filter(source), out),
+            };
         }
         debug_assert_eq!(
             written,
@@ -279,6 +294,34 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
             "export: pass 2 filled {written} rows where pass 1 counted {}",
             x.len(),
         );
+    }
+}
+
+impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
+    /// Write bucket `source`'s rows among the terms `keep` keeps to the head of `out`; returns how many.
+    fn fill_bucket(
+        &self,
+        source: usize,
+        mut keep: impl FnMut(&[u64; W], &[u64; W], C) -> bool,
+        out: ColumnsMut<'_, W, C>,
+    ) -> usize {
+        let ColumnsMut { x, z, coeff } = out;
+        let (bucket_x, bucket_z, bucket_coeff) = self.local.bucket(source);
+        let mut written = 0usize;
+        for term in 0..bucket_coeff.len() {
+            if !keep(&bucket_x[term], &bucket_z[term], bucket_coeff[term]) {
+                continue;
+            }
+            if let Some((out_x, out_z, out_coeff)) =
+                self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term])
+            {
+                x[written] = out_x;
+                z[written] = out_z;
+                coeff[written] = out_coeff;
+                written += 1;
+            }
+        }
+        written
     }
 }
 

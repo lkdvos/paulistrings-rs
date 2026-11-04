@@ -172,12 +172,7 @@ where
         transport: &X,
         clocked: bool,
     ) -> LayerExchangeCounts {
-        let octaves = &mut self.state.layer.octaves;
-        octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
-        // The export reads the sum before the coset loop would apply the cut.
-        if plan.has_remote() {
-            octaves.apply_pending(&mut self.sum);
-        }
+        self.state.layer.octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
         apply_layer_partitioned_with_plan(
             &mut self.sum,
             prepared,

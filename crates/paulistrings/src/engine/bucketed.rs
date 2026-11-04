@@ -56,7 +56,7 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
 
 /// Per-bucket octave counts, taken by the coset loop as it writes each bucket, and the cut they decide, applied as the next coset loop reads each bucket.
 ///
-/// Contract: a cut is pending only between a layer pass and the next layer's coset loop, and anything else that reads or rebuckets the sum first applies it ([`settle`](Self::settle)).
+/// Contract: a cut is pending only between a layer pass and the next layer's coset loop, and anything else that reads or rebuckets the sum first applies it ([`settle`](Self::settle)), except an exchanging layer's export, which reads around it ([`pending`](Self::pending)).
 /// Every partition's window is set from the agreed boundary octave, so all count alike.
 #[derive(Debug, Default)]
 pub(crate) struct LayerOctaves {
@@ -128,6 +128,11 @@ impl LayerOctaves {
         self.pending.as_ref().map_or(len, |cut| cut.kept)
     }
 
+    /// The cut the next coset loop applies, which an export before it must honour.
+    pub(crate) fn pending(&self) -> Option<&BoundaryCut> {
+        self.pending.as_ref()
+    }
+
     pub(crate) fn apply_pending<const W: usize, C: Coefficient>(
         &mut self,
         sum: &mut PauliSum<W, C>,
@@ -135,6 +140,12 @@ impl LayerOctaves {
         if let Some(cut) = self.pending.take() {
             cut.apply(sum);
         }
+    }
+
+    /// Leave `cut` pending, as a layer pass would.
+    #[cfg(test)]
+    pub(crate) fn defer(&mut self, cut: BoundaryCut) {
+        self.pending = Some(cut);
     }
 
     /// End a call: apply the pending cut and forget the bound, since the sum may change before the next.

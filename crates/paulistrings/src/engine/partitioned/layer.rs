@@ -194,7 +194,15 @@ where
     let mut order = std::mem::take(&mut state.layer.order);
     order.rebuild(&span, true);
     state.chunks = ChunkMap::of_order(&order, *EXCHANGE_CHUNKS.get());
-    let (send, mut counts) = export_layer(local, prepared, plan, size, &order, &mut state.export);
+    let (send, mut counts) = export_layer(
+        local,
+        state.layer.octaves.pending(),
+        prepared,
+        plan,
+        size,
+        &order,
+        &mut state.export,
+    );
     let export_ns = export_start.map_or(0, |start| start.elapsed().as_nanos() as u64);
     tally!(state.layer.stats.export_ns, export_ns);
     tally!(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::<u64>());

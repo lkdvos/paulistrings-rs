@@ -184,5 +184,28 @@ Per-layer, per-partition detail (`PropagationStats.partition`), one entry per la
 | `.terms_out` | `list[list[int]]` | terms partition `r` held after layer `k`'s truncation |
 | `.imbalance` | `list[float]` | max/mean of `terms_in` per layer; `1.0` is perfect balance, `partitions` is worst case |
 | `.nanos` | `list[list[int]]` | each partition's own elapsed wall time per layer; `PropagationStats.nanos[k]` is `max(nanos[k])` |
+| `.rebucket_ns` | `list[list[int]]` | coarse phase: raising or lowering the bucket count |
+| `.prepare_ns` | `list[list[int]]` | coarse phase: channel preparation and partition planning |
+| `.collective_ns` | `list[list[int]]` | coarse phase: the bucket-count agreement and the policy's collectives, the wait for the slowest partition included |
+| `.export_ns` | `list[list[int]]` | coarse phase: building the rows to send; zero on a `local` layer |
+| `.exchange_ns` | `list[list[int]]` | coarse phase: the transfer the layer's compute did not hide; zero on a `local` layer |
+| `.coset_loop_ns` | `list[list[int]]` | coarse phase: the layer's own compute; on a device, its export and exchange too |
+| `.finalize_ns` | `list[list[int]]` | coarse phase: the policy's pass after the layer, less its collectives |
+| `.gather_ns` | `list[list[int]] \| None` | fine phase: gathering each coset's rows, received ones included |
+| `.sort_ns` | `list[list[int]] \| None` | fine phase: sorting |
+| `.merge_ns` | `list[list[int]] \| None` | fine phase: merging duplicate strings |
+| `.append_ns` | `list[list[int]] \| None` | fine phase: appending received rows, part of `gather_ns` |
+| `.chunk_wait_ns` | `list[list[int]] \| None` | fine phase: blocked on received rows still in flight, part of `append_ns` |
 
-Under `comm=`, a distributed run's per-layer lists (`terms_in`, `terms_out`, `rows_exported`, `bytes_exported`, `nanos`) hold this rank's own entry only — nothing gathers the group's counters, since that would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture; `imbalance` is always `1.0` in that case.
+The phase fields split `nanos[k][r]` and share its shape.
+The coarse phases are disjoint wall-clock spans recorded on every run, so they sum to at most `nanos[k][r]`.
+The fine phases are busy time summed over worker threads, so they can exceed `coset_loop_ns` under parallelism; they are `None` unless the extension was built with the `phase-timing` feature (`MATURIN_PEP517_ARGS="--features phase-timing"`).
+
+<!-- doctest: skip -->
+```python
+_, stats = observable.propagate_with_stats(circuit, policy, partitions="auto")
+part = stats.partition
+waiting = [max(part.exchange_ns[k][r] + part.collective_ns[k][r] for r in range(part.partitions)) for k in range(stats.layers)]
+```
+
+Under `comm=`, a distributed run's per-layer lists (`terms_in`, `terms_out`, `rows_exported`, `bytes_exported`, `nanos` and the phase fields) hold this rank's own entry only — nothing gathers the group's counters, since that would add a collective per layer for a diagnostic. Reduce over `comm` for the group's picture; `imbalance` is always `1.0` in that case.

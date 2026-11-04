@@ -16,6 +16,7 @@ use paulistrings::{
     PauliSum as CorePauliSum, Placement, ProductBasis, PropagateOptions, ScatterOptions,
     ScatterRows, TopologyError,
 };
+use paulistrings::{FineLayerPhases, LayerPhases};
 use pyo3::exceptions::{PyNotImplementedError, PyOSError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict};
@@ -1066,6 +1067,8 @@ impl PropagationStats {
 /// Per-layer, per-partition record of a propagation — the `partition` attribute of every [`PropagationStats`], one partition for an unpartitioned call.
 /// Every list is one entry per layer applied, in application order; `terms_in`/`terms_out` entries are themselves one entry per partition, in rank order.
 /// Answers the two questions a partitioned run raises: how much crossed a partition boundary (`rows_exported`, `bytes_exported`, `local`), and how evenly terms were spread (`imbalance`).
+/// The phase fields split each `nanos[k][r]`, each shaped like `nanos`: the seven coarse phases (`rebucket_ns`, `prepare_ns`, `collective_ns`, `export_ns`, `exchange_ns`, `coset_loop_ns`, `finalize_ns`) are disjoint wall-clock spans recorded on every run, so they sum to at most `nanos[k][r]`, short of it only by the record's own bookkeeping.
+/// The fine phases (`gather_ns`, `sort_ns`, `merge_ns`, `append_ns`, `chunk_wait_ns`) are `None` unless the extension was built with the `phase-timing` feature.
 #[pyclass(frozen, module = "paulistrings._paulistrings", name = "PartitionStats")]
 #[derive(Clone)]
 pub struct PartitionStats {
@@ -1080,6 +1083,7 @@ pub struct PartitionStats {
     terms_out: Vec<Vec<usize>>,
     imbalance: Vec<f64>,
     nanos: Vec<Vec<u64>>,
+    phases: Vec<Vec<LayerPhases>>,
 }
 
 #[pymethods]
@@ -1097,7 +1101,7 @@ impl PartitionStats {
     }
 
     /// The `comm=` group's size, or `None` for a run that is not distributed.
-    /// A distributed run's per-layer lists hold this rank's entry only (`terms_in[k]`/`terms_out[k]` one-element, `rows_exported[k]`/`bytes_exported[k]` this rank's, `imbalance[k]` always `1.0`) — nothing gathers the group's counters, since that would add a collective per layer for a diagnostic; reduce over `comm` yourself. The in-process case is unchanged: lists are `partitions` long.
+    /// A distributed run's per-layer lists hold this rank's entry only (`terms_in[k]`/`terms_out[k]`, `nanos[k]` and the phase fields one-element, `rows_exported[k]`/`bytes_exported[k]` this rank's, `imbalance[k]` always `1.0`) — nothing gathers the group's counters, since that would add a collective per layer for a diagnostic; reduce over `comm` yourself. The in-process case is unchanged: lists are `partitions` long.
     #[getter]
     fn size(&self) -> Option<u32> {
         self.size
@@ -1153,7 +1157,81 @@ impl PartitionStats {
         self.nanos.clone()
     }
 
-    /// Every field but `nanos`, in getter order; `terms_in`/`terms_out` nested one level deeper (per layer per partition).
+    /// Coarse phase, shaped like `nanos`: raising or lowering the bucket count.
+    #[getter]
+    fn rebucket_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.rebucket_ns)
+    }
+
+    /// Coarse phase, shaped like `nanos`: channel preparation and partition planning.
+    #[getter]
+    fn prepare_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.prepare_ns)
+    }
+
+    /// Coarse phase, shaped like `nanos`: the bucket-count agreement and the truncation policy's own collectives, including the wait for the slowest partition or rank to arrive.
+    #[getter]
+    fn collective_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.collective_ns)
+    }
+
+    /// Coarse phase, shaped like `nanos`: building the rows to send; zero on a `local` layer.
+    #[getter]
+    fn export_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.export_ns)
+    }
+
+    /// Coarse phase, shaped like `nanos`: the transfer the layer's compute did not hide, waiting for a partner included; zero on a `local` layer.
+    #[getter]
+    fn exchange_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.exchange_ns)
+    }
+
+    /// Coarse phase, shaped like `nanos`: the layer's own compute, gather through merge.
+    /// A device (`device=`) run counts its export and exchange here, leaving `export_ns` and `exchange_ns` zero.
+    #[getter]
+    fn coset_loop_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.coset_loop_ns)
+    }
+
+    /// Coarse phase, shaped like `nanos`: the truncation policy's pass after the layer, less its collectives.
+    #[getter]
+    fn finalize_ns(&self) -> Vec<Vec<u64>> {
+        self.coarse(|phases| phases.finalize_ns)
+    }
+
+    /// Fine phase, shaped like `nanos`, or `None` unless the extension was built with the `phase-timing` feature: gathering each coset's rows, received rows included.
+    /// The fine phases are busy time summed over the worker threads, so under parallelism they can exceed `coset_loop_ns`; on a device they are kernel times.
+    #[getter]
+    fn gather_ns(&self) -> Option<Vec<Vec<u64>>> {
+        self.fine(|fine| fine.gather_ns)
+    }
+
+    /// Fine phase, shaped like `nanos`, or `None` without `phase-timing`: sorting the rows that need it.
+    #[getter]
+    fn sort_ns(&self) -> Option<Vec<Vec<u64>>> {
+        self.fine(|fine| fine.sort_ns)
+    }
+
+    /// Fine phase, shaped like `nanos`, or `None` without `phase-timing`: merging and reducing duplicate strings.
+    #[getter]
+    fn merge_ns(&self) -> Option<Vec<Vec<u64>>> {
+        self.fine(|fine| fine.merge_ns)
+    }
+
+    /// Fine phase, shaped like `nanos`, or `None` without `phase-timing`: appending received rows, part of `gather_ns`; zero on a `local` layer.
+    #[getter]
+    fn append_ns(&self) -> Option<Vec<Vec<u64>>> {
+        self.fine(|fine| fine.append_ns)
+    }
+
+    /// Fine phase, shaped like `nanos`, or `None` without `phase-timing`: blocked on received rows still in flight, part of `append_ns`.
+    #[getter]
+    fn chunk_wait_ns(&self) -> Option<Vec<Vec<u64>>> {
+        self.fine(|fine| fine.chunk_wait_ns)
+    }
+
+    /// Every field but `nanos` and its phases, in getter order; `terms_in`/`terms_out` nested one level deeper (per layer per partition).
     fn __repr__(&self) -> String {
         // Spelled with Python's `True`/`False`/`None` rather than Rust's `Debug`, so the line pastes back into a REPL.
         let local = self
@@ -1205,7 +1283,22 @@ impl PartitionStats {
             terms_out: trace.layers.iter().map(|l| l.terms_out.clone()).collect(),
             imbalance: trace.imbalance(),
             nanos: trace.layers.iter().map(|l| l.nanos.clone()).collect(),
+            phases: trace.layers.iter().map(|l| l.phases.clone()).collect(),
         }
+    }
+
+    fn coarse(&self, field: impl Fn(&LayerPhases) -> u64) -> Vec<Vec<u64>> {
+        self.phases.iter().map(|layer| layer.iter().map(&field).collect()).collect()
+    }
+
+    /// `None` on a build without `phase-timing`, whatever the layers hold.
+    fn fine(&self, field: impl Fn(&FineLayerPhases) -> u64) -> Option<Vec<Vec<u64>>> {
+        cfg!(feature = "phase-timing").then(|| {
+            self.phases
+                .iter()
+                .map(|layer| layer.iter().map(|p| field(&p.fine.unwrap_or_default())).collect())
+                .collect()
+        })
     }
 }
 

@@ -42,7 +42,7 @@ On a single-node box `"auto"` also falls back to the unpartitioned path, and an 
 [`paulistrings.numa_nodes()`](../../library/module-helpers.md) reports what the machine offers, as one CPU list per node intersected with this process's affinity mask, so a script can decide for itself before choosing.
 `pin_memory=False` pins the threads but not their allocations; the default binds both, which is the point of the placement.
 
-`PropagationStats.partition` holds, per layer, the terms each partition held, the rows and bytes it sent, and the imbalance across partitions.
+`PropagationStats.partition` holds, per layer, the terms each partition held, the rows and bytes it sent, the imbalance across partitions, and where each partition's time went (`coset_loop_ns`, `export_ns`, `exchange_ns`, `collective_ns` and the rest).
 An unpartitioned run reports one partition.
 `local[k]` says whether the rows keep layer `k` local, which is the figure the cost/benefit split above turns on; a layer that is not local can still send no row when none of its terms takes a crossing shift.
 

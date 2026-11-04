@@ -25,6 +25,9 @@ mpi = ["paulistrings/mpi"]
 # live `paulistrings.cuda_available()`. Off by default, like `mpi`; it needs no
 # toolkit to build. Build it with `maturin develop --release --features cuda`.
 cuda = ["paulistrings/cuda"]
+# Fill the fine phases of `PartitionStats` (`gather_ns` through `chunk_wait_ns`),
+# which are `None` without it. Off by default, like the core's own.
+phase-timing = ["paulistrings/phase-timing"]
 
 [dependencies]
 paulistrings = { workspace = true }

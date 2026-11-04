@@ -3,6 +3,7 @@ use crate::channel::rotation::PauliRotation;
 use crate::channel::Channel;
 use crate::channel::Prepare;
 use crate::channel::PtmChannel;
+use crate::engine::bucketed::apply_layer_bucketed;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
@@ -563,5 +564,7 @@ where
     X: Transport,
 {
     let plan = PartitionPlan::new(prepared, rows, transport.rank());
-    apply_layer_partitioned_with_plan(local, prepared, &plan, rows, policy, state, transport, false)
+    apply_layer_partitioned_with_plan(
+        local, prepared, &plan, rows, policy, state, transport, false, None,
+    )
 }

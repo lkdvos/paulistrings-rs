@@ -8,7 +8,7 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::{max_fanout, LayerScratch};
+use crate::engine::bucketed::{max_fanout, EmitTest, LayerScratch};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::trace::PartitionLayerRow;
@@ -65,7 +65,8 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
 pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
     PartitionStorage<W, C>
 {
-    /// `clocked` asks for the counts' phase times, which a backend may leave zero.
+    /// `clocked` asks for the counts' phase times, which a backend may leave zero; `ahead` is the next layer's one remote delta, prepared under the current hash, which a backend may count for that layer's export.
+    #[allow(clippy::too_many_arguments)]
     fn apply_layer<X: Transport>(
         &mut self,
         prepared: &Prepared<W, C>,
@@ -74,6 +75,7 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         policy: &T,
         transport: &X,
         clocked: bool,
+        ahead: Option<&EmitTest<'_, W, C>>,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
     /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
@@ -117,11 +119,13 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
 
     fn refine(&mut self) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
+        self.state.layer.octaves.drop_ahead();
         self.sum.refine();
     }
 
     fn coarsen_to(&mut self, bits: u8) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
+        self.state.layer.octaves.drop_ahead();
         self.sum.coarsen_to(bits);
     }
 
@@ -131,6 +135,7 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
             .min(self.sum.hash().max_bits());
         if wanted != bits {
             self.state.layer.octaves.apply_pending(&mut self.sum);
+            self.state.layer.octaves.drop_ahead();
             self.sum.rebucket(target_bucket_len, min_buckets);
         }
         true
@@ -171,6 +176,7 @@ where
         policy: &T,
         transport: &X,
         clocked: bool,
+        ahead: Option<&EmitTest<'_, W, C>>,
     ) -> LayerExchangeCounts {
         self.state.layer.octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
         apply_layer_partitioned_with_plan(
@@ -182,13 +188,19 @@ where
             &mut self.state,
             transport,
             clocked,
+            ahead,
         )
     }
 
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
         match policy.sole_approx_top_n() {
             Some(n) => self.state.layer.octaves.finalize(&mut self.sum, collectives, n),
-            None => policy.finalize_layer_partitioned(&mut self.sum, collectives),
+            None => {
+                if policy.finalizes_layer() {
+                    self.state.layer.octaves.drop_ahead();
+                }
+                policy.finalize_layer_partitioned(&mut self.sum, collectives);
+            }
         }
     }
 }

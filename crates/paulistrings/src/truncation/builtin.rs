@@ -323,18 +323,18 @@ pub(crate) fn local_boundary_quota(
     (quota as u64).saturating_sub(below).min(local_count as u64) as usize
 }
 
-/// [`ApproxTopN`]'s layer pass over a whole sum, returning the decision it applied.
+/// [`ApproxTopN`]'s layer pass over a whole sum, returning the decision it applied and the length it decided on.
 fn approx_top_n_solo<const W: usize, C: Coefficient>(
     sum: &mut PauliSum<W, C>,
     n: usize,
-) -> EdgeDecision {
+) -> (EdgeDecision, usize) {
     let total = sum.len();
     if total <= n {
-        return EdgeDecision::KeepAll;
+        return (EdgeDecision::KeepAll, total);
     }
     if n == 0 {
         sum.clear();
-        return EdgeDecision::Clear;
+        return (EdgeDecision::Clear, total);
     }
     let edge = octave_edge(&octave_histogram(sum), total, n);
     let quota = match edge {
@@ -342,17 +342,17 @@ fn approx_top_n_solo<const W: usize, C: Coefficient>(
         EdgeDecision::KeepAll | EdgeDecision::Clear => 0,
     };
     retain_at_edge(sum, edge, quota);
-    edge
+    (edge, total)
 }
 
-/// [`ApproxTopN`]'s layer pass over one partition, returning the decision it applied.
+/// [`ApproxTopN`]'s layer pass over one partition, returning the decision it applied and the whole sum's length it decided on.
 ///
 /// One `allreduce_sum_u64` of `[len, histogram…]`, the single-partition edge walk, and at a boundary one more of the per-rank boundary counts for this rank's quota; no early exit above one partition, since that would desynchronize the group.
 pub(crate) fn approx_top_n_pass<const W: usize, C: Coefficient>(
     local: &mut PauliSum<W, C>,
     collectives: &dyn Collectives,
     n: usize,
-) -> EdgeDecision {
+) -> (EdgeDecision, usize) {
     if collectives.size() == 1 {
         return approx_top_n_solo(local, n);
     }
@@ -375,7 +375,7 @@ pub(crate) fn approx_top_n_pass<const W: usize, C: Coefficient>(
         EdgeDecision::KeepAll | EdgeDecision::Clear => 0,
     };
     retain_at_edge(local, edge, local_quota);
-    edge
+    (edge, total)
 }
 
 impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for ApproxTopN {

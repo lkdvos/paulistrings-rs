@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use super::coset::{CosetOrder, Gf2Span};
 use super::merge::{rest_rows_per_key, SortKernel};
 use super::trace::PartitionTrace;
-use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
+use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
 use crate::collectives::Collectives;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
@@ -67,9 +67,26 @@ pub(crate) struct LayerOctaves {
     counted: bool,
     /// The last layer pass's cut, not yet applied.
     pending: Option<BoundaryCut>,
+    /// An upper bound on the whole sum's length, agreed by every partition: set by a layer pass, scaled by each layer's [`max_fanout`], reset at the end of a call.
+    bound: Option<usize>,
+    /// Whether this layer's coset loop takes counts, set by [`begin_layer`](Self::begin_layer).
+    armed: bool,
+    /// Whether this layer's output is known to fit in `n`, so its layer pass is skipped on every partition alike.
+    within: bool,
 }
 
 impl LayerOctaves {
+    /// Decide what the coming layer does for an `ApproxTopN(n)` policy (`None` for any other), from its [`max_fanout`].
+    pub(crate) fn begin_layer(&mut self, fanout: usize, n: Option<usize>) {
+        let Some(n) = n else {
+            (self.armed, self.within) = (false, false);
+            return;
+        };
+        self.bound = self.bound.map(|bound| bound.saturating_mul(fanout));
+        self.within = self.bound.is_some_and(|bound| bound <= n);
+        self.armed = !self.within && self.window.is_some();
+    }
+
     /// `ApproxTopN(n)`'s layer pass over `sum`, from the counts when the last layer took them, leaving an in-window cut pending.
     pub(crate) fn finalize<const W: usize, C: Coefficient>(
         &mut self,
@@ -78,25 +95,35 @@ impl LayerOctaves {
         n: usize,
     ) {
         debug_assert!(self.pending.is_none(), "the layer did not apply the last cut");
+        if std::mem::take(&mut self.within) {
+            return;
+        }
         let decision = match self.window {
             Some(window) if std::mem::take(&mut self.counted) => {
                 decide_from_window(sum.len(), collectives, n, window, &self.per_bucket)
             }
             _ => None,
         };
-        match decision {
-            None => {
-                if let EdgeDecision::Boundary { bin, .. } = approx_top_n_pass(sum, collectives, n) {
+        self.bound = Some(match decision {
+            None => match approx_top_n_pass(sum, collectives, n) {
+                (EdgeDecision::KeepAll, total) => total,
+                (EdgeDecision::Clear, _) => 0,
+                (EdgeDecision::Boundary { bin, .. }, _) => {
                     self.window = Some(OctaveWindow::around(bin));
+                    n
                 }
+            },
+            Some(WindowDecision::KeepAll { total }) => total,
+            Some(WindowDecision::Clear) => {
+                sum.clear();
+                0
             }
-            Some(WindowDecision::KeepAll) => {}
-            Some(WindowDecision::Clear) => sum.clear(),
             Some(WindowDecision::Cut(cut)) => {
                 self.window = Some(OctaveWindow::around(cut.bin));
                 self.pending = Some(cut);
+                n
             }
-        }
+        });
     }
 
     /// The partition's terms once the pending cut is applied.
@@ -105,10 +132,19 @@ impl LayerOctaves {
     }
 
     /// Apply the pending cut, if any, to the whole sum.
-    pub(crate) fn settle<const W: usize, C: Coefficient>(&mut self, sum: &mut PauliSum<W, C>) {
+    pub(crate) fn apply_pending<const W: usize, C: Coefficient>(
+        &mut self,
+        sum: &mut PauliSum<W, C>,
+    ) {
         if let Some(cut) = self.pending.take() {
             cut.apply(sum);
         }
+    }
+
+    /// End a call: apply the pending cut and forget the bound, since the sum may change before the next.
+    pub(crate) fn settle<const W: usize, C: Coefficient>(&mut self, sum: &mut PauliSum<W, C>) {
+        self.apply_pending(sum);
+        self.bound = None;
     }
 }
 
@@ -280,6 +316,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
 {
     stamp!(stamp);
     scratch.octaves.counted = false;
+    let armed = std::mem::take(&mut scratch.octaves.armed);
     let cut = scratch.octaves.pending.take();
 
     // A partitioned layer's local table can look key-preserving while received rows still need merging.
@@ -317,7 +354,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     let span = Gf2Span::new(deltas, sum.hash().bits());
     debug_assert!(knobs.order.is_none_or(|order| order.dimension() == span.dimension()));
 
-    let window = scratch.octaves.window.filter(|_| policy.sole_approx_top_n().is_some());
+    let window = scratch.octaves.window.filter(|_| armed);
     let mut per_bucket = std::mem::take(&mut scratch.octaves.per_bucket);
     if window.is_some() {
         per_bucket.resize(sum.num_buckets(), [0; _]);
@@ -471,6 +508,22 @@ impl<'a, T> DisjointSlots<'a, T> {
         assert!(index < self.len, "DisjointSlots: index {index} out of {}", self.len);
         // SAFETY: in bounds, and exclusive by the caller's contract.
         unsafe { &mut *self.base.add(index) }
+    }
+}
+
+/// Most output strings one input string can have under `prepared`, as whichever layer path runs it emits them.
+pub(crate) fn max_fanout<const W: usize, C: Coefficient>(prepared: &Prepared<W, C>) -> usize {
+    match prepared {
+        // The rotation kernels drop the identity residue of a Clifford rotation.
+        Prepared::Local(ptm) if RotationLayer::of(ptm).is_some_and(|layer| layer.is_clifford()) => {
+            1
+        }
+        Prepared::Local(ptm) => (0..LOCAL_DIM)
+            .map(|s| ptm.deltas().iter().filter(|delta| delta.amplitude[s].is_nonzero()).count())
+            .max()
+            .unwrap_or(0)
+            .max(1),
+        Prepared::Rotation(_) => 2,
     }
 }
 

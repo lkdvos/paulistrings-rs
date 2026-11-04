@@ -1221,9 +1221,9 @@ mod finalize_tests {
         }
     }
 
-    /// The coset loop counts every output bucket into its window slot, and a rescale layer, which runs no coset loop, leaves the counts invalid.
+    /// An armed coset loop counts every output bucket into its window slot; an unarmed one, or a rescale layer, which runs no coset loop, leaves the counts invalid.
     #[test]
-    fn a_layer_counts_each_output_bucket_under_approx_top_n() {
+    fn an_armed_layer_counts_each_output_bucket() {
         let input = rand_sum::<1>(1500, 8, 0x0C7A).with_hash(Gf2Hash::<1>::new(8, 4, 0x99));
         let window = OctaveWindow::around(1020);
         let mut b = input.clone();
@@ -1231,6 +1231,7 @@ mod finalize_tests {
         scratch.octaves.window = Some(window);
         let rotation = PauliRotation::new(PauliString::<1>::x(3), 0.4);
         let prepared = rotation.prepare(b.hash(), false).unwrap();
+        scratch.octaves.begin_layer(max_fanout(&prepared), Some(10));
         apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
         assert!(scratch.octaves.counted);
         assert_eq!(scratch.octaves.per_bucket.len(), b.num_buckets());
@@ -1242,11 +1243,13 @@ mod finalize_tests {
 
         let mut unarmed = LayerScratch::<1>::new();
         unarmed.octaves.window = Some(window);
+        unarmed.octaves.begin_layer(max_fanout(&prepared), None);
         apply_layer_bucketed(&mut input.clone(), &prepared, &TopN(10), &mut unarmed);
         assert!(!unarmed.octaves.counted, "a policy without ApproxTopN takes no counts");
 
         let depolarizing = PtmChannel::depolarizing(3, 0.11);
         let prepared = depolarizing.prepare(b.hash(), false).unwrap();
+        scratch.octaves.begin_layer(max_fanout(&prepared), Some(10));
         apply_layer_bucketed(&mut b, &prepared, &ApproxTopN(10), &mut scratch);
         assert!(!scratch.octaves.counted, "the rescale path takes no counts");
     }
@@ -1295,6 +1298,36 @@ mod finalize_tests {
     fn fused_approx_top_n_keeps_the_plain_set_w2() {
         let circuit = crate::test_support::trotter_circuit::<2>(70, 0.3);
         assert_fused_approx_top_n_agrees(&circuit, 70, 1500);
+    }
+
+    /// Fan-out bounds as each layer path emits: a Clifford rotation moves strings, a general one splits them in two, a permutation or a rescale keeps one per input.
+    #[test]
+    fn max_fanout_counts_the_outputs_of_one_input() {
+        let hash = Gf2Hash::<1>::new(8, 3, 0x99);
+        let fanout = |channel: &dyn Channel<1>| max_fanout(&channel.prepare(&hash, false).unwrap());
+        let quarter = std::f64::consts::FRAC_PI_2;
+        assert_eq!(fanout(&PauliRotation::new(PauliString::<1>::x(3), quarter)), 1);
+        assert_eq!(fanout(&crate::test_support::zz_rotation::<1>(2, 3, quarter)), 1);
+        assert_eq!(fanout(&PauliRotation::new(PauliString::<1>::x(3), 0.4)), 2);
+        assert_eq!(fanout(&PtmChannel::cnot(1, 2)), 1);
+        assert_eq!(fanout(&PtmChannel::hadamard(0)), 1);
+        assert_eq!(fanout(&PtmChannel::depolarizing(3, 0.11)), 1);
+    }
+
+    /// A circuit whose Clifford layers cannot grow the sum: their layer passes are skipped on the bound, and the sets still agree.
+    #[test]
+    fn fused_approx_top_n_skips_layers_that_cannot_grow() {
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let mut circuit = crate::Circuit::<1>::new(12);
+        for _ in 0..3 {
+            for q in 0..11 {
+                circuit.push(crate::test_support::zz_rotation::<1>(q, q + 1, quarter));
+            }
+            for q in 0..12 {
+                circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.3));
+            }
+        }
+        assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
     }
 
     /// A rescale layer runs no coset loop, so it applies the deferred cut itself and the next pass falls back to the plain one.

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-8c6a2033.js";
+            window.path_to_searchindex_js = "../../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -189,7 +189,7 @@ It also has one trap, which follows directly from <a href="direction.html#push-o
 <h2 id="splitting-a-circuit-is-free"><a class="header" href="#splitting-a-circuit-is-free">Splitting a circuit is free</a></h2>
 <p>Propagating through <code>a</code> and then <code>b</code> applies the same sequence of (apply, merge, truncate) steps as propagating through <code>a + b</code> in one call, so the two agree exactly, in application order:</p>
 <pre><code class="language-python">import numpy as np
-from paulistrings import Circuit, PauliSum, truncation
+from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings({"ZIII": 1.0}, num_qubits=4)
 policy = truncation.coeff(1e-10)
@@ -201,10 +201,9 @@ front.cnot(0, 1)
 back = Circuit(4)
 back.rz(0.3, 1)
 
-split, whole = observable.copy(), observable.copy()
-split.propagate(front, policy, direction="forward")
+split = propagated(observable, front, policy, direction="forward")
 split.propagate(back, policy, direction="forward")
-whole.propagate(front + back, policy, direction="forward")
+whole = propagated(observable, front + back, policy, direction="forward")
 
 assert len(split) == len(whole)
 assert np.allclose(split.coefficients_array(), whole.coefficients_array())

@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8c6a2033.js";
+            window.path_to_searchindex_js = "../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -196,10 +196,11 @@ sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len
                           comm=None, result="gather", device=None)
     -&gt; PropagationStats
 
-sum.copy() -&gt; PauliSum
+paulistrings.propagated(sum, circuit, ...) -&gt; PauliSum
+paulistrings.propagated_with_stats(sum, circuit, ...) -&gt; (PauliSum, PropagationStats)
 </code></pre>
-<p>Both evolve <code>sum</code> in place: the engine takes its terms over instead of copying them, so no second copy of the input is alive during the run.
-Propagate a <code>sum.copy()</code> (or <code>copy.copy(sum)</code>) to keep the input.
+<p>Both methods evolve <code>sum</code> in place: the engine takes its terms over instead of copying them, so no second copy of the input is alive during the run.
+<code>propagated</code> and <code>propagated_with_stats</code> take the same arguments after <code>sum</code> and return an evolved copy, leaving <code>sum</code> untouched, at the cost of that copy.
 A call that raises before the first layer, on a bad keyword or a mismatched circuit, leaves <code>sum</code> untouched; one that fails during the run leaves it empty.
 <code>propagate_with_stats</code> takes the same arguments and evolves <code>sum</code> the same way (to floating-point tolerance) as <code>propagate</code>, and returns a <code>PropagationStats</code> recording per-layer counts.
 The GIL is released for the duration of both calls.</p>

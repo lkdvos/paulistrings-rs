@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-8c6a2033.js";
+            window.path_to_searchindex_js = "../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -224,7 +224,7 @@ Duplicate keys/rows/labels sum their coefficients; exact-zero coefficients are d
 <tbody>
 <tr><td><code>.num_qubits</code></td><td>qubit count</td></tr>
 <tr><td><code>.dtype</code></td><td>coefficient type, a <code>numpy.dtype</code></td></tr>
-<tr><td><code>.copy()</code>, <code>copy.copy(sum)</code>, <code>copy.deepcopy(sum)</code></td><td>an independent copy, to keep an input that <a href="propagate.html"><code>propagate</code></a> would evolve in place</td></tr>
+<tr><td><code>.copy()</code>, <code>copy.copy(sum)</code>, <code>copy.deepcopy(sum)</code></td><td>an independent copy; <a href="propagate.html"><code>propagated</code></a> propagates one</td></tr>
 <tr><td><code>.astype(dtype)</code></td><td>a copy at another coefficient type; <code>ValueError</code> when going real would drop a nonzero imaginary part</td></tr>
 <tr><td><code>.width</code></td><td>active compile-time width tier (words per term)</td></tr>
 <tr><td><code>len(sum)</code></td><td>term count</td></tr>

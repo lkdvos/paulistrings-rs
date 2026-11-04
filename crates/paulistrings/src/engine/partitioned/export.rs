@@ -3,7 +3,7 @@
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
 //! A pending `ApproxTopN` cut is not applied here: both passes skip the terms it drops, and the coset loop applies it as it swaps each bucket in.
-//! Pass 1 reads the counts the last coset loop took ahead where they answer (`LayerOctaves::rows_ahead`), and the bucket otherwise.
+//! Where the last coset loop took counts ahead for this layer (`LayerOctaves::bucket_ahead`), pass 1 reads them instead of the bucket and the fill visits only the marked rows.
 
 use crate::coefficient::Coefficient;
 use rayon::prelude::*;
@@ -172,7 +172,11 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             scratch.source_of[position] = source;
             scratch.block_counts[position] = count;
             if count != 0 {
-                work += local.bucket_len(source as usize);
+                let len = local.bucket_len(source as usize);
+                work += match octaves.bucket_ahead(source as usize).filter(|_| ahead) {
+                    Some(_) => count as usize + len / 64,
+                    None => len,
+                };
             }
             scratch.work_prefix[position + 1] = work;
         }
@@ -193,6 +197,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             let fill = Fill {
                 local,
                 cut,
+                ahead: ahead.then_some(octaves),
                 emitter: &emitters[i],
                 offsets,
                 source_of: &scratch.source_of,
@@ -264,6 +269,8 @@ fn count_bucket<const W: usize, C: Coefficient>(
 struct Fill<'a, 'p, const W: usize, C: Coefficient> {
     local: &'a PauliSum<W, C>,
     cut: Option<&'a BoundaryCut>,
+    /// The counts ahead, when they are for this layer's one remote delta.
+    ahead: Option<&'a LayerOctaves>,
     emitter: &'a RowEmitter<'p, W, C>,
     offsets: &'a [u32],
     source_of: &'a [u32],
@@ -297,9 +304,17 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
                 z: &mut z[written..],
                 coeff: &mut coeff[written..],
             };
-            written += match self.cut {
-                None => self.fill_bucket(source, |_, _, _| true, out),
-                Some(cut) => self.fill_bucket(source, cut.filter(source), out),
+            let all = 0..self.local.bucket_len(source);
+            let marked = self.ahead.and_then(|octaves| octaves.bucket_ahead(source));
+            written += match (self.cut, marked) {
+                (None, None) => self.fill_rows(source, all, |_, _, _| true, out),
+                (Some(cut), None) => self.fill_rows(source, all, cut.filter(source), out),
+                (None, Some(marked)) => {
+                    self.fill_rows(source, marked.marked_rows(), |_, _, _| true, out)
+                }
+                (Some(cut), Some(marked)) => {
+                    self.fill_rows(source, marked.marked_rows(), cut.filter(source), out)
+                }
             };
         }
         debug_assert_eq!(
@@ -312,17 +327,20 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
 }
 
 impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
-    /// Write bucket `source`'s rows among the terms `keep` keeps to the head of `out`; returns how many.
-    fn fill_bucket(
+    /// Write the rows bucket `source`'s terms at `rows` emit, among those `keep` keeps, to the head of `out`; returns how many.
+    ///
+    /// `keep` is asked of every row of `rows` in order, so `rows` skips only terms whose keep test does not move a boundary quota.
+    fn fill_rows(
         &self,
         source: usize,
+        rows: impl Iterator<Item = usize>,
         mut keep: impl FnMut(&[u64; W], &[u64; W], C) -> bool,
         out: ColumnsMut<'_, W, C>,
     ) -> usize {
         let ColumnsMut { x, z, coeff } = out;
         let (bucket_x, bucket_z, bucket_coeff) = self.local.bucket(source);
         let mut written = 0usize;
-        for term in 0..bucket_coeff.len() {
+        for term in rows {
             let survives = keep(&bucket_x[term], &bucket_z[term], bucket_coeff[term]);
             if let (true, Some((out_x, out_z, out_coeff))) =
                 (survives, self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term]))

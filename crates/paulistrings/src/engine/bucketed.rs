@@ -34,7 +34,7 @@ mod partner_order;
 mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
-pub(crate) use export_ahead::EmitTest;
+pub(crate) use export_ahead::{BucketAhead, EmitTest};
 
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
@@ -75,8 +75,8 @@ pub(crate) struct LayerOctaves {
     armed: bool,
     /// Whether this layer's output is known to fit in `n`, so its layer pass is skipped on every partition alike.
     within: bool,
-    /// Per bucket, the window counts of the terms the next layer's remote delta emits for, the `export_ahead` counts.
-    ahead: Vec<BucketOctaves>,
+    /// Per bucket, the terms the next layer's remote delta emits for, the `export_ahead` counts.
+    ahead: Vec<BucketAhead>,
     /// The window `ahead` is binned under; `None` when there are no counts ahead.
     ahead_window: Option<OctaveWindow>,
 }
@@ -397,7 +397,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     let ahead_window = window.or(scratch.octaves.window).unwrap_or(OctaveWindow::around(0));
     let mut ahead_counts = std::mem::take(&mut scratch.octaves.ahead);
     if ahead.is_some() {
-        ahead_counts.resize(sum.num_buckets(), [0; _]);
+        ahead_counts.resize_with(sum.num_buckets(), BucketAhead::default);
     }
     let ahead_slots = ahead.map(|test| (test, DisjointSlots::new(&mut ahead_counts)));
     let octaves = LayerOctaveIo {
@@ -444,7 +444,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
 struct LayerOctaveIo<'s, 'a, 't, const W: usize, C: Coefficient> {
     cut: Option<&'s BoundaryCut>,
     count: Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>,
-    ahead: Option<(OctaveWindow, &'s EmitTest<'t, W, C>, &'s DisjointSlots<'a, BucketOctaves>)>,
+    ahead: Option<(OctaveWindow, &'s EmitTest<'t, W, C>, &'s DisjointSlots<'a, BucketAhead>)>,
 }
 
 impl<const W: usize, C: Coefficient> Clone for LayerOctaveIo<'_, '_, '_, W, C> {

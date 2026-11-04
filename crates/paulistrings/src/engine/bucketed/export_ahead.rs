@@ -12,6 +12,36 @@ use crate::truncation::octave_window::{BucketOctaves, OctaveWindow, WINDOW_OCTAV
 
 use super::LayerOctaves;
 
+/// One bucket's counts ahead: the window counts of its terms that emit a row, and one mark bit per term that does, so the fill visits only those.
+#[derive(Clone, Debug)]
+pub(crate) struct BucketAhead {
+    emitting: BucketOctaves,
+    /// Bit `row % 64` of word `row / 64`.
+    marks: Vec<u64>,
+}
+
+impl Default for BucketAhead {
+    fn default() -> Self {
+        Self { emitting: [0; WINDOW_OCTAVES + 2], marks: Vec::new() }
+    }
+}
+
+impl BucketAhead {
+    /// The rows marked as emitting, ascending.
+    pub(crate) fn marked_rows(&self) -> impl Iterator<Item = usize> + '_ {
+        self.marks.iter().enumerate().flat_map(|(word_index, &word)| {
+            let mut word = word;
+            std::iter::from_fn(move || {
+                (word != 0).then(|| {
+                    let bit = word.trailing_zeros() as usize;
+                    word &= word - 1;
+                    word_index * 64 + bit
+                })
+            })
+        })
+    }
+}
+
 /// Which terms one remote delta of a layer emits a row for, the test the export's count pass applies per term.
 #[derive(Clone, Copy)]
 pub(crate) enum EmitTest<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
@@ -63,27 +93,27 @@ impl OctaveWindow {
         (slot, slot * usize::from(!norm_sqr.is_nan()))
     }
 
-    /// Count the terms of `columns` that `test` emits for into `emitting`, and all of them into `counts` if given, both binned under this window and overwritten.
+    /// Count and mark the terms of `columns` that `test` emits for into `ahead`, and count all of them into `counts` if given, both binned under this window and overwritten.
     pub(crate) fn count_emitting<const W: usize, C: Coefficient>(
         &self,
         columns: &BucketColumns<W, C>,
         test: &EmitTest<'_, W, C>,
         counts: Option<&mut BucketOctaves>,
-        emitting: &mut BucketOctaves,
+        ahead: &mut BucketAhead,
     ) {
         match *test {
-            EmitTest::Every => self.count_rows(columns, |_, _| true, counts, emitting),
+            EmitTest::Every => self.count_rows(columns, |_, _| true, counts, ahead),
             EmitTest::Table { ptm, entry } => {
                 let amplitude = &ptm.deltas()[entry].amplitude;
                 let emits =
                     |x: &[u64; W], z: &[u64; W]| amplitude[ptm.support_bits(x, z)] != C::ZERO;
-                self.count_rows(columns, emits, counts, emitting);
+                self.count_rows(columns, emits, counts, ahead);
             }
             EmitTest::Generator { generator } => {
                 let emits = |x: &[u64; W], z: &[u64; W]| {
                     !PauliString::<W> { x: *x, z: *z }.commutes_with(generator)
                 };
-                self.count_rows(columns, emits, counts, emitting);
+                self.count_rows(columns, emits, counts, ahead);
             }
         }
     }
@@ -95,23 +125,30 @@ impl OctaveWindow {
         columns: &BucketColumns<W, C>,
         emits: impl Fn(&[u64; W], &[u64; W]) -> bool,
         counts: Option<&mut BucketOctaves>,
-        emitting: &mut BucketOctaves,
+        ahead: &mut BucketAhead,
     ) {
+        let BucketAhead { emitting, marks } = ahead;
         *emitting = [0; WINDOW_OCTAVES + 2];
-        let rows = columns.x.iter().zip(&columns.z).zip(&columns.coeff);
+        marks.clear();
+        marks.resize(columns.len().div_ceil(64), 0);
+        let rows = columns.x.iter().zip(&columns.z).zip(&columns.coeff).enumerate();
         match counts {
             Some(counts) => {
                 *counts = [0; WINDOW_OCTAVES + 2];
-                for ((x, z), &coeff) in rows {
+                for (row, ((x, z), &coeff)) in rows {
                     let (slot, emitting_slot) = self.slots_of(coeff);
+                    let emits = emits(x, z);
                     counts[slot] += 1;
-                    emitting[emitting_slot] += u32::from(emits(x, z));
+                    emitting[emitting_slot] += u32::from(emits);
+                    marks[row / 64] |= u64::from(emits) << (row % 64);
                 }
             }
             None => {
-                for ((x, z), &coeff) in rows {
+                for (row, ((x, z), &coeff)) in rows {
                     let (_, emitting_slot) = self.slots_of(coeff);
-                    emitting[emitting_slot] += u32::from(emits(x, z));
+                    let emits = emits(x, z);
+                    emitting[emitting_slot] += u32::from(emits);
+                    marks[row / 64] |= u64::from(emits) << (row % 64);
                 }
             }
         }
@@ -132,7 +169,7 @@ impl LayerOctaves {
     /// Bucket `b`'s exported rows among the terms the pending cut keeps, from the counts ahead; `None` when they cannot tell, at the one bucket a cut's boundary quota splits.
     pub(crate) fn rows_ahead(&self, b: usize) -> Option<u32> {
         let window = self.ahead_window?;
-        let emitting = &self.ahead[b];
+        let emitting = &self.ahead[b].emitting;
         let Some(cut) = &self.pending else {
             return Some(emitting.iter().sum());
         };
@@ -148,6 +185,11 @@ impl LayerOctaves {
             quota if quota == self.per_bucket[b][slot] as usize => Some(above + emitting[slot]),
             _ => None,
         }
+    }
+
+    /// Bucket `b`'s counts ahead where [`rows_ahead`](Self::rows_ahead) answers for it: there the pending cut keeps every boundary term of `b` or none, so its [`BoundaryCut::filter`](crate::truncation::octave_window::BoundaryCut::filter) asked of the marked rows alone keeps what it keeps asked of every row.
+    pub(crate) fn bucket_ahead(&self, b: usize) -> Option<&BucketAhead> {
+        self.rows_ahead(b).map(|_| &self.ahead[b])
     }
 }
 

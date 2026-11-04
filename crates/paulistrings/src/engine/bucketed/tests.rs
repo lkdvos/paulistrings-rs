@@ -1137,6 +1137,7 @@ mod finalize_tests {
     use crate::pauli_string::PauliString;
     use crate::pauli_sum::hash::Gf2Hash;
     use crate::pauli_sum::PauliSum;
+    use crate::test_support::PlainApproxTopN;
     use crate::truncation::builtin::{And, ApproxTopN, CoefficientThreshold, TopN};
 
     #[test]
@@ -1210,15 +1211,6 @@ mod finalize_tests {
         let got = b;
 
         assert_terms_close(&got, &want, 1e-11, "3 truncated layers");
-    }
-
-    /// `ApproxTopN(n)`'s layer pass, hidden from the engine's fused form.
-    struct PlainApproxTopN(usize);
-
-    impl<const W: usize> TruncationPolicy<W> for PlainApproxTopN {
-        fn finalize_layer(&self, sum: &mut PauliSum<W>) {
-            ApproxTopN(self.0).finalize_layer(sum);
-        }
     }
 
     /// An armed coset loop counts every output bucket into its window slot; an unarmed one, or a rescale layer, which runs no coset loop, leaves the counts invalid.
@@ -1342,6 +1334,64 @@ mod finalize_tests {
             }
         }
         assert_fused_approx_top_n_agrees(&circuit, 12, 1500);
+    }
+
+    /// A sum rescaled between calls past the window the last call left, down or up: the next call's first pass misses the window and falls back to the plain one, keeping the plain set.
+    #[test]
+    fn fused_approx_top_n_falls_back_when_the_scale_leaves_the_window() {
+        use crate::engine::{propagate_with, Direction, PropagateOptions};
+        use crate::truncation::octave_window::WINDOW_OCTAVES;
+        let circuit = crate::test_support::trotter_circuit::<1>(12, 0.3);
+        let n = 1500;
+        for (factor, outside_slot) in [(2f64.powi(-40), 0), (2f64.powi(40), WINDOW_OCTAVES + 1)] {
+            let input = rand_sum::<1>(200, 12, 0xF05F);
+            let mut scratch = LayerScratch::<1>::new();
+            let mut plain_scratch = LayerScratch::<1>::new();
+            let options = PropagateOptions::default();
+            let direction = Direction::Heisenberg;
+            let mut got = propagate_with(
+                &circuit,
+                input.clone(),
+                &ApproxTopN(n),
+                direction,
+                &mut scratch,
+                options,
+            );
+            let mut want = propagate_with(
+                &circuit,
+                input,
+                &PlainApproxTopN(n),
+                direction,
+                &mut plain_scratch,
+                options,
+            );
+            assert_same_terms(&got, &want, &format!("factor {factor}: first call"));
+
+            got.scale(Complex64::new(factor, 0.0));
+            want.scale(Complex64::new(factor, 0.0));
+            let window = scratch.octaves.window.expect("the first call cut");
+            let coefficients: Vec<Complex64> = got.iter().map(|(_, _, c)| c).collect();
+            let mut counts = [0; _];
+            window.count(&coefficients, &mut counts);
+            assert_eq!(
+                counts[outside_slot] as usize,
+                got.len(),
+                "factor {factor}: every term leaves the window"
+            );
+
+            let got =
+                propagate_with(&circuit, got, &ApproxTopN(n), direction, &mut scratch, options);
+            let want = propagate_with(
+                &circuit,
+                want,
+                &PlainApproxTopN(n),
+                direction,
+                &mut plain_scratch,
+                options,
+            );
+            assert_eq!(got.len(), n, "factor {factor}: the second call must cut");
+            assert_same_terms(&got, &want, &format!("factor {factor}: second call"));
+        }
     }
 }
 

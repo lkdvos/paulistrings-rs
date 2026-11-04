@@ -13,6 +13,7 @@ mod engine;
 mod pauli_string;
 mod pauli_sum;
 mod phase;
+mod products;
 mod readout;
 mod rng;
 #[cfg(any(test, feature = "test-utils"))]

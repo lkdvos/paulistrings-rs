@@ -6,7 +6,7 @@ import itertools
 import numpy as np
 import pytest
 
-from paulistrings import PauliSum
+from paulistrings import PauliSum, truncation
 
 _PAULI = {
     "I": np.eye(2, dtype=complex),
@@ -97,3 +97,36 @@ def test_operands_on_different_qubit_counts_are_a_value_error():
     for op in (a.product, a.liouvillian, a.anticommutator):
         with pytest.raises(ValueError, match="num_qubits mismatch"):
             op(b)
+
+
+def _chain_operands():
+    h = {"ZZI": 1.0, "IZZ": 1.0, "XII": 0.3, "IXI": 0.3, "IIX": 0.3}
+    o = _random_terms(7, 30, complex_coefficients=False)
+    return (
+        PauliSum.from_strings(h, num_qubits=NUM_QUBITS, dtype="float64"),
+        PauliSum.from_strings(o, num_qubits=NUM_QUBITS, dtype="float64"),
+    )
+
+
+def test_a_coefficient_policy_keeps_the_strings_above_it():
+    h, o = _chain_operands()
+    full = np.abs(h.liouvillian(o).coefficients_array())
+    eps = float(np.median(full))
+    kept = h.liouvillian(o, policy=truncation.coeff(eps)).coefficients_array()
+    assert len(kept) == np.count_nonzero(full > eps)
+    assert np.all(np.abs(kept) > eps)
+
+
+def test_a_layer_policy_runs_on_the_result():
+    h, o = _chain_operands()
+    full = np.sort(np.abs(h.anticommutator(o).coefficients_array()))[::-1]
+    kept = np.sort(np.abs(h.anticommutator(o, policy=truncation.topn(5)).coefficients_array()))[::-1]
+    np.testing.assert_allclose(kept, full[:5])
+
+
+def test_a_product_takes_a_policy_too():
+    h, o = _chain_operands()
+    assert len(h.product(o, policy=truncation.weight(1))) <= len(h.product(o))
+    identity_only = h.product(o, policy=truncation.weight(0))
+    assert len(identity_only) <= 1
+    assert identity_only.identity_coefficient() == pytest.approx(h.product(o).identity_coefficient())

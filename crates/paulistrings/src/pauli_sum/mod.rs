@@ -5,7 +5,7 @@
 pub(crate) mod accumulator;
 pub(crate) mod hash;
 mod partition;
-mod product;
+pub(crate) mod product;
 pub(crate) mod storage;
 mod table;
 

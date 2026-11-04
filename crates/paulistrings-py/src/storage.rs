@@ -4,7 +4,7 @@ use crate::dtype::{imaginary_error, narrow, Dtype, PyCoefficient, Scalar};
 use num_complex::{Complex32, Complex64};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
 use paulistrings::{
-    BuildAccumulator, Gf2Hash, PartitionRowPolicy, PauliAxis, PauliString,
+    BuildAccumulator, BuiltinTruncation, Gf2Hash, PartitionRowPolicy, PauliAxis, PauliString,
     PauliSum as CorePauliSum, ProductBasis, StabilizerState,
 };
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -128,13 +128,13 @@ impl<C: PyCoefficient> WidthSum<C> {
         })
     }
 
-    /// The operator product `pairing` names; `None` on a width mismatch.
+    /// The operator product `pairing` names, truncated by `policy` as one layer; `None` on a width mismatch.
     /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`], and passes a complex `C` for [`Pairing::Product`].
-    pub fn pair(&self, other: &Self, pairing: Pairing) -> Option<Self> {
+    pub fn pair(&self, other: &Self, pairing: Pairing, policy: &BuiltinTruncation) -> Option<Self> {
         for_each_width_pair_rewrap!((self, other), |a, b, wrap| wrap(match pairing {
-            Pairing::Product => a.product(b),
-            Pairing::Liouvillian => a.liouvillian(b),
-            Pairing::Anticommutator => a.anticommutator(b),
+            Pairing::Product => a.product_with(b, policy),
+            Pairing::Liouvillian => a.liouvillian_with(b, policy),
+            Pairing::Anticommutator => a.anticommutator_with(b, policy),
         }))
     }
 
@@ -415,15 +415,22 @@ impl PauliSumImpl {
 
     /// The operator product `pairing` names at the two dtypes' promotion, made complex for [`Pairing::Product`]; `None` on a width mismatch.
     /// Caller checks the qubit counts first, as for [`WidthSum::add_signed`].
-    pub fn pair_promoted(&self, other: &Self, pairing: Pairing) -> Option<Self> {
+    pub fn pair_promoted(
+        &self,
+        other: &Self,
+        pairing: Pairing,
+        policy: &BuiltinTruncation,
+    ) -> Option<Self> {
         let mut dtype = self.dtype().promote(other.dtype());
         if pairing == Pairing::Product {
             dtype = dtype.complex();
         }
         let a = self.converted(dtype).expect("promotion never narrows");
         let b = other.converted(dtype).expect("promotion never narrows");
-        for_each_dtype_pair!((a.as_ref(), b.as_ref()), |x, y, wrap| x.pair(y, pairing).map(wrap))
-            .flatten()
+        for_each_dtype_pair!((a.as_ref(), b.as_ref()), |x, y, wrap| x
+            .pair(y, pairing, policy)
+            .map(wrap))
+        .flatten()
     }
 
     /// `tr(self† · other) / 2^n` at the two dtypes' promotion; `None` on a width mismatch.

@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
+            window.path_to_searchindex_js = "../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -187,16 +187,22 @@
                min_buckets=128, partitions=None, pin_memory=True,
                partition_row_seed=None, partition_row_blocks=None,
                partition_row_exclude=None, partition_rows=None,
-               comm=None, result="gather", device=None) -&gt; PauliSum
+               comm=None, result="gather", device=None) -&gt; None
 
 sum.propagate_with_stats(circuit, policy=None, direction=None, target_bucket_len=1024,
                           min_buckets=128, partitions=None, pin_memory=True,
                           partition_row_seed=None, partition_row_blocks=None,
                           partition_row_exclude=None, partition_rows=None,
                           comm=None, result="gather", device=None)
-    -&gt; (PauliSum, PropagationStats)
+    -&gt; PropagationStats
+
+paulistrings.propagated(sum, circuit, ...) -&gt; PauliSum
+paulistrings.propagated_with_stats(sum, circuit, ...) -&gt; (PauliSum, PropagationStats)
 </code></pre>
-<p><code>propagate_with_stats</code> takes the same arguments and returns the same evolved sum (to floating-point tolerance) as <code>propagate</code>, plus a <code>PropagationStats</code> recording per-layer counts.
+<p>Both methods evolve <code>sum</code> in place: the engine takes its terms over instead of copying them, so no second copy of the input is alive during the run.
+<code>propagated</code> and <code>propagated_with_stats</code> take the same arguments after <code>sum</code> and return an evolved copy, leaving <code>sum</code> untouched, at the cost of that copy.
+A call that raises before the first layer, on a bad keyword or a mismatched circuit, leaves <code>sum</code> untouched; one that fails during the run leaves it empty.
+<code>propagate_with_stats</code> takes the same arguments and evolves <code>sum</code> the same way (to floating-point tolerance) as <code>propagate</code>, and returns a <code>PropagationStats</code> recording per-layer counts.
 The GIL is released for the duration of both calls.</p>
 <h2 id="parameters"><a class="header" href="#parameters">Parameters</a></h2>
 <div class="table-wrapper">
@@ -217,7 +223,7 @@ The GIL is released for the duration of both calls.</p>
 <tr><td><code>partition_row_exclude</code></td><td><code>dict[str, list[int]] | None</code></td><td><code>None</code></td><td><code>{"x": [...], "z": [...]}</code>: the seeded draw with these qubits’ x-bits / z-bits read by no row</td></tr>
 <tr><td><code>partition_rows</code></td><td><code>bool array | None</code></td><td><code>None</code></td><td>the rows outright, shape <code>(log2(P), 2 * num_qubits)</code>, x-bits first, as <code>PauliSum.hash_rows()</code> lays them out and <a href="#paulistringshashes"><code>paulistrings.hashes</code></a> builds them</td></tr>
 <tr><td><code>comm</code></td><td><code>mpi4py.MPI.Comm | None</code></td><td><code>None</code></td><td>run one partition per MPI rank instead of <code>partitions</code></td></tr>
-<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> returns the whole sum on rank 0 and empty elsewhere; <code>"local"</code>, each rank’s own share as a plain <code>PauliSum</code>, is deprecated in favour of <a href="#partitionedpaulisum"><code>PauliSum.partition</code></a></td></tr>
+<tr><td><code>result</code></td><td><code>"gather" | "local"</code></td><td><code>"gather"</code></td><td>only read under <code>comm=</code>: <code>"gather"</code> leaves the whole sum on rank 0 and an empty one elsewhere; <code>"local"</code>, each rank’s own share as a plain <code>PauliSum</code>, is deprecated in favour of <a href="#partitionedpaulisum"><code>PauliSum.partition</code></a></td></tr>
 <tr><td><code>device</code></td><td><code>None | int | list[int] | "auto"</code></td><td><code>None</code></td><td>run on CUDA devices instead of the host; see below</td></tr>
 </tbody>
 </table>

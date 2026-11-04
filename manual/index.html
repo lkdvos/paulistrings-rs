@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
+            window.path_to_searchindex_js = "../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -197,8 +197,8 @@ circuit.rz(math.pi / 8, 0)
 circuit.cnot(0, 1)
 circuit.h(2)
 
-evolved = observable.propagate(circuit, direction="heisenberg")
-print(len(evolved), evolved.expectation("x+").real)
+observable.propagate(circuit, direction="heisenberg")
+print(len(observable), observable.expectation("x+").real)
 </code></pre>
 <p><label class="checkbox-label"><input class="checkbox-img" type="checkbox"><img src="../assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"><span class="img-wrapper"><img src="../assets/quickstart/circuit.svg" alt="Circuit diagram: Rz(pi/8) on qubit 0, then a CNOT from qubit 0 to qubit 1, then H on qubit 2; qubit 3 is idle"></span></label></p>
 <pre><code class="language-text">5 0.7309698831278217

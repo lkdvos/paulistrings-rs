@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-81ed9822.js";
+            window.path_to_searchindex_js = "../../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -200,11 +200,11 @@ python examples/b5_operator_backpropagation/run_b5.py
 </code></pre>
 <p>Key calls — an excerpt from the actual example script, verified by <code>pytest examples/tests/test_showcase_b5.py</code>, not standalone:</p>
 <!-- doctest: skip -->
-<pre><code class="language-python">tail_evolved = observable.propagate(tail_circuit, policy, direction="heisenberg")
+<pre><code class="language-python">tail_evolved = propagated(observable, tail_circuit, policy, direction="heisenberg")
 psio.save(npz_path, tail_evolved)                 # round-trip through disk
 loaded = interop.load_task(task_path)
-composed = loaded.observable.propagate(loaded.circuit, loaded.truncation,
-                                        direction=loaded.direction)
+composed = loaded.observable
+composed.propagate(loaded.circuit, loaded.truncation, direction=loaded.direction)
 </code></pre>
 <p>This regenerates every artifact in the directory — both task JSONs, the <code>.npz</code>, the CSV, both SVG figures — and the whole sweep runs in about <strong>3 seconds</strong> on a laptop-class machine; this page is about depth reduction, not speed. The CI-visible correctness gate is numpy-only and runs well under a second: <code>pytest examples/tests/test_showcase_b5.py</code>.</p>
 <h2 id="validation"><a class="header" href="#validation">Validation</a></h2>

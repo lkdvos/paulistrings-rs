@@ -36,7 +36,7 @@
             const path_to_root = "../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-81ed9822.js";
+            window.path_to_searchindex_js = "../searchindex-c9e85025.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../toc-4f8281a0.js"></script>
@@ -187,14 +187,14 @@
 <p>A propagated sum is read out with <code>expectation(state)</code>, which evaluates <code>⟨s|A|s⟩</code> for a single-qubit product state <code>|s⟩</code> in one masked pass over the terms.
 The state is either a uniform shorthand — <code>"x+"</code>, <code>"y+"</code>, <code>"z+"</code>, the <code>+1</code> eigenstate of that Pauli on every qubit — or a per-qubit label string of exactly <code>num_qubits</code> characters from <code>0 1 + - r l</code>, qiskit’s <code>Statevector.from_label</code> alphabet, with <code>0</code>/<code>1</code> the <code>Z</code> eigenstates, <code>+</code>/<code>-</code> the <code>X</code> ones and <code>r</code>/<code>l</code> the <code>Y</code> ones.
 The default is <code>"x+"</code>, which is the state most pages on this site read against.</p>
-<pre><code class="language-python">from paulistrings import Circuit, PauliSum, truncation
+<pre><code class="language-python">from paulistrings import Circuit, PauliSum, propagated, truncation
 
 observable = PauliSum.from_strings(
     {"XIII": 0.25, "IXII": 0.25, "IIXI": 0.25, "IIIX": 0.25}, num_qubits=4
 )
 circuit = Circuit(4)
 circuit.rz(0.3, 0)
-evolved = observable.propagate(circuit, truncation.coeff(1e-10), direction="heisenberg")
+evolved = propagated(observable, circuit, truncation.coeff(1e-10), direction="heisenberg")
 
 print(evolved.expectation("x+"))        # |++++&gt;
 print(evolved.expectation("z+").real)   # |0000&gt;
@@ -227,8 +227,8 @@ One <code>rx</code> rotation on <code>Z</code>, read against the <code>Y</code> 
 <pre><code class="language-python">z0 = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
 rotate = Circuit(1)
 rotate.rx(0.7, 0)
-print(z0.propagate(rotate, direction="heisenberg").expectation("r").real)
-print(z0.propagate(rotate, direction="forward").expectation("r").real)
+print(propagated(z0, rotate, direction="heisenberg").expectation("r").real)
+print(propagated(z0, rotate, direction="forward").expectation("r").real)
 </code></pre>
 <pre><code class="language-text">0.644217687237691
 -0.644217687237691
@@ -265,7 +265,7 @@ Signatures and the generator rules are under <a href="../library/measurement.htm
 <p>Two sums on the same register have a Hilbert–Schmidt overlap <code>a.overlap(b) = tr(a† b) / 2^n</code>, which is <code>Σ conj(a_P) b_P</code> over the strings they share, since distinct Pauli strings are orthogonal.
 Its two everyday uses are the norm <code>Σ|c|²</code> as <code>a.overlap(a)</code>, introduced under <a href="operators.html#inspecting">Inspecting a sum</a>, and comparing two propagated results term for term without decoding either.
 <code>identity_coefficient()</code> is the coefficient of <code>I…I</code>, or <code>0</code> when the sum has no identity term, which equals <code>tr(O) / 2^n</code> and hence the expectation of <code>O</code> in the maximally mixed state.</p>
-<pre><code class="language-python">truncated = observable.propagate(circuit, truncation.coeff(1e-1), direction="heisenberg")
+<pre><code class="language-python">truncated = propagated(observable, circuit, truncation.coeff(1e-1), direction="heisenberg")
 print(evolved.overlap(evolved).real, truncated.overlap(evolved).real)
 print(evolved.identity_coefficient())
 </code></pre>

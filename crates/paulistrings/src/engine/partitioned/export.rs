@@ -3,7 +3,7 @@
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
 //! A pending `ApproxTopN` cut is not applied here: both passes skip the terms it drops, and the coset loop applies it as it swaps each bucket in.
-//! Pass 1 reads the counts the last coset loop took ahead where they answer (`LayerOctaves::rows_ahead`), and the bucket otherwise.
+//! Where the last coset loop took counts ahead for this layer (`LayerOctaves::bucket_ahead`), pass 1 reads them instead of the bucket and the fill visits only the marked rows.
 
 use crate::coefficient::Coefficient;
 use rayon::prelude::*;
@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use super::exchange_block::{ExchangeBlock, PartnerPayload};
 use super::layer::LayerExchangeCounts;
 use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
-use crate::engine::bucketed::LayerOctaves;
+use crate::engine::bucketed::{BucketAhead, LayerOctaves};
 use crate::engine::coset::CosetOrder;
 use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
@@ -171,7 +171,11 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             scratch.source_of[position] = source;
             scratch.block_counts[position] = count;
             if count != 0 {
-                work += local.bucket_len(source as usize);
+                let len = local.bucket_len(source as usize);
+                work += match octaves.bucket_ahead(source as usize).filter(|_| ahead) {
+                    Some(_) => count as usize + len / 64,
+                    None => len,
+                };
             }
             scratch.work_prefix[position + 1] = work;
         }
@@ -192,6 +196,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             let fill = Fill {
                 local,
                 cut,
+                ahead: ahead.then_some(octaves),
                 emitter: &emitters[i],
                 offsets,
                 source_of: &scratch.source_of,
@@ -267,6 +272,8 @@ fn count_bucket<const W: usize, C: Coefficient, K: TermFilter>(
 struct Fill<'a, 'p, const W: usize, C: Coefficient> {
     local: &'a PauliSum<W, C>,
     cut: Option<&'a BoundaryCut>,
+    /// The counts ahead, when they are for this layer's one remote delta.
+    ahead: Option<&'a LayerOctaves>,
     emitter: &'a RowEmitter<'p, W, C>,
     offsets: &'a [u32],
     source_of: &'a [u32],
@@ -300,9 +307,14 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
                 z: &mut z[written..],
                 coeff: &mut coeff[written..],
             };
-            written += match self.cut {
-                None => self.fill_bucket(source, KeepAll, out),
-                Some(cut) => self.fill_bucket(source, cut.bucket_filter(source), out),
+            let marked = self.ahead.and_then(|octaves| octaves.bucket_ahead(source));
+            written += match (self.cut, marked) {
+                (None, None) => self.fill_bucket(source, KeepAll, out),
+                (Some(cut), None) => self.fill_bucket(source, cut.bucket_filter(source), out),
+                (None, Some(marked)) => self.fill_marked(source, marked, KeepAll, out),
+                (Some(cut), Some(marked)) => {
+                    self.fill_marked(source, marked, cut.bucket_filter(source), out)
+                }
             };
         }
         debug_assert_eq!(
@@ -326,6 +338,31 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
         let (bucket_x, bucket_z, bucket_coeff) = self.local.bucket(source);
         let mut written = 0usize;
         for term in 0..bucket_coeff.len() {
+            let keep = filter.keep(bucket_coeff[term]);
+            if let (true, Some((out_x, out_z, out_coeff))) =
+                (keep, self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term]))
+            {
+                x[written] = out_x;
+                z[written] = out_z;
+                coeff[written] = out_coeff;
+                written += 1;
+            }
+        }
+        written
+    }
+
+    /// [`fill_bucket`](Self::fill_bucket) visiting only the rows `marked` marks as emitting.
+    fn fill_marked<K: TermFilter>(
+        &self,
+        source: usize,
+        marked: &BucketAhead,
+        mut filter: K,
+        out: ColumnsMut<'_, W, C>,
+    ) -> usize {
+        let ColumnsMut { x, z, coeff } = out;
+        let (bucket_x, bucket_z, bucket_coeff) = self.local.bucket(source);
+        let mut written = 0usize;
+        for term in marked.marked_rows() {
             let keep = filter.keep(bucket_coeff[term]);
             if let (true, Some((out_x, out_z, out_coeff))) =
                 (keep, self.emitter.emit(&bucket_x[term], &bucket_z[term], bucket_coeff[term]))

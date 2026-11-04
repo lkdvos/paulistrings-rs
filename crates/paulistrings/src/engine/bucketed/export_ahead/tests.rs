@@ -35,13 +35,17 @@ fn counted_ahead<const W: usize>(
     for b in 0..sum.num_buckets() {
         let (x, z, coeff) = sum.bucket(b);
         let columns = BucketColumns { x: x.to_vec(), z: z.to_vec(), coeff: coeff.to_vec() };
-        let (mut counts, mut emitting) = ([0; WINDOW_OCTAVES + 2], [0; WINDOW_OCTAVES + 2]);
-        window.count_emitting(&columns, test, Some(&mut counts), &mut emitting);
+        let mut counts = [0; WINDOW_OCTAVES + 2];
+        let mut ahead = BucketAhead::default();
+        window.count_emitting(&columns, test, Some(&mut counts), &mut ahead);
         let mut plain = [0; WINDOW_OCTAVES + 2];
         window.count(&columns.coeff, &mut plain);
         assert_eq!(counts, plain, "bucket {b}: the fused count bins as `count` does");
+        let emitting: Vec<usize> =
+            (0..x.len()).filter(|&row| test.emits(&x[row], &z[row])).collect();
+        assert_eq!(ahead.marked_rows().collect::<Vec<_>>(), emitting, "bucket {b}: marks");
         octaves.per_bucket.push(counts);
-        octaves.ahead.push(emitting);
+        octaves.ahead.push(ahead);
     }
     octaves.ahead_window = Some(window);
     octaves

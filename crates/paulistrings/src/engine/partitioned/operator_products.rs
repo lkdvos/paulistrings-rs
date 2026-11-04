@@ -13,7 +13,7 @@ use crate::engine::transport::{ByteParts, Transport};
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::hash::PartitionRows;
 use crate::pauli_sum::product::support::{SupportIndex, SCAN_ABOVE_WEIGHT};
-use crate::pauli_sum::product::{accumulate, Entry, Job, Pairing};
+use crate::pauli_sum::product::{accumulate_into, Entry, Job, Pairing, Weights};
 use crate::pauli_sum::storage::{DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::{assert_supports_partitions, TruncationPolicy};
@@ -111,26 +111,33 @@ fn encode_reachable<const W: usize, C: Coefficient>(
     ])
 }
 
-/// This rank's share of `pairing(generator, operand)`, where `share` is this rank's share of the operand under `rows` and `generator` is the same on every rank. **Collective.**
-fn pair_share<const W: usize, C, X, P>(
+/// `dest ← alpha · pairing(generator, operand) + beta · dest` on this rank, where `share` is this rank's share of the operand under `rows`, `dest` holds only this rank's keys and `generator` is the same on every rank. **Collective.**
+pub(crate) fn pair_share_into<const W: usize, C, X, P>(
+    dest: &mut PauliSum<W, C>,
     generator: &PauliSum<W, C>,
     share: &PauliSum<W, C>,
     rows: &PartitionRows<W>,
     transport: &X,
-    pairing: Pairing,
+    (pairing, weights): (Pairing, Weights<C>),
     policy: &P,
-) -> PauliSum<W, C>
-where
+) where
     C: Coefficient,
     X: Transport,
     P: TruncationPolicy<W, C> + ?Sized,
 {
+    if pairing == Pairing::Product {
+        assert!(
+            !C::IS_REAL,
+            "product_share: a product is not Hermitian, so a real coefficient type ({}) cannot hold it; cast to a complex type first",
+            C::NAME,
+        );
+    }
     let num_qubits = share.num_qubits();
-    assert_eq!(
+    assert!(
+        generator.num_qubits() == num_qubits && dest.num_qubits() == num_qubits,
+        "{pairing:?} of a partitioned operand: num_qubits mismatch (generator {}, share {num_qubits}, destination {})",
         generator.num_qubits(),
-        num_qubits,
-        "{pairing:?} of a partitioned operand: num_qubits mismatch ({} vs {num_qubits})",
-        generator.num_qubits(),
+        dest.num_qubits(),
     );
     let size = transport.size() as usize;
     rows.assert_splits(num_qubits, 1usize << group_bits(transport.size()));
@@ -154,6 +161,7 @@ where
 
     let mut by_delta: ByDelta<W, C> = BTreeMap::new();
     for (x, z, c) in generator.iter() {
+        let c = c * weights.alpha;
         by_delta.entry(rows.partition_of(x, z)).or_default().push(Entry { x: *x, z: *z, c });
     }
     let remote: Vec<u32> = by_delta.keys().copied().filter(|&delta| delta != 0).collect();
@@ -186,17 +194,40 @@ where
     for (delta, slice) in &slices {
         jobs.push(Job::new(by_delta[delta].iter().copied(), slice, pairing, true));
     }
-    let mut out = if jobs.is_empty() {
-        PauliSum::empty_with_hash(num_qubits, share.hash().clone())
-    } else {
-        accumulate(&jobs, pairing, &|x, z, c| policy.keep_term(x, z, c))
-    };
+    dest.align_destination(share.hash(), weights.beta);
+    accumulate_into(dest, weights.beta, &jobs, pairing, &|x, z, c| policy.keep_term(x, z, c));
     drop(jobs);
     drop(slices);
     if policy.finalizes_layer() {
-        policy.finalize_layer_partitioned(&mut out, transport);
+        policy.finalize_layer_partitioned(dest, transport);
     }
-    out.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+    dest.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+}
+
+/// This rank's share of `pairing(generator, operand)` as a fresh sum. **Collective.**
+fn pair_share<const W: usize, C, X, P>(
+    generator: &PauliSum<W, C>,
+    share: &PauliSum<W, C>,
+    rows: &PartitionRows<W>,
+    transport: &X,
+    pairing: Pairing,
+    policy: &P,
+) -> PauliSum<W, C>
+where
+    C: Coefficient,
+    X: Transport,
+    P: TruncationPolicy<W, C> + ?Sized,
+{
+    let mut out = PauliSum::empty_with_hash(share.num_qubits(), share.hash().clone());
+    pair_share_into(
+        &mut out,
+        generator,
+        share,
+        rows,
+        transport,
+        (pairing, Weights::fresh()),
+        policy,
+    );
     out
 }
 
@@ -264,11 +295,6 @@ where
     X: Transport,
     P: TruncationPolicy<W, C> + ?Sized,
 {
-    assert!(
-        !C::IS_REAL,
-        "product_share: a product is not Hermitian, so a real coefficient type ({}) cannot hold it; cast to a complex type first",
-        C::NAME,
-    );
     pair_share(generator, share, rows, transport, Pairing::Product, policy)
 }
 

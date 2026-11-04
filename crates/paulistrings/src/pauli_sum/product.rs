@@ -8,7 +8,8 @@ use rayon::prelude::*;
 
 use super::hash::Gf2Hash;
 use super::storage::{
-    desired_bits, BucketColumns, PauliSum, DEFAULT_MIN_BUCKETS, DEFAULT_TARGET_BUCKET_LEN,
+    desired_bits, merge_summed, scaled_terms, BucketColumns, PauliSum, DEFAULT_MIN_BUCKETS,
+    DEFAULT_TARGET_BUCKET_LEN,
 };
 pub(crate) use super::table::Entry;
 use super::table::Table;
@@ -154,72 +155,90 @@ impl<'a, const W: usize, C: Coefficient> Job<'a, W, C> {
     }
 }
 
-/// The table's nonzero terms that `keep` accepts, as sorted bucket columns.
-fn sorted_columns<const W: usize, C: Coefficient>(
-    table: &Table<W, C>,
-    keep: &impl Fn(&[u64; W], &[u64; W], C) -> bool,
-) -> BucketColumns<W, C> {
-    let mut entries: Vec<&Entry<W, C>> =
-        table.entries().iter().filter(|e| e.c.is_nonzero() && keep(&e.x, &e.z, e.c)).collect();
-    entries.sort_unstable_by(|a, b| (&a.x, &a.z).cmp(&(&b.x, &b.z)));
-    let mut columns = BucketColumns::with_capacity(entries.len());
-    for e in entries {
-        columns.push(e.x, e.z, e.c);
-    }
-    columns
+/// The factors of `dest ← alpha · pairs + beta · dest`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Weights<C> {
+    pub(crate) alpha: C,
+    pub(crate) beta: C,
 }
 
-/// Every pair of every job, summed per key into one sum partitioned as the operands are, keeping the summed terms `keep` accepts.
+impl<C: Coefficient> Weights<C> {
+    /// A fresh result: `alpha = 1`, `beta = 0`.
+    pub(crate) fn fresh() -> Self {
+        Self { alpha: C::ONE, beta: C::ZERO }
+    }
+}
+
+/// The table's terms merged with `beta · dest`, key-sorted, keeping the nonzero sums `keep` accepts.
+fn drained_into<const W: usize, C: Coefficient>(
+    table: &Table<W, C>,
+    dest: &BucketColumns<W, C>,
+    beta: C,
+    keep: &impl Fn(&[u64; W], &[u64; W], C) -> bool,
+) -> BucketColumns<W, C> {
+    let mut entries: Vec<&Entry<W, C>> = table.entries().iter().collect();
+    entries.sort_unstable_by(|a, b| (&a.x, &a.z).cmp(&(&b.x, &b.z)));
+    let held = if beta == C::ZERO { 0 } else { dest.len() };
+    merge_summed(
+        entries.iter().map(|e| (e.x, e.z, e.c)),
+        scaled_terms(dest, beta).take(held),
+        entries.len() + held,
+        keep,
+    )
+}
+
+/// `dest ← alpha · Σ pairs + beta · dest` over every pair of every job, where the jobs' generators already carry `alpha` and `dest` is partitioned exactly as the operands; one bucket of `dest` is replaced at a time, keeping the summed terms `keep` accepts.
 ///
 /// # Panics
 ///
-/// If the operands disagree about their hash rows, bucket count or `num_qubits`.
-pub(crate) fn accumulate<const W: usize, C: Coefficient>(
+/// If `dest` or an operand is partitioned differently from `hash`, or the qubit counts differ.
+pub(crate) fn accumulate_into<const W: usize, C: Coefficient>(
+    dest: &mut PauliSum<W, C>,
+    beta: C,
     jobs: &[Job<'_, W, C>],
     pairing: Pairing,
     keep: &(impl Fn(&[u64; W], &[u64; W], C) -> bool + Sync),
-) -> PauliSum<W, C> {
-    let first = jobs.first().expect("accumulate: no jobs").operand;
+) {
     for job in jobs {
         assert!(
-            job.operand.hash.same_rows_as(&first.hash)
-                && job.operand.hash.bits() == first.hash.bits(),
-            "accumulate: operands partitioned differently",
+            job.operand.hash.same_rows_as(&dest.hash) && job.operand.hash.bits() == dest.hash.bits(),
+            "accumulate_into: operands partitioned differently from the destination",
         );
-        assert_eq!(job.operand.num_qubits, first.num_qubits, "accumulate: num_qubits mismatch");
+        assert_eq!(job.operand.num_qubits, dest.num_qubits, "accumulate_into: num_qubits mismatch");
     }
-    let buckets: Vec<BucketColumns<W, C>> = (0..first.buckets.len())
-        .into_par_iter()
-        .map_init(
-            || (Table::<W, C>::default(), Vec::new()),
-            |(table, candidates), out| {
-                table.clear();
-                for job in jobs {
-                    job.accumulate_into(out, pairing, table, candidates);
-                }
-                sorted_columns(table, keep)
-            },
-        )
-        .collect();
-    let len = buckets.iter().map(BucketColumns::len).sum();
-    PauliSum { buckets, hash: first.hash.clone(), num_qubits: first.num_qubits, len }
+    dest.buckets.par_iter_mut().enumerate().for_each_init(
+        || (Table::<W, C>::default(), Vec::new()),
+        |(table, candidates), (out, columns)| {
+            table.clear();
+            for job in jobs {
+                job.accumulate_into(out, pairing, table, candidates);
+            }
+            *columns = drained_into(table, columns, beta, keep);
+        },
+    );
+    dest.recount();
 }
 
 impl<const W: usize, C: Coefficient> PauliSum<W, C> {
-    /// The operator product `pairing` names, keeping the summed terms `keep` accepts.
-    pub(crate) fn pair(
-        &self,
-        other: &Self,
+    /// `self ← weights.alpha · pairing(generator, operand) + weights.beta · self`, keeping the summed terms `keep` accepts; `self` ends partitioned under the larger operand's hash rows.
+    pub(crate) fn pair_into(
+        &mut self,
+        generator: &Self,
+        operand: &Self,
         pairing: Pairing,
+        weights: Weights<C>,
         keep: &(impl Fn(&[u64; W], &[u64; W], C) -> bool + Sync),
-    ) -> Self {
-        assert_eq!(
-            self.num_qubits, other.num_qubits,
-            "PauliSum::{pairing:?}: num_qubits mismatch ({} vs {})",
-            self.num_qubits, other.num_qubits,
+    ) {
+        assert!(
+            generator.num_qubits == operand.num_qubits && self.num_qubits == operand.num_qubits,
+            "PauliSum::{pairing:?}: num_qubits mismatch (generator {}, operand {}, destination {})",
+            generator.num_qubits,
+            operand.num_qubits,
+            self.num_qubits,
         );
-        let self_is_large = self.len >= other.len;
-        let (large, small) = if self_is_large { (self, other) } else { (other, self) };
+        let generator_is_large = generator.len > operand.len;
+        let (large, small) =
+            if generator_is_large { (generator, operand) } else { (operand, generator) };
 
         // The large operand's own bucket count, raised to the parallelism floor when the pair count warrants it; only a sum below that floor is refined, so the copy is small.
         let pairs = large.len.saturating_mul(small.len);
@@ -238,10 +257,18 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
             large
         };
 
-        let generator = small.iter().map(|(x, z, c)| Entry { x: *x, z: *z, c });
-        let job = Job::new(generator, large, pairing, !self_is_large);
-        let mut out = accumulate(&[job], pairing, keep);
-        out.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+        self.align_destination(&large.hash, weights.beta);
+        let alpha = weights.alpha;
+        let scaled = small.iter().map(|(x, z, c)| Entry { x: *x, z: *z, c: c * alpha });
+        let job = Job::new(scaled, large, pairing, !generator_is_large);
+        accumulate_into(self, weights.beta, &[job], pairing, keep);
+        self.rebucket(DEFAULT_TARGET_BUCKET_LEN, DEFAULT_MIN_BUCKETS);
+    }
+
+    /// `pairing(self, other)` as a new sum, keeping every summed term.
+    fn paired(&self, other: &Self, pairing: Pairing) -> Self {
+        let mut out = Self::empty_with_hash(self.num_qubits, other.hash.clone());
+        out.pair_into(self, other, pairing, Weights::fresh(), &|_, _, _| true);
         out
     }
 
@@ -258,7 +285,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
             "PauliSum::product: a product is not Hermitian, so a real coefficient type ({}) cannot hold it; cast to a complex type first",
             C::NAME,
         );
-        self.pair(other, Pairing::Product, &|_, _, _| true)
+        self.paired(other, Pairing::Product)
     }
 
     /// The Liouvillian `i[self, other] = i(self · other − other · self)`, Hermitian whenever both operands are, so a real coefficient type stays exact.
@@ -269,7 +296,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     ///
     /// If the two sums disagree about `num_qubits`.
     pub fn liouvillian(&self, other: &Self) -> Self {
-        self.pair(other, Pairing::Liouvillian, &|_, _, _| true)
+        self.paired(other, Pairing::Liouvillian)
     }
 
     /// The anticommutator `{self, other} = self · other + other · self`, Hermitian whenever both operands are.
@@ -280,7 +307,7 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     ///
     /// If the two sums disagree about `num_qubits`.
     pub fn anticommutator(&self, other: &Self) -> Self {
-        self.pair(other, Pairing::Anticommutator, &|_, _, _| true)
+        self.paired(other, Pairing::Anticommutator)
     }
 }
 

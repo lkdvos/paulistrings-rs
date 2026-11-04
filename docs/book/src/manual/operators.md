@@ -252,20 +252,20 @@ print(o)
 8*YI
 ```
 
-The operator Lanczos recursion needs nothing more than these, `overlap` and scalar arithmetic; for a Hermitian generator and seed the diagonal coefficients `a_n` vanish:
+The operator Lanczos recursion needs nothing more than these, `overlap` and scalar arithmetic; for a Hermitian generator and seed the diagonal coefficients `a_n` vanish.
+`add_liouvillian` writes $\alpha\, i[H, O] + \beta Y$ into an existing sum `y`, so each step overwrites the older vector, $O_{n-1} \leftarrow i[H, O_n] - b_n O_{n-1}$, and two operators serve the whole recursion:
 
 ```python
 n = 12
 terms = {"I" * j + p + p + "I" * (n - j - 2): 1.0 for j in range(n - 1) for p in "XYZ"}
 h = PauliSum.from_strings(terms, dtype="float64")
-o = PauliSum.from_strings({"I" * 6 + "Z" + "I" * 5: 1.0}, dtype="float64")
-previous, b = None, []
+current = PauliSum.from_strings({"I" * 6 + "Z" + "I" * 5: 1.0}, dtype="float64")
+previous, b = current.copy(), []
 for _ in range(5):
-    a = h.liouvillian(o, policy=truncation.coeff(1e-12))
-    if previous is not None:
-        a -= previous * b[-1]
-    b.append(a.overlap(a) ** 0.5)
-    previous, o = o, a * (1.0 / b[-1])
+    previous.add_liouvillian(h, current, beta=-b[-1] if b else 0.0, policy=truncation.coeff(1e-12))
+    b.append(previous.overlap(previous) ** 0.5)
+    previous *= 1.0 / b[-1]
+    previous, current = current, previous
 print([round(x, 4) for x in b])
 ```
 
@@ -273,7 +273,9 @@ print([round(x, 4) for x in b])
 [4.0, 9.5917, 16.0759, 22.9001, 29.9595]
 ```
 
-The same loop runs unchanged on a split seed, `o = o.partition(partitions="auto")` or `o.partition(comm=comm)`, with `h` replicated: every step then stays split, and each partition receives from another only the strings a generator term moving between them can reach ([`PartitionedPauliSum`](../library/propagate.md#partitionedpaulisum)).
+`y.add(x, alpha, beta)` is the same update for a plain sum, $Y \leftarrow \alpha X + \beta Y$, and `y.add_product` and `y.add_anticommutator` complete the set.
+
+The same loop runs unchanged on a split seed, `current = current.partition(partitions="auto")` or `current.partition(comm=comm)`, with `h` replicated: every step then stays split, and each partition receives from another only the strings a generator term moving between them can reach ([`PartitionedPauliSum`](../library/propagate.md#partitionedpaulisum)).
 
 
 ### A Hamiltonian

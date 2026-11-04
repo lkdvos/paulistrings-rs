@@ -735,18 +735,11 @@ fn lanczos_coefficients_agree_across_ranks() {
         previous = std::mem::replace(&mut current, next);
     }
 
-    // One fresh endpoint per rank for every sum a step builds, handed out in rank order.
-    let mut endpoints: Vec<Vec<InProcessTransport>> = (0..size).map(|_| Vec::new()).collect();
-    for _ in 0..steps {
-        for (rank, endpoint) in InProcessTransport::group(size).into_iter().enumerate() {
-            endpoints[rank].push(endpoint);
-        }
-    }
     let got: Vec<Vec<f64>> = std::thread::scope(|scope| {
         let handles: Vec<_> = InProcessTransport::group(size)
             .into_iter()
-            .zip(endpoints)
-            .map(|(transport, endpoints)| {
+            .zip(InProcessTransport::group(size))
+            .map(|(transport, spare)| {
                 let (h, seed, policy) = (&h, &seed, &policy);
                 scope.spawn(move || {
                     let mut current = DistributedSum::scatter_with(
@@ -754,17 +747,16 @@ fn lanczos_coefficients_agree_across_ranks() {
                         transport,
                         unpinned_scatter(1, 2, 0x5EED),
                     );
-                    let mut previous: Option<DistributedSum<1, InProcessTransport, f64>> = None;
+                    // `O_{n−1} ← L(O_n) − b_n·O_{n−1}` in place, so two sums and their two endpoints serve every step.
+                    let mut previous = current.duplicate(spare);
                     let mut b: Vec<f64> = Vec::new();
-                    for endpoint in endpoints {
-                        let mut next = current.liouvillian_with(h, policy, endpoint);
-                        if let Some(previous) = &previous {
-                            next.add_assign_scaled(previous, -b[b.len() - 1]);
-                        }
-                        let norm = next.overlap(&next).sqrt();
-                        next.scale(1.0 / norm);
+                    for _ in 0..steps {
+                        let beta = -b.last().copied().unwrap_or(0.0);
+                        previous.add_liouvillian(h, &current, 1.0, beta, policy);
+                        let norm = previous.overlap(&previous).sqrt();
+                        previous.scale(1.0 / norm);
                         b.push(norm);
-                        previous = Some(std::mem::replace(&mut current, next));
+                        std::mem::swap(&mut previous, &mut current);
                     }
                     b
                 })

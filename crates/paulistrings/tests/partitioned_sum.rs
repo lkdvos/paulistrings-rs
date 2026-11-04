@@ -2,7 +2,7 @@
 //! accessors, and the runtime shared between sums.
 
 use paulistrings::test_support::{
-    approx_eq, assert_runs_agree, assert_terms_close, low_weight_sum, partition_rows,
+    approx_eq, assert_runs_agree, assert_terms_close, drop_tiny, low_weight_sum, partition_rows,
     propagate_discarding, rand_sum, spread_magnitudes, unpinned_partitions, KeepAll,
 };
 use paulistrings::{propagate, Circuit, Direction, PauliAxis, PauliString, PauliSum, ProductBasis};
@@ -155,13 +155,6 @@ fn an_empty_sum_is_a_valid_partitioned_sum() {
     assert!(ps.gather().is_empty());
 }
 
-/// `sum` without the terms below `1e-13`, where two summation orders disagree on whether a key cancels exactly.
-fn without_residues(sum: &PauliSum<1>) -> PauliSum<1> {
-    let mut out = sum.clone();
-    out.retain(|_, _, c| c.norm() > 1e-13);
-    out
-}
-
 #[test]
 fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
     let generator = low_weight_sum::<1>(24, NQ, 2, 0x51);
@@ -172,15 +165,15 @@ fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
     let product = split.product_with(&generator, &KeepAll);
     product.assert_invariants();
     assert_terms_close(
-        &without_residues(&product.gather()),
-        &without_residues(&generator.product(&operand)),
+        &drop_tiny(&product.gather()),
+        &drop_tiny(&generator.product(&operand)),
         TOL,
         "product",
     );
     let anticommutator = split.anticommutator_with(&generator, &KeepAll);
     assert_terms_close(
-        &without_residues(&anticommutator.gather()),
-        &without_residues(&generator.anticommutator(&operand)),
+        &drop_tiny(&anticommutator.gather()),
+        &drop_tiny(&generator.anticommutator(&operand)),
         TOL,
         "anticommutator",
     );
@@ -238,17 +231,17 @@ fn lanczos_coefficients_agree_split_in_process() {
     let mut current =
         PartitionedSum::scatter(seed, &config(4)).expect("an unpinned config resolves");
     current.scale(1.0 / current.overlap(&current).sqrt());
-    let mut previous: Option<PartitionedSum<1, f64>> = None;
+    // Each step overwrites the older vector in place: `O_{n−1} ← L(O_n) − b_n·O_{n−1}`, so only two splits are ever held.
+    let mut previous = current.clone();
     let mut got: Vec<f64> = Vec::new();
     for _ in 0..want.len() {
-        let mut next = current.liouvillian_with(&h, &policy);
-        if let Some(previous) = &previous {
-            next.add_assign_scaled(previous, -got[got.len() - 1]);
-        }
-        let norm: f64 = next.overlap(&next).sqrt();
-        next.scale(1.0 / norm);
+        let beta = -got.last().copied().unwrap_or(0.0);
+        previous.add_liouvillian(&h, &current, 1.0, beta, &policy);
+        previous.assert_invariants();
+        let norm: f64 = previous.overlap(&previous).sqrt();
+        previous.scale(1.0 / norm);
         got.push(norm);
-        previous = Some(std::mem::replace(&mut current, next));
+        std::mem::swap(&mut previous, &mut current);
     }
     for (n, (g, w)) in got.iter().zip(&want).enumerate() {
         assert!((g - w).abs() < 1e-9 * w, "b_{}: {g} vs {w}", n + 1);

@@ -156,14 +156,39 @@ def _lanczos(h, o, steps, policy):
     return b
 
 
+def _lanczos_in_place(h, o, steps, policy):
+    """``_lanczos`` overwriting the older vector, ``previous = i[h, current] - b * previous``, so two operators serve every step."""
+    current = o * (1.0 / o.overlap(o) ** 0.5)
+    previous, b = current.copy(), []
+    for _ in range(steps):
+        previous.add_liouvillian(h, current, beta=-b[-1] if b else 0.0, policy=policy)
+        norm = previous.overlap(previous) ** 0.5
+        previous *= 1.0 / norm
+        b.append(norm)
+        previous, current = current, previous
+    return b
+
+
+def _chain_seed(n):
+    return PauliSum.from_strings({"I" * (n // 2) + "Z" + "I" * (n - n // 2 - 1): 1.0}, num_qubits=n, dtype="float64")
+
+
+def test_lanczos_in_place_agrees_with_the_allocating_recursion():
+    h, policy = _chain(14), truncation.coeff(1e-10)
+    want = _lanczos(h, _chain_seed(14), 8, policy)
+    np.testing.assert_allclose(_lanczos_in_place(h, _chain_seed(14), 8, policy), want, rtol=1e-10)
+
+
 @pytest.mark.parametrize("partitions", [1, 2])
 def test_lanczos_on_a_split_agrees_with_one_process(partitions):
     n = 14
     h = _chain(n)
-    seed = PauliSum.from_strings({"I" * (n // 2) + "Z" + "I" * (n - n // 2 - 1): 1.0}, num_qubits=n, dtype="float64")
+    seed = _chain_seed(n)
     policy = truncation.coeff(1e-10)
     want = _lanczos(h, seed, 8, policy)
     got = _lanczos(h, seed.partition(partitions=partitions), 8, policy)
+    np.testing.assert_allclose(got, want, rtol=1e-10)
+    got = _lanczos_in_place(h, seed.partition(partitions=partitions), 8, policy)
     np.testing.assert_allclose(got, want, rtol=1e-10)
 
 
@@ -209,3 +234,112 @@ def test_split_operands_reject_what_they_cannot_hold():
         PauliSum.from_strings({"XX": 1.0}, num_qubits=2).liouvillian(split)
     with pytest.raises(ValueError, match="imaginary"):
         h.astype("complex128").__mul__(1j).liouvillian(split)
+
+
+def _close(got, want):
+    difference = got.copy()
+    difference.add(want, alpha=-1.0)
+    return difference.overlap(difference) == pytest.approx(0.0, abs=1e-20 * max(1.0, abs(want.overlap(want))))
+
+
+def test_add_is_alpha_other_plus_beta_self_in_place():
+    h, o = _chain_operands()
+    y = h.liouvillian(o)
+    want = o * 0.5 + y * -2.0
+    alias = y
+    y.add(o, alpha=0.5, beta=-2.0)
+    assert y is alias
+    assert _close(y, want)
+    y.add(o, beta=0.0)
+    assert _close(y, o)
+    y.add(y, alpha=1.0, beta=-1.0)
+    assert len(y) == 0
+
+
+def test_add_keeps_the_destination_dtype():
+    h, o = _chain_operands()
+    y = o.copy()
+    y.add(o.astype("complex128"), alpha=2.0)
+    assert y.dtype == np.float64
+    assert _close(y, o * 3.0)
+    with pytest.raises(ValueError, match="imaginary"):
+        y.add(o, alpha=1j)
+    with pytest.raises(ValueError, match="imaginary"):
+        y.add(o.astype("complex128") * 1j)
+
+
+def test_in_place_plus_keeps_the_object_and_still_promotes():
+    h, o = _chain_operands()
+    y = o.copy()
+    alias = y
+    y += o
+    assert y is alias and y.dtype == np.float64
+    assert _close(y, o * 2.0)
+    y -= o.astype("complex128")
+    assert y.dtype == np.complex128
+    assert _close(y, o.astype("complex128"))
+
+
+@pytest.mark.parametrize("seed", [7, 8])
+def test_destination_products_match_the_matrices(seed):
+    a = _random_terms(seed, 10, complex_coefficients=True)
+    b = _random_terms(seed + 100, 12, complex_coefficients=True)
+    c = _random_terms(seed + 200, 15, complex_coefficients=True)
+    pa, pb, pc = (PauliSum.from_strings(t, num_qubits=NUM_QUBITS) for t in (a, b, c))
+    da, db, dc = _dense(a), _dense(b), _dense(c)
+    alpha, beta = 0.5 - 1j, -1.5 + 0.25j
+    for method, matrix in [
+        ("add_product", da @ db),
+        ("add_liouvillian", 1j * (da @ db - db @ da)),
+        ("add_anticommutator", da @ db + db @ da),
+    ]:
+        y = pc.copy()
+        getattr(y, method)(pa, pb, alpha=alpha, beta=beta)
+        _assert_matches(y, alpha * matrix + beta * dc)
+
+
+def test_a_destination_may_be_an_operand():
+    h, o = _chain_operands()
+    y = o.copy()
+    y.add_liouvillian(h, y, beta=-1.0)
+    assert _close(y, h.liouvillian(o) - o)
+
+
+def test_the_policy_sees_the_destination_in_the_sum():
+    # i[Z, X] = -2 Y; a destination holding 1.9 Y leaves -0.1 Y, below the threshold, while its 0.3 X stays.
+    z = PauliSum.from_strings({"Z": 1.0}, num_qubits=1, dtype="float64")
+    x = PauliSum.from_strings({"X": 1.0}, num_qubits=1, dtype="float64")
+    y = PauliSum.from_strings({"Y": 1.9, "X": 0.3}, num_qubits=1, dtype="float64")
+    y.add_liouvillian(z, x, policy=truncation.coeff(0.2))
+    assert len(y) == 1 and y.overlap(x) == pytest.approx(0.3)
+
+
+def test_destination_products_reject_what_they_cannot_hold():
+    h, o = _chain_operands()
+    y = o.copy()
+    with pytest.raises(TypeError, match="complex destination"):
+        y.add_product(h, o)
+    with pytest.raises(ValueError, match="imaginary"):
+        y.add_liouvillian(h.astype("complex128") * 1j, o)
+    with pytest.raises(ValueError, match="num_qubits mismatch"):
+        y.add_liouvillian(PauliSum.from_strings({"XX": 1.0}, num_qubits=2, dtype="float64"), o)
+
+
+@pytest.mark.parametrize("partitions", [1, 2])
+def test_split_destinations_match_whole_sums(partitions):
+    h, o = _chain_operands()
+    a = o.partition(partitions=partitions)
+    y = h.liouvillian(a)
+    y.add(a, alpha=0.5, beta=-2.0)
+    assert _close(y.gather(), o * 0.5 + h.liouvillian(o) * -2.0)
+    y.add_anticommutator(h, a, alpha=2.0, beta=1.0)
+    want = o * 0.5 + h.liouvillian(o) * -2.0 + h.anticommutator(o) * 2.0
+    assert _close(y.gather(), want)
+    y.add_liouvillian(h, y, beta=0.0)
+    assert _close(y.gather(), h.liouvillian(want))
+    with pytest.raises(TypeError, match="complex"):
+        y.add_product(h, a)
+    with pytest.raises(NotImplementedError):
+        y.add_liouvillian(h, a, policy=truncation.topn(3))
+    with pytest.raises(ValueError, match="dtypes differ"):
+        y.add(o.astype("complex128").partition(partitions=partitions))

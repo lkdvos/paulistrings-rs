@@ -762,6 +762,19 @@ def _lanczos(h, o, steps, policy):
     return b
 
 
+def _lanczos_in_place(h, o, steps, policy):
+    """`_lanczos` overwriting the older vector in place, so two splits and their two communicators serve every step."""
+    current = o * (1.0 / o.overlap(o) ** 0.5)
+    previous, b = current.copy(), []
+    for _ in range(steps):
+        previous.add_liouvillian(h, current, beta=-b[-1] if b else 0.0, policy=policy)
+        norm = previous.overlap(previous) ** 0.5
+        previous *= 1.0 / norm
+        b.append(norm)
+        previous, current = current, previous
+    return b
+
+
 def test_lanczos_over_ranks_matches_one_process():
     n = 14
     h = _heisenberg_chain(n)
@@ -772,3 +785,6 @@ def test_lanczos_over_ranks_matches_one_process():
     np.testing.assert_allclose(got, want, rtol=1e-10)
     # The overlap is all-reduced, so every rank holds the same coefficients.
     assert COMM.allgather(got) == [got] * SIZE
+    in_place = _lanczos_in_place(h, seed.partition(comm=COMM), 8, policy)
+    np.testing.assert_allclose(in_place, want, rtol=1e-10)
+    assert COMM.allgather(in_place) == [in_place] * SIZE

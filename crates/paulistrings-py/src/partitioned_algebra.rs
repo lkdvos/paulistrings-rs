@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 
 use crate::dtype::{narrow, PyCoefficient, Scalar};
 use crate::partitioned::{Split, SplitImpl, WidthSplit};
-use crate::storage::{Pairing, PauliSumImpl, WidthSum};
+use crate::storage::{width_mismatch, Pairing, PauliSumImpl, WidthSum};
 
 impl<const W: usize, C: PyCoefficient> Split<W, C> {
     /// `pairing(generator, self)` as a new split on the same rows, truncated by `policy` as one layer. **Collective** under MPI, where the new split owns a duplicate of this one's communicator.
@@ -89,11 +89,37 @@ impl<const W: usize, C: PyCoefficient> Split<W, C> {
         }
     }
 
-    fn add_assign_scaled(&mut self, other: &Self, c: C) {
+    fn add_scaled(&mut self, other: &Self, alpha: C, beta: C) {
         match (self, other) {
-            (Split::Process(a), Split::Process(b)) => a.add_assign_scaled(b, c),
+            (Split::Process(a), Split::Process(b)) => a.add_scaled(b, alpha, beta),
             #[cfg(feature = "mpi")]
-            (Split::Ranks(a), Split::Ranks(b)) => a.add_assign_scaled(b, c),
+            (Split::Ranks(a), Split::Ranks(b)) => a.add_scaled(b, alpha, beta),
+            #[cfg(feature = "mpi")]
+            _ => unreachable!("checked by misaligned"),
+        }
+    }
+
+    /// `self ← alpha · pairing(generator, operand) + beta · self`, after [`misaligned`](Self::misaligned) found nothing. **Collective** under MPI, over this split's communicator.
+    fn add_paired(
+        &mut self,
+        generator: &CorePauliSum<W, C>,
+        operand: &Self,
+        pairing: Pairing,
+        (alpha, beta): (C, C),
+        policy: &BuiltinTruncation,
+    ) {
+        match (self, operand) {
+            (Split::Process(d), Split::Process(o)) => match pairing {
+                Pairing::Product => d.add_product(generator, o, alpha, beta, policy),
+                Pairing::Liouvillian => d.add_liouvillian(generator, o, alpha, beta, policy),
+                Pairing::Anticommutator => d.add_anticommutator(generator, o, alpha, beta, policy),
+            },
+            #[cfg(feature = "mpi")]
+            (Split::Ranks(d), Split::Ranks(o)) => match pairing {
+                Pairing::Product => d.add_product(generator, o, alpha, beta, policy),
+                Pairing::Liouvillian => d.add_liouvillian(generator, o, alpha, beta, policy),
+                Pairing::Anticommutator => d.add_anticommutator(generator, o, alpha, beta, policy),
+            },
             #[cfg(feature = "mpi")]
             _ => unreachable!("checked by misaligned"),
         }
@@ -170,9 +196,31 @@ impl<C: PyCoefficient> WidthSplit<C> {
             .unwrap_or(Some("they hold different qubit counts"))
     }
 
-    fn add_assign_scaled(&mut self, other: &Self, c: C) {
-        width_pair!((self, other), WidthSplit, |a, b, _wrap| a.add_assign_scaled(b, c))
+    fn add_scaled(&mut self, other: &Self, alpha: C, beta: C) {
+        width_pair!((self, other), WidthSplit, |a, b, _wrap| a.add_scaled(b, alpha, beta))
             .expect("checked by misaligned");
+    }
+
+    /// `None` when the generator was monomorphized at another width.
+    fn add_paired(
+        &mut self,
+        generator: &WidthSum<C>,
+        operand: &Self,
+        pairing: Pairing,
+        weights: (C, C),
+        policy: &BuiltinTruncation,
+    ) -> Option<()> {
+        macro_rules! arm {
+            ($($w:ident),*) => {
+                match (self, generator, operand) {
+                    $((WidthSplit::$w(d), WidthSum::$w(g), WidthSplit::$w(o)) => {
+                        Some(d.add_paired(g, o, pairing, weights, policy))
+                    })*
+                    _ => None,
+                }
+            };
+        }
+        arm!(W1, W2, W4, W8, W16)
     }
 
     fn overlap(&self, other: &Self) -> C {
@@ -207,6 +255,23 @@ macro_rules! dtype_pair {
 }
 
 impl SplitImpl {
+    /// `generator` at this split's dtype for `pairing`: a `TypeError` for a product into a real split, a `ValueError` for an imaginary part a real split cannot take.
+    fn generator_at_dtype(&self, generator: &PauliSumImpl, pairing: Pairing) -> PyResult<PauliSumImpl> {
+        let dtype = self.dtype();
+        if pairing == Pairing::Product && dtype.is_real() {
+            return Err(PyTypeError::new_err(format!(
+                "a product is not Hermitian, so a {} split cannot hold it; partition a complex sum",
+                dtype.name(),
+            )));
+        }
+        generator.cast(dtype).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "the generator has imaginary coefficients, which a {} split cannot take; partition a complex sum",
+                dtype.name(),
+            ))
+        })
+    }
+
     /// `pairing(generator, self)` as a new split, the generator converted to this split's dtype. **Collective** under MPI.
     ///
     /// Callers check the qubit counts and the policy first, before the GIL is released.
@@ -216,19 +281,7 @@ impl SplitImpl {
         pairing: Pairing,
         policy: &BuiltinTruncation,
     ) -> PyResult<SplitImpl> {
-        let dtype = self.dtype();
-        if pairing == Pairing::Product && dtype.is_real() {
-            return Err(PyTypeError::new_err(format!(
-                "a product is not Hermitian, so a {} split cannot hold it; partition a complex sum",
-                dtype.name(),
-            )));
-        }
-        let generator = generator.cast(dtype).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "the generator has imaginary coefficients, which a {} split cannot take; partition a complex sum",
-                dtype.name(),
-            ))
-        })?;
+        let generator = self.generator_at_dtype(generator, pairing)?;
         dtype_pair!((self, &generator), PauliSumImpl, |s, g, wrap| s
             .paired(g, pairing, policy)
             .map(wrap))
@@ -263,17 +316,44 @@ impl SplitImpl {
             .map(str::to_string)
     }
 
-    /// `self += factor · other`, after [`misaligned`](Self::misaligned) found nothing.
-    pub(crate) fn add_assign_scaled(
+    /// `self ← alpha · other + beta · self`, after [`misaligned`](Self::misaligned) found nothing.
+    pub(crate) fn add_scaled(
         &mut self,
         other: &SplitImpl,
-        factor: Complex64,
+        alpha: Complex64,
+        beta: Complex64,
     ) -> PyResult<()> {
         dtype_pair!((self, other), SplitImpl, |a, b, _wrap| {
-            a.add_assign_scaled(b, narrow(factor, "the factor")?);
+            a.add_scaled(b, narrow(alpha, "alpha")?, narrow(beta, "beta")?);
             Ok(())
         })
         .expect("checked by misaligned")
+    }
+
+    /// `self ← alpha · pairing(generator, operand) + beta · self`, the generator converted to this split's dtype, after [`misaligned`](Self::misaligned) found nothing. **Collective** under MPI.
+    ///
+    /// Callers check the qubit counts and the policy first, before the GIL is released.
+    pub(crate) fn add_paired(
+        &mut self,
+        generator: &PauliSumImpl,
+        operand: &SplitImpl,
+        pairing: Pairing,
+        (alpha, beta): (Complex64, Complex64),
+        policy: &BuiltinTruncation,
+    ) -> PyResult<()> {
+        let generator = self.generator_at_dtype(generator, pairing)?;
+        macro_rules! arm {
+            ($($d:ident),*) => {
+                match (self, &generator, operand) {
+                    $((SplitImpl::$d(d), PauliSumImpl::$d(g), SplitImpl::$d(o)) => {
+                        let weights = (narrow(alpha, "alpha")?, narrow(beta, "beta")?);
+                        d.add_paired(g, o, pairing, weights, policy).ok_or_else(width_mismatch)
+                    })*
+                    _ => unreachable!("checked by misaligned and converted to this split's dtype"),
+                }
+            };
+        }
+        arm!(F64, F32, C128, C64)
     }
 
     /// The whole sums' overlap, after [`misaligned`](Self::misaligned) found nothing. **Collective** under MPI.

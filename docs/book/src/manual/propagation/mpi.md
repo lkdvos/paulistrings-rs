@@ -109,7 +109,7 @@ value = split.expectation("z+")                       # the same on every rank
 evolved = split.gather()                              # rank 0 only, if the whole sum is needed
 ```
 
-A `PartitionedPauliSum` takes the same row keywords as `propagate`; `len()`, `expectation`, `overlap`, `gather`, `propagate`, `repartition`, `rehash`, the operator products and `+`, `-` and `*` are collective, so every rank makes the same calls with the same arguments, while `local()`, `repr()`, `*=` and the properties read this rank alone.
+A `PartitionedPauliSum` takes the same row keywords as `propagate`; `len()`, `expectation`, `overlap`, `gather`, `propagate`, `repartition`, `rehash`, the operator products and `+`, `-` and `*` are collective, so every rank makes the same calls with the same arguments, while `local()`, `repr()`, `*=`, `add` and the properties read this rank alone.
 `paulistrings.hashes.remote_layers(rows, circuit.deltas())` says which gates a choice of rows makes exchange, so a run can pick the rows for each segment of a circuit before running it; see [NUMA partitions](partitions.md#switching-rows-mid-circuit).
 
 `result="local"`, which returned each rank's share as a plain `PauliSum`, is deprecated in favour of `PauliSum.partition(comm=...)`.

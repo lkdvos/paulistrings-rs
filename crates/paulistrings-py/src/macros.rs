@@ -38,6 +38,20 @@ macro_rules! for_each_width_pair {
     };
 }
 
+/// [`for_each_width_pair`] over three values of the same enum, for a destination and two operands (`PauliSum.add_liouvillian`); `None` on a width mismatch.
+macro_rules! for_each_width_triple {
+    (($a:expr, $b:expr, $c:expr), |$x:ident, $y:ident, $z:ident| $body:expr) => {
+        match ($a, $b, $c) {
+            (Self::W1($x), Self::W1($y), Self::W1($z)) => Some($body),
+            (Self::W2($x), Self::W2($y), Self::W2($z)) => Some($body),
+            (Self::W4($x), Self::W4($y), Self::W4($z)) => Some($body),
+            (Self::W8($x), Self::W8($y), Self::W8($z)) => Some($body),
+            (Self::W16($x), Self::W16($y), Self::W16($z)) => Some($body),
+            _ => None,
+        }
+    };
+}
+
 /// [`for_each_width_pair`] for an operation whose result is itself width-carrying (`PauliSum::__add__`, `PauliString::mul`).
 /// The body cannot name its own variant, so the arm binds the variant's constructor as `$wrap`; `$body` applies it to the core value it produced. `Some($body)` on a match, `None` on a width mismatch.
 macro_rules! for_each_width_pair_rewrap {
@@ -191,6 +205,19 @@ macro_rules! for_each_dtype_pair {
                 let $wrap = Self::C64;
                 Some($body)
             }
+            _ => None,
+        }
+    };
+}
+
+/// [`for_each_dtype`] over three values of the same dtype enum; `None` on a dtype mismatch, which a caller that converted the operands to the destination's dtype never sees.
+macro_rules! for_each_dtype_triple {
+    (($a:expr, $b:expr, $c:expr), |$x:ident, $y:ident, $z:ident| $body:expr) => {
+        match ($a, $b, $c) {
+            (Self::F64($x), Self::F64($y), Self::F64($z)) => Some($body),
+            (Self::F32($x), Self::F32($y), Self::F32($z)) => Some($body),
+            (Self::C128($x), Self::C128($y), Self::C128($z)) => Some($body),
+            (Self::C64($x), Self::C64($y), Self::C64($z)) => Some($body),
             _ => None,
         }
     };

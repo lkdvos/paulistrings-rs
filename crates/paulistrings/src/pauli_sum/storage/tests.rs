@@ -2,7 +2,7 @@ use super::*;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::{Gf2Hash, PartitionRows};
-use crate::test_support::{low_weight_sum, rand_sum, rand_sum_real, Xs64};
+use crate::test_support::{assert_terms_close, low_weight_sum, rand_sum, rand_sum_real, Xs64};
 use num_complex::Complex64;
 
 /// Low-weight keys, where a badly chosen hash would collapse into one bucket.
@@ -1167,4 +1167,49 @@ fn clone_keeps_every_bucket_and_the_hash_serial_and_parallel_w1() {
 fn clone_keeps_every_bucket_and_the_hash_serial_and_parallel_w2() {
     clone_keeps_every_bucket_and_the_hash::<2>(100);
     clone_keeps_every_bucket_and_the_hash::<2>(PARALLEL_MIN_TERMS + 1);
+}
+
+#[test]
+fn add_scaled_is_alpha_other_plus_beta_self_w1() {
+    add_scaled_agrees::<1>(30, 61);
+}
+
+#[test]
+fn add_scaled_is_alpha_other_plus_beta_self_w2() {
+    add_scaled_agrees::<2>(100, 62);
+}
+
+/// `y ← α·x + β·y` against the allocating merge, over a destination at fewer buckets, more buckets, other rows and `β = 0`.
+fn add_scaled_agrees<const W: usize>(num_qubits: usize, seed: u64) {
+    let (alpha, beta) = (Complex64::new(0.5, 1.0), Complex64::new(-2.0, 0.25));
+    let x = low_weight_sum::<W>(5_000, num_qubits, 4, seed);
+    let y = low_weight_sum::<W>(3_000, num_qubits, 4, seed + 1);
+    let scaled = |sum: &PauliSum<W>, c: Complex64| {
+        let mut out = sum.clone();
+        out.scale(c);
+        out
+    };
+    let want = scaled(&x, alpha).add(&scaled(&y, beta));
+    let mut coarse = y.clone();
+    coarse.coarsen();
+    let mut fine = y.clone();
+    fine.refine();
+    let rehashed = y.clone().with_hash(Gf2Hash::new(num_qubits, 2, 99));
+    for (what, mut dest) in [("coarse", coarse), ("fine", fine), ("rehashed", rehashed)] {
+        dest.add_scaled(&x, alpha, beta);
+        dest.assert_invariants();
+        assert_terms_close(&dest, &want, 1e-12, what);
+    }
+    let mut ignored = scaled(&y, Complex64::new(f64::NAN, 0.0));
+    ignored.add_scaled(&x, alpha, Complex64::new(0.0, 0.0));
+    assert_terms_close(&ignored, &scaled(&x, alpha), 1e-15, "beta = 0");
+}
+
+#[test]
+fn add_scaled_drops_exact_cancellations() {
+    let x = low_weight_sum::<1>(2_000, 30, 4, 63);
+    let mut y = x.clone();
+    y.add_scaled(&x, Complex64::new(-1.0, 0.0), Complex64::new(1.0, 0.0));
+    y.assert_invariants();
+    assert!(y.is_empty());
 }

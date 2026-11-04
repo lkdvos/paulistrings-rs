@@ -2,7 +2,7 @@
 
 use crate::dtype::{Dtype, PyCoefficient, Scalar};
 pub(crate) use crate::storage::{
-    extract_complex, parse_pauli_key, Pairing, PauliSumImpl, WidthSum,
+    extract_complex, parse_pauli_key, width_mismatch, Pairing, PauliSumImpl, WidthSum,
 };
 #[cfg(feature = "cuda")]
 use crate::truncation_spec::COLLAPSE_SAMPLE_DEVICE_MSG;
@@ -1374,29 +1374,70 @@ impl PauliSum {
         Ok(inner)
     }
 
-    /// `slf ± other`, in place.
-    /// `a += a` aliases one Python object into both operands, so that case merges against a snapshot rather than taking two borrows of the same cell.
+    /// `slf ± other`, in place; merged bucket by bucket when `slf` already has the promoted dtype, otherwise replaced by the promoted sum.
     fn add_in_place(
         slf: &Bound<'_, Self>,
         other: &Bound<'_, Self>,
         subtract: bool,
     ) -> PyResult<()> {
-        let combined = if slf.is(other) {
-            let this = slf.borrow();
-            let snapshot = this.inner.clone();
-            this.checked_add(&snapshot, subtract)?
-        } else {
-            let this = slf.borrow();
-            let that = other.borrow();
-            this.checked_add(&that.inner, subtract)?
-        };
-        slf.borrow_mut().inner = combined;
+        let sign = Complex64::new(if subtract { -1.0 } else { 1.0 }, 0.0);
+        let that = Held::of(slf, other);
+        let mut this = slf.borrow_mut();
+        if this.inner.dtype().promote(that.dtype()) == this.inner.dtype() {
+            this.check_same_qubits(&that)?;
+            let (inner, that) = (&mut this.inner, &*that);
+            return slf.py().allow_threads(move || inner.add_scaled(that, sign, Complex64::ONE));
+        }
+        this.inner = this.checked_add(&that, subtract)?;
         Ok(())
+    }
+
+    /// `slf ← alpha · pairing(generator, operand) + beta · slf`, the body of `add_product`, `add_liouvillian` and `add_anticommutator`.
+    fn add_paired_into(
+        slf: &Bound<'_, Self>,
+        generator: &Bound<'_, Self>,
+        operand: &Bound<'_, Self>,
+        pairing: Pairing,
+        weights: (Complex64, Complex64),
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let (generator, operand) = (Held::of(slf, generator), Held::of(slf, operand));
+        let mut this = slf.borrow_mut();
+        this.check_same_qubits(&generator)?;
+        this.check_same_qubits(&operand)?;
+        let policy = PyTruncation::tree_of(policy);
+        let (inner, generator, operand) = (&mut this.inner, &*generator, &*operand);
+        slf.py().allow_threads(move || {
+            inner.add_paired(generator, operand, pairing, weights, &policy)
+        })
     }
 }
 
-fn width_mismatch() -> PyErr {
-    PyValueError::new_err("sums were monomorphized at different widths")
+/// The sum an in-place call on `slf` reads from `other`: a copy when `other` is `slf`, so the call never borrows one cell twice, otherwise a borrow.
+enum Held<'py> {
+    Copy(PauliSumImpl),
+    Borrowed(PyRef<'py, PauliSum>),
+}
+
+impl<'py> Held<'py> {
+    fn of(slf: &Bound<'py, PauliSum>, other: &Bound<'py, PauliSum>) -> Self {
+        if slf.is(other) {
+            Held::Copy(slf.borrow().inner.clone())
+        } else {
+            Held::Borrowed(other.borrow())
+        }
+    }
+}
+
+impl std::ops::Deref for Held<'_> {
+    type Target = PauliSumImpl;
+
+    fn deref(&self) -> &PauliSumImpl {
+        match self {
+            Held::Copy(inner) => inner,
+            Held::Borrowed(sum) => &sum.inner,
+        }
+    }
 }
 
 /// How many terms `__repr__`/`__str__` show before falling back to `... (N more terms)`.
@@ -1858,6 +1899,83 @@ impl PauliSum {
     /// `self -= other`, in place, as `+=`.
     fn __isub__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
         Self::add_in_place(slf, other, true)
+    }
+
+    /// `self = alpha * other + beta * self`, in place, merging bucket by bucket rather than building a new sum.
+    ///
+    /// `self` keeps its dtype: `other` is converted to it, and a real `self` raises `ValueError` on an imaginary coefficient or factor.
+    /// `beta=0` ignores `self`'s current terms; strings whose coefficients cancel exactly are dropped.
+    ///
+    /// ```python
+    /// y = PauliSum.from_strings({"X": 1.0, "Z": 2.0}, num_qubits=1)
+    /// y.add(PauliSum.from_strings({"Z": 1.0}, num_qubits=1), alpha=-2.0)
+    /// y                                        # 1.0 * X: the Z terms cancel exactly
+    /// ```
+    #[pyo3(signature = (other, alpha=Complex64::ONE, beta=Complex64::ONE))]
+    fn add(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+    ) -> PyResult<()> {
+        let that = Held::of(slf, other);
+        let mut this = slf.borrow_mut();
+        this.check_same_qubits(&that)?;
+        let (inner, that) = (&mut this.inner, &*that);
+        slf.py().allow_threads(move || inner.add_scaled(that, alpha, beta))
+    }
+
+    /// `self = alpha * (generator @ operand) + beta * self`, in place: the pairs are summed straight into `self`, one bucket at a time, so no intermediate product is built.
+    ///
+    /// `self` keeps its dtype, which must be complex; the operands are converted to it.
+    /// `policy` truncates the result as one propagation layer would, and its filter sees each string's coefficient after `beta * self` is added.
+    /// `beta=0` ignores `self`'s current terms, so an empty sum of the right dtype is a fresh destination.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_product(
+        slf: &Bound<'_, Self>,
+        generator: &Bound<'_, Self>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        Self::add_paired_into(slf, generator, operand, Pairing::Product, (alpha, beta), policy)
+    }
+
+    /// `self = alpha * i[generator, operand] + beta * self`, in place, as `add_product` accumulates; a real `self` stays real for Hermitian operands.
+    ///
+    /// One Lanczos step overwrites the older vector, so only two operators are ever held:
+    ///
+    /// ```python
+    /// h = PauliSum.from_strings({"ZZ": 1.0, "XI": 0.5}, dtype="float64")
+    /// previous, current = PauliSum(2, dtype="float64"), PauliSum.from_strings({"ZI": 1.0}, dtype="float64")
+    /// previous.add_liouvillian(h, current, beta=0.0)   # previous = i[h, current]
+    /// previous                                         # 1.0 * YI, since i[0.5 X, Z] = Y
+    /// ```
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_liouvillian(
+        slf: &Bound<'_, Self>,
+        generator: &Bound<'_, Self>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        Self::add_paired_into(slf, generator, operand, Pairing::Liouvillian, (alpha, beta), policy)
+    }
+
+    /// `self = alpha * {generator, operand} + beta * self`, in place, as `add_product` accumulates.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_anticommutator(
+        slf: &Bound<'_, Self>,
+        generator: &Bound<'_, Self>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Anticommutator;
+        Self::add_paired_into(slf, generator, operand, pairing, (alpha, beta), policy)
     }
 
     /// The operator product `self @ other`, with every pair of strings multiplied and equal strings summed.

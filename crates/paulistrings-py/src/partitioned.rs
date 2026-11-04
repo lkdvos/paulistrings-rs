@@ -609,12 +609,70 @@ impl PartitionedPauliSum {
 
     /// `self += other`, in place, as `+`.
     fn __iadd__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
-        Self::combine_in_place(slf, other, Complex64::new(1.0, 0.0), "PartitionedPauliSum +=")
+        let weights = (Complex64::ONE, Complex64::ONE);
+        Self::combine_in_place(slf, other, weights, "PartitionedPauliSum +=")
     }
 
     /// `self -= other`, in place, as `+`.
     fn __isub__(slf: &Bound<'_, Self>, other: &Bound<'_, Self>) -> PyResult<()> {
-        Self::combine_in_place(slf, other, Complex64::new(-1.0, 0.0), "PartitionedPauliSum -=")
+        let weights = (-Complex64::ONE, Complex64::ONE);
+        Self::combine_in_place(slf, other, weights, "PartitionedPauliSum -=")
+    }
+
+    /// `self = alpha * other + beta * self`, in place and without communication, as `PauliSum.add`; the splits must be aligned as for `overlap`.
+    #[pyo3(signature = (other, alpha=Complex64::ONE, beta=Complex64::ONE))]
+    fn add(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+    ) -> PyResult<()> {
+        Self::combine_in_place(slf, other, (alpha, beta), "PartitionedPauliSum.add")
+    }
+
+    /// `self = alpha * (generator @ operand) + beta * self`, in place, as `PauliSum.add_product`, with `generator` the same `PauliSum` on every partition or rank and `operand` a split aligned with this one as for `overlap`.
+    ///
+    /// Each partition receives from another only the strings a generator term moving between them can reach and sums its pairs straight into its own share, so no intermediate split is built and no communicator is duplicated.
+    /// Partitioned exact `truncation.topn` raises `NotImplementedError` as `propagate` does. **Collective** under MPI.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_product(
+        slf: &Bound<'_, Self>,
+        generator: PyRef<'_, PauliSum>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Product;
+        Self::add_paired_into(slf, &generator, operand, pairing, (alpha, beta), policy)
+    }
+
+    /// `self = alpha * i[generator, operand] + beta * self`, in place, as `add_product` accumulates. **Collective** under MPI.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_liouvillian(
+        slf: &Bound<'_, Self>,
+        generator: PyRef<'_, PauliSum>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Liouvillian;
+        Self::add_paired_into(slf, &generator, operand, pairing, (alpha, beta), policy)
+    }
+
+    /// `self = alpha * {generator, operand} + beta * self`, in place, as `add_product` accumulates. **Collective** under MPI.
+    #[pyo3(signature = (generator, operand, alpha=Complex64::ONE, beta=Complex64::ONE, policy=None))]
+    fn add_anticommutator(
+        slf: &Bound<'_, Self>,
+        generator: PyRef<'_, PauliSum>,
+        operand: &Bound<'_, Self>,
+        alpha: Complex64,
+        beta: Complex64,
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let pairing = Pairing::Anticommutator;
+        Self::add_paired_into(slf, &generator, operand, pairing, (alpha, beta), policy)
     }
 
     /// `self * scalar` as a new split, keeping the dtype; a real dtype raises `ValueError` on an imaginary scalar. **Collective** under MPI, which duplicates the communicator.
@@ -771,32 +829,87 @@ impl PartitionedPauliSum {
         self.check_aligned(other, what)?;
         let inner = &self.inner;
         let mut out = py.allow_threads(move || inner.duplicate());
-        out.add_assign_scaled(other, factor)?;
+        out.add_scaled(other, factor, Complex64::ONE)?;
         Ok(Self { inner: out })
     }
 
-    /// `slf += factor · other`, in place; `a += a` combines against a copy rather than borrowing one cell twice. **Collective** under MPI.
+    /// The split an in-place call on `slf` reads from `other`: a copy when `other` is `slf`, so the call never borrows one cell twice. **Collective** under MPI when it copies.
+    fn held<'py>(slf: &Bound<'py, Self>, other: &Bound<'py, Self>) -> HeldSplit<'py> {
+        if slf.is(other) {
+            let this = slf.borrow();
+            let inner = &this.inner;
+            HeldSplit::Copy(slf.py().allow_threads(move || inner.duplicate()))
+        } else {
+            HeldSplit::Borrowed(other.borrow())
+        }
+    }
+
+    /// `slf ← alpha · other + beta · slf`, in place. **Collective** under MPI only when `other` is `slf`.
     fn combine_in_place(
         slf: &Bound<'_, Self>,
         other: &Bound<'_, Self>,
-        factor: Complex64,
+        (alpha, beta): (Complex64, Complex64),
         what: &str,
     ) -> PyResult<()> {
-        let py = slf.py();
-        if slf.is(other) {
-            let snapshot = {
-                let this = slf.borrow();
-                let inner = &this.inner;
-                py.allow_threads(move || inner.duplicate())
-            };
-            let mut this = slf.borrow_mut();
-            this.check_aligned(&snapshot, what)?;
-            return this.inner.add_assign_scaled(&snapshot, factor);
-        }
-        let that = other.borrow();
+        let that = Self::held(slf, other);
         let mut this = slf.borrow_mut();
-        this.check_aligned(&that.inner, what)?;
-        this.inner.add_assign_scaled(&that.inner, factor)
+        this.check_aligned(&that, what)?;
+        let (inner, that) = (&mut this.inner, &*that);
+        slf.py().allow_threads(move || inner.add_scaled(that, alpha, beta))
+    }
+
+    /// `slf ← alpha · pairing(generator, operand) + beta · slf`, the body of `add_product`, `add_liouvillian` and `add_anticommutator`.
+    /// Every check raises before the GIL is released, so under MPI a rejected call raises on every rank alike. **Collective** under MPI.
+    fn add_paired_into(
+        slf: &Bound<'_, Self>,
+        generator: &PauliSum,
+        operand: &Bound<'_, Self>,
+        pairing: Pairing,
+        weights: (Complex64, Complex64),
+        policy: Option<&PyTruncation>,
+    ) -> PyResult<()> {
+        let what = match pairing {
+            Pairing::Product => "PartitionedPauliSum.add_product",
+            Pairing::Liouvillian => "PartitionedPauliSum.add_liouvillian",
+            Pairing::Anticommutator => "PartitionedPauliSum.add_anticommutator",
+        };
+        let that = Self::held(slf, operand);
+        let mut this = slf.borrow_mut();
+        this.check_aligned(&that, what)?;
+        if generator.inner.num_qubits() != this.inner.num_qubits() {
+            return Err(PyValueError::new_err(format!(
+                "num_qubits mismatch ({} vs {})",
+                generator.inner.num_qubits(),
+                this.inner.num_qubits(),
+            )));
+        }
+        let policy = PyTruncation::tree_of(policy);
+        if !policy.supports_partitioned() {
+            return Err(PyNotImplementedError::new_err(format!(
+                "an operator product with a PartitionedPauliSum: {TOPN_PARTITIONED_MSG}"
+            )));
+        }
+        let (inner, generator, that) = (&mut this.inner, &generator.inner, &*that);
+        slf.py().allow_threads(move || {
+            inner.add_paired(generator, that, pairing, weights, &policy)
+        })
+    }
+}
+
+/// See [`PartitionedPauliSum::held`].
+enum HeldSplit<'py> {
+    Copy(SplitImpl),
+    Borrowed(PyRef<'py, PartitionedPauliSum>),
+}
+
+impl std::ops::Deref for HeldSplit<'_> {
+    type Target = SplitImpl;
+
+    fn deref(&self) -> &SplitImpl {
+        match self {
+            HeldSplit::Copy(inner) => inner,
+            HeldSplit::Borrowed(split) => &split.inner,
+        }
     }
 }
 

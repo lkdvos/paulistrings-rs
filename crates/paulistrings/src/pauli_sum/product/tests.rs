@@ -5,7 +5,7 @@ use crate::coefficient::Coefficient;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::PauliSum;
-use crate::test_support::{assert_terms_close, low_weight_sum, rand_sum};
+use crate::test_support::{assert_terms_close, drop_tiny, low_weight_sum, rand_sum};
 
 const I: Complex64 = Complex64::new(0.0, 1.0);
 
@@ -259,13 +259,6 @@ fn assert_laws<const W: usize>(a: &PauliSum<W>, b: &PauliSum<W>) {
     let mut swapped = b.liouvillian(a);
     swapped.scale(-Complex64::new(1.0, 0.0));
     assert_terms_close(&a.liouvillian(b), &swapped, 1e-12, "antisymmetry");
-}
-
-/// Sums that cancel in a different order leave residues of a few ulps where the other side has an exact zero.
-fn drop_tiny<const W: usize>(sum: &PauliSum<W>) -> PauliSum<W> {
-    let mut out = sum.clone();
-    out.retain(|_, _, c| c.norm() > 1e-13);
-    out
 }
 
 proptest! {

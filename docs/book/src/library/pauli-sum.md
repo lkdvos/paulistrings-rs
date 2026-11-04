@@ -54,11 +54,14 @@ All five array/list accessors return the sum's canonical order (partition-bucket
 | Call | Returns |
 |---|---|
 | `a + b`, `a - b` | a new sum, coefficients combined on matching strings and the rest kept, at NumPy's promotion of the two dtypes |
-| `a += b`, `a -= b` | the same merge and dtype, in place |
+| `a += b`, `a -= b` | the same merge and dtype, in place; merged into `a` bucket by bucket when `a` already has that dtype |
 | `a * c`, `c * a`, `a *= c` | every coefficient scaled by a complex or real `c`, at `a`'s dtype |
 | `a @ b`, `a.product(b, policy=None)` | the operator product $AB$, complex at the precision of NumPy's promotion of the two dtypes |
 | `a.liouvillian(b, policy=None)` | $i[A, B]$, from anticommuting string pairs only, at the promotion of the two dtypes |
 | `a.anticommutator(b, policy=None)` | $\{A, B\}$, from commuting string pairs only, at the promotion of the two dtypes |
+| `y.add(x, alpha=1, beta=1)` | `None`; $Y \leftarrow \alpha X + \beta Y$ in place, merged bucket by bucket, at `y`'s dtype |
+| `y.add_product(a, b, alpha=1, beta=1, policy=None)` | `None`; $Y \leftarrow \alpha AB + \beta Y$ in place, the pairs summed straight into `y`, which must be complex |
+| `y.add_liouvillian(a, b, ...)`, `y.add_anticommutator(a, b, ...)` | `None`; $Y \leftarrow \alpha\, i[A, B] + \beta Y$ and $Y \leftarrow \alpha \{A, B\} + \beta Y$, as `add_product` |
 
 Both operands of `+`/`-` and of the products must have the same `num_qubits`; anything else is a `ValueError`.
 A real-dtype `a` raises `ValueError` on a `c` with a nonzero imaginary part.
@@ -66,6 +69,8 @@ Terms whose coefficients cancel exactly are dropped, as is every term when `c` i
 `*` is scalar-only; the operator product is `@`.
 For Hermitian operands `liouvillian` and `anticommutator` are Hermitian, so a real dtype stays real.
 `policy` truncates a product as one propagation layer: a filter sees each string's summed coefficient, and a layer pass such as `topn` runs once on the result.
+The `add` forms keep `y`'s dtype, converting the operands to it, and never build the intermediate sum; `beta=0` ignores `y`'s current terms, and a `policy` filter sees each string's coefficient with `beta * y` already added.
+An operand may be `y` itself.
 `b` may be a `PartitionedPauliSum`, which gives a new split ([`PartitionedPauliSum`](propagate.md#partitionedpaulisum)).
 
 ## Saving, loading, importing

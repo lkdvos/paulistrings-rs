@@ -16,7 +16,9 @@ use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation};
 use crate::collectives::Collectives;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
-use crate::truncation::octave_window::{finalize_from_window, BucketOctaves, OctaveWindow};
+use crate::truncation::octave_window::{
+    decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow, WindowDecision,
+};
 use crate::truncation::TruncationPolicy;
 use rotation_layer::{
     fill_received_rotation_bucket, fill_rotation_coset, ReceivedRotation, RotationLayer,
@@ -52,8 +54,9 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
     pub(crate) octaves: LayerOctaves,
 }
 
-/// Per-bucket octave counts, taken by the coset loop as it writes each bucket, for [`finalize_from_window`].
+/// Per-bucket octave counts, taken by the coset loop as it writes each bucket, and the cut they decide, applied as the next coset loop reads each bucket.
 ///
+/// Contract: a cut is pending only between a layer pass and the next layer's coset loop, and anything else that reads or rebuckets the sum first applies it ([`settle`](Self::settle)).
 /// Every partition's window is set from the agreed boundary octave, so all count alike.
 #[derive(Debug, Default)]
 pub(crate) struct LayerOctaves {
@@ -62,24 +65,49 @@ pub(crate) struct LayerOctaves {
     per_bucket: Vec<BucketOctaves>,
     /// Whether `per_bucket` counts the sum as the last layer left it, under `window`.
     counted: bool,
+    /// The last layer pass's cut, not yet applied.
+    pending: Option<BoundaryCut>,
 }
 
 impl LayerOctaves {
-    /// `ApproxTopN(n)`'s layer pass over `sum`, from the counts when the last layer took them.
+    /// `ApproxTopN(n)`'s layer pass over `sum`, from the counts when the last layer took them, leaving an in-window cut pending.
     pub(crate) fn finalize<const W: usize, C: Coefficient>(
         &mut self,
         sum: &mut PauliSum<W, C>,
         collectives: &dyn Collectives,
         n: usize,
     ) {
-        let edge = match self.window {
+        debug_assert!(self.pending.is_none(), "the layer did not apply the last cut");
+        let decision = match self.window {
             Some(window) if std::mem::take(&mut self.counted) => {
-                finalize_from_window(sum, collectives, n, window, &self.per_bucket)
+                decide_from_window(sum.len(), collectives, n, window, &self.per_bucket)
             }
-            _ => approx_top_n_pass(sum, collectives, n),
+            _ => None,
         };
-        if let EdgeDecision::Boundary { bin, .. } = edge {
-            self.window = Some(OctaveWindow::around(bin));
+        match decision {
+            None => {
+                if let EdgeDecision::Boundary { bin, .. } = approx_top_n_pass(sum, collectives, n) {
+                    self.window = Some(OctaveWindow::around(bin));
+                }
+            }
+            Some(WindowDecision::KeepAll) => {}
+            Some(WindowDecision::Clear) => sum.clear(),
+            Some(WindowDecision::Cut(cut)) => {
+                self.window = Some(OctaveWindow::around(cut.bin));
+                self.pending = Some(cut);
+            }
+        }
+    }
+
+    /// The partition's terms once the pending cut is applied.
+    pub(crate) fn len_after_cut(&self, len: usize) -> usize {
+        self.pending.as_ref().map_or(len, |cut| cut.kept)
+    }
+
+    /// Apply the pending cut, if any, to the whole sum.
+    pub(crate) fn settle<const W: usize, C: Coefficient>(&mut self, sum: &mut PauliSum<W, C>) {
+        if let Some(cut) = self.pending.take() {
+            cut.apply(sum);
         }
     }
 }
@@ -263,11 +291,15 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
 {
     stamp!(stamp);
     scratch.octaves.counted = false;
+    let cut = scratch.octaves.pending.take();
 
     // A partitioned layer's local table can look key-preserving while received rows still need merging.
     let rotation = match prepared {
         Prepared::Local(ptm) if !X::NEEDS_BETA => {
             if ptm.is_key_preserving() {
+                if let Some(cut) = cut {
+                    cut.apply(sum);
+                }
                 rescale_in_place(sum, ptm, policy);
                 lap!(stamp, scratch.stats.rescale_ns);
                 return;
@@ -302,7 +334,10 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
         per_bucket.resize(sum.num_buckets(), [0; _]);
     }
     let octaves = window.map(|window| (window, DisjointSlots::new(&mut per_bucket)));
-    let octaves = octaves.as_ref().map(|(window, slots)| (*window, slots));
+    let octaves = LayerOctaveIo {
+        cut: cut.as_ref(),
+        count: octaves.as_ref().map(|(window, slots)| (*window, slots)),
+    };
     let len = match (received_rotation, rotation) {
         (Some(layer), _) => {
             debug_assert_eq!(span.dimension(), 0, "only the identity delta is local");
@@ -336,15 +371,19 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum.assert_invariants();
 }
 
-/// Each bucket's slot in a layer's octave counts, and the window they count.
-type OctaveSlots<'s, 'a> = Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>;
+/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and each bucket's slot in the octave counts it takes after, with their window.
+#[derive(Clone, Copy)]
+struct LayerOctaveIo<'s, 'a> {
+    cut: Option<&'s BoundaryCut>,
+    count: Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>,
+}
 
-/// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns, counting each output bucket into `octaves`; returns the output terms.
+/// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns with `octaves`' cut and counts; returns the output terms.
 fn coset_loop<const W: usize, C: Coefficient, F>(
     sum: &mut PauliSum<W, C>,
     span: &Gf2Span,
     scratch: &mut LayerScratch<W, C>,
-    octaves: OctaveSlots<'_, '_>,
+    octaves: LayerOctaveIo<'_, '_>,
     fill: F,
 ) -> usize
 where
@@ -377,12 +416,12 @@ where
     }
 }
 
-/// Swap coset `coset`'s buckets into the task's member slots, fill them, count them while they are in cache, and swap the outputs back; returns the coset's output terms.
+/// Swap coset `coset`'s buckets into the task's member slots, cut, fill and count them while they are in cache, and swap the outputs back; returns the coset's output terms.
 fn run_coset<const W: usize, C: Coefficient, F>(
     coset: u32,
     span: &Gf2Span,
     buckets: &DisjointSlots<'_, BucketColumns<W, C>>,
-    octaves: OctaveSlots<'_, '_>,
+    octaves: LayerOctaveIo<'_, '_>,
     scratch: &mut CosetScratch<W, C>,
     fill: &F,
 ) -> usize
@@ -398,12 +437,15 @@ where
     for (slot, &beta) in members.iter_mut().zip(&betas) {
         // SAFETY: the cosets partition the buckets, so no other task reaches bucket `beta`.
         std::mem::swap(slot, unsafe { buckets.get(beta as usize) });
+        if let Some(cut) = octaves.cut {
+            cut.apply_to_bucket(beta as usize, slot);
+        }
     }
     fill(&mut members, &betas, scratch);
     let mut len = 0;
     for (slot, &beta) in members.iter_mut().zip(&betas) {
         len += slot.len();
-        if let Some((window, counts)) = octaves {
+        if let Some((window, counts)) = octaves.count {
             // SAFETY: as for the buckets, which the counts are indexed alike with.
             window.count(&slot.coeff, unsafe { counts.get(beta as usize) });
         }

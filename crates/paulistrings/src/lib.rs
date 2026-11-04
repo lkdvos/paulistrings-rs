@@ -31,9 +31,9 @@ pub use engine::gpu;
 #[cfg(feature = "mpi")]
 pub use engine::partitioned::mpi;
 pub use engine::partitioned::{
-    numa_nodes, propagate_partitioned, repartition_share, CpuSet, DistributedSum, PartitionConfig,
-    PartitionRowPolicy, PartitionRuntime, PartitionedSum, Placement, ScatterOptions, ScatterRows,
-    TopologyError,
+    anticommutator_share, liouvillian_share, numa_nodes, product_share, propagate_partitioned,
+    repartition_share, CpuSet, DistributedSum, PartitionConfig, PartitionRowPolicy,
+    PartitionRuntime, PartitionedSum, Placement, ScatterOptions, ScatterRows, TopologyError,
 };
 #[cfg(feature = "phase-timing")]
 pub use engine::stats::PartitionPhaseStats;

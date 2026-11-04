@@ -154,3 +154,43 @@ fn an_empty_sum_is_a_valid_partitioned_sum() {
     ps.assert_invariants();
     assert!(ps.gather().is_empty());
 }
+
+/// `sum` without the terms below `1e-13`, where two summation orders disagree on whether a key cancels exactly.
+fn without_residues(sum: &PauliSum<1>) -> PauliSum<1> {
+    let mut out = sum.clone();
+    out.retain(|_, _, c| c.norm() > 1e-13);
+    out
+}
+
+#[test]
+fn a_nested_commutator_stays_split_and_agrees_with_one_process() {
+    let generator = low_weight_sum::<1>(24, NQ, 2, 0x51);
+    let operand = low_weight_sum::<1>(3_000, NQ, 3, 0x52);
+    let split =
+        PartitionedSum::scatter(operand.clone(), &config(4)).expect("an unpinned config resolves");
+
+    let product = split.product_with(&generator, &KeepAll);
+    product.assert_invariants();
+    assert_terms_close(
+        &without_residues(&product.gather()),
+        &without_residues(&generator.product(&operand)),
+        TOL,
+        "product",
+    );
+    let anticommutator = split.anticommutator_with(&generator, &KeepAll);
+    assert_terms_close(
+        &without_residues(&anticommutator.gather()),
+        &without_residues(&generator.anticommutator(&operand)),
+        TOL,
+        "anticommutator",
+    );
+
+    let policy = CoefficientThreshold(1e-3);
+    let (mut want, mut split) = (operand, split);
+    for step in 0..3 {
+        want = generator.liouvillian_with(&want, &policy);
+        split = split.liouvillian_with(&generator, &policy);
+        split.assert_invariants();
+        assert_terms_close(&split.gather(), &want, TOL, &format!("step {step}"));
+    }
+}

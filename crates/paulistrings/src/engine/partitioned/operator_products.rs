@@ -181,7 +181,7 @@ where
 
     let mut jobs = Vec::with_capacity(slices.len() + 1);
     if let Some(local) = by_delta.get(&0) {
-        jobs.push(Job::with_index(local.iter().copied(), share, index.take(), true));
+        jobs.push(Job::with_index(local.iter().copied(), share, pairing, index.take(), true));
     }
     for (delta, slice) in &slices {
         jobs.push(Job::new(by_delta[delta].iter().copied(), slice, pairing, true));

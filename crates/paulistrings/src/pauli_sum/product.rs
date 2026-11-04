@@ -36,22 +36,128 @@ impl Pairing {
         left: &Entry<W, C>,
         right: &Entry<W, C>,
     ) -> Option<Entry<W, C>> {
-        let mut key = PauliString { x: left.x, z: left.z };
+        let key = PauliString { x: left.x, z: left.z };
         let other = PauliString { x: right.x, z: right.z };
-        let (keep, extra) = match self {
-            Pairing::Product => (true, Phase::ONE),
-            Pairing::Liouvillian => (!key.commutes_with(&other), Phase::I),
-            Pairing::Anticommutator => (key.commutes_with(&other), Phase::ONE),
+        let keep = match self {
+            Pairing::Product => true,
+            Pairing::Liouvillian => !key.commutes_with(&other),
+            Pairing::Anticommutator => key.commutes_with(&other),
         };
-        if !keep {
-            return None;
+        keep.then(|| self.kept_term(left, right))
+    }
+
+    /// The term of a kept pair whose product phase is `i^k`, the key being `left ⊕ right`.
+    #[inline(always)]
+    fn term_with_phase<const W: usize, C: Coefficient>(
+        self,
+        left: &Entry<W, C>,
+        right: &Entry<W, C>,
+        k: u8,
+    ) -> Entry<W, C> {
+        let c = left.c * right.c;
+        let (c, phase) = match self {
+            Pairing::Product => (c, Phase::new(k)),
+            Pairing::Liouvillian => (c * C::real(2.0), Phase::new(k + 1)),
+            Pairing::Anticommutator => (c * C::real(2.0), Phase::new(k)),
+        };
+        Entry {
+            x: std::array::from_fn(|w| left.x[w] ^ right.x[w]),
+            z: std::array::from_fn(|w| left.z[w] ^ right.z[w]),
+            c: c.mul_phase(phase),
         }
-        let phase = key.mul_assign(&other) + extra;
-        let mut c = left.c * right.c;
-        if self != Pairing::Product {
-            c = c * C::real(2.0);
+    }
+
+    /// [`Self::term`] for a pair the caller already knows the pairing keeps.
+    #[inline(always)]
+    fn kept_term<const W: usize, C: Coefficient>(
+        self,
+        left: &Entry<W, C>,
+        right: &Entry<W, C>,
+    ) -> Entry<W, C> {
+        let mut key = PauliString { x: left.x, z: left.z };
+        let phase = key.mul_assign(&PauliString { x: right.x, z: right.z });
+        let c = left.c * right.c;
+        let (c, phase) = match self {
+            Pairing::Product => (c, phase),
+            Pairing::Liouvillian => (c * C::real(2.0), phase + Phase::I),
+            Pairing::Anticommutator => (c * C::real(2.0), phase),
+        };
+        Entry { x: key.x, z: key.z, c: c.mul_phase(phase) }
+    }
+}
+
+/// Runs at least this long are bit-sliced into [`Planes`]; shorter ones visit through the [`SupportIndex`].
+const SLICE_MIN_RUN: usize = 4;
+
+/// A generator run transposed by qubit and Pauli: plane `3·q + p` is the bitset of members carrying Pauli `p` (`X = 0`, `Y = 1`, `Z = 2`) on qubit `q`.
+///
+/// A product of Hermitian strings carries `i^k` with `k` the sum over qubits of `+1` where the right factor's Pauli follows the left's in the cycle `X → Y → Z` and `−1` where it precedes it, so [`Planes::phases`] counts `k mod 4` for every member at once in two bit planes.
+struct Planes {
+    words: usize,
+    rows: Vec<u64>,
+}
+
+/// The packed Pauli index `0 = X, 1 = Y, 2 = Z` of a qubit with bits `(x, z)`, not the identity.
+#[inline(always)]
+fn pauli_index(x: bool, z: bool) -> usize {
+    match (x, z) {
+        (true, false) => 0,
+        (true, true) => 1,
+        _ => 2,
+    }
+}
+
+impl Planes {
+    fn new<const W: usize, C: Coefficient>(run: &[Entry<W, C>]) -> Self {
+        let words = run.len().div_ceil(64);
+        let mut rows = vec![0u64; 3 * 64 * W * words];
+        for (j, s) in run.iter().enumerate() {
+            for w in 0..W {
+                let mut support = s.x[w] | s.z[w];
+                while support != 0 {
+                    let bit = support.trailing_zeros() as usize;
+                    support &= support - 1;
+                    let p = pauli_index(s.x[w] >> bit & 1 == 1, s.z[w] >> bit & 1 == 1);
+                    let q = w * 64 + bit;
+                    rows[(3 * q + p) * words + j / 64] |= 1 << (j % 64);
+                }
+            }
         }
-        Some(Entry { x: key.x, z: key.z, c: c.mul_phase(phase) })
+        Self { words, rows }
+    }
+
+    /// Overwrite `(low, high)` with the bits of `k mod 4` for the product of every member with the key `(x, z)`, the member on the left when `member_left`.
+    #[inline(always)]
+    fn phases<const W: usize>(
+        &self,
+        x: &[u64; W],
+        z: &[u64; W],
+        member_left: bool,
+        low: &mut [u64],
+        high: &mut [u64],
+    ) {
+        low.fill(0);
+        high.fill(0);
+        for w in 0..W {
+            let mut support = x[w] | z[w];
+            while support != 0 {
+                let bit = support.trailing_zeros() as usize;
+                support &= support - 1;
+                let p = pauli_index(x[w] >> bit & 1 == 1, z[w] >> bit & 1 == 1);
+                let q = w * 64 + bit;
+                // With the member on the left, a member Pauli preceding the key's gives +1 and one following it −1.
+                let (before, after) = ((p + 2) % 3, (p + 1) % 3);
+                let (up, down) = if member_left { (before, after) } else { (after, before) };
+                let up = &self.rows[(3 * q + up) * self.words..][..self.words];
+                let down = &self.rows[(3 * q + down) * self.words..][..self.words];
+                for i in 0..self.words {
+                    high[i] ^= low[i] & up[i];
+                    low[i] ^= up[i];
+                    high[i] ^= !low[i] & down[i];
+                    low[i] ^= down[i];
+                }
+            }
+        }
     }
 }
 
@@ -62,10 +168,12 @@ struct Groups<const W: usize, C: Coefficient> {
     buckets: Vec<u32>,
     /// Run `g` is `terms[starts[g]..starts[g + 1]]`.
     starts: Vec<usize>,
+    /// Run `g`'s planes, for a run of at least [`SLICE_MIN_RUN`] members.
+    planes: Vec<Option<Planes>>,
 }
 
 impl<const W: usize, C: Coefficient> Groups<W, C> {
-    fn new(terms: impl Iterator<Item = Entry<W, C>>, hash: &Gf2Hash<W>) -> Self {
+    fn new(terms: impl Iterator<Item = Entry<W, C>>, hash: &Gf2Hash<W>, pairing: Pairing) -> Self {
         let mut keyed: Vec<(u32, Entry<W, C>)> =
             terms.map(|e| (hash.bucket_of(&e.x, &e.z), e)).collect();
         keyed.sort_unstable_by_key(|(bucket, _)| *bucket);
@@ -78,7 +186,16 @@ impl<const W: usize, C: Coefficient> Groups<W, C> {
             }
         }
         starts.push(keyed.len());
-        Self { terms: keyed.into_iter().map(|(_, e)| e).collect(), buckets, starts }
+        let terms: Vec<Entry<W, C>> = keyed.into_iter().map(|(_, e)| e).collect();
+        let planes = starts
+            .windows(2)
+            .map(|run| {
+                let run = &terms[run[0]..run[1]];
+                (pairing != Pairing::Product && run.len() >= SLICE_MIN_RUN)
+                    .then(|| Planes::new(run))
+            })
+            .collect();
+        Self { terms, buckets, starts, planes }
     }
 }
 
@@ -100,21 +217,27 @@ impl<'a, const W: usize, C: Coefficient> Job<'a, W, C> {
         generator_left: bool,
     ) -> Self {
         let index = (pairing == Pairing::Liouvillian).then(|| SupportIndex::new(operand));
-        Self::with_index(generator, operand, index, generator_left)
+        Self::with_index(generator, operand, pairing, index, generator_left)
     }
 
     /// [`Job::new`] with `operand`'s support index already built, which must be `Some` exactly for a Liouvillian.
     pub(crate) fn with_index(
         generator: impl Iterator<Item = Entry<W, C>>,
         operand: &'a PauliSum<W, C>,
+        pairing: Pairing,
         index: Option<SupportIndex>,
         generator_left: bool,
     ) -> Self {
-        Self { groups: Groups::new(generator, &operand.hash), operand, index, generator_left }
+        Self {
+            groups: Groups::new(generator, &operand.hash, pairing),
+            operand,
+            index,
+            generator_left,
+        }
     }
 
     /// Every pair of this job landing in output bucket `out`, accumulated into `table`.
-    #[inline]
+    #[inline(always)]
     fn accumulate_into(
         &self,
         out: usize,
@@ -133,7 +256,43 @@ impl<'a, const W: usize, C: Coefficient> Job<'a, W, C> {
                     table.accumulate(t.x, t.z, t.c);
                 }
             };
-            for s in &self.groups.terms[self.groups.starts[g]..self.groups.starts[g + 1]] {
+            let run = &self.groups.terms[self.groups.starts[g]..self.groups.starts[g + 1]];
+            if let Some(planes) = &self.groups.planes[g] {
+                // The micro-kernel: each operand term against the whole run at once, every member's phase counted in two bit planes.
+                candidates.resize(2 * planes.words, 0);
+                let (low, high) = candidates.split_at_mut(planes.words);
+                let tail = match run.len() % 64 {
+                    0 => u64::MAX,
+                    r => (1u64 << r) - 1,
+                };
+                for i in 0..input.len() {
+                    planes.phases(&input.x[i], &input.z[i], self.generator_left, low, high);
+                    let l = Entry { x: input.x[i], z: input.z[i], c: input.coeff[i] };
+                    for w in 0..planes.words {
+                        let valid = if w + 1 == planes.words { tail } else { u64::MAX };
+                        let mut bits = valid
+                            & match pairing {
+                                Pairing::Product => u64::MAX,
+                                Pairing::Liouvillian => low[w],
+                                Pairing::Anticommutator => !low[w],
+                            };
+                        while bits != 0 {
+                            let j = bits.trailing_zeros() as usize;
+                            bits &= bits - 1;
+                            let k = ((low[w] >> j & 1) | (high[w] >> j & 1) << 1) as u8;
+                            let s = &run[w * 64 + j];
+                            let t = if self.generator_left {
+                                pairing.term_with_phase(s, &l, k)
+                            } else {
+                                pairing.term_with_phase(&l, s, k)
+                            };
+                            table.accumulate(t.x, t.z, t.c);
+                        }
+                    }
+                }
+                continue;
+            }
+            for s in run {
                 let support: [u64; W] = std::array::from_fn(|w| s.x[w] | s.z[w]);
                 let weight: u32 = support.iter().map(|w| w.count_ones()).sum();
                 match &self.index {
@@ -169,6 +328,33 @@ fn sorted_columns<const W: usize, C: Coefficient>(
     columns
 }
 
+/// Every pair of every job landing in output bucket `out`, accumulated into `table`.
+#[inline(always)]
+fn output_bucket<const W: usize, C: Coefficient>(
+    jobs: &[Job<'_, W, C>],
+    out: usize,
+    pairing: Pairing,
+    table: &mut Table<W, C>,
+    candidates: &mut Vec<u64>,
+) {
+    for job in jobs {
+        job.accumulate_into(out, pairing, table, candidates);
+    }
+}
+
+/// [`output_bucket`] compiled with the `POPCNT` instruction, which the baseline target lacks and the commutation tests and phases count with.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "popcnt")]
+fn output_bucket_popcnt<const W: usize, C: Coefficient>(
+    jobs: &[Job<'_, W, C>],
+    out: usize,
+    pairing: Pairing,
+    table: &mut Table<W, C>,
+    candidates: &mut Vec<u64>,
+) {
+    output_bucket(jobs, out, pairing, table, candidates);
+}
+
 /// Every pair of every job, summed per key into one sum partitioned as the operands are, keeping the summed terms `keep` accepts.
 ///
 /// # Panics
@@ -188,15 +374,21 @@ pub(crate) fn accumulate<const W: usize, C: Coefficient>(
         );
         assert_eq!(job.operand.num_qubits, first.num_qubits, "accumulate: num_qubits mismatch");
     }
+    #[cfg(target_arch = "x86_64")]
+    let popcnt = std::is_x86_feature_detected!("popcnt");
     let buckets: Vec<BucketColumns<W, C>> = (0..first.buckets.len())
         .into_par_iter()
         .map_init(
             || (Table::<W, C>::default(), Vec::new()),
             |(table, candidates), out| {
                 table.clear();
-                for job in jobs {
-                    job.accumulate_into(out, pairing, table, candidates);
+                #[cfg(target_arch = "x86_64")]
+                if popcnt {
+                    // SAFETY: the CPU reports POPCNT.
+                    unsafe { output_bucket_popcnt(jobs, out, pairing, table, candidates) };
+                    return sorted_columns(table, keep);
                 }
+                output_bucket(jobs, out, pairing, table, candidates);
                 sorted_columns(table, keep)
             },
         )

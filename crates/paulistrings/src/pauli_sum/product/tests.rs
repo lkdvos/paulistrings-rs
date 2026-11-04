@@ -281,3 +281,69 @@ proptest! {
         assert_laws(&low_weight_sum::<2>(n_a, 70, 3, seed), &low_weight_sum::<2>(n_b, 70, 3, seed ^ 0xABCD));
     }
 }
+
+#[test]
+fn planes_count_every_product_phase() {
+    use super::{Entry, Planes};
+    let keys = low_weight_sum::<2>(400, 100, 3, 51);
+    let probes = low_weight_sum::<2>(50, 100, 6, 52);
+    let all: Vec<Entry<2, Complex64>> =
+        keys.iter().map(|(x, z, c)| Entry { x: *x, z: *z, c }).collect();
+    for len in [1, 63, 64, 65, 130] {
+        let run = &all[..len];
+        let planes = Planes::new(run);
+        let (mut low, mut high) = (vec![0u64; planes.words], vec![0u64; planes.words]);
+        for (px, pz, _) in probes.iter() {
+            let probe = PauliString { x: *px, z: *pz };
+            for member_left in [true, false] {
+                planes.phases(px, pz, member_left, &mut low, &mut high);
+                for (j, s) in run.iter().enumerate() {
+                    let member = PauliString { x: s.x, z: s.z };
+                    let (_, want) =
+                        if member_left { member.product(&probe) } else { probe.product(&member) };
+                    let got = (low[j / 64] >> (j % 64) & 1) | (high[j / 64] >> (j % 64) & 1) << 1;
+                    assert_eq!(
+                        got as u8,
+                        want.exponent(),
+                        "run {len} member {j}, member left {member_left}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Coordinate rows on the first qubits, so every generator term away from them shares bucket delta 0 and the runs are long.
+fn coordinate_hash<const W: usize>(
+    num_qubits: usize,
+    qubits: usize,
+) -> crate::pauli_sum::Gf2Hash<W> {
+    let (mut rows_x, mut rows_z) = (Vec::new(), Vec::new());
+    for q in 0..qubits {
+        let mut unit = [0u64; W];
+        unit[q / 64] = 1 << (q % 64);
+        rows_x.extend([unit, [0; W]]);
+        rows_z.extend([[0; W], unit]);
+    }
+    crate::pauli_sum::Gf2Hash::from_rows(num_qubits, (2 * qubits) as u8, 7, rows_x, rows_z)
+}
+
+fn long_runs<const W: usize>(num_qubits: usize) {
+    let generator = low_weight_sum::<W>(60, num_qubits, 2, 53);
+    let operand =
+        low_weight_sum::<W>(8_000, num_qubits, 5, 54).with_hash(coordinate_hash(num_qubits, 4));
+    let hash = operand.hash();
+    let at_zero = generator.iter().filter(|(x, z, _)| hash.bucket_of(x, z) == 0).count();
+    assert!(at_zero >= 2 * super::SLICE_MIN_RUN, "only {at_zero} generator terms at delta 0");
+    assert_matches_reference(&generator, &operand, "coordinate rows");
+}
+
+#[test]
+fn long_runs_match_the_double_loop_w1() {
+    long_runs::<1>(40);
+}
+
+#[test]
+fn long_runs_match_the_double_loop_w2() {
+    long_runs::<2>(100);
+}

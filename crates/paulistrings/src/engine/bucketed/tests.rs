@@ -942,6 +942,7 @@ mod extra_rows_tests {
             &mut scratch,
             extra,
             LayerKnobs::default(),
+            None,
         );
         b
     }

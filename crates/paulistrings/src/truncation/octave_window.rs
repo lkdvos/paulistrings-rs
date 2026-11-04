@@ -33,7 +33,7 @@ impl OctaveWindow {
 
     /// The slot of octave `bin` in [`BucketOctaves`].
     #[inline(always)]
-    fn slot(&self, bin: usize) -> usize {
+    pub(crate) fn slot(&self, bin: usize) -> usize {
         (bin + 1).saturating_sub(self.base).min(WINDOW_OCTAVES + 1)
     }
 
@@ -56,7 +56,8 @@ pub(crate) struct BoundaryCut {
 }
 
 impl BoundaryCut {
-    fn filter<const W: usize, C: Coefficient>(
+    /// Bucket `b`'s keep test, to be asked of its terms in bucket order, as [`apply_to_bucket`](Self::apply_to_bucket) asks it.
+    pub(crate) fn filter<const W: usize, C: Coefficient>(
         &self,
         b: usize,
     ) -> impl FnMut(&[u64; W], &[u64; W], C) -> bool {

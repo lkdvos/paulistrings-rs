@@ -417,6 +417,12 @@ impl<const W: usize, C: Coefficient, X: Transport> DistributedSum<W, X, C> {
         &self.local.sum
     }
 
+    /// [`PartitionedSum::buckets_exported_ahead_under_cut`](crate::PartitionedSum::buckets_exported_ahead_under_cut) of this rank's partition.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn buckets_exported_ahead_under_cut(&self) -> u64 {
+        self.local.state.export.buckets_ahead_under_cut
+    }
+
     /// Drain this rank's phase counters since the last drain, zeroing them; `per_partition` has one entry.
     #[cfg(feature = "phase-timing")]
     pub fn take_stats(&mut self) -> PartitionPhaseStats {

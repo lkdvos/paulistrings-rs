@@ -29,10 +29,12 @@ use super::stats::{PartitionPhaseStats, PhaseStats};
 use super::timing::{lap, stamp};
 
 mod coset_fill;
+mod export_ahead;
 mod partner_order;
 mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
+pub(crate) use export_ahead::{BucketAhead, RowEmitter};
 
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
@@ -56,7 +58,7 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
 
 /// Per-bucket octave counts, taken by the coset loop as it writes each bucket, and the cut they decide, applied as the next coset loop reads each bucket.
 ///
-/// Contract: a cut is pending only between a layer pass and the next layer's coset loop, and anything else that reads or rebuckets the sum first applies it ([`settle`](Self::settle)).
+/// Contract: a cut is pending only between a layer pass and the next layer's coset loop, and anything else that reads or rebuckets the sum first applies it ([`settle`](Self::settle)), except an exchanging layer's export, which reads around it ([`pending`](Self::pending)).
 /// Every partition's window is set from the agreed boundary octave, so all count alike.
 #[derive(Debug, Default)]
 pub(crate) struct LayerOctaves {
@@ -73,6 +75,10 @@ pub(crate) struct LayerOctaves {
     armed: bool,
     /// Whether this layer's output is known to fit in `n`, so its layer pass is skipped on every partition alike.
     within: bool,
+    /// Per bucket, the counts ahead of the next layer's export.
+    ahead: Vec<BucketAhead>,
+    /// The window `ahead` is binned under; `None` when there are no counts ahead.
+    ahead_window: Option<OctaveWindow>,
 }
 
 impl LayerOctaves {
@@ -114,6 +120,10 @@ impl LayerOctaves {
             }
             None => approx_top_n_pass(sum, collectives, n),
         };
+        // A cut not left pending has changed the sum under the counts ahead.
+        if edge != EdgeDecision::KeepAll && self.pending.is_none() {
+            self.drop_ahead();
+        }
         self.bound = Some(match edge {
             EdgeDecision::KeepAll => total,
             EdgeDecision::Clear => 0,
@@ -128,13 +138,26 @@ impl LayerOctaves {
         self.pending.as_ref().map_or(len, |cut| cut.kept)
     }
 
+    /// The cut the next coset loop applies, which an export before it must honour.
+    pub(crate) fn pending(&self) -> Option<&BoundaryCut> {
+        self.pending.as_ref()
+    }
+
+    /// Apply the pending cut and drop the counts ahead, before anything outside a coset loop that changes the sum or its buckets.
     pub(crate) fn apply_pending<const W: usize, C: Coefficient>(
         &mut self,
         sum: &mut PauliSum<W, C>,
     ) {
+        self.drop_ahead();
         if let Some(cut) = self.pending.take() {
             cut.apply(sum);
         }
+    }
+
+    /// Leave `cut` pending, as a layer pass would.
+    #[cfg(test)]
+    pub(crate) fn defer(&mut self, cut: BoundaryCut) {
+        self.pending = Some(cut);
     }
 
     /// End a call: apply the pending cut and forget the bound, since the sum may change before the next.
@@ -298,6 +321,7 @@ pub(crate) struct NoExtra;
 impl<const W: usize, C: Coefficient> ExtraRows<W, C> for NoExtra {}
 
 /// Apply one prepared channel to a bucketed sum, folding `keep_term` into the merge; the caller runs `finalize_layer`.
+#[cfg(any(test, feature = "test-utils"))]
 pub fn apply_layer_bucketed<const W: usize, C: Coefficient, T>(
     sum: &mut PauliSum<W, C>,
     prepared: &Prepared<W, C>,
@@ -306,10 +330,10 @@ pub fn apply_layer_bucketed<const W: usize, C: Coefficient, T>(
 ) where
     T: TruncationPolicy<W, C> + ?Sized,
 {
-    apply_layer_bucketed_with(sum, prepared, policy, scratch, &NoExtra, LayerKnobs::default())
+    apply_layer_bucketed_with(sum, prepared, policy, scratch, &NoExtra, LayerKnobs::default(), None)
 }
 
-/// [`apply_layer_bucketed`] with the partitioned engine's [`ExtraRows`] source and [`LayerKnobs`].
+/// [`apply_layer_bucketed`] with the partitioned engine's [`ExtraRows`] source and [`LayerKnobs`], counting the rows `ahead` emits for the next layer's export.
 pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum: &mut PauliSum<W, C>,
     prepared: &Prepared<W, C>,
@@ -317,12 +341,14 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     scratch: &mut LayerScratch<W, C>,
     extra: &X,
     knobs: LayerKnobs<'_>,
+    ahead: Option<&RowEmitter<'_, W, C>>,
 ) where
     T: TruncationPolicy<W, C> + ?Sized,
     X: ExtraRows<W, C> + Sync,
 {
     stamp!(stamp);
     scratch.octaves.counted = false;
+    scratch.octaves.drop_ahead();
     let armed = std::mem::take(&mut scratch.octaves.armed);
     let cut = scratch.octaves.pending.take();
 
@@ -367,9 +393,17 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
         per_bucket.resize(sum.num_buckets(), [0; _]);
     }
     let octaves = window.map(|window| (window, DisjointSlots::new(&mut per_bucket)));
+    // Any window bins the counts ahead when no cut can follow, which takes an armed window.
+    let ahead_window = window.or(scratch.octaves.window).unwrap_or(OctaveWindow::around(0));
+    let mut ahead_counts = std::mem::take(&mut scratch.octaves.ahead);
+    if ahead.is_some() {
+        ahead_counts.resize_with(sum.num_buckets(), BucketAhead::default);
+    }
+    let ahead_slots = ahead.map(|emitter| (emitter, DisjointSlots::new(&mut ahead_counts)));
     let octaves = LayerOctaveIo {
         cut: cut.as_ref(),
         count: octaves.as_ref().map(|(window, slots)| (*window, slots)),
+        ahead: ahead_slots.as_ref().map(|(emitter, slots)| (ahead_window, *emitter, slots)),
     };
     let len = match (received_rotation, rotation) {
         (Some(layer), _) => {
@@ -396,6 +430,8 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     };
     scratch.octaves.per_bucket = per_bucket;
     scratch.octaves.counted = window.is_some();
+    scratch.octaves.ahead = ahead_counts;
+    scratch.octaves.ahead_window = ahead.map(|_| ahead_window);
     lap!(stamp, scratch.stats.coset_loop_ns);
     sum.set_len_after_layer(len);
     lap!(stamp, scratch.stats.recount_ns);
@@ -404,11 +440,12 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum.assert_invariants();
 }
 
-/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and the window counts it takes after.
+/// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and the octave counts and counts ahead it takes after, with their windows.
 #[derive(Clone, Copy)]
-struct LayerOctaveIo<'s, 'a> {
+struct LayerOctaveIo<'s, 'a, 't, const W: usize, C: Coefficient> {
     cut: Option<&'s BoundaryCut>,
     count: Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>,
+    ahead: Option<(OctaveWindow, &'s RowEmitter<'t, W, C>, &'s DisjointSlots<'a, BucketAhead>)>,
 }
 
 /// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns with `octaves`' cut and counts; returns the output terms.
@@ -416,7 +453,7 @@ fn coset_loop<const W: usize, C: Coefficient, F>(
     sum: &mut PauliSum<W, C>,
     span: &Gf2Span,
     scratch: &mut LayerScratch<W, C>,
-    octaves: LayerOctaveIo<'_, '_>,
+    octaves: LayerOctaveIo<'_, '_, '_, W, C>,
     fill: F,
 ) -> usize
 where
@@ -454,7 +491,7 @@ fn run_coset<const W: usize, C: Coefficient, F>(
     coset: u32,
     span: &Gf2Span,
     buckets: &DisjointSlots<'_, BucketColumns<W, C>>,
-    octaves: LayerOctaveIo<'_, '_>,
+    octaves: LayerOctaveIo<'_, '_, '_, W, C>,
     scratch: &mut CosetScratch<W, C>,
     fill: &F,
 ) -> usize
@@ -478,9 +515,17 @@ where
     let mut len = 0;
     for (slot, &beta) in members.iter_mut().zip(&betas) {
         len += slot.len();
-        if let Some((window, counts)) = octaves.count {
-            // SAFETY: as for the buckets, which the counts are indexed alike with.
-            window.count(&slot.coeff, unsafe { counts.get(beta as usize) });
+        // SAFETY (both arms): as for the buckets, which the counts are indexed alike with.
+        match (octaves.count, octaves.ahead) {
+            (count, Some((window, emitter, ahead))) => {
+                debug_assert!(count.is_none_or(|(counted, _)| counted == window));
+                let counts = count.map(|(_, counts)| unsafe { counts.get(beta as usize) });
+                window.count_emitting(slot, emitter, counts, unsafe { ahead.get(beta as usize) });
+            }
+            (Some((window, counts)), None) => {
+                window.count(&slot.coeff, unsafe { counts.get(beta as usize) });
+            }
+            (None, None) => {}
         }
         // SAFETY: as above.
         std::mem::swap(slot, unsafe { buckets.get(beta as usize) });

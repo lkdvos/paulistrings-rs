@@ -10,8 +10,9 @@
 
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_same_terms, assert_terms_close,
-    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts,
-    spread_magnitudes, trotter_circuit, unpinned_partitions, KeepAll, PlainApproxTopN,
+    buckets_exported_ahead_under_cut, heavy_cut, propagate_discarding, rand_sum, rand_sum_real,
+    random_circuit, single_cuts, spread_magnitudes, trotter_circuit, unpinned_partitions, KeepAll,
+    PlainApproxTopN,
 };
 use paulistrings::{
     propagate, BuiltinTruncation, Circuit, Direction, PauliSum, PropagateOptions, TruncationPolicy,
@@ -121,13 +122,14 @@ fn builtin_truncation_tree_matches_propagate() {
     check(&circuit, &sum, &tree, "trotter tree", &PS);
 }
 
-/// Two calls of fused `ApproxTopN(n)` on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds.
+/// Two calls of fused `ApproxTopN(n)` on one split against the same split under [`PlainApproxTopN`]: every partition keeps the plain pass's set after every call, and `len()` counts the terms the split holds; returns the fewest buckets any split above one partition exported from the counts ahead under a pending cut, which the plain pass never leaves.
 fn check_fused_keeps_the_plain_set<const W: usize>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
     n: usize,
     name: &str,
-) {
+) -> u64 {
+    let mut fewest_ahead = u64::MAX;
     for direction in [Direction::Forward, Direction::Heisenberg] {
         for p in PS {
             let scatter =
@@ -148,8 +150,13 @@ fn check_fused_keeps_the_plain_set<const W: usize>(
                 let held: usize = (0..p).map(|r| got.partition(r).len()).sum();
                 assert_eq!(got.len(), held, "{what}: len() after the call");
             }
+            assert_eq!(buckets_exported_ahead_under_cut(&want), 0, "{name} P={p} {direction:?}");
+            if p > 1 {
+                fewest_ahead = fewest_ahead.min(buckets_exported_ahead_under_cut(&got));
+            }
         }
     }
+    fewest_ahead
 }
 
 /// `len` real terms on `num_qubits` qubits, magnitudes spread over 40 octaves.
@@ -157,12 +164,15 @@ fn spread_sum<const W: usize>(len: usize, num_qubits: usize, seed: u64) -> Pauli
     spread_magnitudes(&rand_sum_real::<W>(len, num_qubits, seed), 40, seed)
 }
 
+/// Every split above one partition exports some bucket from the counts ahead under a pending cut.
 #[test]
 fn fused_approx_top_n_keeps_the_plain_set_partitioned() {
     let sum = spread_sum::<1>(2_000, 32, 0x71A0);
-    check_fused_keeps_the_plain_set(&trotter_circuit::<1>(32, THETA), &sum, 6_000, "trotter w1");
+    let circuit = trotter_circuit::<1>(32, THETA);
+    assert!(check_fused_keeps_the_plain_set(&circuit, &sum, 6_000, "trotter w1") > 0);
     let sum = spread_sum::<2>(1_500, 70, 0x71A1);
-    check_fused_keeps_the_plain_set(&trotter_circuit::<2>(70, THETA), &sum, 4_000, "trotter w2");
+    let circuit = trotter_circuit::<2>(70, THETA);
+    assert!(check_fused_keeps_the_plain_set(&circuit, &sum, 4_000, "trotter w2") > 0);
 }
 
 /// ZZ bonds with a depolarizing layer every seventh, then an X field, on `num_qubits` qubits.

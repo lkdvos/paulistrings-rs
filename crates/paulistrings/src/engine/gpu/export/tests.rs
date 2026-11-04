@@ -3,6 +3,7 @@ use super::receive::{chunk_layout, chunk_max, receive_chunking, rows_between};
 use super::*;
 use crate::channel::Prepare;
 use crate::channel::{Channel, PtmChannel};
+use crate::engine::bucketed::LayerOctaves;
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::gpu::layer::GpuLayerOptions;
 use crate::engine::gpu::payload::DeviceBlock;
@@ -73,8 +74,15 @@ fn export_rank<const W: usize>(
     let nb = local.num_buckets();
     let mut order = CosetOrder::default();
     order.rebuild(&Gf2Span::new(&plan.local_bucket_deltas, local.hash().bits()), true);
-    let (want, want_counts) =
-        export_layer(&local, &prepared, &plan, size, &order, &mut ExportScratch::default());
+    let (want, want_counts) = export_layer(
+        &local,
+        &LayerOctaves::default(),
+        &prepared,
+        &plan,
+        size,
+        &order,
+        &mut ExportScratch::default(),
+    );
     let dev = GpuSum::from_host_with_options(&local, 0, nvrtc).expect("upload");
     let options = GpuLayerOptions { premerge, arena_bytes, ..GpuLayerOptions::default() };
     let mut scratch = LayerScratch::new(&dev, options).expect("scratch");

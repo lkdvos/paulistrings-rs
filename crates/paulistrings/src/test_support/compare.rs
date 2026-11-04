@@ -397,3 +397,15 @@ pub fn assert_frequencies(counts: &[usize], probs: &[f64], what: &str) {
         );
     }
 }
+
+/// The buckets whose export read the counts ahead under a pending cut, summed over `sum`'s partitions and every layer they drove.
+pub fn buckets_exported_ahead_under_cut<const W: usize>(sum: &crate::PartitionedSum<W>) -> u64 {
+    sum.buckets_exported_ahead_under_cut()
+}
+
+/// [`buckets_exported_ahead_under_cut`] of this rank's partition of `sum`.
+pub fn buckets_exported_ahead_under_cut_on_rank<const W: usize, X: crate::Transport>(
+    sum: &crate::DistributedSum<W, X>,
+) -> u64 {
+    sum.buckets_exported_ahead_under_cut()
+}

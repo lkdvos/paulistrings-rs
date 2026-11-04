@@ -201,7 +201,8 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
             | Self::Weight(_)
             | Self::TopN(_)
             | Self::CollapseSample(_)
-            | Self::Or(_, _) => None,
+            | Self::Or(_, _)
+            | Self::PerPartition(_) => None,
         }
     }
 }

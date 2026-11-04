@@ -443,5 +443,9 @@ Skipping the hit count when a bucket has room for every partner, and closing the
 
 ### Operator products re-read each input bucket once per generator delta
 
-Output bucket `β′` reads the operand's buckets `β′ ⊕ h(s)` for every distinct generator bucket delta, so each input bucket is streamed once per delta (~157 times per call on the §Operator products skip disjoint supports probe, ~7 GB per call at 1.9e6 terms), and the visits stay memory-bound after the support skip.
-Hash rows under which most generator terms have `h(s) = 0` would fix the locality, but a row every generator term leaves at zero is constant over every operator the generator reaches and splits nothing; block-parity rows that only boundary terms flip are the untried middle.
+Output bucket `β′` reads the operand's buckets `β′ ⊕ h(s)` for every distinct generator bucket delta, so each input bucket is streamed once per delta (~152 distinct deltas on the §Operator products skip disjoint supports probe), and at 32 threads the visits run at ccqlin038's ~48 GB/s read ceiling.
+No loop order fixes this under dense hash rows: a tile `c ⊕ S` of output buckets reads `c ⊕ S ⊕ Γ`, and random deltas `Γ` spread that over every input bucket at any tile size that fits in cache.
+The layout does: hash rows on the coordinates `x_q`, `z_q` of the 6 central qubits leave 130 of the 157 generator terms at delta 0 and 26 distinct deltas, and cut the visits 39% at 1 thread (1450 → 891 ms) and the call **−26% at 1 thread (2160 → 1590 ms), −15% at 32 (122 → 104 ms)**, inserts unchanged; the largest bucket is 14.8× the mean, which is what holds back 32 threads.
+Open: choosing such rows from a generator and an operand, balanced, and keeping them across a recursion (the output inherits the operand's hash).
+Measured and not kept (branch `multiply-gemm-wip`, `0576def7`): a bit-sliced ℤ₄ micro-kernel, each generator run transposed into per-qubit X/Y/Z planes so one operand term's phases against the whole run come out of two bit-plane counters, −6% at 1 thread under coordinate rows and nothing under dense rows; `POPCNT` multiversioning of the per-bucket pass, −3–4% at 1 thread, flat at 32; both inside ccqlin038's ±10% noise.
+After the layout change a call splits about evenly between visits, inserts with their drain sort, and the singleton runs of the generator terms on the hashed qubits.

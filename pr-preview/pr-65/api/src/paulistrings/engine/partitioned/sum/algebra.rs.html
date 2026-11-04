@@ -69,8 +69,8 @@
 <a href=#69 id=69 data-nosnippet>69</a>        <span class="self">self</span>.parts.iter().zip(<span class="kw-2">&amp;</span>other.parts).map(|(a, b)| a.sum.overlap(<span class="kw-2">&amp;</span>b.sum)).sum()
 <a href=#70 id=70 data-nosnippet>70</a>    }
 <a href=#71 id=71 data-nosnippet>71</a>
-<a href=#72 id=72 data-nosnippet>72</a>    <span class="doccomment">/// An empty split on the same runtime and rows.
-<a href=#73 id=73 data-nosnippet>73</a>    </span><span class="kw">fn </span>empty_like(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#72 id=72 data-nosnippet>72</a>    <span class="doccomment">/// An empty split on the same runtime and rows, the destination of a fresh product.
+<a href=#73 id=73 data-nosnippet>73</a>    </span><span class="kw">pub fn </span>empty_like(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
 <a href=#74 id=74 data-nosnippet>74</a>        <span class="self">Self </span>{
 <a href=#75 id=75 data-nosnippet>75</a>            parts: <span class="self">self
 <a href=#76 id=76 data-nosnippet>76</a>                </span>.parts
@@ -126,11 +126,11 @@
 <a href=#126 id=126 data-nosnippet>126</a>
 <a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// `self ← alpha · i[generator, operand] + beta · self`, truncated by `policy` as one layer; `beta = 0` ignores `self`'s terms.
 <a href=#128 id=128 data-nosnippet>128</a>    ///
-<a href=#129 id=129 data-nosnippet>129</a>    /// Each partition receives from a partner only the terms a generator term moving between the two can anticommute with ([`liouvillian_share`](crate::liouvillian_share)), and sums its pairs straight into its own buckets.
+<a href=#129 id=129 data-nosnippet>129</a>    /// Each partition receives from a partner only the terms a generator term moving between the two can anticommute with (`operator_products::pair_share_into`), and sums its pairs straight into its own buckets.
 <a href=#130 id=130 data-nosnippet>130</a>    ///
 <a href=#131 id=131 data-nosnippet>131</a>    /// # Panics
 <a href=#132 id=132 data-nosnippet>132</a>    ///
-<a href=#133 id=133 data-nosnippet>133</a>    /// If the two splits have different rows, or as [`liouvillian_share`](crate::liouvillian_share); a panic in any partition is re-raised on the calling thread.
+<a href=#133 id=133 data-nosnippet>133</a>    /// If the two splits have different rows, or if the partitions disagree about `generator` or `policy` has a layer pass with no partitioned form; a panic in any partition is re-raised on the calling thread.
 <a href=#134 id=134 data-nosnippet>134</a>    </span><span class="kw">pub fn </span>add_liouvillian&lt;P&gt;(
 <a href=#135 id=135 data-nosnippet>135</a>        <span class="kw-2">&amp;mut </span><span class="self">self</span>,
 <a href=#136 id=136 data-nosnippet>136</a>        generator: <span class="kw-2">&amp;</span>PauliSum&lt;W, C&gt;,
@@ -180,51 +180,5 @@
 <a href=#180 id=180 data-nosnippet>180</a>    {
 <a href=#181 id=181 data-nosnippet>181</a>        <span class="self">self</span>.add_paired(generator, operand, Pairing::Product, Weights { alpha, beta }, policy);
 <a href=#182 id=182 data-nosnippet>182</a>    }
-<a href=#183 id=183 data-nosnippet>183</a>
-<a href=#184 id=184 data-nosnippet>184</a>    <span class="doccomment">/// `pairing(generator, self)` as a new split on the same runtime and rows.
-<a href=#185 id=185 data-nosnippet>185</a>    </span><span class="kw">fn </span>paired_with&lt;P&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, generator: <span class="kw-2">&amp;</span>PauliSum&lt;W, C&gt;, pairing: Pairing, policy: <span class="kw-2">&amp;</span>P) -&gt; <span class="self">Self
-<a href=#186 id=186 data-nosnippet>186</a>    </span><span class="kw">where
-<a href=#187 id=187 data-nosnippet>187</a>        </span>P: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
-<a href=#188 id=188 data-nosnippet>188</a>    {
-<a href=#189 id=189 data-nosnippet>189</a>        <span class="kw">let </span><span class="kw-2">mut </span>out = <span class="self">self</span>.empty_like();
-<a href=#190 id=190 data-nosnippet>190</a>        out.add_paired(generator, <span class="self">self</span>, pairing, Weights::fresh(), policy);
-<a href=#191 id=191 data-nosnippet>191</a>        out
-<a href=#192 id=192 data-nosnippet>192</a>    }
-<a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a>    <span class="doccomment">/// The Liouvillian `i[generator, self]` as a new split: [`add_liouvillian`](Self::add_liouvillian) into an empty one.
-<a href=#195 id=195 data-nosnippet>195</a>    ///
-<a href=#196 id=196 data-nosnippet>196</a>    /// # Panics
-<a href=#197 id=197 data-nosnippet>197</a>    ///
-<a href=#198 id=198 data-nosnippet>198</a>    /// As [`add_liouvillian`](Self::add_liouvillian).
-<a href=#199 id=199 data-nosnippet>199</a>    </span><span class="kw">pub fn </span>liouvillian_with&lt;P&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, generator: <span class="kw-2">&amp;</span>PauliSum&lt;W, C&gt;, policy: <span class="kw-2">&amp;</span>P) -&gt; <span class="self">Self
-<a href=#200 id=200 data-nosnippet>200</a>    </span><span class="kw">where
-<a href=#201 id=201 data-nosnippet>201</a>        </span>P: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
-<a href=#202 id=202 data-nosnippet>202</a>    {
-<a href=#203 id=203 data-nosnippet>203</a>        <span class="self">self</span>.paired_with(generator, Pairing::Liouvillian, policy)
-<a href=#204 id=204 data-nosnippet>204</a>    }
-<a href=#205 id=205 data-nosnippet>205</a>
-<a href=#206 id=206 data-nosnippet>206</a>    <span class="doccomment">/// The anticommutator `{generator, self}` as a new split, as [`liouvillian_with`](Self::liouvillian_with) builds it.
-<a href=#207 id=207 data-nosnippet>207</a>    ///
-<a href=#208 id=208 data-nosnippet>208</a>    /// # Panics
-<a href=#209 id=209 data-nosnippet>209</a>    ///
-<a href=#210 id=210 data-nosnippet>210</a>    /// As [`add_anticommutator`](Self::add_anticommutator).
-<a href=#211 id=211 data-nosnippet>211</a>    </span><span class="kw">pub fn </span>anticommutator_with&lt;P&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, generator: <span class="kw-2">&amp;</span>PauliSum&lt;W, C&gt;, policy: <span class="kw-2">&amp;</span>P) -&gt; <span class="self">Self
-<a href=#212 id=212 data-nosnippet>212</a>    </span><span class="kw">where
-<a href=#213 id=213 data-nosnippet>213</a>        </span>P: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
-<a href=#214 id=214 data-nosnippet>214</a>    {
-<a href=#215 id=215 data-nosnippet>215</a>        <span class="self">self</span>.paired_with(generator, Pairing::Anticommutator, policy)
-<a href=#216 id=216 data-nosnippet>216</a>    }
-<a href=#217 id=217 data-nosnippet>217</a>
-<a href=#218 id=218 data-nosnippet>218</a>    <span class="doccomment">/// The operator product `generator · self` as a new split, as [`liouvillian_with`](Self::liouvillian_with) builds it.
-<a href=#219 id=219 data-nosnippet>219</a>    ///
-<a href=#220 id=220 data-nosnippet>220</a>    /// # Panics
-<a href=#221 id=221 data-nosnippet>221</a>    ///
-<a href=#222 id=222 data-nosnippet>222</a>    /// As [`add_product`](Self::add_product).
-<a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">pub fn </span>product_with&lt;P&gt;(<span class="kw-2">&amp;</span><span class="self">self</span>, generator: <span class="kw-2">&amp;</span>PauliSum&lt;W, C&gt;, policy: <span class="kw-2">&amp;</span>P) -&gt; <span class="self">Self
-<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">where
-<a href=#225 id=225 data-nosnippet>225</a>        </span>P: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
-<a href=#226 id=226 data-nosnippet>226</a>    {
-<a href=#227 id=227 data-nosnippet>227</a>        <span class="self">self</span>.paired_with(generator, Pairing::Product, policy)
-<a href=#228 id=228 data-nosnippet>228</a>    }
-<a href=#229 id=229 data-nosnippet>229</a>}
+<a href=#183 id=183 data-nosnippet>183</a>}
 </code></pre></div></section></main></body></html>

@@ -177,8 +177,8 @@ def run_rust(task: Task | Mapping[str, Any]) -> dict[str, Any]:
     DEBUG filter costs a clock read per layer — never leave it on for a timed
     run (CLAUDE.md §Performance discipline).
     """
-    from paulistrings import propagated
     import paulistrings as ps
+    from paulistrings import propagated
 
     observable, circuit, policy, direction, state = _build_rust(task)
 

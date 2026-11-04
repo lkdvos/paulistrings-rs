@@ -677,12 +677,12 @@ def rust_parity_leg(task_path: str | Path) -> dict[str, Any]:
     filter costs a clock read per layer, which is exactly why this is a
     separate, untimed process and never folded into a timed leg.
     """
-    from paulistrings import propagated
     import logging
     import re
 
     sys.path.insert(0, str(REPO_ROOT / "examples"))
     import paulistrings as ps
+    from paulistrings import propagated
     from paulistrings.interop import load_task
 
     layer_re = re.compile(

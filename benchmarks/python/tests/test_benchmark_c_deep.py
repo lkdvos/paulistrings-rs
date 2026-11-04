@@ -791,8 +791,9 @@ def test_loose_cutoff_sanity_on_the_full_lattice(theta_label, theta):
     tracked set grows steeply with the cutoff at all, and that the peak, not the
     final count, is the large number.
     """
-    from paulistrings import propagated_with_stats
     import time
+
+    from paulistrings import propagated_with_stats
 
     observable = observables.canonical_z_127()
     circuit = circuits.heavy_hex_kicked_ising(

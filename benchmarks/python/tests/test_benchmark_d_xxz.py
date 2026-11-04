@@ -86,8 +86,7 @@ def oracles():
 @pytest.mark.parametrize("steps", [1, 2, 3])
 def test_matches_statevector(oracles, Jz, steps):
     """Both observables, both regimes, three depths: exact to ~1e-15."""
-    from paulistrings import propagated
-    from paulistrings import truncation
+    from paulistrings import propagated, truncation
 
     n = CHECK_N
     state = driver.domain_wall_state(n)

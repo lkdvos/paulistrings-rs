@@ -21,8 +21,8 @@ Options:
   --reps <usize>           Channel repetitions per cell, Trotter steps for tfim_step and
                            heavyhex_step, ignored by trotter (default: 8)
   --seed <u64|0xHEX>       Seed of the input sum (default: 0xC0FFEE)
-  --truncation <spec>      keep (default), coeff:<t>, topn:<N> or atopn:<N>; topn runs at
-                           one partition only
+  --truncation <spec>      keep (default), coeff:<t>, topn:<N>, atopn:<N> or patopn:<N>
+                           (atopn per partition); topn runs at one partition only
   --partitions <csv>       Partition counts, powers of two dividing every --threads entry
                            (default: 1)
   --partition-cpus <spec>  auto (default, one partition per NUMA node), unpinned, or one
@@ -52,6 +52,7 @@ pub(crate) enum TruncSpec {
     Coefficient(f64),
     TopN(usize),
     ApproxTopN(usize),
+    PerPartitionApproxTopN(usize),
 }
 
 impl TruncSpec {
@@ -62,6 +63,7 @@ impl TruncSpec {
             TruncSpec::Coefficient(t) => format!("coeff:{t}"),
             TruncSpec::TopN(n) => format!("topn:{n}"),
             TruncSpec::ApproxTopN(n) => format!("atopn:{n}"),
+            TruncSpec::PerPartitionApproxTopN(n) => format!("patopn:{n}"),
         }
     }
 
@@ -87,7 +89,15 @@ impl TruncSpec {
         if let Some(v) = t.strip_prefix("atopn:") {
             return Ok(TruncSpec::ApproxTopN(parse_usize(v, "--truncation atopn:<N>")?));
         }
-        Err(format!("--truncation expects keep | coeff:<t> | topn:<N> | atopn:<N>, got '{s}'"))
+        if let Some(v) = t.strip_prefix("patopn:") {
+            return Ok(TruncSpec::PerPartitionApproxTopN(parse_usize(
+                v,
+                "--truncation patopn:<N>",
+            )?));
+        }
+        Err(format!(
+            "--truncation expects keep | coeff:<t> | topn:<N> | atopn:<N> | patopn:<N>, got '{s}'"
+        ))
     }
 }
 

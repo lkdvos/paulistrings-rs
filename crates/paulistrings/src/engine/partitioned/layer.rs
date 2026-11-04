@@ -7,8 +7,8 @@ use super::PLACEMENT_LOG_TARGET;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::engine::bucketed::{
-    apply_layer_bucketed_with, is_rotation_table, EmitTest, ExtraRows, LayerKnobs, LayerScratch,
-    NoExtra,
+    apply_layer_bucketed_with, is_rotation_table, ExtraRows, LayerKnobs, LayerScratch, NoExtra,
+    RowEmitter,
 };
 use crate::engine::coset::{CosetOrder, Gf2Span};
 use crate::engine::knob::{parse_positive, Knob};
@@ -174,7 +174,7 @@ pub(in crate::engine) fn apply_layer_partitioned_with_plan<const W: usize, C: Co
     state: &mut PartitionState<W, C>,
     transport: &X,
     clocked: bool,
-    ahead: Option<&EmitTest<'_, W, C>>,
+    ahead: Option<&RowEmitter<'_, W, C>>,
 ) -> LayerExchangeCounts
 where
     T: TruncationPolicy<W, C> + ?Sized,

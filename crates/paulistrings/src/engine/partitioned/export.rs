@@ -2,16 +2,15 @@
 //!
 //! A row of remote delta `d` from local bucket `β` belongs to partition `rank ⊕ part(d)`, bucket `β ⊕ h(d)`, so the sender fills segment `p` from its bucket `bucket_at(p) ⊕ h(d)` and the block arrives in the receiver's coset order.
 //! A partner gets one block per remote delta to it, in ascending plan order and empty ones included, since the receiver walks them in lockstep with its own plan.
-//! A pending `ApproxTopN` cut is not applied here: both passes skip the terms it drops, and the coset loop applies it as it swaps each bucket in.
-//! Where the last coset loop took counts ahead for this layer (`LayerOctaves::bucket_ahead`), pass 1 reads them instead of the bucket and the fill visits only the marked rows.
+//! Both passes skip the terms a pending `ApproxTopN` cut drops, which the coset loop applies after, and where the last coset loop counted this layer's rows ahead ([`LayerOctaves::bucket_ahead`]) pass 1 reads those counts and the fill visits only the marked rows.
 
 use crate::coefficient::Coefficient;
 use rayon::prelude::*;
 
 use super::exchange_block::{ExchangeBlock, PartnerPayload};
 use super::layer::LayerExchangeCounts;
-use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
-use crate::engine::bucketed::LayerOctaves;
+use crate::channel::prepared::Prepared;
+use crate::engine::bucketed::{LayerOctaves, RowEmitter};
 use crate::engine::coset::CosetOrder;
 use crate::engine::plan::PartitionPlan;
 use crate::pauli_string::PauliString;
@@ -37,27 +36,6 @@ pub(crate) struct ExportScratch<const W: usize, C: Coefficient = num_complex::Co
     /// Test hook: the buckets whose pass 1 read the counts ahead under a pending cut, summed over layers.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) buckets_ahead_under_cut: u64,
-}
-
-/// One remote delta's row-level emitter: the tabulated entry, or the wide rotation's generator pass.
-enum RowEmitter<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
-    Tabulated {
-        ptm: &'p LocalPtm<W, C>,
-        entry: &'p DeltaEntry<W, C>,
-    },
-    /// The identity pass of a rotation is never remote.
-    Generator {
-        rotation: &'p PreparedRotation<W, C::Real>,
-    },
-}
-
-impl<const W: usize, C: Coefficient> RowEmitter<'_, W, C> {
-    fn emit(&self, x: &[u64; W], z: &[u64; W], coeff: C) -> Option<([u64; W], [u64; W], C)> {
-        match self {
-            RowEmitter::Tabulated { ptm, entry } => entry.emit(ptm.support_bits(x, z), x, z, coeff),
-            RowEmitter::Generator { rotation } => rotation.emit_generator(x, z, coeff),
-        }
-    }
 }
 
 /// This partition's outgoing payloads for one layer, one slot per partner rank, from `local` as its pending cut in `octaves` leaves it.
@@ -90,40 +68,17 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
     let cut = octaves.pending();
-    let ahead = num_remote == 1 && octaves.has_ahead();
+    let ahead = Some(octaves).filter(|octaves| num_remote == 1 && octaves.has_ahead());
     let mut send: Vec<Option<PartnerPayload<W, C>>> = (0..size).map(|_| None).collect();
     let mut counts = LayerExchangeCounts::none(size);
     if num_remote == 0 {
         return (send, counts);
     }
 
-    let emitters: Vec<RowEmitter<'_, W, C>> = plan
-        .remote
-        .iter()
-        .map(|remote| match prepared {
-            Prepared::Local(ptm) => {
-                RowEmitter::Tabulated { ptm, entry: &ptm.deltas()[remote.entry] }
-            }
-            Prepared::Rotation(rotation) => {
-                debug_assert_eq!(
-                    remote.entry, 1,
-                    "a rotation's only remote entry is the generator pass",
-                );
-                RowEmitter::Generator { rotation }
-            }
-        })
-        .collect();
-    // Whether every term emits a row, which the generator pass never guarantees.
-    let dense: Vec<bool> = plan
-        .remote
-        .iter()
-        .map(|remote| match prepared {
-            Prepared::Local(ptm) => ptm.entry_is_dense(remote.entry),
-            Prepared::Rotation(_) => false,
-        })
-        .collect();
-    let all_dense =
-        matches!(prepared, Prepared::Local(_)) && dense.iter().all(|&is_dense| is_dense);
+    let emitters: Vec<RowEmitter<'_, W, C>> =
+        plan.remote.iter().map(|remote| RowEmitter::of(prepared, remote)).collect();
+    let dense: Vec<bool> = emitters.iter().map(RowEmitter::is_dense).collect();
+    let all_dense = dense.iter().all(|&is_dense| is_dense);
 
     // Pass 1: bucket-major counts, `counts[β * num_remote + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
@@ -137,7 +92,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
                 Some(cut) => count_bucket(terms, prepared, plan, &dense, cut.filter(bucket), slot),
             }
         };
-        match octaves.rows_ahead(bucket).filter(|_| ahead) {
+        match ahead.and_then(|octaves| octaves.rows_ahead(bucket)) {
             Some(rows) => {
                 slot[0] = rows;
                 #[cfg(debug_assertions)]
@@ -154,7 +109,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
         }
     });
     #[cfg(any(test, feature = "test-utils"))]
-    if ahead && cut.is_some() {
+    if let (Some(octaves), Some(_)) = (ahead, cut) {
         scratch.buckets_ahead_under_cut +=
             (0..num_buckets).filter(|&bucket| octaves.rows_ahead(bucket).is_some()).count() as u64;
     }
@@ -181,7 +136,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             scratch.block_counts[position] = count;
             if count != 0 {
                 let len = local.bucket_len(source as usize);
-                work += match octaves.bucket_ahead(source as usize).filter(|_| ahead) {
+                work += match ahead.and_then(|octaves| octaves.rows_ahead(source as usize)) {
                     Some(_) => count as usize + len / 64,
                     None => len,
                 };
@@ -205,7 +160,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
             let fill = Fill {
                 local,
                 cut,
-                ahead: ahead.then_some(octaves),
+                ahead,
                 emitter: &emitters[i],
                 offsets,
                 source_of: &scratch.source_of,
@@ -336,12 +291,8 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
             x.len(),
         );
     }
-}
 
-impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
-    /// Write the rows bucket `source`'s terms at `rows` emit, among those `keep` keeps, to the head of `out`; returns how many.
-    ///
-    /// `keep` is asked of every row of `rows` in order, so `rows` skips only terms whose keep test does not move a boundary quota.
+    /// Write the rows bucket `source`'s terms at `rows` emit, among those `keep` keeps, to the head of `out`; returns how many; `keep` is asked of `rows` in order, so `rows` may skip only terms that move no boundary quota.
     fn fill_rows(
         &self,
         source: usize,

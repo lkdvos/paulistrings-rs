@@ -14,12 +14,17 @@ use num_complex::Complex64;
 fn counted<const W: usize>(
     sum: &PauliSum<W>,
     b: usize,
-    test: &EmitTest<'_, W>,
+    test: &RowEmitter<'_, W>,
     mut keep: impl FnMut(&[u64; W], &[u64; W], Complex64) -> bool,
 ) -> u32 {
     let (x, z, coeff) = sum.bucket(b);
     (0..coeff.len())
-        .map(|row| u32::from(keep(&x[row], &z[row], coeff[row]) & test.emits(&x[row], &z[row])))
+        .map(|row| {
+            u32::from(
+                keep(&x[row], &z[row], coeff[row])
+                    & test.emit(&x[row], &z[row], Complex64::ONE).is_some(),
+            )
+        })
         .sum()
 }
 
@@ -27,7 +32,7 @@ fn counted<const W: usize>(
 fn counted_ahead<const W: usize>(
     sum: &PauliSum<W>,
     window: OctaveWindow,
-    test: &EmitTest<'_, W>,
+    test: &RowEmitter<'_, W>,
 ) -> LayerOctaves {
     let mut octaves = LayerOctaves::default();
     for b in 0..sum.num_buckets() {
@@ -39,8 +44,9 @@ fn counted_ahead<const W: usize>(
         let mut plain = [0; WINDOW_OCTAVES + 2];
         window.count(&columns.coeff, &mut plain);
         assert_eq!(counts, plain, "bucket {b}: the fused count bins as `count` does");
-        let emitting: Vec<usize> =
-            (0..x.len()).filter(|&row| test.emits(&x[row], &z[row])).collect();
+        let emitting: Vec<usize> = (0..x.len())
+            .filter(|&row| test.emit(&x[row], &z[row], Complex64::ONE).is_some())
+            .collect();
         assert_eq!(ahead.marked_rows().collect::<Vec<_>>(), emitting, "bucket {b}: marks");
         octaves.per_bucket.push(counts);
         octaves.ahead.push(ahead);
@@ -62,7 +68,7 @@ fn assert_rows_ahead_count_the_survivors<const W: usize>(
         let prepared = channel.prepare(sum.hash(), false).expect("prepare");
         let plan = PartitionPlan::new(&prepared, &rows, 0);
         for remote in &plan.remote {
-            let test = EmitTest::of(&prepared, remote);
+            let test = RowEmitter::of(&prepared, remote);
             let mut octaves = counted_ahead(sum, window, &test);
             for b in 0..sum.num_buckets() {
                 assert_eq!(
@@ -123,7 +129,7 @@ fn a_nan_term_is_counted_only_without_a_cut() {
     let rows = PartitionRows::<1>::from_rows(4, vec![[1u64]], vec![[0u64]]);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let [remote] = plan.remote.as_slice() else { panic!("the generator pass must be remote") };
-    let test = EmitTest::of(&prepared, remote);
+    let test = RowEmitter::of(&prepared, remote);
     let window = OctaveWindow::around(crate::truncation::builtin::octave(0.25));
     let mut octaves = counted_ahead(&sum, window, &test);
     assert_eq!(octaves.rows_ahead(0), Some(4));

@@ -321,10 +321,10 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C> {
         &self.parts[r].sum
     }
 
-    /// [`HostPartition::buckets_exported_ahead_under_cut`] summed over the partitions.
+    /// The buckets whose export read the counts ahead under a pending cut, summed over the partitions and every layer they drove.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn buckets_exported_ahead_under_cut(&self) -> u64 {
-        self.parts.iter().map(HostPartition::buckets_exported_ahead_under_cut).sum()
+        self.parts.iter().map(|part| part.state.export.buckets_ahead_under_cut).sum()
     }
 
     /// `⟨ψ|O|ψ⟩` in the product state `basis`, the partitions' own values added in rank order.

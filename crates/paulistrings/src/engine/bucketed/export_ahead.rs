@@ -2,7 +2,7 @@
 //!
 //! Contract: the counts answer for the sum the coset loop left, under whatever cut the layer pass after it leaves pending, and anything that changes the sum or its buckets in between drops them ([`LayerOctaves::drop_ahead`]).
 
-use crate::channel::prepared::{LocalPtm, Prepared};
+use crate::channel::prepared::{DeltaEntry, LocalPtm, Prepared, PreparedRotation};
 use crate::coefficient::Coefficient;
 use crate::engine::plan::RemoteDelta;
 use crate::pauli_string::PauliString;
@@ -59,44 +59,53 @@ impl BucketAhead {
     }
 }
 
-/// Which terms one remote delta of a layer emits a row for, the test the export's count pass applies per term.
-#[derive(Clone, Copy)]
-pub(crate) enum EmitTest<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
-    /// A table entry nonzero on every support pattern.
-    Every,
-    /// A table entry, by its amplitude on the term's support pattern.
-    Table { ptm: &'p LocalPtm<W, C>, entry: usize },
-    /// A wide rotation's generator pass, on the terms that anticommute with the generator.
-    Generator { generator: &'p PauliString<W> },
+/// One remote delta's row-level emitter: a tabulated entry, `dense` when nonzero on every support pattern, or the wide rotation's generator pass.
+pub(crate) enum RowEmitter<'p, const W: usize, C: Coefficient = num_complex::Complex64> {
+    Tabulated {
+        ptm: &'p LocalPtm<W, C>,
+        entry: &'p DeltaEntry<W, C>,
+        dense: bool,
+    },
+    /// The identity pass of a rotation is never remote.
+    Generator {
+        rotation: &'p PreparedRotation<W, C::Real>,
+    },
 }
 
-impl<'p, const W: usize, C: Coefficient> EmitTest<'p, W, C> {
-    /// The test of `remote`, a delta of `prepared`.
+impl<'p, const W: usize, C: Coefficient> RowEmitter<'p, W, C> {
+    /// The emitter of `remote`, a delta of `prepared`.
     pub(crate) fn of(prepared: &'p Prepared<W, C>, remote: &RemoteDelta) -> Self {
         match prepared {
-            Prepared::Local(ptm) if ptm.entry_is_dense(remote.entry) => EmitTest::Every,
-            Prepared::Local(ptm) => EmitTest::Table { ptm, entry: remote.entry },
+            Prepared::Local(ptm) => RowEmitter::Tabulated {
+                ptm,
+                entry: &ptm.deltas()[remote.entry],
+                dense: ptm.entry_is_dense(remote.entry),
+            },
             Prepared::Rotation(rotation) => {
                 debug_assert_eq!(
                     remote.entry, 1,
                     "a rotation's only remote entry is the generator pass"
                 );
-                EmitTest::Generator { generator: &rotation.generator }
+                RowEmitter::Generator { rotation }
             }
         }
     }
 
-    /// Whether the term `(x, z)` emits a row.
-    #[cfg(test)]
-    pub(crate) fn emits(&self, x: &[u64; W], z: &[u64; W]) -> bool {
+    pub(crate) fn is_dense(&self) -> bool {
+        matches!(self, RowEmitter::Tabulated { dense: true, .. })
+    }
+
+    pub(crate) fn emit(
+        &self,
+        x: &[u64; W],
+        z: &[u64; W],
+        coeff: C,
+    ) -> Option<([u64; W], [u64; W], C)> {
         match self {
-            EmitTest::Every => true,
-            EmitTest::Table { ptm, entry } => {
-                ptm.deltas()[*entry].amplitude[ptm.support_bits(x, z)] != C::ZERO
+            RowEmitter::Tabulated { ptm, entry, .. } => {
+                entry.emit(ptm.support_bits(x, z), x, z, coeff)
             }
-            EmitTest::Generator { generator } => {
-                !PauliString::<W> { x: *x, z: *z }.commutes_with(generator)
-            }
+            RowEmitter::Generator { rotation } => rotation.emit_generator(x, z, coeff),
         }
     }
 }
@@ -110,23 +119,26 @@ impl OctaveWindow {
         (slot, slot * usize::from(!norm_sqr.is_nan()))
     }
 
-    /// Count and mark the terms of `columns` that `test` emits for into `ahead`, and count all of them into `counts` if given, both binned under this window and overwritten.
+    /// Count and mark the terms of `columns` that `emitter` emits for into `ahead`, and count all of them into `counts` if given, both binned under this window and overwritten.
     pub(crate) fn count_emitting<const W: usize, C: Coefficient>(
         &self,
         columns: &BucketColumns<W, C>,
-        test: &EmitTest<'_, W, C>,
+        emitter: &RowEmitter<'_, W, C>,
         counts: Option<&mut BucketOctaves>,
         ahead: &mut BucketAhead,
     ) {
-        match *test {
-            EmitTest::Every => self.count_rows(columns, |_, _| true, counts, ahead),
-            EmitTest::Table { ptm, entry } => {
-                let amplitude = &ptm.deltas()[entry].amplitude;
+        match *emitter {
+            RowEmitter::Tabulated { dense: true, .. } => {
+                self.count_rows(columns, |_, _| true, counts, ahead)
+            }
+            RowEmitter::Tabulated { ptm, entry, .. } => {
+                let amplitude = &entry.amplitude;
                 let emits =
                     |x: &[u64; W], z: &[u64; W]| amplitude[ptm.support_bits(x, z)] != C::ZERO;
                 self.count_rows(columns, emits, counts, ahead);
             }
-            EmitTest::Generator { generator } => {
+            RowEmitter::Generator { rotation } => {
+                let generator = &rotation.generator;
                 let emits = |x: &[u64; W], z: &[u64; W]| {
                     !PauliString::<W> { x: *x, z: *z }.commutes_with(generator)
                 };
@@ -135,7 +147,7 @@ impl OctaveWindow {
         }
     }
 
-    /// [`count_emitting`](Self::count_emitting) under one test, monomorphized so the loop carries no dispatch.
+    /// [`count_emitting`](Self::count_emitting) under one emit test, monomorphized so the loop carries no dispatch.
     #[inline(always)]
     fn count_rows<const W: usize, C: Coefficient>(
         &self,

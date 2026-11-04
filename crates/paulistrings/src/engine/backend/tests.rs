@@ -153,7 +153,7 @@ fn two_layers<const W: usize>(
                     apply(&mut part, warm_up, None);
                     let second_plan = PartitionPlan::new(second, rows, rank);
                     let ahead = match second_plan.remote.as_slice() {
-                        [remote] if count_ahead => Some(EmitTest::of(second, remote)),
+                        [remote] if count_ahead => Some(RowEmitter::of(second, remote)),
                         _ => None,
                     };
                     apply(&mut part, first, ahead.as_ref());

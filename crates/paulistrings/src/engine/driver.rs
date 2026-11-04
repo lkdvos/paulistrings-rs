@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::backend::PartitionBackend;
-use super::bucketed::EmitTest;
+use super::bucketed::RowEmitter;
 use super::plan::PartitionPlan;
 use super::transport::Transport;
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
@@ -170,11 +170,13 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
     // Overlap with the bucket rows only costs balance once the bucket count reaches it, so it is reported there, once, by partition 0.
     let mut overlap_onset = if rank == 0 { rows.overlap_onset(local.hash()) } else { None };
 
+    let circuit_index_of = |application_index: usize| match direction {
+        Direction::Forward => application_index,
+        Direction::Heisenberg => num_layers - 1 - application_index,
+    };
+
     for application_index in 0..num_layers {
-        let circuit_index = match direction {
-            Direction::Forward => application_index,
-            Direction::Heisenberg => num_layers - 1 - application_index,
-        };
+        let circuit_index = circuit_index_of(application_index);
         let channel: &dyn Channel<W> = circuit.channels[circuit_index].as_ref();
 
         let debug_enabled = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
@@ -250,17 +252,14 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
 
         // The next layer prepared under this layer's hash, so the coset loop can count the rows it exports; a rebucket in between drops the counts.
         let next_prepared = (!solo && application_index + 1 < num_layers).then(|| {
-            let next_index = match direction {
-                Direction::Forward => circuit_index + 1,
-                Direction::Heisenberg => circuit_index - 1,
-            };
-            let next_channel: &dyn Channel<W> = circuit.channels[next_index].as_ref();
+            let next_index = circuit_index_of(application_index + 1);
+            let next_channel = circuit.channels[next_index].as_ref();
             let next = prepare_or_panic(next_channel, local.hash(), adjoint, rank, next_index);
             next_plan.rebuild(&next, rows, rank as u32);
             next
         });
         let ahead = match (&next_prepared, next_plan.remote.as_slice()) {
-            (Some(next), [remote]) => Some(EmitTest::of(next, remote)),
+            (Some(next), [remote]) => Some(RowEmitter::of(next, remote)),
             _ => None,
         };
         lap!(stamp, local.stats().prepare_ns);

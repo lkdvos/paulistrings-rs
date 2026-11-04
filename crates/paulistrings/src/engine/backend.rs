@@ -8,7 +8,7 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::{max_fanout, EmitTest, LayerScratch};
+use crate::engine::bucketed::{max_fanout, LayerScratch, RowEmitter};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::trace::PartitionLayerRow;
@@ -75,7 +75,7 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         policy: &T,
         transport: &X,
         clocked: bool,
-        ahead: Option<&EmitTest<'_, W, C>>,
+        ahead: Option<&RowEmitter<'_, W, C>>,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
     /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
@@ -105,12 +105,6 @@ impl<const W: usize, C: Coefficient> HostPartition<W, C> {
     pub(crate) fn into_parts(self) -> (PauliSum<W, C>, LayerScratch<W, C>) {
         (self.sum, self.state.layer)
     }
-
-    /// The buckets whose export read the counts ahead under a pending cut, summed over every layer this partition drove.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(crate) fn buckets_exported_ahead_under_cut(&self) -> u64 {
-        self.state.export.buckets_ahead_under_cut
-    }
 }
 
 impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W, C> {
@@ -125,13 +119,11 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
 
     fn refine(&mut self) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
-        self.state.layer.octaves.drop_ahead();
         self.sum.refine();
     }
 
     fn coarsen_to(&mut self, bits: u8) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
-        self.state.layer.octaves.drop_ahead();
         self.sum.coarsen_to(bits);
     }
 
@@ -141,7 +133,6 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
             .min(self.sum.hash().max_bits());
         if wanted != bits {
             self.state.layer.octaves.apply_pending(&mut self.sum);
-            self.state.layer.octaves.drop_ahead();
             self.sum.rebucket(target_bucket_len, min_buckets);
         }
         true
@@ -182,7 +173,7 @@ where
         policy: &T,
         transport: &X,
         clocked: bool,
-        ahead: Option<&EmitTest<'_, W, C>>,
+        ahead: Option<&RowEmitter<'_, W, C>>,
     ) -> LayerExchangeCounts {
         self.state.layer.octaves.begin_layer(max_fanout(prepared), policy.sole_approx_top_n());
         apply_layer_partitioned_with_plan(

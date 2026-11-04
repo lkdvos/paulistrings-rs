@@ -34,7 +34,7 @@ mod partner_order;
 mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
-pub(crate) use export_ahead::{BucketAhead, EmitTest};
+pub(crate) use export_ahead::{BucketAhead, RowEmitter};
 
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
@@ -143,12 +143,13 @@ impl LayerOctaves {
         self.pending.as_ref()
     }
 
+    /// Apply the pending cut and drop the counts ahead, before anything outside a coset loop that changes the sum or its buckets.
     pub(crate) fn apply_pending<const W: usize, C: Coefficient>(
         &mut self,
         sum: &mut PauliSum<W, C>,
     ) {
+        self.drop_ahead();
         if let Some(cut) = self.pending.take() {
-            self.drop_ahead();
             cut.apply(sum);
         }
     }
@@ -162,7 +163,6 @@ impl LayerOctaves {
     /// End a call: apply the pending cut and forget the bound, since the sum may change before the next.
     pub(crate) fn settle<const W: usize, C: Coefficient>(&mut self, sum: &mut PauliSum<W, C>) {
         self.apply_pending(sum);
-        self.drop_ahead();
         self.bound = None;
     }
 }
@@ -341,7 +341,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     scratch: &mut LayerScratch<W, C>,
     extra: &X,
     knobs: LayerKnobs<'_>,
-    ahead: Option<&EmitTest<'_, W, C>>,
+    ahead: Option<&RowEmitter<'_, W, C>>,
 ) where
     T: TruncationPolicy<W, C> + ?Sized,
     X: ExtraRows<W, C> + Sync,
@@ -399,11 +399,11 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     if ahead.is_some() {
         ahead_counts.resize_with(sum.num_buckets(), BucketAhead::default);
     }
-    let ahead_slots = ahead.map(|test| (test, DisjointSlots::new(&mut ahead_counts)));
+    let ahead_slots = ahead.map(|emitter| (emitter, DisjointSlots::new(&mut ahead_counts)));
     let octaves = LayerOctaveIo {
         cut: cut.as_ref(),
         count: octaves.as_ref().map(|(window, slots)| (*window, slots)),
-        ahead: ahead_slots.as_ref().map(|(test, slots)| (ahead_window, *test, slots)),
+        ahead: ahead_slots.as_ref().map(|(emitter, slots)| (ahead_window, *emitter, slots)),
     };
     let len = match (received_rotation, rotation) {
         (Some(layer), _) => {
@@ -440,20 +440,13 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     sum.assert_invariants();
 }
 
+#[derive(Clone, Copy)]
 /// What a coset loop does for [`LayerOctaves`]: the cut it applies to each bucket before the fill, and each bucket's slot in the octave counts and the counts ahead it takes after, with their windows.
 struct LayerOctaveIo<'s, 'a, 't, const W: usize, C: Coefficient> {
     cut: Option<&'s BoundaryCut>,
     count: Option<(OctaveWindow, &'s DisjointSlots<'a, BucketOctaves>)>,
-    ahead: Option<(OctaveWindow, &'s EmitTest<'t, W, C>, &'s DisjointSlots<'a, BucketAhead>)>,
+    ahead: Option<(OctaveWindow, &'s RowEmitter<'t, W, C>, &'s DisjointSlots<'a, BucketAhead>)>,
 }
-
-impl<const W: usize, C: Coefficient> Clone for LayerOctaveIo<'_, '_, '_, W, C> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<const W: usize, C: Coefficient> Copy for LayerOctaveIo<'_, '_, '_, W, C> {}
 
 /// Run `fill(members, betas, scratch)` on every coset of `span`, serially or on the Rayon pool, each over its swapped-out bucket columns with `octaves`' cut and counts; returns the output terms.
 fn coset_loop<const W: usize, C: Coefficient, F>(
@@ -524,10 +517,10 @@ where
         len += slot.len();
         // SAFETY (both arms): as for the buckets, which the counts are indexed alike with.
         match (octaves.count, octaves.ahead) {
-            (count, Some((window, test, ahead))) => {
+            (count, Some((window, emitter, ahead))) => {
                 debug_assert!(count.is_none_or(|(counted, _)| counted == window));
                 let counts = count.map(|(_, counts)| unsafe { counts.get(beta as usize) });
-                window.count_emitting(slot, test, counts, unsafe { ahead.get(beta as usize) });
+                window.count_emitting(slot, emitter, counts, unsafe { ahead.get(beta as usize) });
             }
             (Some((window, counts)), None) => {
                 window.count(&slot.coeff, unsafe { counts.get(beta as usize) });

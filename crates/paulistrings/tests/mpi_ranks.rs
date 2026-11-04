@@ -36,7 +36,8 @@ use paulistrings::test_support::{
     trotter_circuit, unpinned_partitions, unpinned_scatter, zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{
-    count_remote_deltas, mpi_build_library_version, mpi_with_chunk_bytes, BITS_AGREE_EVERY,
+    buckets_exported_ahead_under_cut_on_rank, count_remote_deltas, mpi_build_library_version,
+    mpi_with_chunk_bytes, PlainApproxTopN, BITS_AGREE_EVERY,
 };
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
@@ -567,6 +568,36 @@ fn run_host_cases(r: &mut Runner) {
             SEED,
             "policy and",
         );
+    });
+
+    // Above one rank, some export reads the counts ahead under a pending cut, and the run keeps what the plain layer pass, which leaves none, keeps.
+    r.case("exchanging layers export from the counts ahead", |r| {
+        let circuit = trotter_circuit::<1>(16, THETA);
+        let sum = spread_magnitudes(&rand_sum_real::<1>(1_500, 16, 0xA4E1), 40, 0xA4E1);
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let run = |policy: &dyn TruncationPolicy<1>| {
+                let transport = MpiTransport::from_communicator(r.world);
+                let mut split = DistributedSum::scatter_with(
+                    sum.clone(),
+                    transport,
+                    unpinned_scatter(1, 2, SEED),
+                );
+                split.propagate(&circuit, policy, direction);
+                split.assert_invariants();
+                let ahead = [buckets_exported_ahead_under_cut_on_rank(&split)];
+                let mut total = [0u64];
+                r.world.all_reduce_into(&ahead[..], &mut total[..], SystemOperation::sum());
+                (split.gather(), total[0])
+            };
+            let (got, ahead) = run(&ApproxTopN(1_000));
+            let (want, plain_ahead) = run(&PlainApproxTopN(1_000));
+            let what = format!("counts ahead ranks={} {direction:?}", r.size);
+            assert!(r.size == 1 || ahead > 0, "{what}: no export read the counts ahead");
+            assert_eq!(plain_ahead, 0, "{what}: the plain layer pass left counts ahead");
+            if let Some(got) = r.root_result(got, &what) {
+                assert_terms_close(&got, &want.expect("rank 0 gathers"), TOL, &what);
+            }
+        }
     });
 
     // ---- degenerate inputs ----------------------------------------------

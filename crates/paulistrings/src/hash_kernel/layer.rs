@@ -16,6 +16,7 @@ use super::plan::{monomial, GroupPlan, Plan};
 use super::sum::HashSum;
 use super::table::{key_hash, Entry, Table};
 use crate::channel::prepared::{Prepared, PreparedRotation, LOCAL_DIM};
+use crate::coefficient::Coefficient;
 use crate::engine::coset::Gf2Span;
 use crate::pauli_string::PauliString;
 use crate::phase::Phase;
@@ -373,8 +374,8 @@ fn walk_rotation<const W: usize, T: TruncationPolicy<W> + ?Sized>(
                 }
                 None => ZERO,
             };
-            let new_v = e.c * rotation.cos + phase_w_to_v.apply(cw) * rotation.sin;
-            let new_w = cw * rotation.cos + phase_v_to_w.apply(e.c) * rotation.sin;
+            let new_v = e.c * rotation.cos + cw.mul_phase(phase_w_to_v) * rotation.sin;
+            let new_w = cw * rotation.cos + e.c.mul_phase(phase_v_to_w) * rotation.sin;
             if kept(&v.x, &v.z, new_v, policy) {
                 *tables[b].coefficient_mut(i) = new_v;
             } else {

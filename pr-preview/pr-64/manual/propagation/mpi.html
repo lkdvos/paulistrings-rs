@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-dc17bdb8.js";
+            window.path_to_searchindex_js = "../../searchindex-4654371e.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -263,7 +263,7 @@ split.propagate(circuit[40:], policy, direction="heisenberg")
 value = split.expectation("z+")                       # the same on every rank
 evolved = split.gather()                              # rank 0 only, if the whole sum is needed
 </code></pre>
-<p>A <code>PartitionedPauliSum</code> takes the same row keywords as <code>propagate</code>; <code>len()</code>, <code>expectation</code>, <code>gather</code>, <code>propagate</code>, <code>repartition</code> and <code>rehash</code> are collective, so every rank makes the same calls with the same arguments, while <code>local()</code>, <code>repr()</code> and the properties read this rank alone.
+<p>A <code>PartitionedPauliSum</code> takes the same row keywords as <code>propagate</code>; <code>len()</code>, <code>expectation</code>, <code>overlap</code>, <code>gather</code>, <code>propagate</code>, <code>repartition</code>, <code>rehash</code>, the operator products and <code>+</code>, <code>-</code> and <code>*</code> are collective, so every rank makes the same calls with the same arguments, while <code>local()</code>, <code>repr()</code>, <code>*=</code>, <code>add</code> and the properties read this rank alone.
 <code>paulistrings.hashes.remote_layers(rows, circuit.deltas())</code> says which gates a choice of rows makes exchange, so a run can pick the rows for each segment of a circuit before running it; see <a href="partitions.html#switching-rows-mid-circuit">NUMA partitions</a>.</p>
 <p><code>result="local"</code>, which returned each rank’s share as a plain <code>PauliSum</code>, is deprecated in favour of <code>PauliSum.partition(comm=...)</code>.
 Such a share fed back into a <code>propagate(comm=...)</code> split by other rows would lose the terms that now belong to another rank, so that call raises a <code>ValueError</code> instead.</p>

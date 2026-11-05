@@ -13,7 +13,7 @@
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span><span class="kw">crate</span>::engine::coset::{CosetOrder, Gf2Span};
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">crate</span>::engine::knob::{parse_positive, Knob};
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span><span class="kw">crate</span>::engine::merge::rest_rows_per_key;
-<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">crate</span>::engine::plan::{NextRemote, PartitionPlan};
+<a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span><span class="kw">crate</span>::engine::plan::PartitionPlan;
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span><span class="kw">crate</span>::engine::timing::{tally, timed};
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span><span class="kw">crate</span>::engine::transport::{ChunkMap, ChunkWait, Transport};
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::hash::PartitionRows;
@@ -146,191 +146,169 @@
 <a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub </span>export_ns: u64,
 <a href=#147 id=147 data-nosnippet>147</a>    <span class="doccomment">/// [`LayerPhases::exchange_ns`](crate::LayerPhases::exchange_ns), zero unless the layer was timed.
 <a href=#148 id=148 data-nosnippet>148</a>    </span><span class="kw">pub </span>exchange_ns: u64,
-<a href=#149 id=149 data-nosnippet>149</a>    <span class="doccomment">/// The maximum of [`NextRemote::proposal`] over the next group, when the exchange carried it.
-<a href=#150 id=150 data-nosnippet>150</a>    </span><span class="kw">pub </span>next_bits: <span class="prelude-ty">Option</span>&lt;u8&gt;,
-<a href=#151 id=151 data-nosnippet>151</a>}
-<a href=#152 id=152 data-nosnippet>152</a>
-<a href=#153 id=153 data-nosnippet>153</a><span class="kw">impl </span>LayerExchangeCounts {
-<a href=#154 id=154 data-nosnippet>154</a>    <span class="doccomment">/// Zero counts for `size` partners.
-<a href=#155 id=155 data-nosnippet>155</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>none(size: u32) -&gt; <span class="self">Self </span>{
-<a href=#156 id=156 data-nosnippet>156</a>        <span class="self">Self </span>{
-<a href=#157 id=157 data-nosnippet>157</a>            remote_deltas: <span class="number">0</span>,
-<a href=#158 id=158 data-nosnippet>158</a>            rows_sent: <span class="macro">vec!</span>[<span class="number">0</span>; size <span class="kw">as </span>usize],
-<a href=#159 id=159 data-nosnippet>159</a>            bytes_sent: <span class="macro">vec!</span>[<span class="number">0</span>; size <span class="kw">as </span>usize],
-<a href=#160 id=160 data-nosnippet>160</a>            rows_received: <span class="number">0</span>,
-<a href=#161 id=161 data-nosnippet>161</a>            receive_chunks: <span class="number">0</span>,
-<a href=#162 id=162 data-nosnippet>162</a>            export_ns: <span class="number">0</span>,
-<a href=#163 id=163 data-nosnippet>163</a>            exchange_ns: <span class="number">0</span>,
-<a href=#164 id=164 data-nosnippet>164</a>            next_bits: <span class="prelude-val">None</span>,
-<a href=#165 id=165 data-nosnippet>165</a>        }
-<a href=#166 id=166 data-nosnippet>166</a>    }
-<a href=#167 id=167 data-nosnippet>167</a>}
-<a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a><span class="doccomment">/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`, `clocked` fills the counts' phase times, `ahead` is the next layer's one remote delta, if it has exactly one, whose rows the coset loop counts for it, and `next` rides on a remote layer's exchange.
-<a href=#170 id=170 data-nosnippet>170</a></span><span class="attr">#[allow(clippy::too_many_arguments)]
-<a href=#171 id=171 data-nosnippet>171</a></span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">crate</span>::engine) <span class="kw">fn </span>apply_layer_partitioned_with_plan&lt;<span class="kw">const </span>W: usize, C: Coefficient, T, X&gt;(
-<a href=#172 id=172 data-nosnippet>172</a>    local: <span class="kw-2">&amp;mut </span>PauliSum&lt;W, C&gt;,
-<a href=#173 id=173 data-nosnippet>173</a>    prepared: <span class="kw-2">&amp;</span>Prepared&lt;W, C&gt;,
-<a href=#174 id=174 data-nosnippet>174</a>    plan: <span class="kw-2">&amp;</span>PartitionPlan,
-<a href=#175 id=175 data-nosnippet>175</a>    <span class="attr">#[cfg_attr(not(debug_assertions), allow(unused_variables))] </span>rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;,
-<a href=#176 id=176 data-nosnippet>176</a>    policy: <span class="kw-2">&amp;</span>T,
-<a href=#177 id=177 data-nosnippet>177</a>    state: <span class="kw-2">&amp;mut </span>PartitionState&lt;W, C&gt;,
-<a href=#178 id=178 data-nosnippet>178</a>    transport: <span class="kw-2">&amp;</span>X,
-<a href=#179 id=179 data-nosnippet>179</a>    clocked: bool,
-<a href=#180 id=180 data-nosnippet>180</a>    ahead: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>RowEmitter&lt;<span class="lifetime">'_</span>, W, C&gt;&gt;,
-<a href=#181 id=181 data-nosnippet>181</a>    next: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>NextRemote&lt;<span class="lifetime">'_</span>&gt;&gt;,
-<a href=#182 id=182 data-nosnippet>182</a>) -&gt; LayerExchangeCounts
-<a href=#183 id=183 data-nosnippet>183</a><span class="kw">where
-<a href=#184 id=184 data-nosnippet>184</a>    </span>T: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
-<a href=#185 id=185 data-nosnippet>185</a>    X: Transport,
-<a href=#186 id=186 data-nosnippet>186</a>{
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">let </span>size = transport.size();
-<a href=#188 id=188 data-nosnippet>188</a>
-<a href=#189 id=189 data-nosnippet>189</a>    <span class="comment">// No transport call at all: every partition takes this branch, since `part(d)` depends on the delta alone.
-<a href=#190 id=190 data-nosnippet>190</a>    </span><span class="kw">if </span>!plan.has_remote() {
-<a href=#191 id=191 data-nosnippet>191</a>        apply_layer_bucketed_with(
-<a href=#192 id=192 data-nosnippet>192</a>            local,
-<a href=#193 id=193 data-nosnippet>193</a>            prepared,
-<a href=#194 id=194 data-nosnippet>194</a>            policy,
-<a href=#195 id=195 data-nosnippet>195</a>            <span class="kw-2">&amp;mut </span>state.layer,
-<a href=#196 id=196 data-nosnippet>196</a>            <span class="kw-2">&amp;</span>NoExtra,
-<a href=#197 id=197 data-nosnippet>197</a>            LayerKnobs::default(),
-<a href=#198 id=198 data-nosnippet>198</a>            ahead,
-<a href=#199 id=199 data-nosnippet>199</a>        );
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">return </span>LayerExchangeCounts::default();
-<a href=#201 id=201 data-nosnippet>201</a>    }
-<a href=#202 id=202 data-nosnippet>202</a>
-<a href=#203 id=203 data-nosnippet>203</a>    <span class="kw">let </span>measured = clocked || <span class="macro">cfg!</span>(feature = <span class="string">"phase-timing"</span>);
-<a href=#204 id=204 data-nosnippet>204</a>    <span class="kw">let </span>export_start = measured.then(Instant::now);
-<a href=#205 id=205 data-nosnippet>205</a>    <span class="comment">// The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count; the coset loop reuses it.
-<a href=#206 id=206 data-nosnippet>206</a>    </span><span class="kw">let </span>span = Gf2Span::new(<span class="kw-2">&amp;</span>plan.local_bucket_deltas, local.hash().bits());
-<a href=#207 id=207 data-nosnippet>207</a>    <span class="kw">let </span><span class="kw-2">mut </span>order = std::mem::take(<span class="kw-2">&amp;mut </span>state.layer.order);
-<a href=#208 id=208 data-nosnippet>208</a>    order.rebuild(<span class="kw-2">&amp;</span>span, <span class="bool-val">true</span>);
-<a href=#209 id=209 data-nosnippet>209</a>    state.chunks = ChunkMap::of_order(<span class="kw-2">&amp;</span>order, <span class="kw-2">*</span>EXCHANGE_CHUNKS.get());
-<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">let </span>(<span class="kw-2">mut </span>send, <span class="kw-2">mut </span>counts) =
-<a href=#211 id=211 data-nosnippet>211</a>        export_layer(local, <span class="kw-2">&amp;</span>state.layer.octaves, prepared, plan, size, <span class="kw-2">&amp;</span>order, <span class="kw-2">&amp;mut </span>state.export);
-<a href=#212 id=212 data-nosnippet>212</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(next) = next {
-<a href=#213 id=213 data-nosnippet>213</a>        <span class="comment">// Fresh, not from the pool, whose payloads keep their columns' allocations.
-<a href=#214 id=214 data-nosnippet>214</a>        </span><span class="kw">for </span><span class="kw-2">&amp;</span>member <span class="kw">in </span>next.group {
-<a href=#215 id=215 data-nosnippet>215</a>            send[member <span class="kw">as </span>usize].get_or_insert_with(PartnerPayload::default);
-<a href=#216 id=216 data-nosnippet>216</a>        }
-<a href=#217 id=217 data-nosnippet>217</a>        <span class="kw">for </span>payload <span class="kw">in </span>send.iter_mut().flatten() {
-<a href=#218 id=218 data-nosnippet>218</a>            payload.bits = next.proposal;
-<a href=#219 id=219 data-nosnippet>219</a>        }
-<a href=#220 id=220 data-nosnippet>220</a>    }
-<a href=#221 id=221 data-nosnippet>221</a>    <span class="kw">let </span>export_ns = export_start.map_or(<span class="number">0</span>, |start| start.elapsed().as_nanos() <span class="kw">as </span>u64);
-<a href=#222 id=222 data-nosnippet>222</a>    <span class="macro">tally!</span>(state.layer.stats.export_ns, export_ns);
-<a href=#223 id=223 data-nosnippet>223</a>    <span class="macro">tally!</span>(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::&lt;u64&gt;());
-<a href=#224 id=224 data-nosnippet>224</a>    <span class="attr">#[cfg(debug_assertions)]
-<a href=#225 id=225 data-nosnippet>225</a>    </span>{
-<a href=#226 id=226 data-nosnippet>226</a>        <span class="kw">super</span>::export::debug_assert_exported_partitions(<span class="kw-2">&amp;</span>send, rows);
-<a href=#227 id=227 data-nosnippet>227</a>        <span class="kw">for </span>remote <span class="kw">in </span><span class="kw-2">&amp;</span>plan.remote {
-<a href=#228 id=228 data-nosnippet>228</a>            <span class="macro">debug_assert!</span>(
-<a href=#229 id=229 data-nosnippet>229</a>                send[remote.partner <span class="kw">as </span>usize].is_some(),
-<a href=#230 id=230 data-nosnippet>230</a>                <span class="string">"no payload for partner {}, which the plan names"</span>,
-<a href=#231 id=231 data-nosnippet>231</a>                remote.partner,
-<a href=#232 id=232 data-nosnippet>232</a>            );
-<a href=#233 id=233 data-nosnippet>233</a>        }
-<a href=#234 id=234 data-nosnippet>234</a>    }
-<a href=#235 id=235 data-nosnippet>235</a>    <span class="comment">// A rotation's identity entry is always local, so on a remote layer its generator crosses: it stays whole and `generator_local` switches that pass off.
-<a href=#236 id=236 data-nosnippet>236</a>    </span><span class="kw">let </span>rotation_table = <span class="macro">matches!</span>(prepared, Prepared::Local(ptm) <span class="kw">if </span>is_rotation_table(ptm));
-<a href=#237 id=237 data-nosnippet>237</a>    <span class="kw">let </span>retained;
-<a href=#238 id=238 data-nosnippet>238</a>    <span class="kw">let </span>local_prepared: <span class="kw-2">&amp;</span>Prepared&lt;W, C&gt; = <span class="kw">match </span>prepared {
-<a href=#239 id=239 data-nosnippet>239</a>        Prepared::Local(ptm) <span class="kw">if </span>!rotation_table =&gt; {
-<a href=#240 id=240 data-nosnippet>240</a>            retained = Prepared::Local(ptm.retain_entries(<span class="kw-2">&amp;</span>plan.local_entries));
-<a href=#241 id=241 data-nosnippet>241</a>            <span class="kw-2">&amp;</span>retained
-<a href=#242 id=242 data-nosnippet>242</a>        }
-<a href=#243 id=243 data-nosnippet>243</a>        Prepared::Local(<span class="kw">_</span>) | Prepared::Rotation(<span class="kw">_</span>) =&gt; prepared,
-<a href=#244 id=244 data-nosnippet>244</a>    };
-<a href=#245 id=245 data-nosnippet>245</a>    <span class="kw">let </span>knobs = LayerKnobs {
-<a href=#246 id=246 data-nosnippet>246</a>        bucket_deltas: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>plan.local_bucket_deltas),
-<a href=#247 id=247 data-nosnippet>247</a>        rest_streams: <span class="prelude-val">Some</span>(plan.rest_streams_total),
-<a href=#248 id=248 data-nosnippet>248</a>        <span class="comment">// From `prepared`, not `local_prepared`, so every partition picks the unpartitioned run's sort kernel.
-<a href=#249 id=249 data-nosnippet>249</a>        </span>rows_per_key: <span class="kw">match </span>prepared {
-<a href=#250 id=250 data-nosnippet>250</a>            Prepared::Local(ptm) =&gt; <span class="prelude-val">Some</span>(rest_rows_per_key(ptm)),
-<a href=#251 id=251 data-nosnippet>251</a>            Prepared::Rotation(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
-<a href=#252 id=252 data-nosnippet>252</a>        },
-<a href=#253 id=253 data-nosnippet>253</a>        generator_local: <span class="kw">match </span>prepared {
-<a href=#254 id=254 data-nosnippet>254</a>            Prepared::Rotation(<span class="kw">_</span>) =&gt; plan.local_entries[<span class="number">1</span>],
-<a href=#255 id=255 data-nosnippet>255</a>            Prepared::Local(<span class="kw">_</span>) =&gt; !rotation_table,
-<a href=#256 id=256 data-nosnippet>256</a>        },
-<a href=#257 id=257 data-nosnippet>257</a>        order: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>order),
-<a href=#258 id=258 data-nosnippet>258</a>    };
-<a href=#259 id=259 data-nosnippet>259</a>
-<a href=#260 id=260 data-nosnippet>260</a>    <span class="kw">let </span>PartitionState { layer: layer_scratch, export: export_scratch, chunks: map } = state;
-<a href=#261 id=261 data-nosnippet>261</a>    <span class="kw">let </span>body_ns = std::cell::Cell::new(<span class="number">0u64</span>);
-<a href=#262 id=262 data-nosnippet>262</a>    <span class="kw">let </span>exchange_start = measured.then(Instant::now);
-<a href=#263 id=263 data-nosnippet>263</a>
-<a href=#264 id=264 data-nosnippet>264</a>    <span class="comment">// The rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
-<a href=#265 id=265 data-nosnippet>265</a>    </span><span class="kw">let </span>(received, rows_received) =
-<a href=#266 id=266 data-nosnippet>266</a>        transport.exchange_layer(send, <span class="kw-2">&amp;mut </span>export_scratch.pool, map, |received, wait| {
-<a href=#267 id=267 data-nosnippet>267</a>            <span class="kw">let </span>body_start = measured.then(Instant::now);
-<a href=#268 id=268 data-nosnippet>268</a>            <span class="attr">#[cfg(debug_assertions)]
-<a href=#269 id=269 data-nosnippet>269</a>            </span><span class="kw">for </span>block <span class="kw">in </span>received.iter().flatten().flat_map(|payload| <span class="kw-2">&amp;</span>payload.blocks) {
-<a href=#270 id=270 data-nosnippet>270</a>                <span class="macro">debug_assert_eq!</span>(
-<a href=#271 id=271 data-nosnippet>271</a>                    block.num_buckets() <span class="kw">as </span>usize,
-<a href=#272 id=272 data-nosnippet>272</a>                    local.num_buckets(),
-<a href=#273 id=273 data-nosnippet>273</a>                    <span class="string">"a partner sent a block indexed by {} buckets where this partition has {}: \
-<a href=#274 id=274 data-nosnippet>274</a>                     the partitions disagree about the bucket count"</span>,
-<a href=#275 id=275 data-nosnippet>275</a>                    block.num_buckets(),
-<a href=#276 id=276 data-nosnippet>276</a>                    local.num_buckets(),
-<a href=#277 id=277 data-nosnippet>277</a>                );
-<a href=#278 id=278 data-nosnippet>278</a>            }
-<a href=#279 id=279 data-nosnippet>279</a>            <span class="kw">let </span>rows_received: u64 = received
-<a href=#280 id=280 data-nosnippet>280</a>                .iter()
-<a href=#281 id=281 data-nosnippet>281</a>                .flatten()
-<a href=#282 id=282 data-nosnippet>282</a>                .flat_map(|payload| <span class="kw-2">&amp;</span>payload.blocks)
-<a href=#283 id=283 data-nosnippet>283</a>                .map(|block| block.rows() <span class="kw">as </span>u64)
-<a href=#284 id=284 data-nosnippet>284</a>                .sum();
-<a href=#285 id=285 data-nosnippet>285</a>            <span class="kw">let </span>received_rows = ReceivedRows::new(plan, received, <span class="kw-2">&amp;</span>order, map, wait);
-<a href=#286 id=286 data-nosnippet>286</a>            apply_layer_bucketed_with(
-<a href=#287 id=287 data-nosnippet>287</a>                local,
-<a href=#288 id=288 data-nosnippet>288</a>                local_prepared,
-<a href=#289 id=289 data-nosnippet>289</a>                policy,
-<a href=#290 id=290 data-nosnippet>290</a>                layer_scratch,
-<a href=#291 id=291 data-nosnippet>291</a>                <span class="kw-2">&amp;</span>received_rows,
-<a href=#292 id=292 data-nosnippet>292</a>                knobs,
-<a href=#293 id=293 data-nosnippet>293</a>                ahead,
-<a href=#294 id=294 data-nosnippet>294</a>            );
-<a href=#295 id=295 data-nosnippet>295</a>            <span class="macro">timed!</span> {
-<a href=#296 id=296 data-nosnippet>296</a>                layer_scratch.stats.recv_rows += rows_received;
-<a href=#297 id=297 data-nosnippet>297</a>                layer_scratch.stats.append_ns += received_rows
-<a href=#298 id=298 data-nosnippet>298</a>                    .append_ns
-<a href=#299 id=299 data-nosnippet>299</a>                    .load(std::sync::atomic::Ordering::Relaxed);
-<a href=#300 id=300 data-nosnippet>300</a>                layer_scratch.stats.chunk_wait_ns += received_rows
-<a href=#301 id=301 data-nosnippet>301</a>                    .chunk_wait_ns
-<a href=#302 id=302 data-nosnippet>302</a>                    .load(std::sync::atomic::Ordering::Relaxed);
-<a href=#303 id=303 data-nosnippet>303</a>            }
-<a href=#304 id=304 data-nosnippet>304</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(start) = body_start {
-<a href=#305 id=305 data-nosnippet>305</a>                body_ns.set(start.elapsed().as_nanos() <span class="kw">as </span>u64);
-<a href=#306 id=306 data-nosnippet>306</a>            }
-<a href=#307 id=307 data-nosnippet>307</a>            rows_received
-<a href=#308 id=308 data-nosnippet>308</a>        });
-<a href=#309 id=309 data-nosnippet>309</a>    <span class="comment">// Excludes the body it wraps: the transfer the coset loop did not hide.
-<a href=#310 id=310 data-nosnippet>310</a>    </span><span class="kw">let </span>exchange_ns = exchange_start
-<a href=#311 id=311 data-nosnippet>311</a>        .map_or(<span class="number">0</span>, |start| (start.elapsed().as_nanos() <span class="kw">as </span>u64).saturating_sub(body_ns.get()));
-<a href=#312 id=312 data-nosnippet>312</a>    <span class="macro">tally!</span>(layer_scratch.stats.exchange_ns, exchange_ns);
-<a href=#313 id=313 data-nosnippet>313</a>    counts.next_bits = next.map(|next| {
-<a href=#314 id=314 data-nosnippet>314</a>        next.group
-<a href=#315 id=315 data-nosnippet>315</a>            .iter()
-<a href=#316 id=316 data-nosnippet>316</a>            .map(|<span class="kw-2">&amp;</span>member| {
-<a href=#317 id=317 data-nosnippet>317</a>                received[member <span class="kw">as </span>usize].as_ref().expect(<span class="string">"every group member sends its proposal"</span>)
-<a href=#318 id=318 data-nosnippet>318</a>            })
-<a href=#319 id=319 data-nosnippet>319</a>            .fold(next.proposal, |bits, payload| bits.max(payload.bits))
-<a href=#320 id=320 data-nosnippet>320</a>    });
-<a href=#321 id=321 data-nosnippet>321</a>    export_scratch.pool.extend(received.into_iter().flatten());
-<a href=#322 id=322 data-nosnippet>322</a>    export_scratch.pool.retain(|payload| !payload.blocks.is_empty());
-<a href=#323 id=323 data-nosnippet>323</a>    layer_scratch.order = order;
-<a href=#324 id=324 data-nosnippet>324</a>
-<a href=#325 id=325 data-nosnippet>325</a>    counts.remote_deltas = plan.remote.len();
-<a href=#326 id=326 data-nosnippet>326</a>    counts.rows_received = rows_received;
-<a href=#327 id=327 data-nosnippet>327</a>    counts.receive_chunks = map.chunks() <span class="kw">as </span>u32;
-<a href=#328 id=328 data-nosnippet>328</a>    <span class="kw">if </span>clocked {
-<a href=#329 id=329 data-nosnippet>329</a>        (counts.export_ns, counts.exchange_ns) = (export_ns, exchange_ns);
-<a href=#330 id=330 data-nosnippet>330</a>    }
-<a href=#331 id=331 data-nosnippet>331</a>    counts
-<a href=#332 id=332 data-nosnippet>332</a>}
-<a href=#333 id=333 data-nosnippet>333</a>
-<a href=#334 id=334 data-nosnippet>334</a><span class="attr">#[cfg(test)]
-<a href=#335 id=335 data-nosnippet>335</a></span><span class="kw">mod </span>tests;
+<a href=#149 id=149 data-nosnippet>149</a>}
+<a href=#150 id=150 data-nosnippet>150</a>
+<a href=#151 id=151 data-nosnippet>151</a><span class="kw">impl </span>LayerExchangeCounts {
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="doccomment">/// Zero counts for `size` partners.
+<a href=#153 id=153 data-nosnippet>153</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>none(size: u32) -&gt; <span class="self">Self </span>{
+<a href=#154 id=154 data-nosnippet>154</a>        <span class="self">Self </span>{
+<a href=#155 id=155 data-nosnippet>155</a>            remote_deltas: <span class="number">0</span>,
+<a href=#156 id=156 data-nosnippet>156</a>            rows_sent: <span class="macro">vec!</span>[<span class="number">0</span>; size <span class="kw">as </span>usize],
+<a href=#157 id=157 data-nosnippet>157</a>            bytes_sent: <span class="macro">vec!</span>[<span class="number">0</span>; size <span class="kw">as </span>usize],
+<a href=#158 id=158 data-nosnippet>158</a>            rows_received: <span class="number">0</span>,
+<a href=#159 id=159 data-nosnippet>159</a>            receive_chunks: <span class="number">0</span>,
+<a href=#160 id=160 data-nosnippet>160</a>            export_ns: <span class="number">0</span>,
+<a href=#161 id=161 data-nosnippet>161</a>            exchange_ns: <span class="number">0</span>,
+<a href=#162 id=162 data-nosnippet>162</a>        }
+<a href=#163 id=163 data-nosnippet>163</a>    }
+<a href=#164 id=164 data-nosnippet>164</a>}
+<a href=#165 id=165 data-nosnippet>165</a>
+<a href=#166 id=166 data-nosnippet>166</a><span class="doccomment">/// One layer on this partition's share; `plan` must be `PartitionPlan::new(prepared, rows, transport.rank())`, `clocked` fills the counts' phase times, and `ahead` is the next layer's one remote delta, if it has exactly one, whose rows the coset loop counts for it.
+<a href=#167 id=167 data-nosnippet>167</a></span><span class="attr">#[allow(clippy::too_many_arguments)]
+<a href=#168 id=168 data-nosnippet>168</a></span><span class="kw">pub</span>(<span class="kw">in </span><span class="kw">crate</span>::engine) <span class="kw">fn </span>apply_layer_partitioned_with_plan&lt;<span class="kw">const </span>W: usize, C: Coefficient, T, X&gt;(
+<a href=#169 id=169 data-nosnippet>169</a>    local: <span class="kw-2">&amp;mut </span>PauliSum&lt;W, C&gt;,
+<a href=#170 id=170 data-nosnippet>170</a>    prepared: <span class="kw-2">&amp;</span>Prepared&lt;W, C&gt;,
+<a href=#171 id=171 data-nosnippet>171</a>    plan: <span class="kw-2">&amp;</span>PartitionPlan,
+<a href=#172 id=172 data-nosnippet>172</a>    <span class="attr">#[cfg_attr(not(debug_assertions), allow(unused_variables))] </span>rows: <span class="kw-2">&amp;</span>PartitionRows&lt;W&gt;,
+<a href=#173 id=173 data-nosnippet>173</a>    policy: <span class="kw-2">&amp;</span>T,
+<a href=#174 id=174 data-nosnippet>174</a>    state: <span class="kw-2">&amp;mut </span>PartitionState&lt;W, C&gt;,
+<a href=#175 id=175 data-nosnippet>175</a>    transport: <span class="kw-2">&amp;</span>X,
+<a href=#176 id=176 data-nosnippet>176</a>    clocked: bool,
+<a href=#177 id=177 data-nosnippet>177</a>    ahead: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>RowEmitter&lt;<span class="lifetime">'_</span>, W, C&gt;&gt;,
+<a href=#178 id=178 data-nosnippet>178</a>) -&gt; LayerExchangeCounts
+<a href=#179 id=179 data-nosnippet>179</a><span class="kw">where
+<a href=#180 id=180 data-nosnippet>180</a>    </span>T: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
+<a href=#181 id=181 data-nosnippet>181</a>    X: Transport,
+<a href=#182 id=182 data-nosnippet>182</a>{
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="kw">let </span>size = transport.size();
+<a href=#184 id=184 data-nosnippet>184</a>
+<a href=#185 id=185 data-nosnippet>185</a>    <span class="comment">// No transport call at all: every partition takes this branch, since `part(d)` depends on the delta alone.
+<a href=#186 id=186 data-nosnippet>186</a>    </span><span class="kw">if </span>!plan.has_remote() {
+<a href=#187 id=187 data-nosnippet>187</a>        apply_layer_bucketed_with(
+<a href=#188 id=188 data-nosnippet>188</a>            local,
+<a href=#189 id=189 data-nosnippet>189</a>            prepared,
+<a href=#190 id=190 data-nosnippet>190</a>            policy,
+<a href=#191 id=191 data-nosnippet>191</a>            <span class="kw-2">&amp;mut </span>state.layer,
+<a href=#192 id=192 data-nosnippet>192</a>            <span class="kw-2">&amp;</span>NoExtra,
+<a href=#193 id=193 data-nosnippet>193</a>            LayerKnobs::default(),
+<a href=#194 id=194 data-nosnippet>194</a>            ahead,
+<a href=#195 id=195 data-nosnippet>195</a>        );
+<a href=#196 id=196 data-nosnippet>196</a>        <span class="kw">return </span>LayerExchangeCounts::default();
+<a href=#197 id=197 data-nosnippet>197</a>    }
+<a href=#198 id=198 data-nosnippet>198</a>
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">let </span>measured = clocked || <span class="macro">cfg!</span>(feature = <span class="string">"phase-timing"</span>);
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">let </span>export_start = measured.then(Instant::now);
+<a href=#201 id=201 data-nosnippet>201</a>    <span class="comment">// The receiver's coset order, derived identically on both sides from the local bucket deltas and the agreed bucket count; the coset loop reuses it.
+<a href=#202 id=202 data-nosnippet>202</a>    </span><span class="kw">let </span>span = Gf2Span::new(<span class="kw-2">&amp;</span>plan.local_bucket_deltas, local.hash().bits());
+<a href=#203 id=203 data-nosnippet>203</a>    <span class="kw">let </span><span class="kw-2">mut </span>order = std::mem::take(<span class="kw-2">&amp;mut </span>state.layer.order);
+<a href=#204 id=204 data-nosnippet>204</a>    order.rebuild(<span class="kw-2">&amp;</span>span, <span class="bool-val">true</span>);
+<a href=#205 id=205 data-nosnippet>205</a>    state.chunks = ChunkMap::of_order(<span class="kw-2">&amp;</span>order, <span class="kw-2">*</span>EXCHANGE_CHUNKS.get());
+<a href=#206 id=206 data-nosnippet>206</a>    <span class="kw">let </span>(send, <span class="kw-2">mut </span>counts) =
+<a href=#207 id=207 data-nosnippet>207</a>        export_layer(local, <span class="kw-2">&amp;</span>state.layer.octaves, prepared, plan, size, <span class="kw-2">&amp;</span>order, <span class="kw-2">&amp;mut </span>state.export);
+<a href=#208 id=208 data-nosnippet>208</a>    <span class="kw">let </span>export_ns = export_start.map_or(<span class="number">0</span>, |start| start.elapsed().as_nanos() <span class="kw">as </span>u64);
+<a href=#209 id=209 data-nosnippet>209</a>    <span class="macro">tally!</span>(state.layer.stats.export_ns, export_ns);
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="macro">tally!</span>(state.layer.stats.rows_exported, counts.rows_sent.iter().sum::&lt;u64&gt;());
+<a href=#211 id=211 data-nosnippet>211</a>    <span class="attr">#[cfg(debug_assertions)]
+<a href=#212 id=212 data-nosnippet>212</a>    </span>{
+<a href=#213 id=213 data-nosnippet>213</a>        <span class="kw">super</span>::export::debug_assert_exported_partitions(<span class="kw-2">&amp;</span>send, rows);
+<a href=#214 id=214 data-nosnippet>214</a>        <span class="kw">for </span>remote <span class="kw">in </span><span class="kw-2">&amp;</span>plan.remote {
+<a href=#215 id=215 data-nosnippet>215</a>            <span class="macro">debug_assert!</span>(
+<a href=#216 id=216 data-nosnippet>216</a>                send[remote.partner <span class="kw">as </span>usize].is_some(),
+<a href=#217 id=217 data-nosnippet>217</a>                <span class="string">"no payload for partner {}, which the plan names"</span>,
+<a href=#218 id=218 data-nosnippet>218</a>                remote.partner,
+<a href=#219 id=219 data-nosnippet>219</a>            );
+<a href=#220 id=220 data-nosnippet>220</a>        }
+<a href=#221 id=221 data-nosnippet>221</a>    }
+<a href=#222 id=222 data-nosnippet>222</a>    <span class="comment">// A rotation's identity entry is always local, so on a remote layer its generator crosses: it stays whole and `generator_local` switches that pass off.
+<a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">let </span>rotation_table = <span class="macro">matches!</span>(prepared, Prepared::Local(ptm) <span class="kw">if </span>is_rotation_table(ptm));
+<a href=#224 id=224 data-nosnippet>224</a>    <span class="kw">let </span>retained;
+<a href=#225 id=225 data-nosnippet>225</a>    <span class="kw">let </span>local_prepared: <span class="kw-2">&amp;</span>Prepared&lt;W, C&gt; = <span class="kw">match </span>prepared {
+<a href=#226 id=226 data-nosnippet>226</a>        Prepared::Local(ptm) <span class="kw">if </span>!rotation_table =&gt; {
+<a href=#227 id=227 data-nosnippet>227</a>            retained = Prepared::Local(ptm.retain_entries(<span class="kw-2">&amp;</span>plan.local_entries));
+<a href=#228 id=228 data-nosnippet>228</a>            <span class="kw-2">&amp;</span>retained
+<a href=#229 id=229 data-nosnippet>229</a>        }
+<a href=#230 id=230 data-nosnippet>230</a>        Prepared::Local(<span class="kw">_</span>) | Prepared::Rotation(<span class="kw">_</span>) =&gt; prepared,
+<a href=#231 id=231 data-nosnippet>231</a>    };
+<a href=#232 id=232 data-nosnippet>232</a>    <span class="kw">let </span>knobs = LayerKnobs {
+<a href=#233 id=233 data-nosnippet>233</a>        bucket_deltas: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>plan.local_bucket_deltas),
+<a href=#234 id=234 data-nosnippet>234</a>        rest_streams: <span class="prelude-val">Some</span>(plan.rest_streams_total),
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="comment">// From `prepared`, not `local_prepared`, so every partition picks the unpartitioned run's sort kernel.
+<a href=#236 id=236 data-nosnippet>236</a>        </span>rows_per_key: <span class="kw">match </span>prepared {
+<a href=#237 id=237 data-nosnippet>237</a>            Prepared::Local(ptm) =&gt; <span class="prelude-val">Some</span>(rest_rows_per_key(ptm)),
+<a href=#238 id=238 data-nosnippet>238</a>            Prepared::Rotation(<span class="kw">_</span>) =&gt; <span class="prelude-val">None</span>,
+<a href=#239 id=239 data-nosnippet>239</a>        },
+<a href=#240 id=240 data-nosnippet>240</a>        generator_local: <span class="kw">match </span>prepared {
+<a href=#241 id=241 data-nosnippet>241</a>            Prepared::Rotation(<span class="kw">_</span>) =&gt; plan.local_entries[<span class="number">1</span>],
+<a href=#242 id=242 data-nosnippet>242</a>            Prepared::Local(<span class="kw">_</span>) =&gt; !rotation_table,
+<a href=#243 id=243 data-nosnippet>243</a>        },
+<a href=#244 id=244 data-nosnippet>244</a>        order: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>order),
+<a href=#245 id=245 data-nosnippet>245</a>    };
+<a href=#246 id=246 data-nosnippet>246</a>
+<a href=#247 id=247 data-nosnippet>247</a>    <span class="kw">let </span>PartitionState { layer: layer_scratch, export: export_scratch, chunks: map } = state;
+<a href=#248 id=248 data-nosnippet>248</a>    <span class="kw">let </span>body_ns = std::cell::Cell::new(<span class="number">0u64</span>);
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">let </span>exchange_start = measured.then(Instant::now);
+<a href=#250 id=250 data-nosnippet>250</a>
+<a href=#251 id=251 data-nosnippet>251</a>    <span class="comment">// The rows may still be in flight when the body runs; each coset task waits for its own chunk in `append_into`.
+<a href=#252 id=252 data-nosnippet>252</a>    </span><span class="kw">let </span>(received, rows_received) =
+<a href=#253 id=253 data-nosnippet>253</a>        transport.exchange_layer(send, <span class="kw-2">&amp;mut </span>export_scratch.pool, map, |received, wait| {
+<a href=#254 id=254 data-nosnippet>254</a>            <span class="kw">let </span>body_start = measured.then(Instant::now);
+<a href=#255 id=255 data-nosnippet>255</a>            <span class="attr">#[cfg(debug_assertions)]
+<a href=#256 id=256 data-nosnippet>256</a>            </span><span class="kw">for </span>block <span class="kw">in </span>received.iter().flatten().flat_map(|payload| <span class="kw-2">&amp;</span>payload.blocks) {
+<a href=#257 id=257 data-nosnippet>257</a>                <span class="macro">debug_assert_eq!</span>(
+<a href=#258 id=258 data-nosnippet>258</a>                    block.num_buckets() <span class="kw">as </span>usize,
+<a href=#259 id=259 data-nosnippet>259</a>                    local.num_buckets(),
+<a href=#260 id=260 data-nosnippet>260</a>                    <span class="string">"a partner sent a block indexed by {} buckets where this partition has {}: \
+<a href=#261 id=261 data-nosnippet>261</a>                     the partitions disagree about the bucket count"</span>,
+<a href=#262 id=262 data-nosnippet>262</a>                    block.num_buckets(),
+<a href=#263 id=263 data-nosnippet>263</a>                    local.num_buckets(),
+<a href=#264 id=264 data-nosnippet>264</a>                );
+<a href=#265 id=265 data-nosnippet>265</a>            }
+<a href=#266 id=266 data-nosnippet>266</a>            <span class="kw">let </span>rows_received: u64 = received
+<a href=#267 id=267 data-nosnippet>267</a>                .iter()
+<a href=#268 id=268 data-nosnippet>268</a>                .flatten()
+<a href=#269 id=269 data-nosnippet>269</a>                .flat_map(|payload| <span class="kw-2">&amp;</span>payload.blocks)
+<a href=#270 id=270 data-nosnippet>270</a>                .map(|block| block.rows() <span class="kw">as </span>u64)
+<a href=#271 id=271 data-nosnippet>271</a>                .sum();
+<a href=#272 id=272 data-nosnippet>272</a>            <span class="kw">let </span>received_rows = ReceivedRows::new(plan, received, <span class="kw-2">&amp;</span>order, map, wait);
+<a href=#273 id=273 data-nosnippet>273</a>            apply_layer_bucketed_with(
+<a href=#274 id=274 data-nosnippet>274</a>                local,
+<a href=#275 id=275 data-nosnippet>275</a>                local_prepared,
+<a href=#276 id=276 data-nosnippet>276</a>                policy,
+<a href=#277 id=277 data-nosnippet>277</a>                layer_scratch,
+<a href=#278 id=278 data-nosnippet>278</a>                <span class="kw-2">&amp;</span>received_rows,
+<a href=#279 id=279 data-nosnippet>279</a>                knobs,
+<a href=#280 id=280 data-nosnippet>280</a>                ahead,
+<a href=#281 id=281 data-nosnippet>281</a>            );
+<a href=#282 id=282 data-nosnippet>282</a>            <span class="macro">timed!</span> {
+<a href=#283 id=283 data-nosnippet>283</a>                layer_scratch.stats.recv_rows += rows_received;
+<a href=#284 id=284 data-nosnippet>284</a>                layer_scratch.stats.append_ns += received_rows
+<a href=#285 id=285 data-nosnippet>285</a>                    .append_ns
+<a href=#286 id=286 data-nosnippet>286</a>                    .load(std::sync::atomic::Ordering::Relaxed);
+<a href=#287 id=287 data-nosnippet>287</a>                layer_scratch.stats.chunk_wait_ns += received_rows
+<a href=#288 id=288 data-nosnippet>288</a>                    .chunk_wait_ns
+<a href=#289 id=289 data-nosnippet>289</a>                    .load(std::sync::atomic::Ordering::Relaxed);
+<a href=#290 id=290 data-nosnippet>290</a>            }
+<a href=#291 id=291 data-nosnippet>291</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(start) = body_start {
+<a href=#292 id=292 data-nosnippet>292</a>                body_ns.set(start.elapsed().as_nanos() <span class="kw">as </span>u64);
+<a href=#293 id=293 data-nosnippet>293</a>            }
+<a href=#294 id=294 data-nosnippet>294</a>            rows_received
+<a href=#295 id=295 data-nosnippet>295</a>        });
+<a href=#296 id=296 data-nosnippet>296</a>    <span class="comment">// Excludes the body it wraps: the transfer the coset loop did not hide.
+<a href=#297 id=297 data-nosnippet>297</a>    </span><span class="kw">let </span>exchange_ns = exchange_start
+<a href=#298 id=298 data-nosnippet>298</a>        .map_or(<span class="number">0</span>, |start| (start.elapsed().as_nanos() <span class="kw">as </span>u64).saturating_sub(body_ns.get()));
+<a href=#299 id=299 data-nosnippet>299</a>    <span class="macro">tally!</span>(layer_scratch.stats.exchange_ns, exchange_ns);
+<a href=#300 id=300 data-nosnippet>300</a>    export_scratch.pool.extend(received.into_iter().flatten());
+<a href=#301 id=301 data-nosnippet>301</a>    layer_scratch.order = order;
+<a href=#302 id=302 data-nosnippet>302</a>
+<a href=#303 id=303 data-nosnippet>303</a>    counts.remote_deltas = plan.remote.len();
+<a href=#304 id=304 data-nosnippet>304</a>    counts.rows_received = rows_received;
+<a href=#305 id=305 data-nosnippet>305</a>    counts.receive_chunks = map.chunks() <span class="kw">as </span>u32;
+<a href=#306 id=306 data-nosnippet>306</a>    <span class="kw">if </span>clocked {
+<a href=#307 id=307 data-nosnippet>307</a>        (counts.export_ns, counts.exchange_ns) = (export_ns, exchange_ns);
+<a href=#308 id=308 data-nosnippet>308</a>    }
+<a href=#309 id=309 data-nosnippet>309</a>    counts
+<a href=#310 id=310 data-nosnippet>310</a>}
+<a href=#311 id=311 data-nosnippet>311</a>
+<a href=#312 id=312 data-nosnippet>312</a><span class="attr">#[cfg(test)]
+<a href=#313 id=313 data-nosnippet>313</a></span><span class="kw">mod </span>tests;
 </code></pre></div></section></main></body></html>

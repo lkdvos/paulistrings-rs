@@ -9,12 +9,14 @@ use crate::truncation::TruncationPolicy;
 ///
 /// In place needs spare capacity for every partner that is a new key: with room for every partner the hits go uncounted and the merge starts at that bound, else they are counted; without room the merge runs into `merged`, which is swapped in, as the general path does.
 /// `dirty`, when given, lists (as the scan packs them) the only rows whose coefficients changed, every other row already passing `keep_term`; a bucket with few such rows and partners merges by [`merge_sparse_in_place`].
+/// `new_keys` promises that no partner's key is in the bucket, as after [`fold_hits`].
 pub(super) fn merge_partners<const W: usize, C: Coefficient, T>(
     bucket: &mut BucketColumns<W, C>,
     partners: ColumnsRef<'_, W, C>,
     policy: &T,
     merged: &mut BucketColumns<W, C>,
     dirty: Option<&[u32]>,
+    new_keys: bool,
 ) -> bool
 where
     T: TruncationPolicy<W, C> + ?Sized,
@@ -28,7 +30,11 @@ where
             return true;
         }
     }
-    let total = if spare >= bound { bound } else { bound - count_hits(bucket.view(), partners) };
+    let total = if spare >= bound || new_keys {
+        bound
+    } else {
+        bound - count_hits(bucket.view(), partners)
+    };
     if spare >= total {
         merge_backward_in_place(bucket, partners, policy, total);
         true
@@ -39,6 +45,49 @@ where
         merged.clear();
         false
     }
+}
+
+/// Add each partner whose key is one of the bucket's `dirty` rows (as the scan packs them) to that row's coefficient, bucket-first as the merge sums, and keep the other partners in order, less those `floor` refuses (see [`TruncationPolicy::coefficient_floor`]).
+///
+/// A partner of an anticommuting string anticommutes too, so it can only equal a listed row: `dirty` must list every anticommuting row of `bucket`.
+pub(super) fn fold_hits<const W: usize, C: Coefficient>(
+    bucket: &mut BucketColumns<W, C>,
+    dirty: &[u32],
+    partners: &mut BucketColumns<W, C>,
+    floor: f64,
+) {
+    let floor_sqr = if floor >= 0.0 { floor * floor } else { -1.0 };
+    let BucketColumns { x, z, coeff } = bucket;
+    let BucketColumns { x: p_x, z: p_z, coeff: p_c } = partners;
+    let (mut d, mut kept) = (0usize, 0usize);
+    for j in 0..p_c.len() {
+        let key = (p_x[j], p_z[j]);
+        let mut row = usize::MAX;
+        while d < dirty.len() {
+            let candidate = (dirty[d] >> 4) as usize;
+            match (x[candidate], z[candidate]).cmp(&key) {
+                std::cmp::Ordering::Less => d += 1,
+                std::cmp::Ordering::Equal => {
+                    row = candidate;
+                    d += 1;
+                    break;
+                }
+                std::cmp::Ordering::Greater => break,
+            }
+        }
+        if row != usize::MAX {
+            coeff[row] += p_c[j];
+            continue;
+        }
+        let c = p_c[j];
+        p_x[kept] = key.0;
+        p_z[kept] = key.1;
+        p_c[kept] = c;
+        kept += usize::from(c.norm_sqr() > floor_sqr);
+    }
+    p_x.truncate(kept);
+    p_z.truncate(kept);
+    p_c.truncate(kept);
 }
 
 /// Fewest rows per partner or dirty row at which [`merge_sparse_in_place`] beats the per-row merge.

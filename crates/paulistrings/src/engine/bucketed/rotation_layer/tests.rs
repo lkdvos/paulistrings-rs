@@ -159,6 +159,10 @@ fn policies(len: usize) -> Vec<BuiltinTruncation> {
         KeepAll.into(),
         CoefficientThreshold(0.3).into(),
         WeightCutoff(3).into(),
+        BuiltinTruncation::And(
+            Box::new(CoefficientThreshold(0.2).into()),
+            Box::new(WeightCutoff(4).into()),
+        ),
         TopN(len * 2 / 3).into(),
         ApproxTopN(len / 2).into(),
     ]
@@ -294,7 +298,8 @@ fn merges_hits_and_drops_with_and_without_room() {
             }
             let partners = columns(partners);
             let mut merged = BucketColumns::default();
-            let in_place = merge_partners(&mut got, partners.view(), &KeepAll, &mut merged, None);
+            let in_place =
+                merge_partners(&mut got, partners.view(), &KeepAll, &mut merged, None, false);
             assert_eq!(in_place, room || in_place_without_room, "{partners:?} room={room}");
             assert_eq!(got.x, columns(want).x, "{partners:?} room={room}");
             assert_eq!(got.coeff, columns(want).coeff, "{partners:?} room={room}");

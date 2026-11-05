@@ -154,38 +154,45 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
 
     /// Append each anticommuting string's partner `(k ⊕ g, c·a₁)` to `partners`, then scale those strings by `a₀` in place, or on the Clifford arm zero them for the merge to drop; `hits` is scratch.
     ///
-    /// A first pass reads only the key columns, lists the anticommuting rows and returns the bucket's [`Support`], so the coefficients are read and written for the listed rows alone, without a data-dependent branch.
+    /// A first pass reads only the key columns and lists the anticommuting rows, so the coefficients are read and written for the listed rows alone, without a data-dependent branch.
+    /// Unless `known`, `support` becomes the OR of every row; a known support is a superset already, so the pass reads only the column words the anticommute test needs.
     fn scan(
         &self,
         bucket: &mut BucketColumns<W, C>,
         partners: &mut BucketColumns<W, C>,
         hits: &mut Vec<u32>,
-    ) -> Support<W> {
-        let len = bucket.len();
-        assert!(len < 1 << 28, "a hit packs its row into 28 bits");
+        support: &mut Support<W>,
+        known: bool,
+    ) {
         let BucketColumns { x, z, coeff } = bucket;
-        hits.clear();
-        // One slot past the exact bound, for the discarded write.
-        hits.reserve(len + 1);
-        let listed = hits.as_mut_ptr();
-        let mut anticommuting = 0usize;
-        let mut support: Support<W> = [[0; W]; 2];
-        for row in 0..len {
-            let pattern = self.pattern(&x[row], &z[row]);
-            // SAFETY: `anticommuting ≤ row < len`, within the reserved `len + 1`.
-            unsafe { listed.add(anticommuting).write((row as u32) << 4 | pattern as u32) };
-            anticommuting += usize::from((self.active >> pattern) & 1 != 0);
-            for w in 0..W {
-                support[0][w] |= x[row][w];
-                support[1][w] |= z[row][w];
-            }
-        }
-        // SAFETY: the first `anticommuting` slots were written above.
-        unsafe { hits.set_len(anticommuting) };
-        if anticommuting == 0 {
-            return support;
-        }
         let (mask_x, mask_z) = &self.mask;
+        let [(w0, b0), (w1, b1)] = self.probe;
+        let bit = |word: u64, b: u32| ((word >> b) & 1) as usize;
+        // An `x` bit anticommutes only under `g`'s `z`, and a `z` bit only under its `x`.
+        let reads_x = mask_z.iter().any(|&w| w != 0);
+        let reads_z = mask_x.iter().any(|&w| w != 0);
+        if !known {
+            *support = [[0; W]; 2];
+        }
+        match (known, reads_x, reads_z) {
+            (true, true, false) => {
+                self.list_hits(x.len(), hits, |row| bit(x[row][w0], b0) | bit(x[row][w1], b1) << 2)
+            }
+            (true, false, true) => self
+                .list_hits(x.len(), hits, |row| bit(z[row][w0], b0) << 1 | bit(z[row][w1], b1) << 3),
+            (true, _, _) => self.list_hits(x.len(), hits, |row| self.pattern(&x[row], &z[row])),
+            (false, _, _) => self.list_hits(x.len(), hits, |row| {
+                for w in 0..W {
+                    support[0][w] |= x[row][w];
+                    support[1][w] |= z[row][w];
+                }
+                self.pattern(&x[row], &z[row])
+            }),
+        }
+        let anticommuting = hits.len();
+        if anticommuting == 0 {
+            return;
+        }
         let start = partners.len();
         partners.x.reserve(anticommuting);
         partners.z.reserve(anticommuting);
@@ -198,8 +205,11 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
                 partners.coeff.as_mut_ptr().add(start),
             )
         };
-        for (slot, &hit) in hits.iter().enumerate() {
-            let (row, support) = ((hit >> 4) as usize, (hit & 15) as usize & self.support_mask);
+        for (slot, hit) in hits.iter_mut().enumerate() {
+            let row = (*hit >> 4) as usize;
+            let pattern = self.pattern(&x[row], &z[row]);
+            *hit |= pattern as u32;
+            let support = pattern & self.support_mask;
             let c = coeff[row];
             // SAFETY: `slot < anticommuting`, reserved past `start` above.
             unsafe {
@@ -215,7 +225,25 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             partners.z.set_len(start + anticommuting);
             partners.coeff.set_len(start + anticommuting);
         }
-        support
+    }
+
+    /// List into `hits`, as `row << 4`, the rows below `len` whose probe `pattern` the generator reaches; a pattern may leave out the bits that cannot change that.
+    #[inline(always)]
+    fn list_hits(&self, len: usize, hits: &mut Vec<u32>, mut pattern: impl FnMut(usize) -> usize) {
+        assert!(len < 1 << 28, "a hit packs its row into 28 bits");
+        hits.clear();
+        // One slot past the exact bound, for the discarded write.
+        hits.reserve(len + 1);
+        let listed = hits.as_mut_ptr();
+        let mut anticommuting = 0usize;
+        for row in 0..len {
+            let pattern = pattern(row);
+            // SAFETY: `anticommuting ≤ row < len`, within the reserved `len + 1`.
+            unsafe { listed.add(anticommuting).write((row as u32) << 4) };
+            anticommuting += usize::from((self.active >> pattern) & 1 != 0);
+        }
+        // SAFETY: the first `anticommuting` slots were written above.
+        unsafe { hits.set_len(anticommuting) };
     }
 
     /// Whether a bucket within `support` may hold a string that anticommutes with `g`, which needs an `x` bit under `g`'s `z` or a `z` bit under its `x`.
@@ -389,7 +417,7 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
         // Counted as the general path's identity rows, whose keys stay put.
         tally!(scratch.stats.rows_gathered, bucket.len());
         tally!(scratch.stats.rows_id, bucket.len());
-        supports[j] = layer.scan(bucket, partners, &mut scratch.hits[j]);
+        layer.scan(bucket, partners, &mut scratch.hits[j], &mut supports[j], known);
         changed[j] = !scratch.hits[j].is_empty();
     }
     lap!(stamp, scratch.stats.gather_ns);

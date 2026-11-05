@@ -669,3 +669,49 @@ fn sparse_merge_agrees_with_the_per_row_merge() {
     assert_sparse_merge_agrees::<1>();
     assert_sparse_merge_agrees::<2>();
 }
+
+/// Under a known support the scan reads only the key columns its generator tests, and lists, moves and scales exactly what the full scan does, leaving the support as given.
+fn assert_known_scan_agrees<const W: usize>(num_qubits: usize) {
+    let mut rng = Xs64::new(0x5CA ^ W as u64);
+    let (a, b) = (1, num_qubits - 2);
+    for (name, g) in generators::<W>(a, b) {
+        for theta in [0.3, FRAC_PI_2] {
+            let channel = PauliRotation::new(g, theta);
+            let hash = Gf2Hash::<W>::new(num_qubits, 0, 0x1);
+            let prepared = Prepare::<W>::prepare(&channel, &hash, false).unwrap();
+            let crate::channel::prepared::Prepared::Local(ptm) = &prepared else { unreachable!() };
+            let layer = RotationLayer::of(ptm).expect("a rotation");
+            let mut bucket = BucketColumns::<W>::default();
+            for _ in 0..200 {
+                let word = |rng: &mut Xs64| core::array::from_fn(|_| rng.next_u64());
+                let (x, z) = (word(&mut rng), word(&mut rng));
+                bucket.push(x, z, Complex64::new(1.0 + (rng.next_u64() % 8) as f64, 0.0));
+            }
+            let label = format!("W={W}, {name}, θ={theta}");
+            let mut full = (bucket.clone(), BucketColumns::<W>::default(), Vec::new());
+            let mut full_support = [[0; W]; 2];
+            layer.scan(&mut full.0, &mut full.1, &mut full.2, &mut full_support, false);
+            let want_support: Support<W> = [
+                core::array::from_fn(|w| bucket.x.iter().fold(0, |s, k| s | k[w])),
+                core::array::from_fn(|w| bucket.z.iter().fold(0, |s, k| s | k[w])),
+            ];
+            assert_eq!(full_support, want_support, "{label}: the full scan ORs every row");
+            let mut lean = (bucket.clone(), BucketColumns::<W>::default(), Vec::new());
+            let mut lean_support = [[u64::MAX; W]; 2];
+            layer.scan(&mut lean.0, &mut lean.1, &mut lean.2, &mut lean_support, true);
+            assert_eq!(lean_support, [[u64::MAX; W]; 2], "{label}: a known support stays");
+            assert!(!full.2.is_empty(), "{label}: the fixture has hits");
+            assert_eq!(lean.2, full.2, "{label}: hits");
+            assert_eq!(lean.1.x, full.1.x, "{label}: partner x");
+            assert_eq!(lean.1.z, full.1.z, "{label}: partner z");
+            assert_eq!(lean.1.coeff, full.1.coeff, "{label}: partner coefficients");
+            assert_eq!(lean.0.coeff, full.0.coeff, "{label}: scaled rows");
+        }
+    }
+}
+
+#[test]
+fn a_known_support_scan_agrees_with_the_full_scan() {
+    assert_known_scan_agrees::<1>(40);
+    assert_known_scan_agrees::<2>(100);
+}

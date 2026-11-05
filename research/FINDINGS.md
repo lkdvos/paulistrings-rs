@@ -64,6 +64,12 @@ Idea: a `cmov` select for the merge's `take_a` compare.
 Rejected: mispredicts relocated to the equal-key drain (56.7M → 58.4M) and the dependency chain lengthened, **+4.83%** on `rotation_zz`, +4.64% on `trotter`.
 Branchless pays only when the branch genuinely misses and nothing downstream re-asks the same bit.
 
+### Branch-free rotation merge (revisits §Branchless `merge2_into`)
+
+Idea: a borrow-chain key compare, masked selects and an unconditional store kept by moving `w` in `merge_backward_in_place`, `merge_sparse_in_place` and `count_hits`, and a select-step binary search for the sparse merge's blocks.
+Rejected: branch misses fall 24–39% but cycles rise, ccqlin038 one thread at `float64`: heavyhex Clifford **+6%**, heavyhex generic +9%, TFIM +14% (`perf stat` cycles, every pair slower); the per-row loop's next load waits on the compare, as in §Branchless `merge2_into`.
+Only the sparse merge's search and step branch-free: TFIM +3–5% and heavyhex Clifford +1–4% cycles; heavyhex generic +5% cycles and +4.3% to +6.1% wall in 4 of 4 interleaved pairs at a steady load of 7.5, branch misses −4%.
+
 ### Greedy partition-row selector
 
 Idea: choose partition rows by greedy search over circuit generators.

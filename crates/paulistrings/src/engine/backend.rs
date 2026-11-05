@@ -48,6 +48,8 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
         let _ = (target_bucket_len, min_buckets);
         false
     }
+    /// Start a call: forget whatever the scratch knows about the sum, which may have changed since the last; the driver calls it before the first layer.
+    fn begin_call(&mut self) {}
     /// End a call: apply any truncation the last layer pass deferred; the driver calls it after the last layer.
     fn settle(&mut self) {}
     /// Move the partition out, leaving an empty one under the same hash so the driver stays consistent if the work is never handed back.
@@ -128,11 +130,13 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
 
     fn refine(&mut self) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
+        self.state.layer.supports.forget();
         self.sum.refine();
     }
 
     fn coarsen_to(&mut self, bits: u8) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
+        self.state.layer.supports.forget();
         self.sum.coarsen_to(bits);
     }
 
@@ -142,13 +146,19 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
             .min(self.sum.hash().max_bits());
         if wanted != bits {
             self.state.layer.octaves.apply_pending(&mut self.sum);
+            self.state.layer.supports.forget();
             self.sum.rebucket(target_bucket_len, min_buckets);
         }
         true
     }
 
+    fn begin_call(&mut self) {
+        self.state.layer.supports.forget();
+    }
+
     fn settle(&mut self) {
         self.state.layer.octaves.settle(&mut self.sum);
+        self.state.layer.supports.forget();
     }
 
     fn detach(&mut self) -> Self {
@@ -221,6 +231,8 @@ where
             None => {
                 if policy.finalizes_layer() {
                     self.state.layer.octaves.drop_ahead();
+                    // A layer pass may rescale what `keep_term` already passed.
+                    self.state.layer.supports.forget();
                 }
                 policy.finalize_layer_partitioned(&mut self.sum, collectives);
             }

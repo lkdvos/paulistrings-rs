@@ -22,7 +22,8 @@ use crate::truncation::octave_window::{
 };
 use crate::truncation::{FusedApproxTopN, TruncationPolicy};
 use rotation_layer::{
-    fill_received_rotation_bucket, fill_rotation_coset, ReceivedRotation, RotationLayer,
+    fill_received_rotation_bucket, fill_rotation_coset, rotation_coset_loop, ReceivedRotation,
+    RotationLayer,
 };
 
 #[cfg(feature = "phase-timing")]
@@ -36,7 +37,9 @@ mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 pub(crate) use export_ahead::{BucketAhead, RowEmitter};
-pub(crate) use rotation_layer::{apply_rotation_run, RotationRunSpan, MAX_ROTATION_RUN_LAYERS};
+pub(crate) use rotation_layer::{
+    apply_rotation_run, BucketSupports, RotationRunSpan, MAX_ROTATION_RUN_LAYERS,
+};
 
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
@@ -56,6 +59,8 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
     pub(crate) trace: Option<PartitionTrace>,
     /// The octave counts an `ApproxTopN` layer pass reads instead of the sum.
     pub(crate) octaves: LayerOctaves,
+    /// Per-bucket supports the rotation kernels carry from one layer to the next.
+    pub(crate) supports: BucketSupports<W>,
     /// Layers applied by [`apply_rotation_run`].
     #[cfg(test)]
     pub(crate) rotation_run_layers: usize,
@@ -383,6 +388,7 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
     let rotation = match prepared {
         Prepared::Local(ptm) if !X::NEEDS_BETA => {
             if ptm.is_key_preserving() {
+                scratch.supports.forget();
                 if let Some(cut) = cut {
                     cut.apply(sum);
                 }
@@ -432,6 +438,9 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
         count: octaves.as_ref().map(|(window, slots)| (*window, slots)),
         ahead: ahead_slots.as_ref().map(|(emitter, slots)| (ahead_window, *emitter, slots)),
     };
+    if rotation.is_none() {
+        scratch.supports.forget();
+    }
     let len = match (received_rotation, rotation) {
         (Some(layer), _) => {
             debug_assert_eq!(span.dimension(), 0, "only the identity delta is local");
@@ -443,9 +452,15 @@ pub(crate) fn apply_layer_bucketed_with<const W: usize, C: Coefficient, T, X>(
         (None, Some(layer)) => {
             debug_assert!(knobs.order.is_none());
             lap!(stamp, scratch.stats.span_plan_ns);
-            coset_loop(sum, &span, scratch, octaves, |members, _, worker_scratch| {
-                fill_rotation_coset(members, &layer, policy, worker_scratch)
-            })
+            rotation_coset_loop(
+                sum,
+                &span,
+                scratch,
+                octaves,
+                |members, worker_scratch, supports, known| {
+                    fill_rotation_coset(members, &layer, policy, worker_scratch, supports, known)
+                },
+            )
         }
         (None, None) => {
             let plan = DeltaPlan::new(prepared, &span, knobs);

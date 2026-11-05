@@ -33,6 +33,7 @@ pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex
     /// Per-term filter, run inside the merge on every output, so it must be cheap.
     ///
     /// `c` is the coefficient summed over every contribution to the key `(x, z)`.
+    /// It must be a pure function of its arguments: the engine does not ask again about a term no layer changed since it passed.
     fn keep_term(&self, _x: &[u64; W], _z: &[u64; W], _c: C) -> bool {
         true
     }

@@ -259,6 +259,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         layers: Vec::new(),
     };
 
+    local.begin_call();
     let mut application_index = 0;
     while application_index < num_layers {
         let circuit_index = circuit_index_of(application_index);

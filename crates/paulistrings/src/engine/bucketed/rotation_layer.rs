@@ -6,7 +6,7 @@ use crate::coefficient::Coefficient;
 
 use super::coset_fill::{CosetScratch, GatherRun};
 use super::partner_order::PartnerOrder;
-use super::{coset_loop, ExtraRows, LayerOctaveIo, LayerScratch};
+use super::{coset_loop, DisjointSlots, ExtraRows, LayerOctaveIo, LayerScratch};
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
 use crate::engine::coset::Gf2Span;
 use crate::engine::merge::{merge_identity_and_rest, SortKernel};
@@ -15,6 +15,61 @@ use crate::pauli_sum::storage::{BucketColumns, ColumnsRef, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 use crate::engine::timing::{lap, stamp, tally};
+
+/// A bucket's `x` and `z` columns, each ORed over its strings, or a superset of them.
+pub(super) type Support<const W: usize> = [[u64; W]; 2];
+
+/// Per bucket, a [`Support`], carried from one rotation layer to the next.
+///
+/// Contract: known only while the sum is exactly as the last layer of the current call left it, give or take removed strings, and that layer was a local rotation layer or run under the call's policy; then every string has passed that policy's `keep_term`, which is a pure function of the term, so a string no layer changes need not pass it again.
+/// Anything else that writes the sum or renumbers its buckets clears it ([`forget`](Self::forget)), and so do the start and end of a call.
+#[derive(Debug)]
+pub(crate) struct BucketSupports<const W: usize> {
+    masks: Vec<Support<W>>,
+    known: bool,
+}
+
+impl<const W: usize> Default for BucketSupports<W> {
+    fn default() -> Self {
+        Self { masks: Vec::new(), known: false }
+    }
+}
+
+impl<const W: usize> BucketSupports<W> {
+    /// Drop the supports, so the next rotation layer scans and merges every bucket.
+    pub(crate) fn forget(&mut self) {
+        self.known = false;
+    }
+}
+
+/// A coset loop over `span` whose `fill` also gets its members' supports, and whether they are known; every support is known afterwards.
+pub(super) fn rotation_coset_loop<const W: usize, C: Coefficient>(
+    sum: &mut PauliSum<W, C>,
+    span: &Gf2Span,
+    scratch: &mut LayerScratch<W, C>,
+    octaves: LayerOctaveIo<'_, '_, '_, W, C>,
+    fill: impl Fn(&mut [BucketColumns<W, C>], &mut CosetScratch<W, C>, &mut [Support<W>], bool) + Sync,
+) -> usize {
+    let buckets = sum.num_buckets();
+    let supports = &mut scratch.supports;
+    let known = std::mem::take(&mut supports.known) && supports.masks.len() == buckets;
+    let mut masks = std::mem::take(&mut supports.masks);
+    masks.resize(buckets, [[0; W]; 2]);
+    let slots = DisjointSlots::new(&mut masks);
+    let len = coset_loop(sum, span, scratch, octaves, |members, betas, worker_scratch| {
+        let mut supports = std::mem::take(&mut worker_scratch.member_supports);
+        supports.clear();
+        // SAFETY (both loops): the cosets partition the buckets, so no other task reaches bucket `beta`.
+        supports.extend(betas.iter().map(|&beta| *unsafe { slots.get(beta as usize) }));
+        fill(members, worker_scratch, &mut supports, known);
+        for (support, &beta) in supports.iter().zip(betas) {
+            *unsafe { slots.get(beta as usize) } = *support;
+        }
+        worker_scratch.member_supports = supports;
+    });
+    scratch.supports = BucketSupports { masks, known: true };
+    len
+}
 
 /// A table shaped like a Pauli rotation about `g`: an identity entry and one generator entry.
 ///
@@ -98,13 +153,13 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
 
     /// Append each anticommuting string's partner `(k ⊕ g, c·a₁)` to `partners`, then scale those strings by `a₀` in place, or on the Clifford arm zero them for the merge to drop; `hits` is scratch.
     ///
-    /// A first pass reads only the probed key words and lists the anticommuting rows, so the coefficients are read and written for those rows alone, without a data-dependent branch.
+    /// A first pass reads only the key columns, lists the anticommuting rows and returns the bucket's [`Support`], so the coefficients are read and written for the listed rows alone, without a data-dependent branch.
     fn scan(
         &self,
         bucket: &mut BucketColumns<W, C>,
         partners: &mut BucketColumns<W, C>,
         hits: &mut Vec<u32>,
-    ) {
+    ) -> Support<W> {
         let len = bucket.len();
         assert!(len < 1 << 28, "a hit packs its row into 28 bits");
         let BucketColumns { x, z, coeff } = bucket;
@@ -113,16 +168,21 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
         hits.reserve(len + 1);
         let listed = hits.as_mut_ptr();
         let mut anticommuting = 0usize;
+        let mut support: Support<W> = [[0; W]; 2];
         for row in 0..len {
             let pattern = self.pattern(&x[row], &z[row]);
             // SAFETY: `anticommuting ≤ row < len`, within the reserved `len + 1`.
             unsafe { listed.add(anticommuting).write((row as u32) << 4 | pattern as u32) };
             anticommuting += usize::from((self.active >> pattern) & 1 != 0);
+            for w in 0..W {
+                support[0][w] |= x[row][w];
+                support[1][w] |= z[row][w];
+            }
         }
         // SAFETY: the first `anticommuting` slots were written above.
         unsafe { hits.set_len(anticommuting) };
         if anticommuting == 0 {
-            return;
+            return support;
         }
         let (mask_x, mask_z) = &self.mask;
         let start = partners.len();
@@ -154,6 +214,13 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             partners.z.set_len(start + anticommuting);
             partners.coeff.set_len(start + anticommuting);
         }
+        support
+    }
+
+    /// Whether a bucket within `support` may hold a string that anticommutes with `g`, which needs an `x` bit under `g`'s `z` or a `z` bit under its `x`.
+    fn may_touch(&self, support: &Support<W>) -> bool {
+        let (mask_x, mask_z) = &self.mask;
+        (0..W).any(|w| support[0][w] & mask_z[w] | support[1][w] & mask_x[w] != 0)
     }
 }
 
@@ -283,34 +350,67 @@ pub(super) fn fill_received_rotation_bucket<const W: usize, C: Coefficient, T, X
 }
 
 /// Apply `layer` to one coset, one bucket or the pair `{β, β ⊕ h(g)}`, each partner run merging into the other member.
+///
+/// `supports[j]` is a superset of member `j`'s support coming in when `known`, and is one coming out either way.
+/// A known support certifies, by [`BucketSupports`]'s contract, that every string already passes `keep_term`: a member it shows commuting with `g` is not read, and a member neither changed nor receiving partners is not merged.
 pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
     members: &mut [BucketColumns<W, C>],
     layer: &RotationLayer<'_, W, C>,
     policy: &T,
     scratch: &mut CosetScratch<W, C>,
+    supports: &mut [Support<W>],
+    known: bool,
 ) where
     T: TruncationPolicy<W, C> + ?Sized,
 {
     let size = members.len();
     debug_assert!(size == 1 || size == 2);
+    debug_assert_eq!(supports.len(), size);
     // The general path's buffers, idle between its cosets: each member's run holds its partners in `rest` and in key order in `identity`, and `old[0]` is the merge fallback.
     scratch.runs.resize_with(size.max(scratch.runs.len()), GatherRun::default);
     if scratch.old.is_empty() {
         scratch.old.push(BucketColumns::default());
     }
     stamp!(stamp);
+    let mut changed = [false; 2];
     // Every scan precedes every merge, so each partner carries its source's unscaled coefficient.
     for (j, bucket) in members.iter_mut().enumerate() {
         let partners = &mut scratch.runs[j ^ (size - 1)].rest;
         partners.clear();
+        scratch.hits[j].clear();
+        if known && !layer.may_touch(&supports[j]) {
+            #[cfg(test)]
+            {
+                scratch.rotation_skips.0 += 1;
+            }
+            continue;
+        }
         // Counted as the general path's identity rows, whose keys stay put.
         tally!(scratch.stats.rows_gathered, bucket.len());
         tally!(scratch.stats.rows_id, bucket.len());
-        layer.scan(bucket, partners, &mut scratch.hits);
+        supports[j] = layer.scan(bucket, partners, &mut scratch.hits[j]);
+        changed[j] = !scratch.hits[j].is_empty();
     }
     lap!(stamp, scratch.stats.gather_ns);
+    let sources = [supports[0], supports[size - 1]];
     for (j, bucket) in members.iter_mut().enumerate() {
         let run = &mut scratch.runs[j];
+        if known && !changed[j] && run.rest.len() == 0 {
+            #[cfg(test)]
+            {
+                scratch.rotation_skips.1 += 1;
+            }
+            continue;
+        }
+        if run.rest.len() != 0 {
+            // A partner `k ⊕ g` lies within its source's support and `g`'s.
+            let source = &sources[size - 1 - j];
+            let (mask_x, mask_z) = &layer.mask;
+            supports[j] = [
+                core::array::from_fn(|w| supports[j][0][w] | source[0][w] | mask_x[w]),
+                core::array::from_fn(|w| supports[j][1][w] | source[1][w] | mask_z[w]),
+            ];
+        }
         tally!(scratch.stats.rows_gathered, run.rest.len());
         tally!(scratch.stats.rows_sorted, run.rest.len());
         layer.order.order(&run.rest, &mut run.identity, scratch.sort.indices());
@@ -328,13 +428,16 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
     tally!(scratch.stats.runs, size);
 }
 
-/// Apply `layers` in order to one coset of their joint span, each to the member pairs its generator's coordinate in `coordinates` joins, while the coset is in cache.
+/// Apply `layers` in order to one coset of their joint span, each to the member pairs its generator's coordinate in `coordinates` joins, while the coset is in cache; `supports` and `known` as for [`fill_rotation_coset`].
+#[allow(clippy::too_many_arguments)]
 fn fill_rotation_run<const W: usize, C: Coefficient, T>(
     members: &mut [BucketColumns<W, C>],
     layers: &[RotationLayer<'_, W, C>],
     coordinates: &[u32],
     policy: &T,
     scratch: &mut CosetScratch<W, C>,
+    supports: &mut [Support<W>],
+    mut known: bool,
 ) where
     T: TruncationPolicy<W, C> + ?Sized,
 {
@@ -343,15 +446,27 @@ fn fill_rotation_run<const W: usize, C: Coefficient, T>(
         for j in 0..members.len() {
             let partner = j ^ coordinate as usize;
             if partner == j {
-                fill_rotation_coset(core::slice::from_mut(&mut members[j]), layer, policy, scratch);
+                let (bucket, support) = (&mut members[j], &mut supports[j..j + 1]);
+                fill_rotation_coset(
+                    core::slice::from_mut(bucket),
+                    layer,
+                    policy,
+                    scratch,
+                    support,
+                    known,
+                );
             } else if j < partner {
                 std::mem::swap(&mut pair[0], &mut members[j]);
                 std::mem::swap(&mut pair[1], &mut members[partner]);
-                fill_rotation_coset(&mut pair, layer, policy, scratch);
+                let mut pair_supports = [supports[j], supports[partner]];
+                fill_rotation_coset(&mut pair, layer, policy, scratch, &mut pair_supports, known);
+                [supports[j], supports[partner]] = pair_supports;
                 std::mem::swap(&mut pair[0], &mut members[j]);
                 std::mem::swap(&mut pair[1], &mut members[partner]);
             }
         }
+        // After the first layer every support is exact, and every string it scanned passed `keep_term`.
+        known = true;
     }
 }
 
@@ -424,9 +539,23 @@ pub(crate) fn apply_rotation_run<const W: usize, C: Coefficient, T>(
         scratch.rotation_run_layers += run.len();
     }
     let octaves = LayerOctaveIo { cut: None, count: None, ahead: None };
-    let len = coset_loop(sum, &span, scratch, octaves, |members, _, worker_scratch| {
-        fill_rotation_run(members, &layers, &coordinates, policy, worker_scratch)
-    });
+    let len = rotation_coset_loop(
+        sum,
+        &span,
+        scratch,
+        octaves,
+        |members, worker_scratch, supports, known| {
+            fill_rotation_run(
+                members,
+                &layers,
+                &coordinates,
+                policy,
+                worker_scratch,
+                supports,
+                known,
+            )
+        },
+    );
     lap!(stamp, scratch.stats.coset_loop_ns);
     sum.set_len_after_layer(len);
     lap!(stamp, scratch.stats.recount_ns);

@@ -519,7 +519,20 @@ fn rotation_runs_agree_with_single_layers_w2() {
     assert_runs_agree_with_single_layers(&input, &generators);
 }
 
-/// A kicked-Ising-like circuit through the driver, where the bucket count lets rotation runs form, against the same layers applied one by one.
+/// `(unread, unmerged)` members over every slot of `scratch`.
+fn skips<const W: usize>(scratch: &LayerScratch<W>) -> (usize, usize) {
+    let mut total = scratch.task.rotation_skips;
+    for slot in &scratch.workers {
+        let (unread, unmerged) = slot.lock().unwrap().rotation_skips;
+        total.0 += unread;
+        total.1 += unmerged;
+    }
+    total
+}
+
+/// A kicked-Ising-like circuit through the driver, against the same layers applied one by one: the bucket count lets rotation runs form, and the light cone of a sum clustered on `cluster` leaves most gates touching no string of most buckets.
+///
+/// The input holds strings each policy drops, which the first layer must drop though no gate changes them.
 fn assert_propagated_runs_agree<const W: usize>(num_qubits: usize, cluster: &[usize]) {
     let mut circuit = Circuit::<W>::new(num_qubits);
     for q in 0..num_qubits {
@@ -558,16 +571,18 @@ fn assert_propagated_runs_agree<const W: usize>(num_qubits: usize, cluster: &[us
             let what = format!("W={W} {policy:?} {direction:?}");
             assert_terms_close(&got, &want, 1e-10, &what);
             assert!(scratch.rotation_run_layers > 0, "{what}: no rotation run");
+            let (unread, unmerged) = skips(&scratch);
+            assert!(unread > 0 && unmerged > 0, "{what}: no member skipped ({unread}, {unmerged})");
         }
     }
 }
 
 #[test]
-fn propagated_rotation_runs_agree_w1() {
+fn propagated_runs_and_light_cone_skips_agree_w1() {
     assert_propagated_runs_agree::<1>(40, &[18, 19, 20, 21, 22, 23]);
 }
 
 #[test]
-fn propagated_rotation_runs_agree_w2() {
+fn propagated_runs_and_light_cone_skips_agree_w2() {
     assert_propagated_runs_agree::<2>(80, &[60, 62, 63, 64, 65, 67]);
 }

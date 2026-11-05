@@ -368,3 +368,35 @@ fn per_partition_runs_the_policy_on_each_slice_alone() {
         }
     }
 }
+
+#[test]
+fn every_coefficient_floor_is_honoured_by_keep_term() {
+    use crate::truncation::BuiltinTruncation as B;
+    let and = |a: B, b: B| B::And(Box::new(a), Box::new(b));
+    let or = |a: B, b: B| B::or(a, b);
+    let cases = [
+        (B::Keep, -1.0),
+        (B::Coefficient(0.25), 0.25),
+        (B::Coefficient(-1.0), -1.0),
+        (B::Weight(2), -1.0),
+        (B::TopN(3), -1.0),
+        (and(B::Coefficient(0.25), B::Weight(2)), 0.25),
+        (and(B::Coefficient(0.25), B::Coefficient(0.5)), 0.5),
+        (or(B::Coefficient(0.25), B::Coefficient(0.5)), 0.25),
+        (or(B::Coefficient(0.25), B::Weight(2)), -1.0),
+        (B::PerPartition(Box::new(B::Coefficient(0.5))), 0.5),
+    ];
+    let (x, z) = ([0b1011u64], [0b0110u64]);
+    for (policy, want) in cases {
+        let floor = <B as TruncationPolicy<1>>::coefficient_floor(&policy);
+        assert_eq!(floor, want, "{policy:?}");
+        for magnitude in [0.0, 0.1, 0.25, 0.3, 0.5, 0.7] {
+            let c = Complex64::from_polar(magnitude, 0.7);
+            if magnitude <= floor {
+                assert!(!policy.keep_term(&x, &z, c), "{policy:?} keeps {magnitude}");
+            }
+        }
+    }
+    let lowered = And(CoefficientThreshold(0.25), WeightCutoff(2));
+    assert_eq!(<_ as TruncationPolicy<1>>::coefficient_floor(&lowered), 0.25);
+}

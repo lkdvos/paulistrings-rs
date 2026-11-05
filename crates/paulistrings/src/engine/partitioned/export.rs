@@ -17,8 +17,11 @@ use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{ColumnsMut, PauliSum};
 use crate::truncation::octave_window::BoundaryCut;
 
-/// Scanned input terms below which a block's fill stays on one thread.
-const FILL_PARALLEL_MIN_TERMS: usize = 16384;
+/// Fill work ([`fill_work`]) below which a block's fill stays on one thread.
+const FILL_PARALLEL_MIN_WORK: usize = 16384;
+
+/// A marked row's fill cost in scanned input terms: a marked fill reaches each row at a cache miss (§Marked export fills split by rows).
+const MARKED_ROW_WORK: usize = 32;
 
 /// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
 #[derive(Debug, Default)]
@@ -29,7 +32,9 @@ pub(crate) struct ExportScratch<const W: usize, C: Coefficient = num_complex::Co
     block_counts: Vec<u32>,
     /// `source_of[position] = order.bucket_at(position) ^ bucket_delta`.
     source_of: Vec<u32>,
-    /// One block's prefix sums of input terms its fill scans, by destination position; a position that exports nothing scans nothing.
+    /// Pass-1 fill work in scanned input terms ([`fill_work`]), laid out like `counts`.
+    work: Vec<usize>,
+    /// One block's prefix sums of `work`, by destination position.
     work_prefix: Vec<usize>,
     /// Payloads not in flight, columns intact; outgoing and incoming payloads are both drawn from here.
     pub(crate) pool: Vec<PartnerPayload<W, C>>,
@@ -50,10 +55,10 @@ pub(crate) fn export_layer<const W: usize, C: Coefficient>(
     order: &CosetOrder,
     scratch: &mut ExportScratch<W, C>,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
-    export_layer_with(local, octaves, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_TERMS)
+    export_layer_with(local, octaves, prepared, plan, size, order, scratch, FILL_PARALLEL_MIN_WORK)
 }
 
-/// [`export_layer`] with the fill's leaf size in scanned input terms.
+/// [`export_layer`] with the fill's leaf size in fill work ([`fill_work`]).
 #[allow(clippy::too_many_arguments)]
 fn export_layer_with<const W: usize, C: Coefficient>(
     local: &PauliSum<W, C>,
@@ -63,7 +68,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     size: u32,
     order: &CosetOrder,
     scratch: &mut ExportScratch<W, C>,
-    min_terms: usize,
+    min_work: usize,
 ) -> (Vec<Option<PartnerPayload<W, C>>>, LayerExchangeCounts) {
     let num_remote = plan.remote.len();
     let num_buckets = local.num_buckets();
@@ -80,10 +85,15 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     let dense: Vec<bool> = emitters.iter().map(RowEmitter::is_dense).collect();
     let all_dense = dense.iter().all(|&is_dense| is_dense);
 
-    // Pass 1: bucket-major counts, `counts[β * num_remote + i]`, so each bucket owns one disjoint chunk.
+    // Pass 1: bucket-major counts and fill work, `counts[β * num_remote + i]`, so each bucket owns one disjoint chunk.
     scratch.counts.clear();
     scratch.counts.resize(num_buckets * num_remote, 0);
-    scratch.counts.par_chunks_mut(num_remote).enumerate().for_each(|(bucket, slot)| {
+    scratch.work.clear();
+    scratch.work.resize(num_buckets * num_remote, 0);
+    let slots =
+        scratch.counts.par_chunks_mut(num_remote).zip(scratch.work.par_chunks_mut(num_remote));
+    slots.enumerate().for_each(|(bucket, (slot, work))| {
+        let len = local.bucket_len(bucket);
         let counted = |slot: &mut [u32]| {
             let terms = local.bucket(bucket);
             match cut {
@@ -95,6 +105,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
         match ahead.and_then(|octaves| octaves.rows_ahead(bucket)) {
             Some(rows) => {
                 slot[0] = rows;
+                work[0] = fill_work(len, rows, true);
                 #[cfg(debug_assertions)]
                 {
                     let mut recounted = [0u32];
@@ -105,7 +116,12 @@ fn export_layer_with<const W: usize, C: Coefficient>(
                     );
                 }
             }
-            None => counted(slot),
+            None => {
+                counted(slot);
+                for (work, &rows) in work.iter_mut().zip(slot.iter()) {
+                    *work = fill_work(len, rows, false);
+                }
+            }
         }
     });
     #[cfg(any(test, feature = "test-utils"))]
@@ -131,16 +147,10 @@ fn export_layer_with<const W: usize, C: Coefficient>(
         let mut work = 0usize;
         for position in 0..num_buckets {
             let source = order.bucket_at(position as u32) ^ remote.bucket_delta;
-            let count = scratch.counts[source as usize * num_remote + i];
+            let index = source as usize * num_remote + i;
             scratch.source_of[position] = source;
-            scratch.block_counts[position] = count;
-            if count != 0 {
-                let len = local.bucket_len(source as usize);
-                work += match ahead.and_then(|octaves| octaves.rows_ahead(source as usize)) {
-                    Some(_) => count as usize + len / 64,
-                    None => len,
-                };
-            }
+            scratch.block_counts[position] = scratch.counts[index];
+            work += scratch.work[index];
             scratch.work_prefix[position + 1] = work;
         }
         let partner = remote.partner as usize;
@@ -165,7 +175,7 @@ fn export_layer_with<const W: usize, C: Coefficient>(
                 offsets,
                 source_of: &scratch.source_of,
                 work_prefix: &scratch.work_prefix,
-                min_terms,
+                min_work,
             };
             fill.range(0, num_buckets, columns);
         }
@@ -238,18 +248,18 @@ struct Fill<'a, 'p, const W: usize, C: Coefficient> {
     offsets: &'a [u32],
     source_of: &'a [u32],
     work_prefix: &'a [usize],
-    /// Scanned input terms below which a range stays on one thread.
-    min_terms: usize,
+    /// Fill work below which a range stays on one thread.
+    min_work: usize,
 }
 
 impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
     /// Fill destination positions `start..end`; the halves of a split are disjoint, so the contents are independent of the thread count.
     ///
-    /// The split balances scanned input terms rather than emitted rows, since bucket bits can decide the emit test for whole buckets and leave most of the scan where few rows land.
+    /// The split balances fill work ([`fill_work`]) rather than emitted rows, since bucket bits can decide the emit test for whole buckets and leave most of the scan where few rows land.
     fn range(&self, start: usize, end: usize, columns: ColumnsMut<'_, W, C>) {
         let offsets = self.offsets;
         debug_assert_eq!(columns.len(), (offsets[end] - offsets[start]) as usize);
-        if end - start > 1 && self.work_prefix[end] - self.work_prefix[start] > self.min_terms {
+        if end - start > 1 && self.work_prefix[end] - self.work_prefix[start] > self.min_work {
             let middle = split_at_half_work(self.work_prefix, start, end);
             let (head, tail) = columns.split_at((offsets[middle] - offsets[start]) as usize);
             rayon::join(|| self.range(start, middle, head), || self.range(middle, end, tail));
@@ -315,6 +325,15 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
             }
         }
         written
+    }
+}
+
+/// A source bucket's fill work in scanned input terms: nothing without rows, else its marked rows plus mark words, or its whole scan.
+fn fill_work(len: usize, rows: u32, marked: bool) -> usize {
+    match (rows, marked) {
+        (0, _) => 0,
+        (rows, true) => rows as usize * MARKED_ROW_WORK + len / 64,
+        (_, false) => len,
     }
 }
 

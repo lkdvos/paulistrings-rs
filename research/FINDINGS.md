@@ -281,6 +281,16 @@ Quiet-node code A/B against `ad9d358d` (`9e8f5c03`, same campaign and probe, 5 A
 On genoa weak-scaling sweeps (16×16 TFIM, 1e7 per rank, jobs 7402414 `ad9d358d` against 7402372 `9e8f5c03`, the latter noisy between cells), steady s/step at 2 ranks on one node: x-only 19.9 → 17.1, random rows 27.3 → 14.3, `avoid:10` 25.0 → 13.8; at 8 nodes random rows 41.5 → 21.0, x-only 28.5 → 18.4.
 So the large-sum weak-scaling workload gains roughly 2×, and the small probe across genoa nodes is flat to slightly worse; there the export absorbs the read of the terms the cut drops, which the whole-sum cut used to take outside the export phase, and the counting and marking cost is not repaid; the MPI export increase is open.
 
+### Marked export fills split by rows
+
+A marked fill (§Exchanging layers count and mark their rows a layer ahead) reaches each row at a cache miss, ~145 ns CPU per row at 2e6 terms per partition and ~290 at 1e7, but the split weighed a marked bucket at one scanned term per row, so the fill formed few leaves.
+In-process 16×16 TFIM probe (`partition_approx_topn`, P = 2, 16 threads per partition, x-only rows), per exchanging layer: at 2e6 1.15 ms, of which pass 1 0.09, the per-position loop 0.07 and the fill 0.93 over 8 leaves, the longest 95% of the fill; at 1e7 5.2 ms (0.26 / 0.63 / 4.15, 32 leaves, 12 busy threads).
+A marked row now weighs 32 scanned terms (`MARKED_ROW_WORK`; 16 and 64 measure the same) and pass 1 records each bucket's fill work, so the per-position loop only gathers it: 128 leaves at 2e6, fill −25..−30% at 2e6 and −15..−19% at 1e7.
+Code A/B against `3d25ccba` on ccqlin038 (abba, other sessions' builds loading it to 30–48 on 32 cores): on the probe, export per remote layer **−26.3%** at x-only 2e6 (6/6, wall −1.2%, 5/6), −27.3% at random 2e6 (4/6; the other two are B runs whose coset loop and collective also rose ~40%, wall no consistent change), −19.4% at x-only 1e7 (3/4) and −6% at random 1e7 (2/4), wall no consistent change at 1e7 (step walls spread ±30%).
+`phase_breakdown` at `atopn:2e6`, P = 2, 32 threads: 24-qubit `tfim_step` random rows wall +0.4% median (3/8 negative) and `heavyhex_step` −6.7% (6/8; a first 4-pair run at +22%, 4/4, in the exchange and barrier waits did not reproduce), no consistent change; `tfim_step` cut rows export −36.7% and wall −28% (4/4 each).
+Rejected: software prefetch of the marked rows, fill −9% at 2e6 and flat at 1e7.
+Quiet-node A/B pending.
+
 ### Operator products skip disjoint supports
 
 A Liouvillian pair whose supports miss always commutes, and on a nested-commutator probe (Heisenberg chain `L = 40` with a `0.3` Z field, 157 generator terms, `O` from `Z_20` thresholded at `1e-12` per step, 1.9e6 terms at step 13, `W = 1`) only 30% of pairs meet and 16.5% anticommute.

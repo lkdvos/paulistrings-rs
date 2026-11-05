@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-d91dc083.js";
+            window.path_to_searchindex_js = "searchindex-7f5540b9.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -1793,7 +1793,7 @@ Under <code>comm=</code>, a failure on one rank’s device fails the call on eve
 <li><strong>Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits</strong>, since a layer holds its input, its output and a staging arena at once.</li>
 <li><strong>Widths <code>W ≥ 8</code> (more than 256 qubits) are correct but untuned.</strong></li>
 <li><strong>A multi-device or MPI group holds its exchange in device memory.</strong> One export volume and one receive volume stay resident on a partition’s device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count a single device still fits.</li>
-<li><strong>A device partition in a group cannot refine mid-run.</strong> It runs every remote layer at the bucket count agreed with its exchange partners and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap.</li>
+<li><strong>A device partition in a group cannot refine mid-run.</strong> It runs every remote layer at the group’s agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap.</li>
 <li><strong>The sender-side merge (<code>premerge</code>) does not pay on a same-device exchange at low merge ratios.</strong> Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.</li>
 <li><strong>Multi-node runs are unmeasured.</strong> Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.</li>
 <li><strong>One chunk’s transfer does not overlap the fused layer of the chunk before it</strong>, and the chunked receive has not run over a real NCCL communicator.</li>
@@ -4848,7 +4848,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.nanos</code></td><td><code>list[list[int]]</code></td><td>each partition’s own elapsed wall time per layer; <code>PropagationStats.nanos[k]</code> is <code>max(nanos[k])</code></td></tr>
 <tr><td><code>.rebucket_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: raising or lowering the bucket count</td></tr>
 <tr><td><code>.prepare_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: channel preparation and partition planning</td></tr>
-<tr><td><code>.collective_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: a remote layer’s bucket-count exchange and the policy’s collectives, the wait for the slowest partner included</td></tr>
+<tr><td><code>.collective_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the policy’s collectives, the wait for the slowest partition included</td></tr>
 <tr><td><code>.export_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: building the rows to send; zero on a <code>local</code> layer</td></tr>
 <tr><td><code>.exchange_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the transfer the layer’s compute did not hide; zero on a <code>local</code> layer</td></tr>
 <tr><td><code>.coset_loop_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the layer’s own compute; on a device, its export and exchange too</td></tr>

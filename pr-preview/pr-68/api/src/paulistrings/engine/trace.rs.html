@@ -5,11 +5,11 @@
 <a href=#5 id=5 data-nosnippet>5</a><span class="doccomment">/// What one layer did across the whole group; the per-partition vectors are indexed by rank.
 <a href=#6 id=6 data-nosnippet>6</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Eq)]
 <a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">pub struct </span>PartitionLayerRecord {
-<a href=#8 id=8 data-nosnippet>8</a>    <span class="doccomment">/// Bucket bits each partition held for this layer; equal between the partners of an exchange, not across the group.
+<a href=#8 id=8 data-nosnippet>8</a>    <span class="doccomment">/// Bucket bits each partition held for this layer, equal across each exchange group of a remote layer.
 <a href=#9 id=9 data-nosnippet>9</a>    </span><span class="kw">pub </span>bits: Vec&lt;u8&gt;,
 <a href=#10 id=10 data-nosnippet>10</a>    <span class="doccomment">/// Remote deltas the layer had; zero means it made no transport call.
 <a href=#11 id=11 data-nosnippet>11</a>    </span><span class="kw">pub </span>remote_deltas: u32,
-<a href=#12 id=12 data-nosnippet>12</a>    <span class="doccomment">/// Group calls the layer issued besides the exchange: the bucket-count exchange of a remote layer plus the policy's collective finalization.
+<a href=#12 id=12 data-nosnippet>12</a>    <span class="doccomment">/// Collective calls the layer issued besides the exchange: the policy's collective finalization, plus a device group's separate bucket-count exchange on a remote layer.
 <a href=#13 id=13 data-nosnippet>13</a>    </span><span class="kw">pub </span>collectives: u32,
 <a href=#14 id=14 data-nosnippet>14</a>    <span class="doccomment">/// This layer's position in the [`Circuit`](crate::Circuit), independent of direction.
 <a href=#15 id=15 data-nosnippet>15</a>    </span><span class="kw">pub </span>circuit_index: u32,
@@ -49,7 +49,7 @@
 <a href=#49 id=49 data-nosnippet>49</a>    </span><span class="kw">pub </span>rebucket_ns: u64,
 <a href=#50 id=50 data-nosnippet>50</a>    <span class="doccomment">/// Channel preparation and partition planning, both passes of a refining layer.
 <a href=#51 id=51 data-nosnippet>51</a>    </span><span class="kw">pub </span>prepare_ns: u64,
-<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// The bucket-count proposal and, on a remote layer, its exchange, plus the policy finalization's collective calls.
+<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// The policy finalization's collective calls, plus a device group's separate bucket-count exchange.
 <a href=#53 id=53 data-nosnippet>53</a>    </span><span class="kw">pub </span>collective_ns: u64,
 <a href=#54 id=54 data-nosnippet>54</a>    <span class="doccomment">/// The export pass building the per-partner blocks.
 <a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub </span>export_ns: u64,

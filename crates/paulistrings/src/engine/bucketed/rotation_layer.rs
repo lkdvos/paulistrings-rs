@@ -13,7 +13,7 @@ use crate::engine::merge::SortKernel;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
-use merge::merge_partners;
+use merge::{fold_hits, merge_partners};
 
 use crate::engine::timing::{lap, stamp, tally};
 
@@ -373,7 +373,7 @@ pub(super) fn fill_received_rotation_bucket<const W: usize, C: Coefficient, T, X
         }
     };
     lap!(stamp, scratch.stats.sort_ns);
-    merge_partners(bucket, partners, policy, &mut old[0], None);
+    merge_partners(bucket, partners, policy, &mut old[0], None, false);
     lap!(stamp, scratch.stats.merge_ns);
     tally!(scratch.stats.cosets, 1);
     tally!(scratch.stats.runs, 1);
@@ -394,6 +394,7 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
     T: TruncationPolicy<W, C> + ?Sized,
 {
     let size = members.len();
+    let floor = policy.coefficient_floor();
     debug_assert!(size == 1 || size == 2);
     debug_assert_eq!(supports.len(), size);
     // The general path's buffers, idle between its cosets: each member's run holds its partners in `rest` and in key order in `identity`, and `old[0]` is the merge fallback.
@@ -445,10 +446,11 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
         tally!(scratch.stats.rows_sorted, run.rest.len());
         layer.order.order(&run.rest, &mut run.identity, scratch.sort.indices());
         lap!(stamp, scratch.stats.sort_ns);
+        fold_hits(bucket, &scratch.hits[j], &mut run.identity, floor);
         let dirty = known.then_some(scratch.hits[j].as_slice());
         #[cfg_attr(not(test), allow(unused_variables))]
         let in_place =
-            merge_partners(bucket, run.identity.view(), policy, &mut scratch.old[0], dirty);
+            merge_partners(bucket, run.identity.view(), policy, &mut scratch.old[0], dirty, true);
         #[cfg(test)]
         {
             scratch.rotation_merges.0 += usize::from(in_place);

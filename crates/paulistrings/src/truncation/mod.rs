@@ -38,6 +38,13 @@ pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex
         true
     }
 
+    /// A floor `ε` below which [`keep_term`](Self::keep_term) refuses every term: it is `false` whenever `|c| ≤ ε`; negative when there is none.
+    ///
+    /// The engine may drop a new term at or below it without asking `keep_term`, so a floor that `keep_term` does not honour changes results.
+    fn coefficient_floor(&self) -> f64 {
+        -1.0
+    }
+
     /// Pass over the whole sum after each layer; [`PauliSum::retain`] is the easy way to write a filter here.
     fn finalize_layer(&self, _sum: &mut PauliSum<W, C>) {}
 

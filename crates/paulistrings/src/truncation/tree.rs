@@ -127,6 +127,22 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
         }
     }
 
+    fn coefficient_floor(&self) -> f64 {
+        match self {
+            Self::Coefficient(eps) => *eps,
+            Self::And(a, b) => <Self as TruncationPolicy<W, C>>::coefficient_floor(a)
+                .max(<Self as TruncationPolicy<W, C>>::coefficient_floor(b)),
+            Self::Or(a, b) => <Self as TruncationPolicy<W, C>>::coefficient_floor(a)
+                .min(<Self as TruncationPolicy<W, C>>::coefficient_floor(b)),
+            Self::PerPartition(inner) => <Self as TruncationPolicy<W, C>>::coefficient_floor(inner),
+            Self::Keep
+            | Self::Weight(_)
+            | Self::TopN(_)
+            | Self::ApproxTopN(_)
+            | Self::CollapseSample(_) => -1.0,
+        }
+    }
+
     fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         match self {
             Self::TopN(n) => TopN(*n).finalize_layer(sum),

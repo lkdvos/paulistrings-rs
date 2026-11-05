@@ -31,6 +31,10 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for CoefficientThres
         eps < 0.0 || c.norm_sqr() > eps * eps
     }
 
+    fn coefficient_floor(&self) -> f64 {
+        self.0
+    }
+
     fn finalizes_layer(&self) -> bool {
         false
     }
@@ -641,6 +645,10 @@ where
         self.0.keep_term(x, z, c) && self.1.keep_term(x, z, c)
     }
 
+    fn coefficient_floor(&self) -> f64 {
+        self.0.coefficient_floor().max(self.1.coefficient_floor())
+    }
+
     fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         self.0.finalize_layer(sum);
         self.1.finalize_layer(sum);
@@ -688,6 +696,10 @@ impl<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>> TruncationPolicy
 {
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
         self.0.keep_term(x, z, c)
+    }
+
+    fn coefficient_floor(&self) -> f64 {
+        self.0.coefficient_floor()
     }
 
     fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
@@ -748,6 +760,10 @@ where
 {
     fn keep_term(&self, x: &[u64; W], z: &[u64; W], c: C) -> bool {
         self.0.keep_term(x, z, c) || self.1.keep_term(x, z, c)
+    }
+
+    fn coefficient_floor(&self) -> f64 {
+        self.0.coefficient_floor().min(self.1.coefficient_floor())
     }
 
     /// `false`; panics if either operand has a layer pass.

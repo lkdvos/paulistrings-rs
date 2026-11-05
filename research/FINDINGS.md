@@ -98,7 +98,33 @@ The reads it removed reappeared cold in the next pass: at saturation moving a pa
 Idea: merge every rotation bucket into the scratch buffer and swap it in, dropping the in-place merge's closing shift.
 Rejected: TFIM at one thread **+22.7% (0/3 faster)**; the shift copies a bucket already in L1/L2, while the swapped buffer is colder.
 
+### Rotation partners as coefficients only (revisits §Skipping small rotation partners)
+
+Idea: the scan keeps only each partner's coefficient, the partner order is computed on row positions from the source keys, and only the new keys above the policy's floor are ever built as rows.
+Rejected: one pair each against v0.3.0 at one thread, `float64`: `tfim_11x11` −17.3%, `heavyhex_clifford` +1.6%, `heavyhex_generic` −1.1% cycles, all behind §Fold rotation hits before the merge; reading the partner keys back from the source costs more than writing them, and ordering is only 4–8% of the time (`PartnerOrder` + `Placer`).
+
+### Skipping small rotation partners
+
+Idea: under a coefficient floor `ε` a partner with `|c·a₁| ≤ ε` survives only by summing into a present key (`tfim_11x11`: 84.6% of partners are that small and 27.9% of those hit, so 61% of all partners are built only to be dropped; `heavyhex_clifford`: 43.7% and 10.0%), so the scan built such a partner only after a binary search of the destination bucket's keys found it.
+Rejected: exact (counts and ⟨Z⟩ identical) but one thread `tfim_11x11` **+33% (3/3**, 9.8 → 13.1 s), `heavyhex_clifford` +12/+44/+12% (3/3); the search costs ~27 ns per small partner, a binary search on the first key word only the same, while building, ordering and merging a partner that then fails `keep_term` costs a few, so no per-partner membership test can pay.
+An opt-in `branch_atol` that drops such partners whatever their key (prototyped as `BranchThreshold`, not shipped) costs one compare when off (neutral, 3/3 mixed signs) but buys nothing on the bench tasks at `coeff:1e-4`, one thread, float64 (exact: TFIM 7.0 s, 1.01e6 strings, ⟨Z⟩ 0.3101; heavyhex Clifford 19.7 s, 4.65e5, 0.1588):
+
+| `branch_atol` / cutoff | TFIM wall, strings, ⟨Z⟩ error | heavyhex Clifford wall, strings, ⟨Z⟩ error |
+|---|---|---|
+| 0.1 | 7.06 s, 1.03e6, −2.9e-3 | 20.1 s, unchanged, 0 |
+| 0.3 | 7.10 s, 1.26e6, −1.2e-2 | 20.2 s, unchanged, 0 |
+| 1 | 9.85 s, 2.47e6, +9.1e-2 | 15.3 s, 3.90e5, +5.8e-3 |
+| 3 | 1.74 s, 5.1e5, +0.41 | 3.15 s, 8.6e4, +4.8e-2 |
+
+A dropped branch onto a present string is mostly one that would have shrunk it below the cutoff, so TFIM grows rather than shrinks until the tolerance is far above the cutoff, where the error is no longer small; on heavyhex every rotation is `rx(π/4)` or Clifford, so nothing drops below `atol ≈ 0.7·ε`.
+
 ## Shipped
+
+### Fold rotation hits before the merge
+
+A partner of an anticommuting string anticommutes too, so it can only land on one of the destination bucket's anticommuting rows, which the scan has already listed: before the merge, one walk of the ordered partners against that list sums each hit into its row (bucket-first, as the merge sums), and drops each new key at or below the policy's `TruncationPolicy::coefficient_floor`, so the merge sees new keys above the floor only and needs no `count_hits` (`rotation_layer/merge.rs`, `fold_hits`).
+Measured on ccqlin038 against v0.3.0 at `float64`, interleaved pairs, results identical in every pair: one thread `tfim_11x11` **−20.0% to −21.3% cycles (4/4)**, 18% fewer instructions and 21% fewer branch misses; `heavyhex_generic` −5.1% to −5.8% (5/5 at steady load); `heavyhex_clifford` −1.0% to −1.7% in 5 of 6 pairs and +0.1% in one, its rotations being mostly Clifford; 8 threads `tfim_11x11` −20% to −22% cycles (−10% to −20% wall, 3/3), `heavyhex_clifford` −1.6% to −3.2% (3/3).
+Where the time of the dropped partners went on v0.3.0 (one thread, `tfim_11x11` / `heavyhex_clifford`): `merge_partners` 37% / 29%, `scan` 26% / 18%, memmove 9% / 6%, the fallback merge 7% / 3%, `count_hits` 5% / 2%, partner ordering 8% / 4%.
 
 ### Direct-apply path for small sums
 

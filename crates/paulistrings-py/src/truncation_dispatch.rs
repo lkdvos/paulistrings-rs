@@ -21,6 +21,10 @@ impl<const W: usize, C: Coefficient, F: TruncationPolicy<W, C>> TruncationPolicy
         self.filter.keep_term(x, z, c)
     }
 
+    fn coefficient_floor(&self) -> f64 {
+        self.filter.coefficient_floor()
+    }
+
     fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
         <BuiltinTruncation as TruncationPolicy<W, C>>::finalize_layer(self.tree, sum)
     }

@@ -30,6 +30,11 @@ pub(super) struct RotationLayer<'p, const W: usize, C: Coefficient = num_complex
     /// Whether every anticommuting pattern has `|a₀| ≤ ε·|a₁|`, so strings move instead of splitting.
     clifford: bool,
     order: PartnerOrder<W>,
+    /// [`LocalPtm::support_probe`].
+    probe: [(usize, u32); 2],
+    /// Bit `p` set iff the generator entry reaches probe pattern `p`, whose support pattern is `p & support_mask`.
+    active: u16,
+    support_mask: usize,
 }
 
 impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
@@ -57,6 +62,10 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             }
         }
         let mask = generator.mask();
+        let support_mask = dim - 1;
+        let active = (0..16)
+            .filter(|&p| generator.amplitude[p & support_mask] != C::ZERO)
+            .fold(0u16, |bits, p| bits | 1 << p);
         Some(Self {
             ptm,
             mask,
@@ -64,7 +73,18 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             partner: generator.amplitude,
             clifford,
             order: PartnerOrder::new(&mask.0, &mask.1),
+            probe: ptm.support_probe(),
+            active,
+            support_mask,
         })
+    }
+
+    /// The probe pattern of `(x, z)`, packed like [`LocalPtm::support_bits`] on two probe slots.
+    #[inline(always)]
+    fn pattern(&self, x: &[u64; W], z: &[u64; W]) -> usize {
+        let [(w0, b0), (w1, b1)] = self.probe;
+        let bit = |word: u64, b: u32| ((word >> b) & 1) as usize;
+        bit(x[w0], b0) | bit(z[w0], b0) << 1 | bit(x[w1], b1) << 2 | bit(z[w1], b1) << 3
     }
 
     /// Whether strings move instead of splitting, so each input string has at most one output.
@@ -72,41 +92,62 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
         self.clifford
     }
 
-    /// Append each anticommuting string's partner `(k ⊕ g, c·a₁)` to `partners`, then scale the bucket by `a₀` in place, or on the Clifford arm drop the moved strings.
-    fn scan(&self, bucket: &mut BucketColumns<W, C>, partners: &mut BucketColumns<W, C>) {
+    /// Append each anticommuting string's partner `(k ⊕ g, c·a₁)` to `partners`, then scale those strings by `a₀` in place, or on the Clifford arm zero them for the merge to drop; `hits` is scratch.
+    ///
+    /// A first pass reads only the probed key words and lists the anticommuting rows, so the coefficients are read and written for those rows alone, without a data-dependent branch.
+    fn scan(
+        &self,
+        bucket: &mut BucketColumns<W, C>,
+        partners: &mut BucketColumns<W, C>,
+        hits: &mut Vec<u32>,
+    ) {
         let len = bucket.len();
-        // One slot past the exact bound, for `append_if`'s discarded write.
-        partners.x.reserve(len + 1);
-        partners.z.reserve(len + 1);
-        partners.coeff.reserve(len + 1);
+        assert!(len < 1 << 28, "a hit packs its row into 28 bits");
         let BucketColumns { x, z, coeff } = bucket;
-        let (mask_x, mask_z) = &self.mask;
-        let mut kept = 0usize;
+        hits.clear();
+        // One slot past the exact bound, for the discarded write.
+        hits.reserve(len + 1);
+        let listed = hits.as_mut_ptr();
+        let mut anticommuting = 0usize;
         for row in 0..len {
-            let (key_x, key_z, c) = (x[row], z[row], coeff[row]);
-            let pattern = self.ptm.support_bits(&key_x, &key_z);
-            let amplitude = self.partner[pattern];
-            let anticommutes = amplitude.is_nonzero();
-            let partner_x = core::array::from_fn(|w| key_x[w] ^ mask_x[w]);
-            let partner_z = core::array::from_fn(|w| key_z[w] ^ mask_z[w]);
-            // SAFETY: reserved `len + 1` above, and at most `len` rows are published.
-            unsafe {
-                GatherRun::append_if(partners, anticommutes, partner_x, partner_z, c * amplitude)
-            };
-            if self.clifford {
-                x[kept] = key_x;
-                z[kept] = key_z;
-                coeff[kept] = c;
-                kept += usize::from(!anticommutes);
-            } else {
-                // Unconditional: a store only for anticommuting strings mispredicts on every active gate.
-                coeff[row] = c * self.identity[pattern];
-            }
+            let pattern = self.pattern(&x[row], &z[row]);
+            // SAFETY: `anticommuting ≤ row < len`, within the reserved `len + 1`.
+            unsafe { listed.add(anticommuting).write((row as u32) << 4 | pattern as u32) };
+            anticommuting += usize::from((self.active >> pattern) & 1 != 0);
         }
-        if self.clifford {
-            x.truncate(kept);
-            z.truncate(kept);
-            coeff.truncate(kept);
+        // SAFETY: the first `anticommuting` slots were written above.
+        unsafe { hits.set_len(anticommuting) };
+        if anticommuting == 0 {
+            return;
+        }
+        let (mask_x, mask_z) = &self.mask;
+        let start = partners.len();
+        partners.x.reserve(anticommuting);
+        partners.z.reserve(anticommuting);
+        partners.coeff.reserve(anticommuting);
+        let (out_x, out_z, out_c) = unsafe {
+            (
+                partners.x.as_mut_ptr().add(start),
+                partners.z.as_mut_ptr().add(start),
+                partners.coeff.as_mut_ptr().add(start),
+            )
+        };
+        for (slot, &hit) in hits.iter().enumerate() {
+            let (row, support) = ((hit >> 4) as usize, (hit & 15) as usize & self.support_mask);
+            let c = coeff[row];
+            // SAFETY: `slot < anticommuting`, reserved past `start` above.
+            unsafe {
+                out_x.add(slot).write(core::array::from_fn(|w| x[row][w] ^ mask_x[w]));
+                out_z.add(slot).write(core::array::from_fn(|w| z[row][w] ^ mask_z[w]));
+                out_c.add(slot).write(c * self.partner[support]);
+            }
+            coeff[row] = if self.clifford { C::ZERO } else { c * self.identity[support] };
+        }
+        // SAFETY: written above.
+        unsafe {
+            partners.x.set_len(start + anticommuting);
+            partners.z.set_len(start + anticommuting);
+            partners.coeff.set_len(start + anticommuting);
         }
     }
 }
@@ -260,7 +301,7 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
         // Counted as the general path's identity rows, whose keys stay put.
         tally!(scratch.stats.rows_gathered, bucket.len());
         tally!(scratch.stats.rows_id, bucket.len());
-        layer.scan(bucket, partners);
+        layer.scan(bucket, partners, &mut scratch.hits);
     }
     lap!(stamp, scratch.stats.gather_ns);
     for (j, bucket) in members.iter_mut().enumerate() {

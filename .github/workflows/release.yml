@@ -33,7 +33,7 @@ jobs:
         include:
           - { name: linux-x86_64, os: ubuntu-latest, target: x86_64, manylinux: "2_28", features: cuda }
           - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28", features: cuda }
-          # Both macOS wheels come off one arm64 runner; the Intel one is a cross-build,
+          # Both macOS wheels come off arm64 runners; the Intel one is a cross-build,
           # which abi3 allows since no x86_64 interpreter is needed at build time.
           # No `cuda` on macOS, which has no CUDA driver.
           - { name: macos-x86_64, os: macos-15, target: x86_64-apple-darwin }

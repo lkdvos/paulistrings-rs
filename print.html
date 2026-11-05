@@ -9,7 +9,7 @@
 
         <!-- Custom HTML head -->
 
-        <meta name="description" content="Pauli propagation from Python: a Manual, worked Examples, and a Library reference.">
+        <meta name="description" content="Quantum circuits in the Pauli basis from Python: a Manual, worked Examples, and a Library reference.">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-1d2116ed.js";
+            window.path_to_searchindex_js = "searchindex-850ce018.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -1650,7 +1650,8 @@ exported = comm.allreduce(sum(stats.partition.rows_exported))
 <h2 id="limits-1"><a class="header" href="#limits-1">Limits</a></h2>
 <ul>
 <li><strong>Exact <code>topn</code> is unavailable</strong>, as in any partitioned run: choosing the <code>n</code>-th largest magnitude across ranks is a distributed selection.
-<code>truncation.approx_topn(n)</code> all-reduces its octave histogram and retains exactly the set a single-process run would have.</li>
+<code>truncation.approx_topn(n)</code> all-reduces its octave histogram and retains exactly the set a single-process run would have.
+<code>truncation.partition_topn(n)</code> and <code>partition_approx_topn(n)</code> hold each rank to <code>n</code> terms with no collective.</li>
 <li><strong>A replicated input caps the sum at what one rank can build.</strong> Reaching the capacity the ranks together have needs a driver that ingests already distributed; the scatter itself is a local filter and costs nothing extra.</li>
 <li><strong>Homogeneous groups only.</strong> The wire carries raw host bytes, so a mixed-architecture job, or one mixing compile-time width tiers across ranks, is silently wrong.</li>
 <li><strong>One partition per rank.</strong> The hybrid — several NUMA domains inside one rank — is not implemented.
@@ -4702,7 +4703,7 @@ The GIL is released for the duration of both calls.</p>
 </tbody>
 </table>
 </div>
-<p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>).</p>
+<p>In partitioned mode <code>RAYON_NUM_THREADS</code> and <code>engine</code> are ignored, and <code>truncation.topn</code> raises <code>NotImplementedError</code> (use <code>approx_topn</code>, or <code>partition_topn</code> for a per-partition cap).</p>
 <p><code>partition_row_blocks</code> excludes <code>partition_row_seed</code> and <code>partition_row_exclude</code>, and <code>partition_rows</code> excludes every other row keyword; all but the seed need <code>partitions=</code>, <code>comm=</code> or a list of several devices.
 A partition is named by <code>log2(P)</code> rows over the <code>2 * num_qubits</code> key coordinates, so <code>P</code> is at most <code>2^min(2 * num_qubits, 31)</code>.
 Rows that leave some partitions unreachable (linearly dependent rows, or an exclusion that leaves no coordinate readable) run with a <code>RuntimeWarning</code> naming the shortfall; only a malformed keyword is a <code>ValueError</code>.
@@ -4729,7 +4730,7 @@ Under <code>comm=</code>, the block count in <code>partition_row_blocks</code> o
 <p>A list’s length must be a power of two, at most <code>2^min(2 * num_qubits, 31)</code>, or it is a <code>ValueError</code>; an ordinal may repeat, putting several partitions on one device.
 Several devices split the sum like <code>partitions=</code>: the <code>partition_row_*</code> keywords and <code>partition_rows</code> pick the rows, the block or row count matching the list length.
 <code>device=</code> is an alternative to <code>partitions=</code>; passing both, or <code>result="local"</code> without <code>comm=</code>, or <code>partition_row_blocks=</code> with a single device, is a <code>ValueError</code>.
-<code>engine</code> is ignored, <code>truncation.topn</code> runs on one device and raises <code>NotImplementedError</code> on several or under <code>comm=</code> (use <code>approx_topn</code>), an exhausted device raises <code>MemoryError</code>, and without the <code>cuda</code> feature or a visible device <code>device=</code> raises <code>RuntimeError</code>.</p>
+<code>engine</code> is ignored, <code>truncation.topn</code> runs on one device and raises <code>NotImplementedError</code> on several or under <code>comm=</code> (use <code>approx_topn</code> or <code>partition_topn</code>), an exhausted device raises <code>MemoryError</code>, and without the <code>cuda</code> feature or a visible device <code>device=</code> raises <code>RuntimeError</code>.</p>
 <p>With <code>comm=</code>, <code>device=</code> is this rank’s one device: an <code>int</code> or <code>"auto"</code> (a device near the rank’s CPUs, <code>gpu::local_device_for_comm</code>), and a list of several ordinals is a <code>ValueError</code>.
 <code>result=</code> and the row kwargs mean what they mean on the host <code>comm=</code> path, and a rank that cannot use its device fails the call on every rank.
 The pair needs the extension built with both the <code>cuda</code> and <code>mpi</code> features, and raises <code>RuntimeError</code> naming the missing one otherwise.

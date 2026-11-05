@@ -436,6 +436,18 @@ fn support_bits_use_the_clifford2q_packing() {
 }
 
 #[test]
+fn support_probe_names_each_qubit_word_and_bit_repeating_the_last() {
+    let hash = Gf2Hash::<2>::new(128, 8, 0x1);
+    let Prepared::Local(two) = PtmChannel::cnot(3, 70).prepare(&hash, false).unwrap() else {
+        panic!("expected Local")
+    };
+    assert_eq!(two.support_probe(), [(0, 3), (1, 6)]);
+    let rx = PauliRotation::new(PauliString::<2>::x(100), 0.3);
+    let Prepared::Local(one) = rx.prepare(&hash, false).unwrap() else { panic!("expected Local") };
+    assert_eq!(one.support_probe(), [(1, 36), (1, 36)]);
+}
+
+#[test]
 fn colliding_deltas_share_a_group_rather_than_being_lost() {
     // With 1 bucket bit, CNOT's four key deltas collide on bucket deltas.
     let hash = Gf2Hash::<2>::new(128, 1, 0xC011);

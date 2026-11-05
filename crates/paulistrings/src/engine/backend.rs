@@ -8,9 +8,12 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::{max_fanout, LayerScratch, RowEmitter};
+use crate::engine::bucketed::{
+    apply_permutation_run, apply_rotation_run, max_fanout, LayerScratch, RowEmitter, Run,
+};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::engine::timing::{lap, stamp};
 use crate::engine::trace::PartitionLayerRow;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::{rebucketed_bits, PauliSum};
@@ -48,6 +51,8 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
         let _ = (target_bucket_len, min_buckets);
         false
     }
+    /// Start a call: forget whatever the scratch knows about the sum, which may have changed since the last; the driver calls it before the first layer.
+    fn begin_call(&mut self) {}
     /// End a call: apply any truncation the last layer pass deferred; the driver calls it after the last layer.
     fn settle(&mut self) {}
     /// Move the partition out, leaving an empty one under the same hash so the driver stays consistent if the work is never handed back.
@@ -78,6 +83,15 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         ahead: Option<&RowEmitter<'_, W, C>>,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
+    /// Whether [`apply_run`](Self::apply_run) is implemented; the driver asks before it looks ahead for a run.
+    fn takes_runs(&self) -> bool {
+        false
+    }
+    /// Apply `run` in one pass; called only when [`takes_runs`](Self::takes_runs) and the policy has no layer pass.
+    fn apply_run(&mut self, run: Run<'_, W, C>, policy: &T) {
+        let _ = (run, policy);
+        unreachable!("the backend takes no runs");
+    }
     /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
     fn trace_layer(&self, row: &mut PartitionLayerRow) {
         let _ = row;
@@ -119,11 +133,13 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
 
     fn refine(&mut self) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
+        self.state.layer.supports.forget();
         self.sum.refine();
     }
 
     fn coarsen_to(&mut self, bits: u8) {
         self.state.layer.octaves.apply_pending(&mut self.sum);
+        self.state.layer.supports.forget();
         self.sum.coarsen_to(bits);
     }
 
@@ -133,13 +149,19 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for HostPartition<W,
             .min(self.sum.hash().max_bits());
         if wanted != bits {
             self.state.layer.octaves.apply_pending(&mut self.sum);
+            self.state.layer.supports.forget();
             self.sum.rebucket(target_bucket_len, min_buckets);
         }
         true
     }
 
+    fn begin_call(&mut self) {
+        self.state.layer.supports.forget();
+    }
+
     fn settle(&mut self) {
         self.state.layer.octaves.settle(&mut self.sum);
+        self.state.layer.supports.forget();
     }
 
     fn detach(&mut self) -> Self {
@@ -193,12 +215,36 @@ where
         )
     }
 
+    fn takes_runs(&self) -> bool {
+        true
+    }
+
+    fn apply_run(&mut self, run: Run<'_, W, C>, policy: &T) {
+        match run {
+            Run::Rotations(layers) => {
+                self.state.layer.octaves.begin_layer(1, policy.fused_approx_top_n(), false);
+                apply_rotation_run(&mut self.sum, layers, policy, &mut self.state.layer);
+            }
+            Run::Permutations(steps) => {
+                stamp!(stamp);
+                self.state.layer.octaves.apply_pending(&mut self.sum);
+                // A run rehashes every string into new buckets.
+                self.state.layer.supports.forget();
+                let layer = &mut self.state.layer;
+                apply_permutation_run(&mut self.sum, steps, policy, &mut layer.permutation);
+                lap!(stamp, layer.stats.coset_loop_ns);
+            }
+        }
+    }
+
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {
         match policy.fused_approx_top_n() {
             Some(fused) => self.state.layer.octaves.finalize(&mut self.sum, collectives, fused),
             None => {
                 if policy.finalizes_layer() {
                     self.state.layer.octaves.drop_ahead();
+                    // A layer pass may rescale what `keep_term` already passed.
+                    self.state.layer.supports.forget();
                 }
                 policy.finalize_layer_partitioned(&mut self.sum, collectives);
             }

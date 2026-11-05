@@ -92,7 +92,6 @@ impl<const W: usize, C: Coefficient> LocalPtm<W, C> {
     }
 
     /// Support qubits, ascending.
-    #[cfg(any(test, feature = "cuda"))]
     pub(crate) fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
         self.qubits[..self.k as usize].iter().map(|&q| q as usize)
     }
@@ -149,6 +148,15 @@ impl<const W: usize, C: Coefficient> LocalPtm<W, C> {
             s |= (((z[w] >> b) & 1) as usize) << (2 * j + 1);
         }
         s
+    }
+
+    /// Each support qubit's `(word, bit)`, the last repeated to fill [`MAX_LOCAL_SUPPORT`] slots, so a probe of fixed shape reads [`support_bits`](Self::support_bits) in its low `2k` bits.
+    pub(crate) fn support_probe(&self) -> [(usize, u32); MAX_LOCAL_SUPPORT] {
+        let k = self.k();
+        core::array::from_fn(|j| {
+            let q = if k == 0 { 0 } else { self.qubits[j.min(k - 1)] as usize };
+            (q / 64, (q % 64) as u32)
+        })
     }
 
     /// Whether every key maps to itself, making the layer an in-place coefficient rescale.

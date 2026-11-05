@@ -28,11 +28,18 @@ pub(in crate::engine) struct CosetScratch<const W: usize, C: Coefficient = num_c
     pub(super) members: Vec<BucketColumns<W, C>>,
     /// The coset's bucket indices, member `j` at index `j`.
     pub(super) betas: Vec<u32>,
+    /// The rotation layer's anticommuting rows of each member it scans.
+    pub(super) hits: [Vec<u32>; 2],
+    /// The coset's member supports while a rotation layer runs on it, member `j` at index `j`.
+    pub(super) member_supports: Vec<super::rotation_layer::Support<W>>,
     /// The window counts this slot took since its coset loop last drained it.
     pub(super) octave_totals: WindowTotals,
     /// The rotation layer's merges done in place, and through `old[0]`.
     #[cfg(test)]
     pub(super) rotation_merges: (usize, usize),
+    /// The rotation layer's members left unread, and left unmerged, on a known support.
+    #[cfg(test)]
+    pub(super) rotation_skips: (usize, usize),
     /// This slot's busy-time counters.
     #[cfg(feature = "phase-timing")]
     pub(super) stats: CosetStats,

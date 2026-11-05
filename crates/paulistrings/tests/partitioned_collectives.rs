@@ -68,8 +68,13 @@ fn exchange_free_layers_are_collective_free() {
     }
 }
 
+/// Whether a traced layer was applied alone or leads a run; a run's later layers keep its bucket count.
+fn leads(layer: &paulistrings::PartitionLayerRecord) -> bool {
+    layer.nanos.iter().any(|&n| n > 0)
+}
+
 /// `P = 1` has no group to agree with, so the driver takes no collective at
-/// all — and keeps rebucketing every layer, as `propagate` does.
+/// all — and keeps rebucketing every layer a run does not cover, as `propagate` does.
 #[test]
 fn one_partition_takes_no_collective_and_still_rebuckets() {
     let circuit = steps(2, 0.1);
@@ -87,7 +92,7 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
     // Exactly `propagate`'s own rule, every layer, with no lag because there is nothing to lag behind.
     let mut prev = before;
     let mut grew = false;
-    for (k, layer) in trace.layers.iter().enumerate() {
+    for (k, layer) in trace.layers.iter().enumerate().filter(|(_, layer)| leads(layer)) {
         let want =
             rebucketed_bits(layer.terms_in[0], prev, fine().target_bucket_len, fine().min_buckets);
         assert_eq!(
@@ -123,7 +128,7 @@ fn one_partition_coarsens_once_the_sum_collapses() {
     let trace = ps.take_trace().expect("tracing is on");
 
     let mut coarsened = false;
-    for (k, layer) in trace.layers.iter().enumerate() {
+    for (k, layer) in trace.layers.iter().enumerate().filter(|(_, layer)| leads(layer)) {
         let want =
             rebucketed_bits(layer.terms_in[0], prev, fine().target_bucket_len, fine().min_buckets);
         assert_eq!(layer.bits[0], want, "layer {k}: {} terms in", layer.terms_in[0]);

@@ -1,6 +1,7 @@
 use num_complex::Complex64;
 use std::f64::consts::FRAC_PI_2;
 
+use super::merge::{merge_backward_in_place, merge_sparse_in_place};
 use super::*;
 use crate::channel::{Channel, PauliRotation, Prepare, PtmChannel};
 use crate::engine::bucketed::{apply_layer_bucketed, LayerScratch};
@@ -12,6 +13,7 @@ use crate::test_support::{
     assert_terms_close, coarsen, naive_apply_layer, rand_sum, zz_rotation, KeepAll, Xs64,
 };
 use crate::truncation::{ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
+use crate::PropagateOptions;
 use crate::{Circuit, Direction};
 
 const TOL: f64 = 1e-12;
@@ -292,7 +294,7 @@ fn merges_hits_and_drops_with_and_without_room() {
             }
             let partners = columns(partners);
             let mut merged = BucketColumns::default();
-            let in_place = merge_partners(&mut got, partners.view(), &KeepAll, &mut merged);
+            let in_place = merge_partners(&mut got, partners.view(), &KeepAll, &mut merged, None);
             assert_eq!(in_place, room || in_place_without_room, "{partners:?} room={room}");
             assert_eq!(got.x, columns(want).x, "{partners:?} room={room}");
             assert_eq!(got.coeff, columns(want).coeff, "{partners:?} room={room}");
@@ -440,4 +442,276 @@ fn partitioned_local_layers_agree_at_two_partitions() {
         let want = crate::propagate(&circuit, input.clone(), &policy, direction);
         assert_terms_close(&got, &want, 1e-10, &format!("{direction:?}"));
     }
+}
+
+/// A run of rotation layers in one coset loop against the same layers applied one by one, over hashes whose run spans have every dimension from 0 to the run's length.
+fn assert_runs_agree_with_single_layers<const W: usize>(
+    input: &PauliSum<W>,
+    generators: &[PauliString<W>],
+) {
+    let mut rng = Xs64::new(0x5EED ^ W as u64);
+    let rotations: Vec<PauliRotation<W>> = generators
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let theta = if i % 3 == 2 {
+                FRAC_PI_2
+            } else {
+                (rng.next_u64() as f64 / u64::MAX as f64 - 0.5) * 3.0
+            };
+            PauliRotation::new(*g, theta)
+        })
+        .collect();
+    let policies: [BuiltinTruncation; 3] =
+        [KeepAll.into(), CoefficientThreshold(0.05).into(), WeightCutoff(4).into()];
+    for bits in [0u8, 1, 3, 6] {
+        for seed in 1..4u64 {
+            let sum = input.clone().with_hash(Gf2Hash::<W>::new(input.num_qubits(), bits, seed));
+            for policy in &policies {
+                for adjoint in [false, true] {
+                    let prepared: Vec<_> = rotations
+                        .iter()
+                        .map(|r| r.prepare(sum.hash(), adjoint).expect("prepares"))
+                        .collect();
+                    let mut want = sum.clone();
+                    let mut scratch = LayerScratch::new();
+                    for layer in &prepared {
+                        apply_layer_bucketed(&mut want, layer, policy, &mut scratch);
+                    }
+                    let mut got = sum.clone();
+                    apply_rotation_run(&mut got, &prepared, policy, &mut LayerScratch::new());
+                    got.assert_invariants();
+                    let what =
+                        format!("W={W} bits={bits} seed={seed} {policy:?} adjoint={adjoint}");
+                    assert_terms_close(&got, &want, TOL, &what);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rotation_runs_agree_with_single_layers_w1() {
+    let input = clustered_sum::<1>(1200, 12, &[1, 2, 3, 5, 8], 0xB1);
+    type P = PauliString<1>;
+    let generators = [
+        P::x(2),
+        P::z(2).product(&P::z(3)).0,
+        P::y(5),
+        P::x(8),
+        P::x(1).product(&P::y(2)).0,
+        P::z(3),
+    ];
+    assert_runs_agree_with_single_layers(&input, &generators);
+}
+
+#[test]
+fn rotation_runs_agree_with_single_layers_w2() {
+    let input = clustered_sum::<2>(1200, 100, &[3, 40, 63, 64, 70, 99], 0xB2);
+    type P = PauliString<2>;
+    let generators = [
+        P::x(63),
+        P::z(63).product(&P::z(64)).0,
+        P::y(70),
+        P::x(3),
+        P::x(40).product(&P::y(99)).0,
+        P::x(63),
+    ];
+    assert_runs_agree_with_single_layers(&input, &generators);
+}
+
+/// `(unread, unmerged)` members over every slot of `scratch`.
+fn skips<const W: usize>(scratch: &LayerScratch<W>) -> (usize, usize) {
+    let mut total = scratch.task.rotation_skips;
+    for slot in &scratch.workers {
+        let (unread, unmerged) = slot.lock().unwrap().rotation_skips;
+        total.0 += unread;
+        total.1 += unmerged;
+    }
+    total
+}
+
+/// A kicked-Ising-like circuit through the driver, against the same layers applied one by one: the bucket count lets rotation runs form, and the light cone of a sum clustered on `cluster` leaves most gates touching no string of most buckets.
+///
+/// The input holds strings each policy drops, which the first layer must drop though no gate changes them.
+fn assert_propagated_runs_agree<const W: usize>(num_qubits: usize, cluster: &[usize]) {
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for q in 0..num_qubits {
+        let theta = if q % 5 == 0 { FRAC_PI_2 } else { 0.3 + 0.01 * q as f64 };
+        circuit.push(PauliRotation::new(PauliString::x(q), theta));
+    }
+    for q in 0..num_qubits - 1 {
+        circuit.push(zz_rotation(q, q + 1, if q % 3 == 0 { FRAC_PI_2 } else { 0.2 }));
+    }
+    let input = clustered_sum::<W>(4000, num_qubits, cluster, 0x1C ^ W as u64);
+    let options = PropagateOptions { target_bucket_len: 32, ..PropagateOptions::default() };
+    let policies: [BuiltinTruncation; 2] =
+        [CoefficientThreshold(0.05).into(), WeightCutoff(4).into()];
+    for policy in policies {
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let mut scratch = LayerScratch::new();
+            let got = crate::propagate_with(
+                &circuit,
+                input.clone(),
+                &policy,
+                direction,
+                &mut scratch,
+                options,
+            );
+            let adjoint = direction == Direction::Heisenberg;
+            let mut channels: Vec<_> = circuit.channels.iter().collect();
+            if adjoint {
+                channels.reverse();
+            }
+            let mut want = input.clone();
+            let mut layer_scratch = LayerScratch::new();
+            for channel in channels {
+                let prepared = channel.prepare(want.hash(), adjoint).expect("prepares");
+                apply_layer_bucketed(&mut want, &prepared, &policy, &mut layer_scratch);
+            }
+            let what = format!("W={W} {policy:?} {direction:?}");
+            assert_terms_close(&got, &want, 1e-10, &what);
+            assert!(scratch.rotation_run_layers > 0, "{what}: no rotation run");
+            let (unread, unmerged) = skips(&scratch);
+            assert!(unread > 0 && unmerged > 0, "{what}: no member skipped ({unread}, {unmerged})");
+        }
+    }
+}
+
+#[test]
+fn propagated_runs_and_light_cone_skips_agree_w1() {
+    assert_propagated_runs_agree::<1>(40, &[18, 19, 20, 21, 22, 23]);
+}
+
+#[test]
+fn propagated_runs_and_light_cone_skips_agree_w2() {
+    assert_propagated_runs_agree::<2>(80, &[60, 62, 63, 64, 65, 67]);
+}
+
+/// A sorted bucket of `len` distinct keys on `W` words, every coefficient of magnitude at least 1, so all pass a 0.5 threshold.
+fn sparse_case<const W: usize>(len: usize, rng: &mut Xs64) -> BucketColumns<W> {
+    let mut keys: Vec<([u64; W], [u64; W])> = (0..len * 2)
+        .map(|_| {
+            (
+                core::array::from_fn(|_| rng.next_u64() % 64),
+                core::array::from_fn(|_| rng.next_u64() % 4),
+            )
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.truncate(len);
+    let mut bucket = BucketColumns::<W>::default();
+    for (x, z) in keys {
+        let sign = if rng.next_u64() & 1 == 0 { 1.0 } else { -1.0 };
+        bucket.push(x, z, Complex64::new(sign * (1.0 + (rng.next_u64() % 8) as f64), 0.0));
+    }
+    bucket
+}
+
+/// The sparse merge against the per-row merge, on buckets whose dirty rows were rescaled (some below the threshold, some to zero) and whose partners mix hits and new keys.
+fn assert_sparse_merge_agrees<const W: usize>() {
+    let mut rng = Xs64::new(0x5BA ^ W as u64);
+    let policy = CoefficientThreshold(0.5);
+    for case in 0..300 {
+        let len = 1 + (rng.next_u64() % 200) as usize;
+        let mut bucket = sparse_case::<W>(len, &mut rng);
+        let len = bucket.len();
+        let mut dirty: Vec<u32> =
+            (0..len as u32).filter(|_| rng.next_u64().is_multiple_of(9)).collect();
+        dirty.dedup();
+        for &row in &dirty {
+            let scale = [0.0, 0.1, 0.7, -2.0][(rng.next_u64() % 4) as usize];
+            bucket.coeff[row as usize] *= scale;
+        }
+        let packed: Vec<u32> = dirty.iter().map(|&row| row << 4 | (row & 15)).collect();
+        // Partners: some on dirty rows' keys, some new.
+        let mut partner_keys: Vec<([u64; W], [u64; W])> = dirty
+            .iter()
+            .filter(|_| rng.next_u64() & 1 == 0)
+            .map(|&row| (bucket.x[row as usize], bucket.z[row as usize]))
+            .collect();
+        for _ in 0..(rng.next_u64() % 12) {
+            partner_keys.push((
+                core::array::from_fn(|_| rng.next_u64() % 64),
+                core::array::from_fn(|_| 4 + rng.next_u64() % 4),
+            ));
+        }
+        partner_keys.sort_unstable();
+        partner_keys.dedup();
+        let mut partners = BucketColumns::<W>::default();
+        for (x, z) in partner_keys {
+            partners.push(
+                x,
+                z,
+                Complex64::new([0.3, 0.6, -1.5][(rng.next_u64() % 3) as usize], 0.0),
+            );
+        }
+        let mut want = bucket.clone();
+        want.x.reserve(partners.len());
+        want.z.reserve(partners.len());
+        want.coeff.reserve(partners.len());
+        let total = want.len() + partners.len();
+        merge_backward_in_place(&mut want, partners.view(), &policy, total);
+        let mut got = bucket.clone();
+        got.x.reserve(partners.len());
+        got.z.reserve(partners.len());
+        got.coeff.reserve(partners.len());
+        merge_sparse_in_place(&mut got, partners.view(), &packed, &policy, total);
+        assert_eq!(got.x, want.x, "W={W} case {case}");
+        assert_eq!(got.z, want.z, "W={W} case {case}");
+        assert_eq!(got.coeff, want.coeff, "W={W} case {case}");
+    }
+}
+
+#[test]
+fn sparse_merge_agrees_with_the_per_row_merge() {
+    assert_sparse_merge_agrees::<1>();
+    assert_sparse_merge_agrees::<2>();
+}
+
+/// Under a known support the scan reads only the key columns its generator tests, and lists, moves and scales exactly what the full scan does, leaving the support as given.
+fn assert_known_scan_agrees<const W: usize>(num_qubits: usize) {
+    let mut rng = Xs64::new(0x5CA ^ W as u64);
+    let (a, b) = (1, num_qubits - 2);
+    for (name, g) in generators::<W>(a, b) {
+        for theta in [0.3, FRAC_PI_2] {
+            let channel = PauliRotation::new(g, theta);
+            let hash = Gf2Hash::<W>::new(num_qubits, 0, 0x1);
+            let prepared = Prepare::<W>::prepare(&channel, &hash, false).unwrap();
+            let crate::channel::prepared::Prepared::Local(ptm) = &prepared else { unreachable!() };
+            let layer = RotationLayer::of(ptm).expect("a rotation");
+            let mut bucket = BucketColumns::<W>::default();
+            for _ in 0..200 {
+                let word = |rng: &mut Xs64| core::array::from_fn(|_| rng.next_u64());
+                let (x, z) = (word(&mut rng), word(&mut rng));
+                bucket.push(x, z, Complex64::new(1.0 + (rng.next_u64() % 8) as f64, 0.0));
+            }
+            let label = format!("W={W}, {name}, θ={theta}");
+            let mut full = (bucket.clone(), BucketColumns::<W>::default(), Vec::new());
+            let mut full_support = [[0; W]; 2];
+            layer.scan(&mut full.0, &mut full.1, &mut full.2, &mut full_support, false);
+            let want_support: Support<W> = [
+                core::array::from_fn(|w| bucket.x.iter().fold(0, |s, k| s | k[w])),
+                core::array::from_fn(|w| bucket.z.iter().fold(0, |s, k| s | k[w])),
+            ];
+            assert_eq!(full_support, want_support, "{label}: the full scan ORs every row");
+            let mut lean = (bucket.clone(), BucketColumns::<W>::default(), Vec::new());
+            let mut lean_support = [[u64::MAX; W]; 2];
+            layer.scan(&mut lean.0, &mut lean.1, &mut lean.2, &mut lean_support, true);
+            assert_eq!(lean_support, [[u64::MAX; W]; 2], "{label}: a known support stays");
+            assert!(!full.2.is_empty(), "{label}: the fixture has hits");
+            assert_eq!(lean.2, full.2, "{label}: hits");
+            assert_eq!(lean.1.x, full.1.x, "{label}: partner x");
+            assert_eq!(lean.1.z, full.1.z, "{label}: partner z");
+            assert_eq!(lean.1.coeff, full.1.coeff, "{label}: partner coefficients");
+            assert_eq!(lean.0.coeff, full.0.coeff, "{label}: scaled rows");
+        }
+    }
+}
+
+#[test]
+fn a_known_support_scan_agrees_with_the_full_scan() {
+    assert_known_scan_agrees::<1>(40);
+    assert_known_scan_agrees::<2>(100);
 }

@@ -8,6 +8,8 @@
 //! and one `allreduce_max_u8` after the last layer, which refines every partition to the group's largest count, so a call returns with one count everywhere.
 //! A local layer issues no call for the count: on the schedule of `rebuckets` a partition moves to its own proposal, so counts differ mid-call.
 //! At `P = 1` there is no group: the loop refines every layer, as `propagate` does.
+//!
+//! Consecutive local layers under a policy without a layer pass may run as one pass ([`Runs`]), which issues no transport call.
 
 use crate::channel::Prepare;
 use crate::coefficient::Coefficient;
@@ -15,10 +17,10 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::backend::PartitionBackend;
-use super::bucketed::RowEmitter;
+use super::bucketed::{RotationRunSpan, RowEmitter, Run, MAX_ROTATION_RUN_LAYERS};
 use super::plan::PartitionPlan;
 use super::transport::{ByteParts, Transport};
-use crate::channel::prepared::MAX_LOCAL_SUPPORT;
+use crate::channel::prepared::{Prepared, MAX_LOCAL_SUPPORT};
 use crate::channel::Channel;
 use crate::circuit::Circuit;
 use crate::collectives::Collectives;
@@ -115,7 +117,7 @@ fn prepare_or_panic<const W: usize, C: Coefficient>(
     adjoint: bool,
     rank: usize,
     circuit_index: usize,
-) -> crate::channel::prepared::Prepared<W, C> {
+) -> Prepared<W, C> {
     let prepared = channel.prepare(hash, adjoint).unwrap_or_else(|| {
         let weight: u32 = channel.support().iter().map(|w| w.count_ones()).sum();
         panic!(
@@ -134,6 +136,86 @@ pub(crate) fn assert_coefficient_type<const W: usize, C: Coefficient>(circuit: &
          use a complex coefficient type",
         C::NAME,
     );
+}
+
+/// The layers after the current one, prepared on demand under the current hash.
+struct Lookahead<'a, const W: usize> {
+    circuit: &'a Circuit<W>,
+    circuit_index_of: &'a dyn Fn(usize) -> usize,
+    adjoint: bool,
+    rank: usize,
+}
+
+impl<const W: usize> Lookahead<'_, W> {
+    /// Hand `accept` the layers from application index `start` on, prepared under `hash`, until it refuses one or took `limit`; returns how many it took.
+    fn extend<C: Coefficient>(
+        &self,
+        start: usize,
+        hash: &Gf2Hash<W>,
+        limit: usize,
+        mut accept: impl FnMut(Prepared<W, C>) -> bool,
+    ) -> usize {
+        let end = self.circuit.channels.len().min(start + limit);
+        let mut taken = 0;
+        for application_index in start..end {
+            let index = (self.circuit_index_of)(application_index);
+            let channel = self.circuit.channels[index].as_ref();
+            if !accept(prepare_or_panic(channel, hash, self.adjoint, self.rank, index)) {
+                break;
+            }
+            taken += 1;
+        }
+        taken
+    }
+}
+
+/// The runs a call takes, consecutive local layers applied in one pass by [`PartitionBackend::apply_run`], and the buffers kept between them.
+struct Runs<const W: usize, C: Coefficient> {
+    /// Rotation runs, only alone and untraced, since per-layer records need the layers apart.
+    rotations: bool,
+    layers: Vec<Prepared<W, C>>,
+}
+
+impl<const W: usize, C: Coefficient> Runs<W, C> {
+    /// Apply the run that starts at application index `start` with `prepared`, and return its end, or `None` to apply layer `start` alone.
+    // Never inlined: `run_layers` inlines the merge kernels, which are sensitive to code motion.
+    #[inline(never)]
+    fn take<T, B>(
+        &mut self,
+        start: usize,
+        prepared: &Prepared<W, C>,
+        local: &mut B,
+        policy: &T,
+        lookahead: &Lookahead<'_, W>,
+        logging: bool,
+    ) -> Option<usize>
+    where
+        T: TruncationPolicy<W, C> + ?Sized,
+        B: PartitionBackend<W, C, T>,
+    {
+        if !self.rotations || logging {
+            return None;
+        }
+        let mut span = RotationRunSpan::new(local.hash().bits());
+        if !span.join(prepared) {
+            return None;
+        }
+        self.layers.clear();
+        let layers = &mut self.layers;
+        let joined =
+            lookahead.extend(start + 1, local.hash(), MAX_ROTATION_RUN_LAYERS - 1, |next| {
+                span.join(&next) && {
+                    layers.push(next);
+                    true
+                }
+            });
+        if joined == 0 {
+            return None;
+        }
+        self.layers.insert(0, prepared.clone());
+        local.apply_run(Run::Rotations(&self.layers), policy);
+        Some(start + 1 + joined)
+    }
 }
 
 /// One partition's layer loop, run in lock-step with its peers inside its own pool, in the module's collective order.
@@ -171,8 +253,14 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         Direction::Forward => application_index,
         Direction::Heisenberg => num_layers - 1 - application_index,
     };
+    let lookahead = Lookahead { circuit, circuit_index_of: &circuit_index_of, adjoint, rank };
+    let mut runs = Runs::<W, C> {
+        rotations: solo && !finalizes && !tracing && local.takes_runs(),
+        layers: Vec::new(),
+    };
 
-    for application_index in 0..num_layers {
+    let mut application_index = 0;
+    while application_index < num_layers {
         let circuit_index = circuit_index_of(application_index);
         let channel: &dyn Channel<W> = circuit.channels[circuit_index].as_ref();
 
@@ -239,6 +327,18 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 application_index + 1,
                 local.hash().num_buckets(),
             );
+        }
+
+        if let Some(end) =
+            runs.take(application_index, &prepared, local, policy, &lookahead, debug_enabled)
+        {
+            timed!(stamp.rearm());
+            // Per layer of the run, as the one-by-one path counts them.
+            tally!(local.stats().layers, end - application_index - 1);
+            tally!(local.stats().terms_in, terms_before * (end - application_index - 1));
+            tally!(local.stats().terms_out, local.len() * (end - application_index));
+            application_index = end;
+            continue;
         }
 
         // The next layer prepared under this layer's hash, so the coset loop can count the rows it exports; a rebucket in between drops the counts.
@@ -317,13 +417,14 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
             record_layer_row(&mut work.rows, row);
         }
 
+        application_index += 1;
         if debug_enabled {
             let Some(elapsed) = elapsed else { continue };
             log::debug!(
                 target: LOG_TARGET,
                 "layer {}/{} [{}]: {} -> {} terms, {:.1} ms (partition {}/{}, {} remote deltas, \
                  {} rows in)",
-                application_index + 1,
+                application_index,
                 num_layers,
                 channel.debug_name(),
                 terms_before,

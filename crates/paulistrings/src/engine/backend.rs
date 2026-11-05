@@ -8,7 +8,7 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::{max_fanout, LayerScratch, RowEmitter};
+use crate::engine::bucketed::{apply_rotation_run, max_fanout, LayerScratch, RowEmitter, Run};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::trace::PartitionLayerRow;
@@ -78,6 +78,15 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         ahead: Option<&RowEmitter<'_, W, C>>,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
+    /// Whether [`apply_run`](Self::apply_run) is implemented; the driver asks before it looks ahead for a run.
+    fn takes_runs(&self) -> bool {
+        false
+    }
+    /// Apply `run` in one pass; called only when [`takes_runs`](Self::takes_runs) and the policy has no layer pass.
+    fn apply_run(&mut self, run: Run<'_, W, C>, policy: &T) {
+        let _ = (run, policy);
+        unreachable!("the backend takes no runs");
+    }
     /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
     fn trace_layer(&self, row: &mut PartitionLayerRow) {
         let _ = row;
@@ -191,6 +200,19 @@ where
             clocked,
             ahead,
         )
+    }
+
+    fn takes_runs(&self) -> bool {
+        true
+    }
+
+    fn apply_run(&mut self, run: Run<'_, W, C>, policy: &T) {
+        match run {
+            Run::Rotations(layers) => {
+                self.state.layer.octaves.begin_layer(1, policy.fused_approx_top_n(), false);
+                apply_rotation_run(&mut self.sum, layers, policy, &mut self.state.layer);
+            }
+        }
     }
 
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives) {

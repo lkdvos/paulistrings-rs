@@ -12,6 +12,7 @@ use crate::test_support::{
     assert_terms_close, coarsen, naive_apply_layer, rand_sum, zz_rotation, KeepAll, Xs64,
 };
 use crate::truncation::{ApproxTopN, BuiltinTruncation, CoefficientThreshold, TopN, WeightCutoff};
+use crate::PropagateOptions;
 use crate::{Circuit, Direction};
 
 const TOL: f64 = 1e-12;
@@ -440,4 +441,133 @@ fn partitioned_local_layers_agree_at_two_partitions() {
         let want = crate::propagate(&circuit, input.clone(), &policy, direction);
         assert_terms_close(&got, &want, 1e-10, &format!("{direction:?}"));
     }
+}
+
+/// A run of rotation layers in one coset loop against the same layers applied one by one, over hashes whose run spans have every dimension from 0 to the run's length.
+fn assert_runs_agree_with_single_layers<const W: usize>(
+    input: &PauliSum<W>,
+    generators: &[PauliString<W>],
+) {
+    let mut rng = Xs64::new(0x5EED ^ W as u64);
+    let rotations: Vec<PauliRotation<W>> = generators
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            let theta = if i % 3 == 2 {
+                FRAC_PI_2
+            } else {
+                (rng.next_u64() as f64 / u64::MAX as f64 - 0.5) * 3.0
+            };
+            PauliRotation::new(*g, theta)
+        })
+        .collect();
+    let policies: [BuiltinTruncation; 3] =
+        [KeepAll.into(), CoefficientThreshold(0.05).into(), WeightCutoff(4).into()];
+    for bits in [0u8, 1, 3, 6] {
+        for seed in 1..4u64 {
+            let sum = input.clone().with_hash(Gf2Hash::<W>::new(input.num_qubits(), bits, seed));
+            for policy in &policies {
+                for adjoint in [false, true] {
+                    let prepared: Vec<_> = rotations
+                        .iter()
+                        .map(|r| r.prepare(sum.hash(), adjoint).expect("prepares"))
+                        .collect();
+                    let mut want = sum.clone();
+                    let mut scratch = LayerScratch::new();
+                    for layer in &prepared {
+                        apply_layer_bucketed(&mut want, layer, policy, &mut scratch);
+                    }
+                    let mut got = sum.clone();
+                    apply_rotation_run(&mut got, &prepared, policy, &mut LayerScratch::new());
+                    got.assert_invariants();
+                    let what =
+                        format!("W={W} bits={bits} seed={seed} {policy:?} adjoint={adjoint}");
+                    assert_terms_close(&got, &want, TOL, &what);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rotation_runs_agree_with_single_layers_w1() {
+    let input = clustered_sum::<1>(1200, 12, &[1, 2, 3, 5, 8], 0xB1);
+    type P = PauliString<1>;
+    let generators = [
+        P::x(2),
+        P::z(2).product(&P::z(3)).0,
+        P::y(5),
+        P::x(8),
+        P::x(1).product(&P::y(2)).0,
+        P::z(3),
+    ];
+    assert_runs_agree_with_single_layers(&input, &generators);
+}
+
+#[test]
+fn rotation_runs_agree_with_single_layers_w2() {
+    let input = clustered_sum::<2>(1200, 100, &[3, 40, 63, 64, 70, 99], 0xB2);
+    type P = PauliString<2>;
+    let generators = [
+        P::x(63),
+        P::z(63).product(&P::z(64)).0,
+        P::y(70),
+        P::x(3),
+        P::x(40).product(&P::y(99)).0,
+        P::x(63),
+    ];
+    assert_runs_agree_with_single_layers(&input, &generators);
+}
+
+/// A kicked-Ising-like circuit through the driver, where the bucket count lets rotation runs form, against the same layers applied one by one.
+fn assert_propagated_runs_agree<const W: usize>(num_qubits: usize, cluster: &[usize]) {
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for q in 0..num_qubits {
+        let theta = if q % 5 == 0 { FRAC_PI_2 } else { 0.3 + 0.01 * q as f64 };
+        circuit.push(PauliRotation::new(PauliString::x(q), theta));
+    }
+    for q in 0..num_qubits - 1 {
+        circuit.push(zz_rotation(q, q + 1, if q % 3 == 0 { FRAC_PI_2 } else { 0.2 }));
+    }
+    let input = clustered_sum::<W>(4000, num_qubits, cluster, 0x1C ^ W as u64);
+    let options = PropagateOptions { target_bucket_len: 32, ..PropagateOptions::default() };
+    let policies: [BuiltinTruncation; 2] =
+        [CoefficientThreshold(0.05).into(), WeightCutoff(4).into()];
+    for policy in policies {
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let mut scratch = LayerScratch::new();
+            let got = crate::propagate_with(
+                &circuit,
+                input.clone(),
+                &policy,
+                direction,
+                &mut scratch,
+                options,
+            );
+            let adjoint = direction == Direction::Heisenberg;
+            let mut channels: Vec<_> = circuit.channels.iter().collect();
+            if adjoint {
+                channels.reverse();
+            }
+            let mut want = input.clone();
+            let mut layer_scratch = LayerScratch::new();
+            for channel in channels {
+                let prepared = channel.prepare(want.hash(), adjoint).expect("prepares");
+                apply_layer_bucketed(&mut want, &prepared, &policy, &mut layer_scratch);
+            }
+            let what = format!("W={W} {policy:?} {direction:?}");
+            assert_terms_close(&got, &want, 1e-10, &what);
+            assert!(scratch.rotation_run_layers > 0, "{what}: no rotation run");
+        }
+    }
+}
+
+#[test]
+fn propagated_rotation_runs_agree_w1() {
+    assert_propagated_runs_agree::<1>(40, &[18, 19, 20, 21, 22, 23]);
+}
+
+#[test]
+fn propagated_rotation_runs_agree_w2() {
+    assert_propagated_runs_agree::<2>(80, &[60, 62, 63, 64, 65, 67]);
 }

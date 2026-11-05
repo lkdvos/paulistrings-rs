@@ -6,11 +6,12 @@ use crate::coefficient::Coefficient;
 
 use super::coset_fill::{CosetScratch, GatherRun};
 use super::partner_order::PartnerOrder;
-use super::ExtraRows;
-use crate::channel::prepared::{LocalPtm, PreparedRotation, LOCAL_DIM};
+use super::{coset_loop, ExtraRows, LayerOctaveIo, LayerScratch};
+use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
+use crate::engine::coset::Gf2Span;
 use crate::engine::merge::{merge_identity_and_rest, SortKernel};
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
+use crate::pauli_sum::storage::{BucketColumns, ColumnsRef, PauliSum};
 use crate::truncation::TruncationPolicy;
 
 use crate::engine::timing::{lap, stamp, tally};
@@ -35,6 +36,8 @@ pub(super) struct RotationLayer<'p, const W: usize, C: Coefficient = num_complex
     /// Bit `p` set iff the generator entry reaches probe pattern `p`, whose support pattern is `p & support_mask`.
     active: u16,
     support_mask: usize,
+    /// `h(g)`.
+    bucket_delta: u32,
 }
 
 impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
@@ -76,6 +79,7 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             probe: ptm.support_probe(),
             active,
             support_mask,
+            bucket_delta: generator.bucket_delta,
         })
     }
 
@@ -125,6 +129,7 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
         partners.x.reserve(anticommuting);
         partners.z.reserve(anticommuting);
         partners.coeff.reserve(anticommuting);
+        // SAFETY: `start` is each column's length, within its allocation.
         let (out_x, out_z, out_c) = unsafe {
             (
                 partners.x.as_mut_ptr().add(start),
@@ -321,6 +326,113 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
     }
     tally!(scratch.stats.cosets, 1);
     tally!(scratch.stats.runs, size);
+}
+
+/// Apply `layers` in order to one coset of their joint span, each to the member pairs its generator's coordinate in `coordinates` joins, while the coset is in cache.
+fn fill_rotation_run<const W: usize, C: Coefficient, T>(
+    members: &mut [BucketColumns<W, C>],
+    layers: &[RotationLayer<'_, W, C>],
+    coordinates: &[u32],
+    policy: &T,
+    scratch: &mut CosetScratch<W, C>,
+) where
+    T: TruncationPolicy<W, C> + ?Sized,
+{
+    let mut pair: [BucketColumns<W, C>; 2] = Default::default();
+    for (layer, &coordinate) in layers.iter().zip(coordinates) {
+        for j in 0..members.len() {
+            let partner = j ^ coordinate as usize;
+            if partner == j {
+                fill_rotation_coset(core::slice::from_mut(&mut members[j]), layer, policy, scratch);
+            } else if j < partner {
+                std::mem::swap(&mut pair[0], &mut members[j]);
+                std::mem::swap(&mut pair[1], &mut members[partner]);
+                fill_rotation_coset(&mut pair, layer, policy, scratch);
+                std::mem::swap(&mut pair[0], &mut members[j]);
+                std::mem::swap(&mut pair[1], &mut members[partner]);
+            }
+        }
+    }
+}
+
+/// Most layers a rotation run joins.
+pub(crate) const MAX_ROTATION_RUN_LAYERS: usize = 8;
+
+/// Largest span dimension of a rotation run's bucket deltas, so a coset of `2^r` buckets at the bucket target stays within a core's L2 (research/FINDINGS.md §Consecutive rotation tables run as one coset loop).
+const MAX_ROTATION_RUN_DIMENSION: usize = 3;
+
+/// The bucket deltas of a rotation run being joined, at one bucket count.
+pub(crate) struct RotationRunSpan {
+    deltas: Vec<u32>,
+    bits: u8,
+}
+
+impl RotationRunSpan {
+    /// An empty run at `bits` bucket bits.
+    pub(crate) fn new(bits: u8) -> Self {
+        Self { deltas: Vec::new(), bits }
+    }
+
+    /// Join `layer` if it is a rotation table that keeps the run's span within [`MAX_ROTATION_RUN_DIMENSION`]; returns whether it joined.
+    pub(crate) fn join<const W: usize, C: Coefficient>(&mut self, layer: &Prepared<W, C>) -> bool {
+        let Prepared::Local(ptm) = layer else { return false };
+        if RotationLayer::of(ptm).is_none() {
+            return false;
+        }
+        let joined = self.deltas.len();
+        self.deltas.extend(ptm.bucket_deltas());
+        if Gf2Span::new(&self.deltas, self.bits).dimension() > MAX_ROTATION_RUN_DIMENSION {
+            self.deltas.truncate(joined);
+            return false;
+        }
+        true
+    }
+}
+
+/// Apply `run`, consecutive rotation tables a [`RotationRunSpan`] joined under the current hash, as one coset loop over their joint span, each coset taking every layer in order while its buckets are in cache.
+///
+/// Each layer moves a string only within its own coset of the joint span, so the cosets stay independent and every output of every layer passes `keep_term` as when the layers run one by one; no layer pass runs between them, so the policy must have none.
+pub(crate) fn apply_rotation_run<const W: usize, C: Coefficient, T>(
+    sum: &mut PauliSum<W, C>,
+    run: &[Prepared<W, C>],
+    policy: &T,
+    scratch: &mut LayerScratch<W, C>,
+) where
+    T: TruncationPolicy<W, C> + ?Sized,
+{
+    stamp!(stamp);
+    debug_assert!(!policy.finalizes_layer(), "a layer pass would run between the run's layers");
+    if let Some(cut) = scratch.octaves.pending.take() {
+        cut.apply(sum);
+    }
+    scratch.octaves.counted = false;
+    scratch.octaves.drop_ahead();
+    let layers: Vec<RotationLayer<'_, W, C>> = run
+        .iter()
+        .map(|layer| match layer {
+            Prepared::Local(ptm) => RotationLayer::of(ptm),
+            Prepared::Rotation(_) => None,
+        })
+        .map(|layer| layer.expect("a rotation run holds rotation tables only"))
+        .collect();
+    let deltas: Vec<u32> = layers.iter().map(|layer| layer.bucket_delta).collect();
+    let span = Gf2Span::new(&deltas, sum.hash().bits());
+    let coordinates: Vec<u32> = deltas.iter().map(|&delta| span.coordinate_of(delta)).collect();
+    lap!(stamp, scratch.stats.span_plan_ns);
+    #[cfg(test)]
+    {
+        scratch.rotation_run_layers += run.len();
+    }
+    let octaves = LayerOctaveIo { cut: None, count: None, ahead: None };
+    let len = coset_loop(sum, &span, scratch, octaves, |members, _, worker_scratch| {
+        fill_rotation_run(members, &layers, &coordinates, policy, worker_scratch)
+    });
+    lap!(stamp, scratch.stats.coset_loop_ns);
+    sum.set_len_after_layer(len);
+    lap!(stamp, scratch.stats.recount_ns);
+
+    #[cfg(debug_assertions)]
+    sum.assert_invariants();
 }
 
 /// Merge the strictly ascending `partners` into the strictly ascending `bucket`, summing equal keys bucket-first and keeping each output iff it is nonzero and `keep_term` passes; returns whether it ran in place.

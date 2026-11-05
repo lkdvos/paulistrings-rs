@@ -36,6 +36,7 @@ mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 pub(crate) use export_ahead::{BucketAhead, RowEmitter};
+pub(crate) use rotation_layer::{apply_rotation_run, RotationRunSpan, MAX_ROTATION_RUN_LAYERS};
 
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.
 ///
@@ -55,6 +56,15 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
     pub(crate) trace: Option<PartitionTrace>,
     /// The octave counts an `ApproxTopN` layer pass reads instead of the sum.
     pub(crate) octaves: LayerOctaves,
+    /// Layers applied by [`apply_rotation_run`].
+    #[cfg(test)]
+    pub(crate) rotation_run_layers: usize,
+}
+
+/// Consecutive local layers prepared under the current hash, applied in one pass.
+pub(crate) enum Run<'a, const W: usize, C: Coefficient> {
+    /// Rotation tables a [`RotationRunSpan`] joined, for [`apply_rotation_run`].
+    Rotations(&'a [Prepared<W, C>]),
 }
 
 /// Per-bucket octave counts, taken by the coset loop as it writes each bucket, and the cut they decide, applied as the next coset loop reads each bucket.

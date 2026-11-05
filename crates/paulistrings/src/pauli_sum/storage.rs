@@ -70,7 +70,7 @@ impl<const W: usize, C: Coefficient> BucketColumns<W, C> {
         Self::with_capacity(0)
     }
 
-    pub(super) fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             x: Vec::with_capacity(capacity),
             z: Vec::with_capacity(capacity),
@@ -494,6 +494,15 @@ impl<const W: usize, C: Coefficient> PauliSum<W, C> {
     /// Mutable access to the buckets, for layers that are applied in place.
     pub(crate) fn buckets_mut(&mut self) -> &mut [BucketColumns<W, C>] {
         &mut self.buckets
+    }
+
+    /// Take `buckets`, one per hash bucket and each holding exactly the keys hashing to it, strictly ascending, as the sum's storage.
+    pub(crate) fn replace_buckets(&mut self, buckets: Vec<BucketColumns<W, C>>) {
+        debug_assert_eq!(buckets.len(), self.hash.num_buckets());
+        self.buckets = buckets;
+        self.recount();
+        #[cfg(debug_assertions)]
+        self.assert_invariants();
     }
 
     /// Recompute the cached total after an in-place layer.

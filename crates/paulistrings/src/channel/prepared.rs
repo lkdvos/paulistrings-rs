@@ -92,7 +92,6 @@ impl<const W: usize, C: Coefficient> LocalPtm<W, C> {
     }
 
     /// Support qubits, ascending.
-    #[cfg(any(test, feature = "cuda"))]
     pub(crate) fn qubits(&self) -> impl ExactSizeIterator<Item = usize> + '_ {
         self.qubits[..self.k as usize].iter().map(|&q| q as usize)
     }

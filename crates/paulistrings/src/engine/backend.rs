@@ -8,9 +8,12 @@ use super::transport::Transport;
 use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::bucketed::{apply_rotation_run, max_fanout, LayerScratch, RowEmitter, Run};
+use crate::engine::bucketed::{
+    apply_permutation_run, apply_rotation_run, max_fanout, LayerScratch, RowEmitter, Run,
+};
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
+use crate::engine::timing::{lap, stamp};
 use crate::engine::trace::PartitionLayerRow;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::{rebucketed_bits, PauliSum};
@@ -221,6 +224,15 @@ where
             Run::Rotations(layers) => {
                 self.state.layer.octaves.begin_layer(1, policy.fused_approx_top_n(), false);
                 apply_rotation_run(&mut self.sum, layers, policy, &mut self.state.layer);
+            }
+            Run::Permutations(steps) => {
+                stamp!(stamp);
+                self.state.layer.octaves.apply_pending(&mut self.sum);
+                // A run rehashes every string into new buckets.
+                self.state.layer.supports.forget();
+                let layer = &mut self.state.layer;
+                apply_permutation_run(&mut self.sum, steps, policy, &mut layer.permutation);
+                lap!(stamp, layer.stats.coset_loop_ns);
             }
         }
     }

@@ -33,10 +33,12 @@ use super::timing::{lap, stamp};
 mod coset_fill;
 mod export_ahead;
 mod partner_order;
+mod permutation_run;
 mod rotation_layer;
 
 pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 pub(crate) use export_ahead::{BucketAhead, RowEmitter};
+pub(crate) use permutation_run::{apply_permutation_run, PermutationScratch, PermutationStep};
 pub(crate) use rotation_layer::{
     apply_rotation_run, BucketSupports, RotationRunSpan, MAX_ROTATION_RUN_LAYERS,
 };
@@ -61,6 +63,8 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
     pub(crate) octaves: LayerOctaves,
     /// Per-bucket supports the rotation kernels carry from one layer to the next.
     pub(crate) supports: BucketSupports<W>,
+    /// The working set of a run of one-to-one channels.
+    pub(crate) permutation: PermutationScratch,
     /// Layers applied by [`apply_rotation_run`].
     #[cfg(test)]
     pub(crate) rotation_run_layers: usize,
@@ -70,6 +74,8 @@ pub struct LayerScratch<const W: usize, C: Coefficient = num_complex::Complex64>
 pub(crate) enum Run<'a, const W: usize, C: Coefficient> {
     /// Rotation tables a [`RotationRunSpan`] joined, for [`apply_rotation_run`].
     Rotations(&'a [Prepared<W, C>]),
+    /// One-to-one channels, for [`apply_permutation_run`].
+    Permutations(&'a [PermutationStep<W, C>]),
 }
 
 /// Per-bucket octave counts, taken by the coset loop as it writes each bucket, and the cut they decide, applied as the next coset loop reads each bucket.

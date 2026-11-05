@@ -1,6 +1,7 @@
 use num_complex::Complex64;
 use std::f64::consts::FRAC_PI_2;
 
+use super::merge::{merge_backward_in_place, merge_sparse_in_place};
 use super::*;
 use crate::channel::{Channel, PauliRotation, Prepare, PtmChannel};
 use crate::engine::bucketed::{apply_layer_bucketed, LayerScratch};
@@ -293,7 +294,7 @@ fn merges_hits_and_drops_with_and_without_room() {
             }
             let partners = columns(partners);
             let mut merged = BucketColumns::default();
-            let in_place = merge_partners(&mut got, partners.view(), &KeepAll, &mut merged);
+            let in_place = merge_partners(&mut got, partners.view(), &KeepAll, &mut merged, None);
             assert_eq!(in_place, room || in_place_without_room, "{partners:?} room={room}");
             assert_eq!(got.x, columns(want).x, "{partners:?} room={room}");
             assert_eq!(got.coeff, columns(want).coeff, "{partners:?} room={room}");
@@ -585,4 +586,86 @@ fn propagated_runs_and_light_cone_skips_agree_w1() {
 #[test]
 fn propagated_runs_and_light_cone_skips_agree_w2() {
     assert_propagated_runs_agree::<2>(80, &[60, 62, 63, 64, 65, 67]);
+}
+
+/// A sorted bucket of `len` distinct keys on `W` words, every coefficient of magnitude at least 1, so all pass a 0.5 threshold.
+fn sparse_case<const W: usize>(len: usize, rng: &mut Xs64) -> BucketColumns<W> {
+    let mut keys: Vec<([u64; W], [u64; W])> = (0..len * 2)
+        .map(|_| {
+            (
+                core::array::from_fn(|_| rng.next_u64() % 64),
+                core::array::from_fn(|_| rng.next_u64() % 4),
+            )
+        })
+        .collect();
+    keys.sort_unstable();
+    keys.dedup();
+    keys.truncate(len);
+    let mut bucket = BucketColumns::<W>::default();
+    for (x, z) in keys {
+        let sign = if rng.next_u64() & 1 == 0 { 1.0 } else { -1.0 };
+        bucket.push(x, z, Complex64::new(sign * (1.0 + (rng.next_u64() % 8) as f64), 0.0));
+    }
+    bucket
+}
+
+/// The sparse merge against the per-row merge, on buckets whose dirty rows were rescaled (some below the threshold, some to zero) and whose partners mix hits and new keys.
+fn assert_sparse_merge_agrees<const W: usize>() {
+    let mut rng = Xs64::new(0x5BA ^ W as u64);
+    let policy = CoefficientThreshold(0.5);
+    for case in 0..300 {
+        let len = 1 + (rng.next_u64() % 200) as usize;
+        let mut bucket = sparse_case::<W>(len, &mut rng);
+        let len = bucket.len();
+        let mut dirty: Vec<u32> =
+            (0..len as u32).filter(|_| rng.next_u64().is_multiple_of(9)).collect();
+        dirty.dedup();
+        for &row in &dirty {
+            let scale = [0.0, 0.1, 0.7, -2.0][(rng.next_u64() % 4) as usize];
+            bucket.coeff[row as usize] *= scale;
+        }
+        let packed: Vec<u32> = dirty.iter().map(|&row| row << 4 | (row & 15)).collect();
+        // Partners: some on dirty rows' keys, some new.
+        let mut partner_keys: Vec<([u64; W], [u64; W])> = dirty
+            .iter()
+            .filter(|_| rng.next_u64() & 1 == 0)
+            .map(|&row| (bucket.x[row as usize], bucket.z[row as usize]))
+            .collect();
+        for _ in 0..(rng.next_u64() % 12) {
+            partner_keys.push((
+                core::array::from_fn(|_| rng.next_u64() % 64),
+                core::array::from_fn(|_| 4 + rng.next_u64() % 4),
+            ));
+        }
+        partner_keys.sort_unstable();
+        partner_keys.dedup();
+        let mut partners = BucketColumns::<W>::default();
+        for (x, z) in partner_keys {
+            partners.push(
+                x,
+                z,
+                Complex64::new([0.3, 0.6, -1.5][(rng.next_u64() % 3) as usize], 0.0),
+            );
+        }
+        let mut want = bucket.clone();
+        want.x.reserve(partners.len());
+        want.z.reserve(partners.len());
+        want.coeff.reserve(partners.len());
+        let total = want.len() + partners.len();
+        merge_backward_in_place(&mut want, partners.view(), &policy, total);
+        let mut got = bucket.clone();
+        got.x.reserve(partners.len());
+        got.z.reserve(partners.len());
+        got.coeff.reserve(partners.len());
+        merge_sparse_in_place(&mut got, partners.view(), &packed, &policy, total);
+        assert_eq!(got.x, want.x, "W={W} case {case}");
+        assert_eq!(got.z, want.z, "W={W} case {case}");
+        assert_eq!(got.coeff, want.coeff, "W={W} case {case}");
+    }
+}
+
+#[test]
+fn sparse_merge_agrees_with_the_per_row_merge() {
+    assert_sparse_merge_agrees::<1>();
+    assert_sparse_merge_agrees::<2>();
 }

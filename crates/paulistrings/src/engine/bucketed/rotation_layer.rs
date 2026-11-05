@@ -9,10 +9,11 @@ use super::partner_order::PartnerOrder;
 use super::{coset_loop, DisjointSlots, ExtraRows, LayerOctaveIo, LayerScratch};
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
 use crate::engine::coset::Gf2Span;
-use crate::engine::merge::{merge_identity_and_rest, SortKernel};
+use crate::engine::merge::SortKernel;
 use crate::pauli_string::PauliString;
-use crate::pauli_sum::storage::{BucketColumns, ColumnsRef, PauliSum};
+use crate::pauli_sum::storage::{BucketColumns, PauliSum};
 use crate::truncation::TruncationPolicy;
+use merge::merge_partners;
 
 use crate::engine::timing::{lap, stamp, tally};
 
@@ -343,7 +344,7 @@ pub(super) fn fill_received_rotation_bucket<const W: usize, C: Coefficient, T, X
         }
     };
     lap!(stamp, scratch.stats.sort_ns);
-    merge_partners(bucket, partners, policy, &mut old[0]);
+    merge_partners(bucket, partners, policy, &mut old[0], None);
     lap!(stamp, scratch.stats.merge_ns);
     tally!(scratch.stats.cosets, 1);
     tally!(scratch.stats.runs, 1);
@@ -415,8 +416,10 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
         tally!(scratch.stats.rows_sorted, run.rest.len());
         layer.order.order(&run.rest, &mut run.identity, scratch.sort.indices());
         lap!(stamp, scratch.stats.sort_ns);
+        let dirty = known.then_some(scratch.hits[j].as_slice());
         #[cfg_attr(not(test), allow(unused_variables))]
-        let in_place = merge_partners(bucket, run.identity.view(), policy, &mut scratch.old[0]);
+        let in_place =
+            merge_partners(bucket, run.identity.view(), policy, &mut scratch.old[0], dirty);
         #[cfg(test)]
         {
             scratch.rotation_merges.0 += usize::from(in_place);
@@ -564,129 +567,7 @@ pub(crate) fn apply_rotation_run<const W: usize, C: Coefficient, T>(
     sum.assert_invariants();
 }
 
-/// Merge the strictly ascending `partners` into the strictly ascending `bucket`, summing equal keys bucket-first and keeping each output iff it is nonzero and `keep_term` passes; returns whether it ran in place.
-///
-/// In place needs spare capacity for every partner that is a new key: with room for every partner the hits go uncounted and the merge starts at that bound, else they are counted; without room the merge runs into `merged`, which is swapped in, as the general path does.
-fn merge_partners<const W: usize, C: Coefficient, T>(
-    bucket: &mut BucketColumns<W, C>,
-    partners: ColumnsRef<'_, W, C>,
-    policy: &T,
-    merged: &mut BucketColumns<W, C>,
-) -> bool
-where
-    T: TruncationPolicy<W, C> + ?Sized,
-{
-    let bound = bucket.len() + partners.coeff.len();
-    let spare = bucket.x.capacity().min(bucket.z.capacity()).min(bucket.coeff.capacity());
-    let total = if spare >= bound { bound } else { bound - count_hits(bucket.view(), partners) };
-    if spare >= total {
-        merge_backward_in_place(bucket, partners, policy, total);
-        true
-    } else {
-        merged.clear();
-        merge_identity_and_rest(bucket.view(), partners, merged, policy);
-        std::mem::swap(bucket, merged);
-        merged.clear();
-        false
-    }
-}
-
-/// Keys `partners` shares with `bucket`, both strictly ascending.
-fn count_hits<const W: usize, C: Coefficient>(
-    bucket: ColumnsRef<'_, W, C>,
-    partners: ColumnsRef<'_, W, C>,
-) -> usize {
-    let (len, extra) = (bucket.x.len(), partners.x.len());
-    let (mut i, mut j, mut hits) = (0usize, 0usize, 0usize);
-    while i < len && j < extra {
-        let order = (bucket.x[i], bucket.z[i]).cmp(&(partners.x[j], partners.z[j]));
-        // Branchless steps: which side advances is the merge's coin flip.
-        i += usize::from(order.is_le());
-        j += usize::from(order.is_ge());
-        hits += usize::from(order.is_eq());
-    }
-    hits
-}
-
-/// [`merge_partners`] in the bucket's own buffer: written from the back of `total`, at least the length before drops, then shifted to the front over the slots hits and drops left.
-fn merge_backward_in_place<const W: usize, C: Coefficient, T>(
-    bucket: &mut BucketColumns<W, C>,
-    partners: ColumnsRef<'_, W, C>,
-    policy: &T,
-    total: usize,
-) where
-    T: TruncationPolicy<W, C> + ?Sized,
-{
-    let ColumnsRef { x: p_x, z: p_z, coeff: p_c } = partners;
-    let (len, extra) = (bucket.len(), p_c.len());
-    debug_assert!(total >= len + extra - count_hits(bucket.view(), partners));
-    debug_assert!(bucket.x.capacity() >= total);
-    debug_assert!(bucket.z.capacity() >= total);
-    debug_assert!(bucket.coeff.capacity() >= total);
-    debug_assert!(p_x.windows(2).zip(p_z.windows(2)).all(|(x, z)| (x[0], z[0]) < (x[1], z[1])));
-    let x = bucket.x.as_mut_ptr();
-    let z = bucket.z.as_mut_ptr();
-    let c = bucket.coeff.as_mut_ptr();
-    // `i` and `j` count the unread rows of each input, `w` the first written slot, and `h` the hits among the unread rows.
-    // A step writes at most one slot per output key it consumes, so `w ≥ i + j − h ≥ i`, since each unread hit pairs an unread partner: a write never lands on an unread bucket row.
-    let (mut i, mut j, mut w) = (len, extra, total);
-    // SAFETY: every read is below `i ≤ len`, the initialized prefix; every write is at `w - 1 ≥ i` and below `total ≤ capacity`.
-    unsafe {
-        let emit = |w: &mut usize, key_x: [u64; W], key_z: [u64; W], sum: C| {
-            if sum != C::ZERO && policy.keep_term(&key_x, &key_z, sum) {
-                *w -= 1;
-                x.add(*w).write(key_x);
-                z.add(*w).write(key_z);
-                c.add(*w).write(sum);
-            }
-        };
-        while i > 0 && j > 0 {
-            let (b_x, b_z) = (*x.add(i - 1), *z.add(i - 1));
-            let (q_x, q_z) = (p_x[j - 1], p_z[j - 1]);
-            match (b_x, b_z).cmp(&(q_x, q_z)) {
-                std::cmp::Ordering::Greater => {
-                    i -= 1;
-                    emit(&mut w, b_x, b_z, *c.add(i));
-                }
-                std::cmp::Ordering::Less => {
-                    j -= 1;
-                    emit(&mut w, q_x, q_z, p_c[j]);
-                }
-                std::cmp::Ordering::Equal => {
-                    i -= 1;
-                    j -= 1;
-                    emit(&mut w, b_x, b_z, *c.add(i) + p_c[j]);
-                }
-            }
-        }
-        while j > 0 {
-            j -= 1;
-            emit(&mut w, p_x[j], p_z[j], p_c[j]);
-        }
-        // Below the last write the bucket's rows may already sit in their slots, and are then not rewritten.
-        while i > 0 {
-            i -= 1;
-            let (key_x, key_z, sum) = (*x.add(i), *z.add(i), *c.add(i));
-            if sum != C::ZERO && policy.keep_term(&key_x, &key_z, sum) {
-                w -= 1;
-                if w != i {
-                    x.add(w).write(key_x);
-                    z.add(w).write(key_z);
-                    c.add(w).write(sum);
-                }
-            }
-        }
-        let out = total - w;
-        if w > 0 {
-            std::ptr::copy(x.add(w), x, out);
-            std::ptr::copy(z.add(w), z, out);
-            std::ptr::copy(c.add(w), c, out);
-        }
-        bucket.x.set_len(out);
-        bucket.z.set_len(out);
-        bucket.coeff.set_len(out);
-    }
-}
+mod merge;
 
 #[cfg(test)]
 mod tests;

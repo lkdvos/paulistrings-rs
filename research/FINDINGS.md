@@ -29,6 +29,7 @@ Coefficient-only materialization for dense identity streams shipped instead.
 Idea: gallop to the next rest key and bulk-copy the identity segment in `merge2_into`.
 Rejected: id/rest ratios (rotation ~1.5, cnot ~1.3, gu2q ~0.4) make segments one or two rows, **+36.3%** wall on `cnot`.
 Revisit only for a workload whose rest stream is far sparser.
+Settled rotation buckets are such a workload: §Block merge of clean rows (revisits §Segment-copy merge).
 
 ### Interleaved transient key layout
 
@@ -85,6 +86,11 @@ Rejected: **10–14% slower** wall on `cnot` and `rotation_zz`, merge **+31–37
 Idea (branch `rotation-fusion`, `5d579b52`): scale a remote rotation's identity half while the export fill reads the bucket, and merge received partners straight from the exchange block.
 Rejected: gather −23% / −57%, but sort +29% / +67%, merge +20% / +26% and export +18% / +13%, net wall **+1.15%** on `heavyhex_step` at 4 MPI ranks (job 7400720) and **+1.96%** on 24-qubit `tfim_step` at P = 2 (job 7400713), 5/5 pairs each.
 The reads it removed reappeared cold in the next pass: at saturation moving a pass does not help, only removing one does.
+
+### Out-of-place rotation merge
+
+Idea: merge every rotation bucket into the scratch buffer and swap it in, dropping the in-place merge's closing shift.
+Rejected: TFIM at one thread **+22.7% (0/3 faster)**; the shift copies a bucket already in L1/L2, while the swapped buffer is colder.
 
 ## Shipped
 
@@ -210,9 +216,22 @@ Peak RSS rises 33.2 → 35.8 GB at 48 threads and 49.9 → 52.3 GB at P=2, unatt
 
 With `J·dt = π/4` every `ZZ` gate is Clifford, so `C` (the `ZZ` layer) moves onto the `Z`-basis initial state and step `k` keeps only `rx` about `C^k X_q C^-k`: 127 instead of 271 channels per heavy-hex step, the series and term counts identical.
 Wall **1.9–2.1×** at every rank count under x-parity rows (genoa, 2 to 32 ranks, jobs 7392303–5), and 2.0× at P=1 on ccqlin038.
-A `ZZ` gate costs as much as an `rx` (busy time: gather 67%, merge 28%, sort 3%), because every gate streams the whole sum however few rows it changes (6.6% anticommute on average); only removing passes moves the step, so a CPU permutation path for Clifford tables, which can drop the sort and the duplicate check, was not built.
+A `ZZ` gate costs as much as an `rx` (busy time: gather 67%, merge 28%, sort 3%), because every gate streams the whole sum however few rows it changes (6.6% anticommute on average); only removing passes moves the step, which §Clifford runs as one pass does in the lab frame.
 Not adopted in paulistrings-sim; issue #47 tracks it and the hash-function variant.
 Under z-only cut rows the frame's generators `X_q Z_N(q)` leave 45.5 of 127 rotations remote per step at 32 ranks, against 67 of 271 gates in the lab frame.
+
+### Clifford runs as one pass
+
+A maximal run of channels that map strings one to one (Clifford-arm rotation tables, `H`, `S`, `CNOT`, `CZ`, `SWAP`, Paulis, key-preserving rescales) is one pass (`engine/bucketed/permutation_run.rs`): each string walks the run, then the sum is scattered to its new buckets and each bucket sorted once.
+The walk visits only the steps whose support a string occupies (per-qubit bitsets over 256-step segments); visiting every step cost 89% of the run, and the sparse walk is 3.4× faster (no-LTO probe, one thread, 2.06e6 terms, 144 bonds: walk 4.04 → 1.18 s).
+`heavyhex_clifford` against `3d25ccba`, smoke grade (ccqlin038 shared, load 4–16, every pair negative, counts and ⟨Z⟩ identical): one thread **−41.6%** (59.59 → 34.79, 59.70 → 35.05 s), eight **−47.4%** (11.26 → 5.93, 11.26 → 5.91 s); PP.jl 0.9.2 under the same lock 40.1 s (`vector`, one thread) and 13.1 s (`multi`, eight).
+Controls without a Clifford gate (`tfim_11x11`, `heavyhex_generic`): no consistent change once the run handling left the inlined layer loop body, +2.4% to +13% on `tfim_11x11` while it sat inside.
+A rehashed bucket gets half its length again in spare capacity, so the next rotation layer merges in place: probe step **−3.4%** (3/3), peak RSS +4%.
+Rejected: the radix kernel for the rehash sort, no consistent change on the probe step.
+A run spans only layers that exchange nothing, which issue no transport call (§Bucket bits agreed on the exchanges), so it runs at any partition count; under x-only rows every `Z`-type Clifford is local.
+The shortest worthwhile run is unmeasured (2 to 16 bonds at 1.9e5 terms: no consistent difference inside ±10% noise), so any run of two or more is taken.
+Not built: a remote run whose exchange is deferred to its end, and a GPU form.
+Quiet-node A/B pending.
 
 ### Row choice on heavy-hex: x-parity rows beat the z-only cut
 
@@ -321,6 +340,42 @@ The halo is thin only while the light cone stays inside a block: strings averagi
 Cut rows trade volume for balance as they do for circuits (§Partition rows without a known lattice); in one process the exchange is a copy, so balance decides, and across nodes the 3× volume of seeded rows is unmeasured.
 Rows reading only x-bits keep a `Z` field local; `PartitionRows::cut` reads z-bits, so every field term crosses.
 Selecting the sends in parallel over buckets and reusing the send index for the local job took P=2 seeded from 219 to 179 ms.
+
+### Rotation circuits against PauliPropagation.jl 0.9.2
+
+On kicked-Ising heavy-hex (Clifford and `J = 0.2`) and 11×11 TFIM at `coeff:1e-4`, 1e5–3e6 strings, `3d25ccba` spent 12.5 ns per string per gate on one ccqlin038 core against PP.jl's 7.4: scan 70%, merge 25%, partner order 3%.
+A sum above the L3 streamed whole from DRAM every gate, yet more than half the gates touch no string (anticommuting fraction per gate median 0, mean 4–7%, 90th percentile 16–28%).
+The four entries below remove that; together, single runs on the quiet host, one thread against PP.jl `vector`: heavyhex Clifford 63.7 → 28.9 s (PP.jl 38.2), TFIM 19.3 → 7.7 s (11.3), heavyhex generic 29.0 → 11.6 s (18.6); eight threads against PP.jl `multi`: 11.3 → 4.3 s (13.0), 2.9 → 1.14 s (3.3), 5.8 → 1.72 s (6.0).
+Every A/B in them is smoke grade (shared workstation, every pair the same sign unless stated, step counts and ⟨Z⟩ identical); quiet-node A/B pending.
+
+### The rotation scan reads keys first
+
+A key-only pass lists each anticommuting row with its support pattern, then a dense pass over the listed rows reads and writes their coefficients (§In-place rotation layer: faster rotation steps at 5–8% more peak memory rejected the branchy store this avoids); the Clifford arm zeroes moved strings for the merge to drop.
+TFIM at one thread **−16.7% (3/3)**.
+
+### Consecutive rotation tables run as one coset loop
+
+Alone and under a policy without a layer pass, up to 8 consecutive rotation tables whose bucket deltas span at most 3 dimensions run as one coset loop, each coset (8 buckets, within L2) taking them in order, so the sum streams from memory once per run.
+One thread: TFIM **−14.4%**, heavyhex Clifford **−20.7%** (3/3 each); dimension 4 against 3 neutral, 2 against 3 slower (2/2).
+Rejected: also capping the span so a run leaves at least 8 cosets per pool thread (perf/fused-rotations, whose 8-dimensional groups at ~2^10 buckets left 4 cosets for 8 threads and ran 2.6–2.8× slower, with 12 MB cosets): `tfim_11x11` at 8 threads **+3.5%** (3/3, 1.13 → 1.17 s), and at 16 threads on 8 cores TFIM at `coeff:3e-4` (1.5e5 strings, one coset per thread uncapped) **+30%** and at `coeff:1e-3` (1.8e4) **+18%** (3/3 each), where the cap removes the run; other cells flat, load 3–5.
+At 96 threads a dimension-3 run at 1e6 strings leaves about one coset per thread; unmeasured.
+Traces and debug logs keep the layers apart, so `propagate_with_stats` measures the unfused path.
+
+### Bucket supports skip what a rotation cannot touch
+
+Each bucket's `x` and `z` columns, ORed, ride from one rotation layer to the next within a call (exact from the scan, widened by partners, forgotten at call boundaries, on every rebucket, after a layer pass and by every other layer kind).
+A bucket with no `x` bit under the generator's `z` and no `z` bit under its `x` is not read, and one with no anticommuting row and no partners is not merged, since every string already passed the call's `keep_term`, which must be pure.
+One thread: TFIM **−37.1%**, heavyhex Clifford **−26.2%**, heavyhex generic **−35.7%** (3/3 each); `x` and `z` apart rather than ORed: no consistent change.
+
+### Block merge of clean rows (revisits §Segment-copy merge)
+
+With known supports, rows outside the scan's list keep their coefficients and pass `keep_term`, so when partners and changed rows are at most an eighth of the bucket the in-place merge moves the clean rows between them as blocks; here a partner has 15–1000 clean rows, not §Segment-copy merge's one or two.
+One thread against the per-row merge: heavyhex Clifford **−7.0% (3/3**, quiet), instructions −13.2%; TFIM −9.3% / −9.6% with one pair +2.7%, heavyhex generic −6.5% / −8.0% with one pair under a load burst.
+
+### Real coefficients pay once the scan stops streaming
+
+`--dtype float64` against complex128 with bucket supports: heavyhex Clifford **−14.2%**, TFIM **−12.2%** (2/2 each), identical counts and ⟨Z⟩; before them the same switch showed no clear change (heavyhex Clifford, noisy).
+The kernels are generic over the coefficient, so the choice left is the API's: a Hermitian observable under Hermiticity-preserving channels could default to `float64`.
 
 ## GPU spike
 

@@ -641,7 +641,7 @@ fn the_permutation_path_has_no_bucket_length_cap() {
     )
     .expect("device propagate");
     let (layer, c) = last_layer(&mut dev);
-    assert!(c.permuted && layer.bits == 0 && layer.refine_passes[0] == 0, "{layer:?}");
+    assert!(c.permuted && layer.bits == [0] && layer.refine_passes[0] == 0, "{layer:?}");
     assert_terms_close(&dev.gather().unwrap(), &want, TOL, "one bucket of 20000");
 }
 

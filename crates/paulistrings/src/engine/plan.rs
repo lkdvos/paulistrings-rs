@@ -109,6 +109,32 @@ impl PartitionPlan {
         self.index_among_partner(remote)
     }
 
+    /// A plan at `rank` whose remote deltas move terms by the partition deltas `offsets`.
+    #[cfg(test)]
+    pub(crate) fn with_partition_deltas(rank: u32, offsets: &[u32]) -> Self {
+        let remote = offsets
+            .iter()
+            .enumerate()
+            .map(|(entry, &offset)| RemoteDelta { entry, partner: rank ^ offset, bucket_delta: 0 })
+            .collect();
+        Self { remote, ..Self::default() }
+    }
+
+    /// The partitions other than `rank` that the layer's exchange connects to it, `rank ^ span(part(d))`, which must hold its bucket count; empty on a local layer.
+    ///
+    /// The span and not the partners alone, since partnership is transitive within a layer; it depends on the deltas alone, so every member derives the same group.
+    pub(crate) fn exchange_group(&self, rank: u32) -> Vec<u32> {
+        let mut span = vec![0u32];
+        for remote in &self.remote {
+            let offset = remote.partner ^ rank;
+            if !span.contains(&offset) {
+                let shifted: Vec<u32> = span.iter().map(|member| member ^ offset).collect();
+                span.extend(shifted);
+            }
+        }
+        span.into_iter().skip(1).map(|offset| rank ^ offset).collect()
+    }
+
     fn index_among_partner(&self, remote: usize) -> usize {
         let partner = self.remote[remote].partner;
         self.remote[..remote].iter().filter(|other| other.partner == partner).count()

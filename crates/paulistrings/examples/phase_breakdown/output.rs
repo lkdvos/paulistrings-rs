@@ -1,6 +1,6 @@
 //! What a cell prints: the `cell` line, the table, and the JSON row.
 
-use paulistrings::test_support::{BITS_AGREE_EVERY, TIMER_READ_OVERHEAD_NS};
+use paulistrings::test_support::TIMER_READ_OVERHEAD_NS;
 use paulistrings::PhaseStats;
 use serde_json::{json, Value};
 
@@ -149,14 +149,13 @@ pub(crate) fn print_partition_block(cell: &CellResult) {
         p.bytes_exported as f64 / (1024.0 * 1024.0),
     );
     println!(
-        "    collectives = {} over {} layers (bucket-count schedule every {} layers, \
-         plus every remote layer and any the policy runs)",
+        "    collectives = {} over {} layers (a bucket-count exchange per remote layer, plus the \
+         policy's)",
         p.collectives,
         p.local_layers + p.remote_layers,
-        BITS_AGREE_EVERY,
     );
     println!(
-        "    export = {:.3} ms   exchange = {:.3} ms   barrier (bucket-count all-reduce) = \
+        "    export = {:.3} ms   exchange = {:.3} ms   barrier (bucket-count exchange, policy collectives) = \
          {:.3} ms   [max over partitions]",
         s.export_ns as f64 / 1e6,
         s.exchange_ns as f64 / 1e6,

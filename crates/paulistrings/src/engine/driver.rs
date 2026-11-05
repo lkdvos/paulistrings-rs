@@ -1,12 +1,13 @@
 //! The layer loop `run_layers` every driver runs, one partition's share of a call at any partition count.
 //!
 //! Every partition issues the same transport calls in the same order, or the group falls out of step; per layer:
-//! 1. `allreduce_max_u8` of the proposed bucket bits, on any layer whose plan has a remote delta (both sides index the exchange's blocks by the count) and otherwise on the schedule of `agrees_bucket_bits`;
+//! 1. on a layer whose plan has a remote delta, an `exchange` of the proposed bucket bits within its exchange group ([`PartitionPlan::exchange_group`]), whose maximum every member then holds, since partners index an exchange's blocks by the count;
 //! 2. the exchange, only if the plan has a remote delta;
-//! 3. the policy's layer pass, on every layer, if `finalizes_layer` is true.
+//! 3. the policy's layer pass, on every layer, if `finalizes_layer` is true;
 //!
-//! Between agreements a partition keeps its count even when its own proposal is higher, so the counts stay equal without communicating, and the schedule depends on the layer index and the plan alone.
-//! At `P = 1` there is no group: the loop skips the reduction and refines every layer, as `propagate` does.
+//! and one `allreduce_max_u8` after the last layer, which refines every partition to the group's largest count, so a call returns with one count everywhere.
+//! A local layer issues no call for the count: on the schedule of `rebuckets` a partition moves to its own proposal, so counts differ mid-call.
+//! At `P = 1` there is no group: the loop refines every layer, as `propagate` does.
 
 use crate::channel::Prepare;
 use crate::coefficient::Coefficient;
@@ -16,7 +17,7 @@ use std::time::Instant;
 use super::backend::PartitionBackend;
 use super::bucketed::RowEmitter;
 use super::plan::PartitionPlan;
-use super::transport::Transport;
+use super::transport::{ByteParts, Transport};
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::channel::Channel;
 use crate::circuit::Circuit;
@@ -27,26 +28,22 @@ use crate::engine::{Direction, PropagateOptions, LOG_TARGET};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::truncation::TruncationPolicy;
 
-/// Layers between two bucket-count agreements, and the length of the opening ramp that precedes them.
-pub(crate) const BITS_AGREE_EVERY: usize = 16;
+/// Layers between two rebuckets of a partition in a group, and the length of the opening ramp that precedes them.
+const REBUCKET_EVERY: usize = 16;
 
-/// Whether the layer at `application_index` of a call agrees the bucket count; a pure function of it, so every partition answers alike.
-fn agrees_bucket_bits(application_index: usize) -> bool {
-    application_index < BITS_AGREE_EVERY || application_index.is_multiple_of(BITS_AGREE_EVERY)
+/// Whether a partition of a group rebuckets at the layer at `application_index`, whatever the layer's plan.
+fn rebuckets(application_index: usize) -> bool {
+    application_index < REBUCKET_EVERY || application_index.is_multiple_of(REBUCKET_EVERY)
 }
 
-/// Panic on every partition unless all hold `bits` bucket bits; two collectives, outside the module's schedule, so only a debug build issues them.
-#[cfg(debug_assertions)]
-fn assert_bucket_bits_agree(collectives: &impl Collectives, bits: u8, application_index: usize) {
-    let highest = collectives.allreduce_max_u8(bits);
-    let lowest = u8::MAX - collectives.allreduce_max_u8(u8::MAX - bits);
-    assert_eq!(
-        lowest,
-        highest,
-        "partition {}, layer {application_index}: the partitions hold between {lowest} and {highest} \
-         bucket bits (this one {bits}), where the bucket-count agreement keeps them equal",
-        collectives.rank(),
-    );
+/// The largest of `bits` over this partition and `group`, one `exchange` among them.
+fn exchange_bits<X: Transport>(transport: &X, group: &[u32], bits: u8) -> u8 {
+    let mut send: Vec<Option<ByteParts>> = (0..transport.size()).map(|_| None).collect();
+    for &member in group {
+        send[member as usize] = Some(ByteParts(vec![vec![bits]]));
+    }
+    let received = transport.exchange(send, &mut Vec::new());
+    received.iter().flatten().map(|payload| payload.0[0][0]).fold(bits, u8::max)
 }
 
 /// A [`Collectives`] view that counts the policy finalization's calls for the trace and, when `nanos` is given, times them.
@@ -208,11 +205,12 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         clock.lap(&mut phases.prepare_ns);
 
         let mut collectives = 0u32;
-        if !refined_early && (solo || plan.has_remote() || agrees_bucket_bits(application_index)) {
+        if !refined_early && (solo || plan.has_remote() || rebuckets(application_index)) {
             let mut wanted_bits =
                 local.proposed_bits(&prepared, options.target_bucket_len, options.min_buckets);
-            if !solo {
-                wanted_bits = transport.allreduce_max_u8(wanted_bits);
+            if !solo && plan.has_remote() {
+                wanted_bits =
+                    exchange_bits(transport, &plan.exchange_group(rank as u32), wanted_bits);
                 collectives += 1;
             }
             lap!(stamp, local.stats().collective_ns);
@@ -242,13 +240,6 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 local.hash().num_buckets(),
             );
         }
-
-        // Gated on the build alone, never on data, so every partition issues these collectives alike.
-        #[cfg(debug_assertions)]
-        if !solo {
-            assert_bucket_bits_agree(transport, local.hash().bits(), application_index);
-        }
-        clock.lap(&mut phases.collective_ns);
 
         // The next layer prepared under this layer's hash, so the coset loop can count the rows it exports; a rebucket in between drops the counts.
         let next_prepared = (!solo && application_index + 1 < num_layers).then(|| {
@@ -343,6 +334,12 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 remote_deltas,
                 rows_received,
             );
+        }
+    }
+    if !solo {
+        let agreed = transport.allreduce_max_u8(local.hash().bits());
+        while local.hash().bits() < agreed {
+            local.refine();
         }
     }
     local.settle();

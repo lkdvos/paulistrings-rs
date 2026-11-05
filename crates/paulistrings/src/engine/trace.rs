@@ -5,11 +5,11 @@ use std::time::Instant;
 /// What one layer did across the whole group; the per-partition vectors are indexed by rank.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PartitionLayerRecord {
-    /// Bucket bits every partition held for this layer.
-    pub bits: u8,
+    /// Bucket bits each partition held for this layer, equal across each exchange group of a remote layer.
+    pub bits: Vec<u8>,
     /// Remote deltas the layer had; zero means it made no transport call.
     pub remote_deltas: u32,
-    /// Collective calls the layer issued besides the exchange: the scheduled bucket-count all-reduce plus the policy's collective finalization.
+    /// Group calls the layer issued besides the exchange: a remote layer's bucket-count exchange plus the policy's collective finalization.
     pub collectives: u32,
     /// This layer's position in the [`Circuit`](crate::Circuit), independent of direction.
     pub circuit_index: u32,
@@ -49,7 +49,7 @@ pub struct LayerPhases {
     pub rebucket_ns: u64,
     /// Channel preparation and partition planning, both passes of a refining layer.
     pub prepare_ns: u64,
-    /// The bucket-count proposal and its all-reduce, plus the policy finalization's collective calls.
+    /// The bucket-count proposal and a remote layer's exchange of it, plus the policy finalization's collective calls.
     pub collective_ns: u64,
     /// The export pass building the per-partner blocks.
     pub export_ns: u64,
@@ -259,7 +259,7 @@ pub(crate) fn assemble(
     for k in 0..layers {
         let head = &per_partition[0][k];
         let mut record = PartitionLayerRecord {
-            bits: head.bits,
+            bits: Vec::with_capacity(size),
             remote_deltas: head.remote_deltas,
             collectives: head.collectives,
             circuit_index: head.circuit_index,
@@ -278,11 +278,6 @@ pub(crate) fn assemble(
         };
         for (rank, rows) in per_partition.iter().enumerate() {
             let row = &rows[k];
-            assert_eq!(
-                row.bits, head.bits,
-                "layer {k}: partition {rank} has {} bucket bits, partition 0 has {}",
-                row.bits, head.bits,
-            );
             assert_eq!(
                 row.remote_deltas, head.remote_deltas,
                 "layer {k}: partition {rank} saw {} remote deltas, partition 0 saw {}",
@@ -308,6 +303,7 @@ pub(crate) fn assemble(
                 "layer {k}: partition {rank} ran gate {:?}, partition 0 ran {:?}",
                 row.gate_name, head.gate_name,
             );
+            record.bits.push(row.bits);
             record.terms_in.push(row.terms_in);
             record.terms_out.push(row.terms_out);
             // A layer without an exchange reports empty per-partner vectors.

@@ -1,36 +1,20 @@
-//! The partitioned engine's **per-layer collective schedule**: which layers
-//! talk to the group at all.
+//! The partitioned engine's collective schedule (`engine/driver.rs`): the bucket count is agreed within each remote layer's exchange group and once at the end of a call, never on a local layer.
 //!
-//! A layer's exchange is conditional already (no remote delta ⇒ no transport
-//! call). These tests pin the other half of the contract in `engine/driver.rs`:
-//! the bucket-count agreement is on a *schedule*, so a run of
-//! exchange-free layers is also collective-free, and an exchange is always
-//! preceded by an agreement, so both sides index their blocks by the same
-//! bucket count.
-//!
-//! Every fixture truncates by weight. `WeightCutoff` is a per-term filter — no
-//! collective form, so the policy contributes nothing to the counts here — and
-//! it bounds the key space outright, which keeps a 128-layer debug-build run
-//! affordable.
+//! Every fixture truncates by weight, a per-term filter with no collective form, which also bounds the key space so 128-layer debug runs stay affordable.
 
-use num_complex::Complex64;
-use paulistrings::test_support::BITS_AGREE_EVERY;
+use paulistrings::test_support::rebucketed_bits;
 use paulistrings::test_support::{
     assert_terms_close, rand_sum_real, unpinned_partitions, zz_rotation,
 };
-use paulistrings::test_support::{desired_bits, rebucketed_bits};
 use paulistrings::PauliRotation;
 use paulistrings::WeightCutoff;
-use paulistrings::{
-    propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PropagateOptions,
-};
-use paulistrings::{PartitionConfig, PartitionRuntime, PartitionTrace, PartitionedSum};
+use paulistrings::{propagate, Circuit, Direction, PartitionRows, PauliString, PropagateOptions};
+use paulistrings::{PartitionConfig, PartitionRuntime, PartitionedSum};
 use paulistrings::{ScatterOptions, ScatterRows};
 
 const NQ: usize = 32;
 const TOL: f64 = 1e-11;
-/// Fine enough that the bucket count tracks the term count instead of sitting
-/// on the `min_buckets` floor — which is what makes the *lag* observable.
+/// Fine enough that the bucket count tracks the term count instead of sitting on the `min_buckets` floor.
 fn fine() -> PropagateOptions {
     PropagateOptions { target_bucket_len: 32, min_buckets: 16 }
 }
@@ -67,56 +51,20 @@ fn steps(n: usize, theta: f64) -> Circuit<1> {
     circuit
 }
 
-/// Collectives the schedule allows over `layers` layers of which `remote`
-/// exchanged: the opening ramp, one per period after it, and one per remote
-/// layer.
-fn bound(layers: usize, remote: usize) -> usize {
-    BITS_AGREE_EVERY + layers.div_ceil(BITS_AGREE_EVERY) + remote
-}
-
-fn total(trace: &PartitionTrace) -> usize {
-    trace.total_collectives() as usize
-}
-
-/// **The point of the schedule**: a long run of exchange-free layers costs a
-/// handful of collectives, not one per layer.
+/// A run of exchanging and local layers agrees the bucket count on the exchanging ones alone.
 #[test]
 fn exchange_free_layers_are_collective_free() {
-    let circuit = steps(2, 0.1);
     let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
     let mut ps = PartitionedSum::scatter_with(
         rand_sum_real::<1>(600, NQ, 0xC01),
         ScatterOptions { runtime, rows: ScatterRows::Explicit(cut_rows()) },
     );
     ps.enable_trace();
-    ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
+    ps.propagate_with(&steps(2, 0.1), &WeightCutoff(3), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
-
-    let layers = trace.layers.len();
-    let remote = trace.remote_layers();
-    assert_eq!(layers, 4 * NQ);
-    assert_eq!(remote, 4, "two crossing bonds per step, not {remote}");
-
-    let got = total(&trace);
-    assert!(
-        got <= bound(layers, remote),
-        "{got} collectives over {layers} layers ({remote} remote); the schedule allows {}",
-        bound(layers, remote),
-    );
-    // And the win is real, not marginal: fewer than one collective per four
-    // layers, where the unconditional schedule spent one per layer.
-    assert!(got * 4 < layers, "{got} collectives over {layers} layers is not a schedule",);
-
-    // Every layer that did talk to the group either exchanged or was on the
-    // fixed layer-index schedule — never "because my own share grew".
+    assert_eq!(trace.remote_layers(), 4, "two crossing bonds per step");
     for (k, layer) in trace.layers.iter().enumerate() {
-        assert!(
-            layer.collectives == 0
-                || layer.remote_deltas > 0
-                || k < BITS_AGREE_EVERY
-                || k % BITS_AGREE_EVERY == 0,
-            "layer {k} took a collective off the schedule",
-        );
+        assert_eq!(layer.collectives, u32::from(layer.remote_deltas > 0), "layer {k}");
     }
 }
 
@@ -135,7 +83,7 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
     ps.propagate_with(&circuit, &WeightCutoff(5), Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
 
-    assert_eq!(total(&trace), 0, "P = 1 has nobody to reduce with");
+    assert_eq!(trace.total_collectives(), 0, "P = 1 has nobody to reduce with");
     // Exactly `propagate`'s own rule, every layer, with no lag because there is nothing to lag behind.
     let mut prev = before;
     let mut grew = false;
@@ -143,12 +91,12 @@ fn one_partition_takes_no_collective_and_still_rebuckets() {
         let want =
             rebucketed_bits(layer.terms_in[0], prev, fine().target_bucket_len, fine().min_buckets);
         assert_eq!(
-            layer.bits, want,
+            layer.bits[0], want,
             "layer {k}: P = 1 must rebucket every layer ({} terms in)",
             layer.terms_in[0],
         );
-        grew |= layer.bits > prev;
-        prev = layer.bits;
+        grew |= layer.bits[0] > prev;
+        prev = layer.bits[0];
     }
     assert!(grew, "the fixture should have grown the bucket count");
 }
@@ -178,9 +126,9 @@ fn one_partition_coarsens_once_the_sum_collapses() {
     for (k, layer) in trace.layers.iter().enumerate() {
         let want =
             rebucketed_bits(layer.terms_in[0], prev, fine().target_bucket_len, fine().min_buckets);
-        assert_eq!(layer.bits, want, "layer {k}: {} terms in", layer.terms_in[0]);
-        coarsened |= layer.bits < prev;
-        prev = layer.bits;
+        assert_eq!(layer.bits[0], want, "layer {k}: {} terms in", layer.terms_in[0]);
+        coarsened |= layer.bits[0] < prev;
+        prev = layer.bits[0];
     }
     assert!(coarsened, "the fixture should have coarsened the bucket count");
 }
@@ -200,105 +148,42 @@ fn a_group_coarsens_together_and_still_matches_propagate() {
     ps.enable_trace();
     ps.propagate_with(&circuit, &policy, Direction::Forward, fine());
     let trace = ps.take_trace().expect("tracing is on");
-    let peak = trace.layers.iter().map(|layer| layer.bits).max().expect("layers ran");
+    let peak = trace.layers.iter().flat_map(|layer| layer.bits.clone()).max().expect("layers ran");
     assert!(ps.bits() < peak, "bits stayed at the peak {peak}");
     let got = ps.into_gathered();
     assert_terms_close(&got, &want, TOL, "P=2 after coarsening");
     assert_eq!(got.len(), want.len(), "term count");
 }
 
-/// A start whose terms all live in the first block, plus a handful in the
-/// second: the two partitions are lopsided, and local layers keep them that
-/// way (a z-only cut row is blind to an `X` rotation, so no term ever changes
-/// owner).
-fn lopsided_start() -> paulistrings::PauliSum<1> {
-    let mut acc = BuildAccumulator::<1>::with_capacity(NQ, 260);
-    for q in 0..16 {
-        for r in (q + 1)..16 {
-            let mut p = PauliString::<1>::z(q);
-            p.z[0] |= 1u64 << r;
-            acc.add_term(p, Complex64::new(1.0 / (1 + q + r) as f64, 0.0));
-        }
-    }
-    // Four terms on the far side of the cut: odd z-weight in `[16, 32)`.
-    for q in 16..20 {
-        acc.add_term(PauliString::<1>::z(q), Complex64::new(0.25, 0.0));
-    }
-    acc.finalize()
-}
-
-/// Between two agreements the partitions' own `desired_bits` may diverge — and
-/// neither is allowed to act on it. The layer that finally crosses agrees
-/// first, so both sides index the blocks by the same bucket count; the
-/// receiver's `num_buckets` debug assert is the tripwire, and a debug build
-/// runs it.
+/// Two calls on one split agree with `propagate` at every partition count and in both directions, each returning with one bucket count on every partition.
 #[test]
-fn a_remote_layer_after_a_long_local_run_agrees_first() {
-    // 40 transverse-field layers — all local under a z-only cut row, and long
-    // enough to leave the opening ramp behind — then the one crossing bond.
-    let mut circuit = Circuit::<1>::new(NQ);
-    for k in 0..40 {
-        circuit.push(PauliRotation::new(PauliString::<1>::x(k % NQ), 0.37));
-    }
-    circuit.push(zz_rotation::<1>(15, 16, 0.41));
-
-    let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
-    let mut ps = PartitionedSum::scatter_with(
-        lopsided_start(),
-        ScatterOptions { runtime, rows: ScatterRows::Explicit(cut_rows()) },
-    );
-    ps.enable_trace();
-    ps.propagate_with(&circuit, &WeightCutoff(3), Direction::Forward, fine());
-    let trace = ps.take_trace().expect("tracing is on");
-
-    // The fixture has to actually exercise the lag: a layer past the ramp
-    // where the two partitions want different bucket counts, and the count
-    // they ran under is not what one of them wanted.
-    let lagged = trace.layers.iter().enumerate().any(|(k, layer)| {
-        let wants: Vec<u8> = layer
-            .terms_in
-            .iter()
-            .map(|&n| desired_bits(n, fine().target_bucket_len, fine().min_buckets))
-            .collect();
-        k >= BITS_AGREE_EVERY && wants[0] != wants[1] && layer.collectives == 0
-    });
-    assert!(
-        lagged,
-        "fixture must reach an off-schedule layer where the partitions disagree about bits: {:?}",
-        trace.layers.iter().map(|l| l.terms_in.clone()).collect::<Vec<_>>(),
-    );
-
-    // The crossing layer is the last one, and it agreed before it exchanged.
-    let last = trace.layers.last().expect("layers");
-    assert!(last.remote_deltas > 0, "the last layer must cross");
-    assert!(last.collectives > 0, "a remote layer must agree the bucket count before it exchanges",);
-    assert!(last.rows_received.iter().sum::<u64>() > 0, "rows must move");
-}
-
-/// The lag changes bucket counts, and bucket counts are not the answer: the
-/// gathered result still agrees with `propagate` to tolerance at every
-/// partition count.
-#[test]
-fn the_lagged_schedule_still_matches_propagate() {
+fn two_calls_match_propagate_and_return_one_count() {
     let circuit = steps(2, 0.1);
     let sum = rand_sum_real::<1>(400, NQ, 0xC04);
     let policy = WeightCutoff(3);
-    let quarters: Vec<Vec<usize>> =
-        (0..4).map(|b| (b * 8..(b + 1) * 8).collect::<Vec<usize>>()).collect();
     for &direction in &[Direction::Forward, Direction::Heisenberg] {
-        let want = propagate(&circuit, sum.clone(), &policy, direction);
-        for &p in &[2usize, 4] {
-            let rows = if p == 2 { cut_rows() } else { PartitionRows::<1>::cut(NQ, &quarters) };
+        let once = propagate(&circuit, sum.clone(), &policy, direction);
+        let twice = propagate(&circuit, once.clone(), &policy, direction);
+        for &p in &[2usize, 4, 8] {
+            let blocks: Vec<Vec<usize>> =
+                (0..p).map(|b| (b * NQ / p..(b + 1) * NQ / p).collect()).collect();
             let runtime = PartitionRuntime::new(&config(p)).expect("topology resolves");
             let mut ps = PartitionedSum::scatter_with(
                 sum.clone(),
-                ScatterOptions { runtime, rows: ScatterRows::Explicit(rows) },
+                ScatterOptions {
+                    runtime,
+                    rows: ScatterRows::Explicit(PartitionRows::<1>::cut(NQ, &blocks)),
+                },
             );
-            ps.propagate(&circuit, &policy, direction);
-            let got = ps.into_gathered();
-            let what = format!("P={p} {direction:?}");
-            assert_terms_close(&got, &want, TOL, &what);
-            assert_eq!(got.len(), want.len(), "{what}: term count");
+            for (call, want) in [&once, &twice].into_iter().enumerate() {
+                let what = format!("P={p} {direction:?} call {call}");
+                ps.propagate_with(&circuit, &policy, direction, fine());
+                let bits: Vec<u8> = (0..p).map(|r| ps.partition(r).hash().bits()).collect();
+                assert!(bits.iter().all(|&b| b == bits[0]), "{what}: bits {bits:?} after the call");
+                let got = ps.gather();
+                assert_terms_close(&got, want, TOL, &what);
+                assert_eq!(got.len(), want.len(), "{what}: term count");
+            }
         }
     }
 }

@@ -1172,7 +1172,7 @@ impl PartitionStats {
         self.coarse(|phases| phases.prepare_ns)
     }
 
-    /// Coarse phase, shaped like `nanos`: the bucket-count agreement and the truncation policy's own collectives, including the wait for the slowest partition or rank to arrive.
+    /// Coarse phase, shaped like `nanos`: a remote layer's bucket-count exchange and the truncation policy's own collectives, including the wait for the slowest partner to arrive.
     #[getter]
     fn collective_ns(&self) -> Vec<Vec<u64>> {
         self.coarse(|phases| phases.collective_ns)

@@ -198,7 +198,7 @@ Per-layer, per-partition detail (`PropagationStats.partition`), one entry per la
 | `.nanos` | `list[list[int]]` | each partition's own elapsed wall time per layer; `PropagationStats.nanos[k]` is `max(nanos[k])` |
 | `.rebucket_ns` | `list[list[int]]` | coarse phase: raising or lowering the bucket count |
 | `.prepare_ns` | `list[list[int]]` | coarse phase: channel preparation and partition planning |
-| `.collective_ns` | `list[list[int]]` | coarse phase: the bucket-count agreement and the policy's collectives, the wait for the slowest partition included |
+| `.collective_ns` | `list[list[int]]` | coarse phase: a remote layer's bucket-count exchange and the policy's collectives, the wait for the slowest partner included |
 | `.export_ns` | `list[list[int]]` | coarse phase: building the rows to send; zero on a `local` layer |
 | `.exchange_ns` | `list[list[int]]` | coarse phase: the transfer the layer's compute did not hide; zero on a `local` layer |
 | `.coset_loop_ns` | `list[list[int]]` | coarse phase: the layer's own compute; on a device, its export and exchange too |

@@ -291,6 +291,13 @@ Code A/B against `3d25ccba` on ccqlin038 (abba, other sessions' builds loading i
 Rejected: software prefetch of the marked rows, fill −9% at 2e6 and flat at 1e7.
 Quiet-node A/B pending.
 
+### Bucket bits agreed within exchange groups
+
+Under `partition_approx_topn` a local layer issued no collective but the scheduled bucket-count all-reduce (the opening 16 layers and every 16th), and on cut rows the partitions waited there for per-layer work imbalance that moves between them.
+Now only a remote layer agrees the count, by an `exchange` of the proposals within its exchange group just before the layer's exchange, a local layer rebuckets to its own proposal, and one all-reduce at the end of a call evens the counts (`engine/driver.rs`).
+Code A/B against `1abdcaa8`, 4–5 abba pairs per cell: ccqlin038 in process (shared, load 15–31; `paulistrings-sim` 16×16 TFIM step, timed steps 3–4 of 4) P = 4 cut rows **−9.8%** (4/4), P = 8 cut **−9.4%** (4/4), x-only rows no consistent change; two genoa nodes over MPI, 4 ranks, 24-qubit `tfim_step` cut rows at `patopn:1e6` wall **−5.7%** (5/5, barrier −18%, job 7409289).
+Rejected: carrying the proposals for the next remote layer on each remote layer's exchange instead of a round of their own, **+28.5%** on the same MPI cell (5/5, exchange +403%, export +38%, job 7409291); it adds proposal-only payloads to every member of the next group that is not a partner, and in process the separate round's wait only moves into the exchange.
+
 ### Operator products skip disjoint supports
 
 A Liouvillian pair whose supports miss always commutes, and on a nested-commutator probe (Heisenberg chain `L = 40` with a `0.3` Z field, 157 generator terms, `O` from `Z_20` thresholded at `1e-12` per step, 1.9e6 terms at step 13, `W = 1`) only 30% of pairs meet and 16.5% anticommute.

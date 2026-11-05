@@ -523,5 +523,20 @@ impl Transport for InProcessTransport {
     }
 }
 
+/// `f` on every rank of an in-process group of `size`, each on its own thread, results in rank order.
+#[cfg(test)]
+pub(crate) fn on_every_rank<O: Send>(
+    size: u32,
+    f: impl Fn(&InProcessTransport) -> O + Send + Sync,
+) -> Vec<O> {
+    let group = InProcessTransport::group(size);
+    let f = &f;
+    std::thread::scope(|scope| {
+        let handles: Vec<_> =
+            group.into_iter().map(|transport| scope.spawn(move || f(&transport))).collect();
+        handles.into_iter().map(|h| h.join().expect("rank thread panicked")).collect()
+    })
+}
+
 #[cfg(test)]
 mod tests;

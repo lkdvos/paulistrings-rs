@@ -500,67 +500,55 @@ mod partitioned {
         }
     }
 
-    /// The bucket count is collective: equal on every partition (asserted by the
-    /// trace's own assembly), and always the maximum over partitions of what
-    /// each share proposes from the current count.
+    /// Every layer of the opening ramp rebuckets each partition to its own proposal, a remote layer to its group's largest, and the call returns at the largest count.
     #[test]
-    fn bits_are_uniform_and_follow_the_largest_proposal() {
+    fn bits_follow_each_proposal_and_agree_across_an_exchange() {
         let runtime = PartitionRuntime::new(&config(2)).expect("topology resolves");
         // Lopsided on purpose: weight-2 keys over 16 qubits rarely carry `X` on
-        // qubit 0, so partition 0 holds the bulk and the `max` is what decides.
+        // qubit 0, so the two proposals differ.
         let sum = low_weight_sum::<1>(3_000, NQ, 2, 0x6);
         let mut ps = PartitionedSum::scatter_with(
             sum,
             ScatterOptions { runtime, rows: ScatterRows::Explicit(rows_seeing_qubit_0_x()) },
         );
-        assert!(
-            ps.partition(0).len() > 2 * ps.partition(1).len(),
-            "fixture should be lopsided: {} vs {}",
-            ps.partition(0).len(),
-            ps.partition(1).len(),
-        );
-
-        // A fine bucket policy, so the count actually moves over four layers.
         let options = PropagateOptions { target_bucket_len: 32, min_buckets: 16 };
-        let before = ps.bits();
+        let mut prev = vec![ps.bits(); 2];
         ps.enable_trace();
         ps.propagate_with(&circuit(), &KeepAll, Direction::Forward, options);
         let trace = ps.take_trace().expect("tracing is on");
 
-        let mut prev = before;
-        let mut grew = false;
+        let mut diverged = false;
         for (k, layer) in trace.layers.iter().enumerate() {
-            let want = layer
+            let proposals: Vec<u8> = layer
                 .terms_in
                 .iter()
-                .map(|&len| {
-                    rebucketed_bits(len, prev, options.target_bucket_len, options.min_buckets)
+                .zip(&prev)
+                .map(|(&len, &bits)| {
+                    rebucketed_bits(len, bits, options.target_bucket_len, options.min_buckets)
                 })
-                .max()
-                .expect("at least one partition");
-            assert_eq!(
-                layer.bits, want,
-                "layer {k}: bits {} but the group wanted {want} from {:?}",
-                layer.bits, layer.terms_in,
-            );
+                .collect();
+            let want = if layer.remote_deltas > 0 {
+                vec![*proposals.iter().max().unwrap(); 2]
+            } else {
+                proposals
+            };
+            assert_eq!(layer.bits, want, "layer {k}: from {:?} terms", layer.terms_in);
             // A host partition refines one doubling per pass.
-            assert!(
-                layer
-                    .refine_passes
-                    .iter()
-                    .all(|&passes| passes == u32::from(layer.bits.saturating_sub(prev))),
-                "layer {k}: {:?} refine passes from {prev} to {} bits",
-                layer.refine_passes,
-                layer.bits
-            );
-            grew |= layer.bits > prev;
-            prev = layer.bits;
+            let passes: Vec<u32> = want
+                .iter()
+                .zip(&prev)
+                .map(|(&bits, &p)| u32::from(bits.saturating_sub(p)))
+                .collect();
+            assert_eq!(layer.refine_passes, passes, "layer {k}");
+            diverged |= layer.bits[0] != layer.bits[1];
+            prev = want;
         }
-        assert!(grew, "the fixture should have grown the bucket count");
-        assert_eq!(ps.bits(), prev);
+        assert!(diverged, "the fixture should split the counts");
+        let closing = *prev.iter().max().unwrap();
+        assert_eq!([ps.partition(0).hash().bits(), ps.partition(1).hash().bits()], [closing; 2]);
     }
 
-    /// Every partition's coarse phases fit inside its `nanos`; only a remote layer exports, and every layer of the opening ramp agrees the bucket count.
+    /// Every partition's coarse phases fit inside its `nanos`; only a remote layer exports, and every layer of the opening ramp proposes a bucket count.
     #[test]
     fn coarse_phases_split_each_partitions_layer() {
         let mut circuit = circuit();

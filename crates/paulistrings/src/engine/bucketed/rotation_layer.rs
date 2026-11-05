@@ -178,8 +178,9 @@ impl<'p, const W: usize, C: Coefficient> RotationLayer<'p, W, C> {
             (true, true, false) => {
                 self.list_hits(x.len(), hits, |row| bit(x[row][w0], b0) | bit(x[row][w1], b1) << 2)
             }
-            (true, false, true) => self
-                .list_hits(x.len(), hits, |row| bit(z[row][w0], b0) << 1 | bit(z[row][w1], b1) << 3),
+            (true, false, true) => self.list_hits(x.len(), hits, |row| {
+                bit(z[row][w0], b0) << 1 | bit(z[row][w1], b1) << 3
+            }),
             (true, _, _) => self.list_hits(x.len(), hits, |row| self.pattern(&x[row], &z[row])),
             (false, _, _) => self.list_hits(x.len(), hits, |row| {
                 for w in 0..W {

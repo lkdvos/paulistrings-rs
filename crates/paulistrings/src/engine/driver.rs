@@ -13,8 +13,8 @@
 
 use crate::channel::Prepare;
 use crate::coefficient::Coefficient;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
 use super::backend::{PartitionBackend, PartitionStorage};

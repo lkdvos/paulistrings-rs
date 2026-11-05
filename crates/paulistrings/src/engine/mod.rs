@@ -2,7 +2,7 @@
 
 pub(crate) mod backend;
 pub(crate) mod bucketed;
-mod coset;
+pub(crate) mod coset;
 #[cfg(feature = "cuda")]
 mod cuda_context;
 pub(crate) mod driver;

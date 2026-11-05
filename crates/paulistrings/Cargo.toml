@@ -26,6 +26,8 @@ test-utils = []
 mpi = ["dep:mpi", "cudarc?/nccl-02022"]
 # The CUDA backend; `cudarc` loads libcuda and libnvrtc at runtime, so building needs no toolkit.
 cuda = ["dep:cudarc"]
+# Prototype hash-table kernel, for comparison with the sorted-column engine.
+hash-kernel = []
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
@@ -62,6 +64,10 @@ paulistrings = { path = ".", features = ["test-utils"] }
 [[bench]]
 name = "pauli_ops"
 harness = false
+
+[[example]]
+name = "hash_kernel"
+required-features = ["hash-kernel"]
 
 [[example]]
 name = "phase_breakdown"

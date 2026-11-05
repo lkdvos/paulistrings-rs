@@ -403,6 +403,24 @@ A four-rank hang on workergpu047 is attributed to that node; every job step is b
 
 ## Open
 
+### Hash-table buckets updated in place
+
+Idea: keep the GF(2) buckets but update each in place through a hash index (`hash-kernel` feature, `propagate_hashed`): a bucket is a dense entry list plus a linear-probing index of positions.
+A layer walks entries in order; the first member of each closed key group it reaches reads the group, writes present members in place and queues absent ones, a done bit per position standing in for a leader scan; truncated entries are removed afterwards by descending swap-remove, then the queued keys appended.
+A monomial PTM (any Clifford) relabels with no lookup, since distinct keys stay distinct: entries that keep their key are rescaled in place, the others removed and appended; a diagonal one is a column rescale.
+A table is compacted and re-indexed instead when a layer removes and appends more entries than stay; re-indexing every table after each Clifford cost the kicked Ising and heavy-hex runs, whose `ZZ` layers are Cliffords, 20% and 10% (jobs 7397063 and 7397982), never re-indexing costs `cnot` 34%.
+Against the v0.2.0 sorted engine on worker6049 (job 7397982, `W = 2` except kicked Ising, target 1024, best of 3, ns per term·layer, sorted / hashed at 1 thread; 32 threads): `cnot` 30.6 / **14.3**; 1.75 / **0.53**, mixed Cliffords 24.6 / **17.0**; 0.99 / **0.65**, a weight-4 rotation 31.4 / **15.9**; 1.09 / **0.54**, `rotation_zz` 19.6 / 19.6; 0.75 / 0.68, `su4` 264 / **42**; 23.1 / **1.9**, `gu2q` 109 / **84**; 4.0 / 3.6, depolarizing 3.4 / 3.5; **0.16** / 0.20, kicked Ising grown to 4.4e5 terms 1389 / **1290**; 94 / 93, heavy-hex grown to 3.4e6 terms 1603 / 1569; 76 / 75.
+Buckets of 256–4096 terms are flat and one table is 2× slower single-threaded (job 7393814).
+Rejected, each against the sorted engine on worker6037 (job 7393814) or ccqlin038:
+slot-indexed tables (`hashbrown`, then a custom SSE2 table with walk prefetch), whose walks skip empty slots: depolarizing 3–4× slower;
+a scatter kernel (side buffer, accumulate, filter, PauliPropagation.jl's unfused path): `su4` 2× slower than orbit;
+an orbit kernel with a separate leader scan: `cnot` 2.4× slower than sorted;
+a fused two-pass kernel for rotations and Cliffords (the exact form of PauliPropagation.jl's `fused=true`): ties sorted per gate, mixed Cliffords +10–17%, superseded by the indexed walk;
+streaming the coset in before the walk: helps only `su4` (−15–20%);
+appending absent keys during the walk instead of after the removals: `cnot` 41.7 → 53.8, the index holding old and new keys at once.
+keys stored a word per column, so a rotation layer's scan reads 16 of a `W = 2` entry's 48 bytes: the scan alone ran 2.5× faster cold, but heavy-hex gained 2% and depolarizing 21% while `su4` lost 68%, Cliffords 65%, `cnot` 46% and kicked Ising 18%, every lookup, push and removal touching `2W + 1` cache lines instead of one or two.
+Open: the depolarizing gap.
+
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
 
 Non-rotation channels on more than two qubits panic in `propagate`.

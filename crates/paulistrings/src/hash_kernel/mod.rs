@@ -1,0 +1,64 @@
+//! The hash engine: buckets of dense entries behind a hash index, updated in place by each layer, for comparison with the sorted-column engine.
+//!
+//! One partition, host only, and per-term truncation only: a policy with a layer pass panics.
+
+// Pattern-indexed tables read clearer indexed, and a plan is built once per layer.
+#![allow(clippy::needless_range_loop, clippy::large_enum_variant)]
+
+mod layer;
+mod plan;
+mod sum;
+mod table;
+
+pub use layer::{apply_layer_hashed, HashScratch, PassTimes};
+pub use sum::HashSum;
+
+use crate::channel::Prepare;
+use crate::circuit::Circuit;
+use crate::engine::Direction;
+use crate::truncation::TruncationPolicy;
+
+/// Bucket sizing for [`propagate_hashed`]; unlike [`PropagateOptions`](crate::PropagateOptions), any `min_buckets >= 1` is accepted, so one bucket is reachable.
+#[derive(Clone, Copy, Debug)]
+pub struct HashOptions {
+    /// Terms per bucket the rebucketing targets.
+    pub target_bucket_len: usize,
+    /// Floor on the bucket count once the sum is worth splitting.
+    pub min_buckets: usize,
+}
+
+/// Propagate `sum` through `circuit` in place under a per-term `policy`.
+///
+/// # Panics
+///
+/// If `policy` has a layer pass, or a channel's preparation declines.
+pub fn propagate_hashed<const W: usize, T>(
+    circuit: &Circuit<W>,
+    sum: &mut HashSum<W>,
+    policy: &T,
+    direction: Direction,
+    scratch: &mut HashScratch<W>,
+    options: HashOptions,
+) where
+    T: TruncationPolicy<W> + ?Sized,
+{
+    assert!(!policy.finalizes_layer(), "the hash-kernel prototype supports per-term policies only");
+    let adjoint = matches!(direction, Direction::Heisenberg);
+    // An entry no group touches is never re-filtered, so the input must already pass.
+    sum.retain(|x, z, c| policy.keep_term(x, z, c));
+    let n = circuit.channels.len();
+    for application_index in 0..n {
+        let circuit_index = match direction {
+            Direction::Forward => application_index,
+            Direction::Heisenberg => n - 1 - application_index,
+        };
+        sum.rebucket(options.target_bucket_len, options.min_buckets);
+        let prepared = circuit.channels[circuit_index]
+            .prepare(&sum.hash, adjoint)
+            .expect("channel preparation declined");
+        apply_layer_hashed(sum, &prepared, policy, scratch);
+    }
+}
+
+#[cfg(test)]
+mod tests;

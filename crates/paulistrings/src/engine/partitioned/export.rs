@@ -20,7 +20,7 @@ use crate::truncation::octave_window::BoundaryCut;
 /// Fill work ([`fill_work`]) below which a block's fill stays on one thread.
 const FILL_PARALLEL_MIN_WORK: usize = 16384;
 
-/// Scanned input terms a marked row's fill costs as much as, since a marked fill reaches each row at a cache miss where a scan streams (§Marked export fills split by rows).
+/// A marked row's fill cost in scanned input terms: a marked fill reaches each row at a cache miss (§Marked export fills split by rows).
 const MARKED_ROW_WORK: usize = 32;
 
 /// Reusable scratch for [`export_layer`], so a steady-state layer allocates nothing.
@@ -90,9 +90,9 @@ fn export_layer_with<const W: usize, C: Coefficient>(
     scratch.counts.resize(num_buckets * num_remote, 0);
     scratch.work.clear();
     scratch.work.resize(num_buckets * num_remote, 0);
-    let chunks =
+    let slots =
         scratch.counts.par_chunks_mut(num_remote).zip(scratch.work.par_chunks_mut(num_remote));
-    chunks.enumerate().for_each(|(bucket, (slot, work))| {
+    slots.enumerate().for_each(|(bucket, (slot, work))| {
         let len = local.bucket_len(bucket);
         let counted = |slot: &mut [u32]| {
             let terms = local.bucket(bucket);
@@ -328,7 +328,7 @@ impl<const W: usize, C: Coefficient> Fill<'_, '_, W, C> {
     }
 }
 
-/// A source bucket's fill work in scanned input terms: nothing when it exports no row, its marked rows and mark words when `marked`, else its whole length.
+/// A source bucket's fill work in scanned input terms: nothing without rows, else its marked rows plus mark words, or its whole scan.
 fn fill_work(len: usize, rows: u32, marked: bool) -> usize {
     match (rows, marked) {
         (0, _) => 0,

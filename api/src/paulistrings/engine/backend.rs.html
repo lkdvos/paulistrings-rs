@@ -25,7 +25,7 @@
 <a href=#25 id=25 data-nosnippet>25</a>    <span class="kw">fn </span>len(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize;
 <a href=#26 id=26 data-nosnippet>26</a>    <span class="kw">fn </span>hash(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>Gf2Hash&lt;W&gt;;
 <a href=#27 id=27 data-nosnippet>27</a>    <span class="kw">fn </span>refine(<span class="kw-2">&amp;mut </span><span class="self">self</span>);
-<a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// Halve the bucket count until `bits` remain; called only after the group agreed fewer bits than it holds.
+<a href=#28 id=28 data-nosnippet>28</a>    <span class="doccomment">/// Halve the bucket count until `bits` remain; called only when the count this partition settles on for a layer is below the one it holds.
 <a href=#29 id=29 data-nosnippet>29</a>    </span><span class="kw">fn </span>coarsen_to(<span class="kw-2">&amp;mut </span><span class="self">self</span>, bits: u8);
 <a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// The bucket bits this partition proposes for the layer; a backend may raise the host formula but never lower it.
 <a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">fn </span>proposed_bits(

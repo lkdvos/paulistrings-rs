@@ -109,12 +109,38 @@
 <a href=#109 id=109 data-nosnippet>109</a>        <span class="self">self</span>.index_among_partner(remote)
 <a href=#110 id=110 data-nosnippet>110</a>    }
 <a href=#111 id=111 data-nosnippet>111</a>
-<a href=#112 id=112 data-nosnippet>112</a>    <span class="kw">fn </span>index_among_partner(<span class="kw-2">&amp;</span><span class="self">self</span>, remote: usize) -&gt; usize {
-<a href=#113 id=113 data-nosnippet>113</a>        <span class="kw">let </span>partner = <span class="self">self</span>.remote[remote].partner;
-<a href=#114 id=114 data-nosnippet>114</a>        <span class="self">self</span>.remote[..remote].iter().filter(|other| other.partner == partner).count()
-<a href=#115 id=115 data-nosnippet>115</a>    }
-<a href=#116 id=116 data-nosnippet>116</a>}
-<a href=#117 id=117 data-nosnippet>117</a>
-<a href=#118 id=118 data-nosnippet>118</a><span class="attr">#[cfg(test)]
-<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">mod </span>tests;
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="doccomment">/// A plan at `rank` whose remote deltas move terms by the partition deltas `offsets`.
+<a href=#113 id=113 data-nosnippet>113</a>    </span><span class="attr">#[cfg(test)]
+<a href=#114 id=114 data-nosnippet>114</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>with_partition_deltas(rank: u32, offsets: <span class="kw-2">&amp;</span>[u32]) -&gt; <span class="self">Self </span>{
+<a href=#115 id=115 data-nosnippet>115</a>        <span class="kw">let </span>remote = offsets
+<a href=#116 id=116 data-nosnippet>116</a>            .iter()
+<a href=#117 id=117 data-nosnippet>117</a>            .enumerate()
+<a href=#118 id=118 data-nosnippet>118</a>            .map(|(entry, <span class="kw-2">&amp;</span>offset)| RemoteDelta { entry, partner: rank ^ offset, bucket_delta: <span class="number">0 </span>})
+<a href=#119 id=119 data-nosnippet>119</a>            .collect();
+<a href=#120 id=120 data-nosnippet>120</a>        <span class="self">Self </span>{ remote, ..<span class="self">Self</span>::default() }
+<a href=#121 id=121 data-nosnippet>121</a>    }
+<a href=#122 id=122 data-nosnippet>122</a>
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// The partitions other than `rank` that the layer's exchange connects to it, `rank ^ span(part(d))`, which must hold its bucket count; empty on a local layer.
+<a href=#124 id=124 data-nosnippet>124</a>    ///
+<a href=#125 id=125 data-nosnippet>125</a>    /// The span and not the partners alone, since partnership is transitive within a layer; it depends on the deltas alone, so every member derives the same group.
+<a href=#126 id=126 data-nosnippet>126</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>exchange_group(<span class="kw-2">&amp;</span><span class="self">self</span>, rank: u32) -&gt; Vec&lt;u32&gt; {
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span><span class="kw-2">mut </span>span = <span class="macro">vec!</span>[<span class="number">0u32</span>];
+<a href=#128 id=128 data-nosnippet>128</a>        <span class="kw">for </span>remote <span class="kw">in </span><span class="kw-2">&amp;</span><span class="self">self</span>.remote {
+<a href=#129 id=129 data-nosnippet>129</a>            <span class="kw">let </span>offset = remote.partner ^ rank;
+<a href=#130 id=130 data-nosnippet>130</a>            <span class="kw">if </span>!span.contains(<span class="kw-2">&amp;</span>offset) {
+<a href=#131 id=131 data-nosnippet>131</a>                <span class="kw">let </span>shifted: Vec&lt;u32&gt; = span.iter().map(|member| member ^ offset).collect();
+<a href=#132 id=132 data-nosnippet>132</a>                span.extend(shifted);
+<a href=#133 id=133 data-nosnippet>133</a>            }
+<a href=#134 id=134 data-nosnippet>134</a>        }
+<a href=#135 id=135 data-nosnippet>135</a>        span.into_iter().skip(<span class="number">1</span>).map(|offset| rank ^ offset).collect()
+<a href=#136 id=136 data-nosnippet>136</a>    }
+<a href=#137 id=137 data-nosnippet>137</a>
+<a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">fn </span>index_among_partner(<span class="kw-2">&amp;</span><span class="self">self</span>, remote: usize) -&gt; usize {
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="kw">let </span>partner = <span class="self">self</span>.remote[remote].partner;
+<a href=#140 id=140 data-nosnippet>140</a>        <span class="self">self</span>.remote[..remote].iter().filter(|other| other.partner == partner).count()
+<a href=#141 id=141 data-nosnippet>141</a>    }
+<a href=#142 id=142 data-nosnippet>142</a>}
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a><span class="attr">#[cfg(test)]
+<a href=#145 id=145 data-nosnippet>145</a></span><span class="kw">mod </span>tests;
 </code></pre></div></section></main></body></html>

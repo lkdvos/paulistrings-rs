@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-de629d4d.js";
+            window.path_to_searchindex_js = "searchindex-1d2116ed.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -4848,7 +4848,7 @@ A broadcast call such as <code>circuit.depolarize(p, [0, 1])</code> contributes 
 <tr><td><code>.nanos</code></td><td><code>list[list[int]]</code></td><td>each partition’s own elapsed wall time per layer; <code>PropagationStats.nanos[k]</code> is <code>max(nanos[k])</code></td></tr>
 <tr><td><code>.rebucket_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: raising or lowering the bucket count</td></tr>
 <tr><td><code>.prepare_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: channel preparation and partition planning</td></tr>
-<tr><td><code>.collective_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the bucket-count agreement and the policy’s collectives, the wait for the slowest partition included</td></tr>
+<tr><td><code>.collective_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: a remote layer’s bucket-count exchange and the policy’s collectives, the wait for the slowest partner included</td></tr>
 <tr><td><code>.export_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: building the rows to send; zero on a <code>local</code> layer</td></tr>
 <tr><td><code>.exchange_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the transfer the layer’s compute did not hide; zero on a <code>local</code> layer</td></tr>
 <tr><td><code>.coset_loop_ns</code></td><td><code>list[list[int]]</code></td><td>coarse phase: the layer’s own compute; on a device, its export and exchange too</td></tr>

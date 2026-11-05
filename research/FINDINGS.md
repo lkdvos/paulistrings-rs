@@ -98,6 +98,21 @@ The reads it removed reappeared cold in the next pass: at saturation moving a pa
 Idea: merge every rotation bucket into the scratch buffer and swap it in, dropping the in-place merge's closing shift.
 Rejected: TFIM at one thread **+22.7% (0/3 faster)**; the shift copies a bucket already in L1/L2, while the swapped buffer is colder.
 
+### Skipping small rotation partners
+
+Idea: under a coefficient floor `ε` a partner with `|c·a₁| ≤ ε` survives only by summing into a present key (`tfim_11x11`: 84.6% of partners are that small and 27.9% of those hit, so 61% of all partners are built only to be dropped; `heavyhex_clifford`: 43.7% and 10.0%), so the scan built such a partner only after a binary search of the destination bucket's keys found it.
+Rejected: exact (counts and ⟨Z⟩ identical) but one thread `tfim_11x11` **+33% (3/3**, 9.8 → 13.1 s), `heavyhex_clifford` +12/+44/+12% (3/3); the search costs ~27 ns per small partner, a binary search on the first key word only the same, while building, ordering and merging a partner that then fails `keep_term` costs a few, so no per-partner membership test can pay.
+The opt-in `BranchThreshold` (`truncation.branch`) drops such partners whatever their key, which costs one compare when off (neutral, 3/3 mixed signs) but buys nothing on the bench tasks at `coeff:1e-4`, one thread, float64 (exact: TFIM 7.0 s, 1.01e6 strings, ⟨Z⟩ 0.3101; heavyhex Clifford 19.7 s, 4.65e5, 0.1588):
+
+| `branch_atol` / cutoff | TFIM wall, strings, ⟨Z⟩ error | heavyhex Clifford wall, strings, ⟨Z⟩ error |
+|---|---|---|
+| 0.1 | 7.06 s, 1.03e6, −2.9e-3 | 20.1 s, unchanged, 0 |
+| 0.3 | 7.10 s, 1.26e6, −1.2e-2 | 20.2 s, unchanged, 0 |
+| 1 | 9.85 s, 2.47e6, +9.1e-2 | 15.3 s, 3.90e5, +5.8e-3 |
+| 3 | 1.74 s, 5.1e5, +0.41 | 3.15 s, 8.6e4, +4.8e-2 |
+
+A dropped branch onto a present string is mostly one that would have shrunk it below the cutoff, so TFIM grows rather than shrinks until the tolerance is far above the cutoff, where the error is no longer small; on heavyhex every rotation is `rx(π/4)` or Clifford, so nothing drops below `atol ≈ 0.7·ε`.
+
 ## Shipped
 
 ### Direct-apply path for small sums

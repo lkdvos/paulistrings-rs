@@ -6,6 +6,9 @@ cd "$(dirname "$0")/.."
 
 command -v uv >/dev/null 2>&1 || { echo "uv not found: module load uv, or see https://docs.astral.sh/uv/" >&2; exit 2; }
 
+# The tracked hooks, which refuse a commit `cargo fmt --check` would change.
+git config core.hooksPath .githooks
+
 # Two steps because the extension builds without isolation against the venv's maturin, which uv before 0.8 does not install first.
 uv sync --no-install-project "$@"
 # The examples extra is best-effort, but without qiskit-aer every statevector cross-check silently skips.

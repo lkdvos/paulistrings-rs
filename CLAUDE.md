@@ -35,7 +35,7 @@ On Flatiron `module load uv`; a first `uv sync` needs uv ≥ 0.8.
 Point `UV_CACHE_DIR` at local disk (`/home/$USER/.cache/uv`, `UV_LINK_MODE=copy`) to keep the cache off the `/mnt/home` inode quota.
 
 ```bash
-scripts/setup.sh                                                 # once: uv sync plus the examples extra
+scripts/setup.sh                                                 # once: uv sync plus the examples extra, and the fmt pre-commit hook
 cargo test --workspace                                           # must be green at every commit
 cargo test -p paulistrings -- --ignored                          # the opt-in exhaustive tier
 cargo clippy --workspace --all-targets -- -D warnings

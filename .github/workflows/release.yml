@@ -37,7 +37,7 @@ jobs:
           # which abi3 allows since no x86_64 interpreter is needed at build time.
           # No `cuda` on macOS, which has no CUDA driver.
           - { name: macos-x86_64, os: macos-15, target: x86_64-apple-darwin }
-          - { name: macos-arm64, os: macos-14, target: aarch64-apple-darwin }
+          - { name: macos-arm64, os: macos-15, target: aarch64-apple-darwin }
           - { name: windows-x86_64, os: windows-latest, target: x64, features: cuda }
     runs-on: ${{ matrix.os }}
     steps:
@@ -90,7 +90,7 @@ jobs:
           - { os: ubuntu-latest, wheel: linux-x86_64, python: "3.9", arch: x64 }
           - { os: ubuntu-latest, wheel: linux-x86_64, python: "3.13", arch: x64 }
           - { os: ubuntu-24.04-arm, wheel: linux-aarch64, python: "3.12", arch: arm64 }
-          - { os: macos-14, wheel: macos-arm64, python: "3.12", arch: arm64 }
+          - { os: macos-15, wheel: macos-arm64, python: "3.12", arch: arm64 }
           # The x64 interpreter is universal2 and would run as arm64, so `arch` forces it under Rosetta.
           - { os: macos-15, wheel: macos-x86_64, python: "3.12", arch: x64, prefix: "arch -x86_64" }
           - { os: windows-latest, wheel: windows-x86_64, python: "3.12", arch: x64 }

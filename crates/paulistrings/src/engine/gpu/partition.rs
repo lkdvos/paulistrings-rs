@@ -234,6 +234,17 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         host.max(device)
     }
 
+    /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so.
+    fn settle(&mut self) {
+        let bits = self.hash.bits();
+        if let Some((sum, _)) = self.healthy_parts() {
+            if sum.hash.bits() < bits {
+                let result = sum.refine_to(bits);
+                self.record(result);
+            }
+        }
+    }
+
     fn detach(&mut self) -> Self {
         Self {
             sum: self.sum.take(),

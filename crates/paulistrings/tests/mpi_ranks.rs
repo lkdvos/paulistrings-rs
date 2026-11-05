@@ -38,7 +38,7 @@ use paulistrings::test_support::{
 };
 use paulistrings::test_support::{
     buckets_exported_ahead_under_cut_on_rank, count_remote_deltas, mpi_build_library_version,
-    mpi_with_chunk_bytes, BITS_AGREE_EVERY,
+    mpi_with_chunk_bytes,
 };
 use paulistrings::{
     propagate, BuildAccumulator, Circuit, Direction, PartitionRows, PauliString, PauliSum,
@@ -92,9 +92,7 @@ fn haar_su4<const W: usize>(nq: usize) -> Circuit<W> {
 /// rotations, whose generator carries no `z` bits — with the one bond that
 /// does cross at the end.
 ///
-/// Longer than [`BITS_AGREE_EVERY`], so the bucket-count schedule has to skip
-/// layers, and the closing bond is the layer that must agree before it
-/// exchanges.
+/// Long enough to leave the opening rebucket ramp behind before the closing bond agrees the count.
 fn local_run_then_one_crossing<const W: usize>(nq: usize) -> Circuit<W> {
     let mut circuit = Circuit::<W>::new(nq);
     for round in 0..3 {
@@ -255,6 +253,7 @@ impl Runner<'_> {
                 split.assert_invariants();
                 split.propagate(circuit, policy, direction);
                 split.assert_invariants();
+                split.transport().check_consistency(u64::from(split.bits()));
                 split.gather()
             }
             #[cfg(feature = "cuda")]
@@ -709,15 +708,11 @@ fn run_host_cases(r: &mut Runner) {
     });
 
     // ---- the collective schedule ----------------------------------------
-    r.case("a long local run skips the bucket-count collective", |r| {
+    r.case("a long local run agrees the bucket count only at its crossing", |r| {
         // At least one qubit per rank, so every block of the cut is nonempty.
         let nq = 16.max(r.size as usize);
         let circuit = local_run_then_one_crossing::<1>(nq);
         let layers = circuit.len();
-        assert!(
-            layers > 2 * BITS_AGREE_EVERY,
-            "the schedule must have something to skip: {layers} layers",
-        );
         let rows = block_cut::<1>(nq, r.size as usize);
         let sum = rand_sum_real::<1>(600, nq, 0xA021);
 
@@ -736,24 +731,10 @@ fn run_host_cases(r: &mut Runner) {
             usize::from(r.size > 1),
             "only the closing bond crosses, and only when there is a group",
         );
-        // The opening ramp, one per period after it, and the remote layer. At
-        // one rank there is no group at all and the count is zero.
-        let allowed = if r.size == 1 {
-            0
-        } else {
-            (BITS_AGREE_EVERY + layers.div_ceil(BITS_AGREE_EVERY) + 1) as u64
-        };
-        assert!(
-            trace.total_collectives() <= allowed,
-            "{} collectives over {layers} layers, the schedule allows {allowed}",
+        assert_eq!(
             trace.total_collectives(),
-        );
-        // The crossing layer agreed first — otherwise a receiver would index a
-        // partner's blocks by the wrong bucket count.
-        let last = trace.layers.last().expect("layers");
-        assert!(
-            r.size == 1 || (last.remote_deltas > 0 && last.collectives > 0),
-            "a remote layer must agree the bucket count before it exchanges",
+            trace.remote_layers() as u64,
+            "{layers} layers: one bucket-count exchange per remote layer",
         );
 
         if let Some(got) = split.gather() {

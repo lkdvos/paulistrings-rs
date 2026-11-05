@@ -28,7 +28,7 @@ fn two_layer_trace() -> PartitionTrace {
         &mut trace,
         vec![
             vec![row(3, 0, 100, vec![0, 0]), row(4, 2, 120, vec![0, 7])],
-            vec![row(3, 0, 300, vec![0, 0]), row(4, 2, 280, vec![5, 0])],
+            vec![row(5, 0, 300, vec![0, 0]), row(4, 2, 280, vec![5, 0])],
         ],
         2,
     );
@@ -39,9 +39,9 @@ fn two_layer_trace() -> PartitionTrace {
 fn assemble_transposes_into_per_layer_records() {
     let trace = two_layer_trace();
     assert_eq!(trace.layers.len(), 2);
-    assert_eq!(trace.layers[0].bits, 3);
+    assert_eq!(trace.layers[0].bits, vec![3, 5]);
     assert_eq!(trace.layers[0].terms_in, vec![100, 300]);
-    assert_eq!(trace.layers[1].bits, 4);
+    assert_eq!(trace.layers[1].bits, vec![4, 4]);
     assert_eq!(trace.layers[1].rows_sent, vec![vec![0, 7], vec![5, 0]]);
     assert_eq!(trace.layers[1].bytes_sent, vec![vec![0, 336], vec![240, 0]]);
 }
@@ -87,13 +87,6 @@ fn an_all_empty_layer_is_perfectly_balanced() {
     let mut trace = PartitionTrace::default();
     assemble(&mut trace, vec![vec![row(0, 0, 0, vec![0, 0])], vec![row(0, 0, 0, vec![0, 0])]], 2);
     assert_eq!(trace.imbalance(), vec![1.0]);
-}
-
-#[test]
-#[should_panic(expected = "bucket bits")]
-fn assemble_rejects_disagreeing_bucket_bits() {
-    let mut trace = PartitionTrace::default();
-    assemble(&mut trace, vec![vec![row(3, 0, 1, vec![0, 0])], vec![row(4, 0, 1, vec![0, 0])]], 2);
 }
 
 #[test]

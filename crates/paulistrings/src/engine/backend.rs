@@ -25,7 +25,7 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
     fn len(&self) -> usize;
     fn hash(&self) -> &Gf2Hash<W>;
     fn refine(&mut self);
-    /// Halve the bucket count until `bits` remain; called only after the group agreed fewer bits than it holds.
+    /// Halve the bucket count until `bits` remain; called only when the count this partition settles on for a layer is below the one it holds.
     fn coarsen_to(&mut self, bits: u8);
     /// The bucket bits this partition proposes for the layer; a backend may raise the host formula but never lower it.
     fn proposed_bits(

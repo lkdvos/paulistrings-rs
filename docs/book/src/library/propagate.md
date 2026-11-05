@@ -54,7 +54,7 @@ The GIL is released for the duration of both calls.
 | an `int` power of two `>= 2` | caps placement at that many nodes |
 | `list[list[int]]` | explicit disjoint CPU lists, one partition per list |
 
-In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`).
+In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`, or `partition_topn` for a per-partition cap).
 
 `partition_row_blocks` excludes `partition_row_seed` and `partition_row_exclude`, and `partition_rows` excludes every other row keyword; all but the seed need `partitions=`, `comm=` or a list of several devices.
 A partition is named by `log2(P)` rows over the `2 * num_qubits` key coordinates, so `P` is at most `2^min(2 * num_qubits, 31)`.
@@ -80,7 +80,7 @@ See [NUMA partitions](../manual/propagation/partitions.md) and [MPI ranks](../ma
 A list's length must be a power of two, at most `2^min(2 * num_qubits, 31)`, or it is a `ValueError`; an ordinal may repeat, putting several partitions on one device.
 Several devices split the sum like `partitions=`: the `partition_row_*` keywords and `partition_rows` pick the rows, the block or row count matching the list length.
 `device=` is an alternative to `partitions=`; passing both, or `result="local"` without `comm=`, or `partition_row_blocks=` with a single device, is a `ValueError`.
-`engine` is ignored, `truncation.topn` runs on one device and raises `NotImplementedError` on several or under `comm=` (use `approx_topn`), an exhausted device raises `MemoryError`, and without the `cuda` feature or a visible device `device=` raises `RuntimeError`.
+`engine` is ignored, `truncation.topn` runs on one device and raises `NotImplementedError` on several or under `comm=` (use `approx_topn` or `partition_topn`), an exhausted device raises `MemoryError`, and without the `cuda` feature or a visible device `device=` raises `RuntimeError`.
 
 With `comm=`, `device=` is this rank's one device: an `int` or `"auto"` (a device near the rank's CPUs, `gpu::local_device_for_comm`), and a list of several ordinals is a `ValueError`.
 `result=` and the row kwargs mean what they mean on the host `comm=` path, and a rank that cannot use its device fails the call on every rank.

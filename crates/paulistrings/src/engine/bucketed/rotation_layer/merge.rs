@@ -62,24 +62,24 @@ pub(super) fn fold_hits<const W: usize, C: Coefficient>(
     let (mut d, mut kept) = (0usize, 0usize);
     for j in 0..p_c.len() {
         let key = (p_x[j], p_z[j]);
-        let mut row = usize::MAX;
-        while d < dirty.len() {
-            let candidate = (dirty[d] >> 4) as usize;
+        let mut hit = None;
+        while let Some(&packed) = dirty.get(d) {
+            let candidate = (packed >> 4) as usize;
             match (x[candidate], z[candidate]).cmp(&key) {
                 std::cmp::Ordering::Less => d += 1,
                 std::cmp::Ordering::Equal => {
-                    row = candidate;
+                    hit = Some(candidate);
                     d += 1;
                     break;
                 }
                 std::cmp::Ordering::Greater => break,
             }
         }
-        if row != usize::MAX {
-            coeff[row] += p_c[j];
+        let c = p_c[j];
+        if let Some(row) = hit {
+            coeff[row] += c;
             continue;
         }
-        let c = p_c[j];
         p_x[kept] = key.0;
         p_z[kept] = key.1;
         p_c[kept] = c;

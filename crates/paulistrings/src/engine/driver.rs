@@ -185,7 +185,7 @@ impl<const W: usize> Lookahead<'_, W> {
 struct Runs<const W: usize, C: Coefficient> {
     /// Runs of one-to-one channels (`engine/bucketed/permutation_run.rs`), tried first.
     permutations: bool,
-    /// Rotation runs, only alone and untraced, since per-layer records need their layers apart.
+    /// Rotation runs (`engine/bucketed/rotation_layer.rs`).
     rotations: bool,
     steps: Vec<PermutationStep<W, C>>,
     layers: Vec<Prepared<W, C>>,
@@ -208,7 +208,10 @@ impl<const W: usize, C: Coefficient> Runs<W, C> {
         T: TruncationPolicy<W, C> + ?Sized,
         B: PartitionBackend<W, C, T>,
     {
-        if self.permutations && !lookahead.exchanges(prepared) {
+        if lookahead.exchanges(prepared) {
+            return None;
+        }
+        if self.permutations {
             if let Some(first) = PermutationStep::of(prepared) {
                 self.steps.clear();
                 self.steps.push(first);
@@ -346,7 +349,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
     };
     let mut runs = Runs::<W, C> {
         permutations: !finalizes && local.takes_runs(),
-        rotations: solo && !finalizes && !tracing && local.takes_runs(),
+        rotations: !finalizes && local.takes_runs(),
         steps: Vec::new(),
         layers: Vec::new(),
     };

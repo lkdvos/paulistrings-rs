@@ -169,11 +169,8 @@ fn a_run_records_one_trace_row_per_layer() {
     let trace = scratch.take_trace().expect("tracing is on");
     assert_eq!(trace.layers.len(), 2 * gates.len());
     let untimed = trace.layers.iter().filter(|layer| layer.nanos.iter().all(|&n| n == 0)).count();
-    assert_eq!(
-        untimed,
-        2 * (heavy_hex_127_edges().len() - 1),
-        "the bonds run as one pass per step"
-    );
+    // Rotation runs add untimed rows of their own.
+    assert!(untimed >= 2 * (heavy_hex_127_edges().len() - 1), "the bonds run as one pass per step");
 }
 
 /// Runs of `Z`-type Cliffords (`ZZ`, `CZ`, `S` and `Z` quarter turns) between generic `X` rotations on `num_qubits` qubits.
@@ -231,5 +228,45 @@ fn runs_that_exchange_nothing_are_taken_on_every_partition_and_agree() {
             4 * 11,
             "{label}: each step's twelve Cliffords run as one pass"
         );
+    }
+}
+
+/// At P > 1 under x-only rows `Z`-type rotations are local, so they run as one coset pass per partition between the exchanging `X` rotations, traced one row per layer.
+#[test]
+fn rotation_runs_that_exchange_nothing_are_taken_on_every_partition_and_agree() {
+    let num_qubits = 40;
+    let mut rng = Xs64::new(33);
+    let mut draw = |n: usize| (rng.next_u64() % n as u64) as usize;
+    let mut gates = Vec::new();
+    for _ in 0..6 {
+        gates.push(rotation(&[draw(num_qubits)], &[], 0.4));
+        for _ in 0..6 {
+            let a = draw(num_qubits);
+            gates.push(rotation(&[], &[a, (a + 1) % num_qubits], 0.3));
+        }
+    }
+    let circuit = build::<1>(num_qubits, &gates);
+    let sum = low_weight_sum::<1>(10_000, num_qubits, 4, 33);
+    let policy = CoefficientThreshold(1e-4);
+    let all = [(1u64 << num_qubits) - 1];
+    for ((partitions, bits), direction) in [(2, 1u8), (4, 2)]
+        .into_iter()
+        .flat_map(|cell| [(cell, Direction::Heisenberg), (cell, Direction::Forward)])
+    {
+        let want = propagate(&circuit, sum.clone(), &policy, direction);
+        let rows = PartitionRows::<1>::from_seed_excluding(num_qubits, bits, 5, &[0], &all);
+        let options = ScatterOptions {
+            runtime: PartitionRuntime::new(&unpinned_partitions(partitions, 2)).unwrap(),
+            rows: ScatterRows::Explicit(rows),
+        };
+        let mut split = PartitionedSum::scatter_with(sum.clone(), options);
+        split.enable_trace();
+        split.propagate_with(&circuit, &policy, direction, PropagateOptions::default());
+        let label = format!("P = {partitions}, {direction:?}");
+        assert_terms_close(&split.gather(), &want, TOL, &label);
+        let trace = split.take_trace().expect("tracing is on");
+        assert_eq!(trace.layers.len(), gates.len(), "{label}: one row per layer");
+        let untimed = trace.layers.iter().filter(|layer| layer.nanos.iter().all(|&n| n == 0));
+        assert!(untimed.count() > 0, "{label}: some rotations run as one pass");
     }
 }

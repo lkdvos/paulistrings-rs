@@ -532,6 +532,7 @@ On TFIM 16×16 at `--threshold 1e-5` the block fallback had taken 424 of 1240 ru
 
 ncu (2025.1 runs on ccqlin038; nsys does not) on steady-state launches put `k_join` at 87% of DRAM peak, but a third of its traffic was local memory: `support_bits` indexed a key word at run time (`k.x[q >> 6]`), which spills the whole key to local memory, at 1.4 useful bytes of 32 per sector (`k_join` W = 2: 160 B stack frame, W = 4: 320 B and 84 registers; `k_count` 32/64 B; the permutation run's `run_bit` select too, as ptxas folds a select chain back into an index).
 `key_bit` masks the word out of every word instead: no stack frame left on `k_join` (W = 2), `k_count` or `k_permute_run_*`, and `k_join` W = 4 at 64 registers.
+The rotation run's `rr_bit` and `rr_with_pattern` had the same defect (64–384 B stack frames on `k_rotation_run_*`); with `key_bit` and per-word masks none is left, and TFIM 16×16 `--threshold 1e-5` went **1.299 / 1.322 / 1.313 → 1.153 / 1.126 / 1.149 s (−11% to −15%)**, readout identical (SM 1890–1905 MHz, memory 7601 MHz).
 A/B (`sampling_bench` release, JCC flag, f64, ABAB, SM 1800–1875 MHz, memory 7601 MHz): kicked Ising `--approx-topn 1e7` **15.03 / 15.26 → 11.36 / 11.55 s (−24.4% / −24.3%)**, TFIM 16×16 `--approx-topn 1e6` **14.81 / 14.13 / 13.39 → 12.18 / 11.45 / 11.73 s (−17.7% / −19.0% / −12.4%)**.
 
 ### Warp-per-bucket kernels narrow their blocks at few buckets

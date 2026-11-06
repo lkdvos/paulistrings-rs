@@ -31,19 +31,12 @@ struct RunInfo {
 };
 static_assert(sizeof(RunInfo) == 648, "RunInfo matches RotationRunInfo");
 
-__device__ __forceinline__ u32 rr_bit(const u64 (&v)[W], u32 q) {
-    u64 word = 0;
-#pragma unroll
-    for (int w = 0; w < W; ++w) word = ((u32)w == (q >> 6)) ? v[w] : word;
-    return (u32)((word >> (q & 63)) & 1ull);
-}
-
 // Bit 2j is the x-bit of run qubit j, bit 2j+1 its z-bit.
 __device__ __forceinline__ u32 rr_pattern(const RunInfo& R, const Key& k) {
     u32 p = 0;
     for (u32 j = 0; j < R.qubits_len; ++j) {
         const u32 q = R.qubits[j];
-        p |= rr_bit(k.x, q) << (2 * j) | rr_bit(k.z, q) << (2 * j + 1);
+        p |= key_bit(k.x, q) << (2 * j) | key_bit(k.z, q) << (2 * j + 1);
     }
     return p;
 }
@@ -84,17 +77,18 @@ __device__ __forceinline__ u32 rr_class_bucket(u64 class_fingerprint, u32 class_
     return class_bits == 0 ? 0u : (u32)(rr_mix(class_fingerprint) >> (64u - class_bits));
 }
 
-// The key with the run's qubits cleared, then set from pattern p.
+// The key with the run's qubits cleared, then set from pattern p; every word is masked, as in `key_bit`, so the key stays in registers.
 __device__ __forceinline__ Key rr_with_pattern(const RunInfo& R, Key k, u32 p) {
     for (u32 j = 0; j < R.qubits_len; ++j) {
         const u32 q = R.qubits[j];
         const u64 bit = 1ull << (q & 63);
+        const u64 x_bit = 0ull - (u64)((p >> (2 * j)) & 1u);
+        const u64 z_bit = 0ull - (u64)((p >> (2 * j + 1)) & 1u);
 #pragma unroll
         for (int w = 0; w < W; ++w) {
-            if ((u32)w == (q >> 6)) {
-                k.x[w] = (k.x[w] & ~bit) | (((p >> (2 * j)) & 1u) ? bit : 0ull);
-                k.z[w] = (k.z[w] & ~bit) | (((p >> (2 * j + 1)) & 1u) ? bit : 0ull);
-            }
+            const u64 m = bit & (0ull - (u64)((u32)w == (q >> 6)));
+            k.x[w] = (k.x[w] & ~m) | (m & x_bit);
+            k.z[w] = (k.z[w] & ~m) | (m & z_bit);
         }
     }
     return k;

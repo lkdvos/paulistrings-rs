@@ -17,7 +17,7 @@ fn and(a: BuiltinTruncation, b: BuiltinTruncation) -> BuiltinTruncation {
 }
 
 fn sampler() -> BuiltinTruncation {
-    T::from(CollapseSample::new(4, 7))
+    T::from(CollapseSample::new(4, 2, 7))
 }
 
 #[test]

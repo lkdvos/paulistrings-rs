@@ -379,7 +379,7 @@ pub fn four_term_keys<const W: usize>() -> [PauliString<W>; 4] {
     ]
 }
 
-/// Squared magnitudes of [`weighted_four_term_sum`]'s terms, which sum to one: each term's probability under a draw by weight.
+/// Squared magnitudes of [`weighted_four_term_sum`]'s terms, which sum to one.
 pub const FOUR_TERM_WEIGHTS: [f64; 4] = [0.1, 0.2, 0.3, 0.4];
 
 /// [`four_term_keys`] on `num_qubits >= 8` qubits with `|c|² =` [`FOUR_TERM_WEIGHTS`] and four different phases.
@@ -393,27 +393,63 @@ pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> 
     acc.finalize()
 }
 
-/// Which of `keys` a collapsed sum holds, asserting it is one string with coefficient exactly `1`.
-pub fn collapsed_index<const W: usize>(sum: &PauliSum<W>, keys: &[PauliString<W>]) -> usize {
-    assert_eq!(sum.len(), 1, "a collapse leaves exactly one string");
-    let (x, z, c) = sum.iter().next().unwrap();
-    assert_eq!(c, Complex64::new(1.0, 0.0), "the survivor's coefficient is 1");
-    keys.iter()
-        .position(|p| &p.x == x && &p.z == z)
-        .expect("the survivor is one of the input strings")
+/// Each term's multiplicity under the systematic draw [`crate::CollapseSample`] documents over `magnitudes` laid end to end, by a search per point: the reference its bucketed walk is held to.
+pub fn systematic_multiplicities(magnitudes: &[f64], u: f64, samples: usize) -> Vec<usize> {
+    let ends: Vec<f64> = magnitudes
+        .iter()
+        .scan(0.0f64, |end, &magnitude| {
+            *end += magnitude;
+            Some(*end)
+        })
+        .collect();
+    let total = ends.last().copied().unwrap_or(0.0);
+    let step = total / samples as f64;
+    let last_nonzero = ends.partition_point(|&end| end < total);
+    let mut counts = vec![0usize; magnitudes.len()];
+    for k in 0..samples {
+        let t = (u + k as f64) * step;
+        let owner = if t >= total { last_nonzero } else { ends.partition_point(|&end| end <= t) };
+        counts[owner] += 1;
+    }
+    counts
 }
 
-/// Assert each empirical frequency `counts[i] / trials` lies within 4σ of `probs[i]`, `σ² = p(1 − p) / trials`.
-pub fn assert_frequencies(counts: &[usize], probs: &[f64], what: &str) {
-    let trials: usize = counts.iter().sum();
-    for (i, (&k, &p)) in counts.iter().zip(probs).enumerate() {
-        let f = k as f64 / trials as f64;
-        let sigma = (p * (1.0 - p) / trials as f64).sqrt();
+/// Assert `got` is the systematic resample of `terms`, listed in draw order, at offset `u` with `samples` points: exactly the drawn keys, each with coefficient `m·h·c/|c|` to `tolerance·h`, and every `m` the floor or ceiling of `samples·|c|/Σ|c|`.
+pub fn assert_systematic_resample<const W: usize, C: crate::Coefficient>(
+    got: &PauliSum<W, C>,
+    terms: &[([u64; W], [u64; W], C)],
+    u: f64,
+    samples: usize,
+    tolerance: f64,
+    what: &str,
+) {
+    let magnitudes: Vec<f64> = terms.iter().map(|term| term.2.magnitude()).collect();
+    let counts = systematic_multiplicities(&magnitudes, u, samples);
+    let total: f64 = magnitudes.iter().sum();
+    let step = total / samples as f64;
+    let mut kept = 0;
+    for ((x, z, c), m) in terms.iter().zip(counts) {
+        let share = c.magnitude() / step;
         assert!(
-            (f - p).abs() < 4.0 * sigma,
-            "{what}: slot {i} drawn {k}/{trials} = {f:.4}, expected {p} ± {sigma:.4}",
+            share.floor() - 1e-9 <= m as f64 && m as f64 <= share.ceil() + 1e-9,
+            "{what}: drawn {m} times for a share of {share} points",
+        );
+        let found = got.get(x, z);
+        if m == 0 {
+            assert!(found.is_none(), "{what}: an undrawn term survived");
+            continue;
+        }
+        kept += 1;
+        let found = found
+            .unwrap_or_else(|| panic!("{what}: a term drawn {m} times is missing"))
+            .to_complex64();
+        let want = c.to_complex64() * (m as f64 * step / c.magnitude());
+        assert!(
+            (found - want).norm() <= tolerance * step,
+            "{what}: drawn {m} times, {found} vs {want}"
         );
     }
+    assert_eq!(got.len(), kept, "{what}: kept count");
 }
 
 /// The buckets whose export read the counts ahead under a pending cut, summed over `sum`'s partitions and every layer they drove.

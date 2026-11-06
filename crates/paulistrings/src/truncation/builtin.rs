@@ -3,12 +3,12 @@
 use super::{FusedApproxTopN, TruncationPolicy};
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
-use crate::engine::LOG_TARGET;
 use crate::pauli_sum::PauliSum;
-use crate::rng::Rng;
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(doc)]
+use super::CollapseSample;
 
 thread_local! {
     /// [`TopN`]'s per-thread squared-magnitude buffer.
@@ -459,171 +459,6 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for ApproxTopN {
 
     fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         Some(FusedApproxTopN { n: self.0, agreed: true })
-    }
-}
-
-/// Replace the sum by one Pauli string, drawn with probability `|c|² / Σ|c|²` and given coefficient `1`, whenever it holds more than `cache` terms.
-///
-/// One seed is one Monte Carlo trajectory: the draw at the `k`-th layer pass is a function of `(seed, k)` only, and the pass counter lives in the policy, so reusing a policy continues its sequence.
-/// Partitioned runs agree with unpartitioned ones in distribution, not string for string, and count passes and collapses on rank 0's policy only.
-/// A collapse panics if the sum's total weight is zero or not finite.
-#[derive(Debug)]
-pub struct CollapseSample {
-    /// Largest sum left untouched.
-    pub cache: usize,
-    /// Trajectory seed.
-    pub seed: u64,
-    /// Layer passes seen.
-    calls: AtomicU64,
-    /// Collapses performed.
-    collapses: AtomicU64,
-}
-
-impl CollapseSample {
-    /// A fresh trajectory: collapse above `cache` terms, draws keyed by `seed`.
-    pub fn new(cache: usize, seed: u64) -> Self {
-        Self { cache, seed, calls: AtomicU64::new(0), collapses: AtomicU64::new(0) }
-    }
-
-    /// Collapses performed so far (rank 0's count in partitioned mode).
-    pub fn collapses(&self) -> u64 {
-        self.collapses.load(Ordering::Relaxed)
-    }
-
-    /// Claim the next pass index.
-    pub(crate) fn next_call(&self) -> u64 {
-        self.calls.fetch_add(1, Ordering::Relaxed)
-    }
-
-    pub(crate) fn count_collapse(&self) -> u64 {
-        self.collapses.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// The point of the cumulative weight pass `call` draws; panics unless `total` is positive and finite.
-    pub(crate) fn target(&self, call: u64, total: f64, len: usize) -> f64 {
-        assert!(
-            total.is_finite() && total > 0.0,
-            "CollapseSample: cannot draw by weight from {len} terms with Σ|c|² = {total}",
-        );
-        Rng::from_key(&[self.seed, call]).uniform() * total
-    }
-}
-
-/// `Σ|c|²` of each bucket, in bucket order.
-pub(crate) fn bucket_norms<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> Vec<f64> {
-    (0..sum.num_buckets())
-        .into_par_iter()
-        .map(|b| sum.bucket(b).2.iter().map(|c| c.norm_sqr()).sum())
-        .collect()
-}
-
-/// The slot whose stretch of the running total contains `target`, and the offset into it; past the end, the last positive slot.
-pub(crate) fn pick_slot(
-    weights: impl IntoIterator<Item = f64>,
-    target: f64,
-) -> Option<(usize, f64)> {
-    let mut cumulative = 0.0f64;
-    let mut last = None;
-    for (i, w) in weights.into_iter().enumerate() {
-        if w > 0.0 {
-            if target < cumulative + w {
-                return Some((i, target - cumulative));
-            }
-            last = Some((i, target - cumulative));
-        }
-        cumulative += w;
-    }
-    last
-}
-
-/// Reduce `sum` to the single string at `target` of its cumulative weight, with coefficient `1`; `norms` is [`bucket_norms`] of `sum`.
-pub(crate) fn collapse_to_target<const W: usize, C: Coefficient>(
-    sum: &mut PauliSum<W, C>,
-    norms: &[f64],
-    target: f64,
-) {
-    let (b, rest) = pick_slot(norms.iter().copied(), target)
-        .expect("collapse_to_target: no bucket has positive weight");
-    let (pos, _) = pick_slot(sum.bucket(b).2.iter().map(|c| c.norm_sqr()), rest)
-        .expect("collapse_to_target: a positive bucket has a positive term");
-    let (x, z) = (sum.bucket(b).0[pos], sum.bucket(b).1[pos]);
-    sum.clear();
-    sum.buckets_mut()[b].push(x, z, C::ONE);
-    sum.recount();
-}
-
-/// Equal when `cache`, `seed` and both counters are.
-impl PartialEq for CollapseSample {
-    fn eq(&self, other: &Self) -> bool {
-        self.cache == other.cache
-            && self.seed == other.seed
-            && self.calls.load(Ordering::Relaxed) == other.calls.load(Ordering::Relaxed)
-            && self.collapses() == other.collapses()
-    }
-}
-
-impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for CollapseSample {
-    fn finalize_layer(&self, sum: &mut PauliSum<W, C>) {
-        let call = self.next_call();
-        let len = sum.len();
-        if len <= self.cache {
-            return;
-        }
-        let norms = bucket_norms(sum);
-        let total: f64 = norms.iter().sum();
-        collapse_to_target(sum, &norms, self.target(call, total, len));
-        let n = self.count_collapse();
-        log::debug!(
-            target: LOG_TARGET,
-            "collapse_sample: {len} terms, sum |c|^2 = {total:.6e}, collapsed to one (collapse {n})",
-        );
-    }
-
-    /// Reduces `[len, pass]` (the pass from rank 0) and the per-partition `Σ|c|²`, then picks a partition by weight and a term within it, as [`finalize_layer`](TruncationPolicy::finalize_layer) picks a bucket and then a term.
-    fn finalize_layer_partitioned(
-        &self,
-        local: &mut PauliSum<W, C>,
-        collectives: &dyn Collectives,
-    ) {
-        if collectives.size() == 1 {
-            self.finalize_layer(local);
-            return;
-        }
-        let rank = collectives.rank() as usize;
-        let call = if rank == 0 { self.next_call() } else { 0 };
-        let mut head = [local.len() as u64, call];
-        collectives.allreduce_sum_u64(&mut head);
-        let [len, call] = head;
-        if len as usize <= self.cache {
-            return;
-        }
-
-        let norms = bucket_norms(local);
-        let mut weights = vec![0.0f64; collectives.size() as usize];
-        weights[rank] = norms.iter().sum();
-        collectives.allreduce_sum_f64(&mut weights);
-        let total: f64 = weights.iter().sum();
-        let target = self.target(call, total, len as usize);
-        let (chosen, rest) = pick_slot(weights.iter().copied(), target)
-            .expect("CollapseSample: a positive total has a positive partition");
-        if rank == chosen {
-            collapse_to_target(local, &norms, rest);
-        } else {
-            local.clear();
-        }
-        if rank == 0 {
-            let collapses = self.count_collapse();
-            log::debug!(
-                target: LOG_TARGET,
-                "collapse_sample: {len} terms over {} partitions, sum |c|^2 = {total:.6e}, \
-                 collapsed to one on partition {chosen} (collapse {collapses})",
-                collectives.size(),
-            );
-        }
-    }
-
-    fn supports_partitioned(&self) -> bool {
-        true
     }
 }
 

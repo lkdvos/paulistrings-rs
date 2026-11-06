@@ -406,7 +406,7 @@ fn single_layer_combines_inputs_that_collide_under_channel() {
     assert!(approx_eq(bucket(&out, 0).2[1], Complex64::new(3.0, 0.0), TOL));
 }
 
-/// `CollapseSample` inside a real run: three TFIM Trotter steps grow `Z0` past the cache several times, each collapse restarts from one unit-weight string, and unitary layers keep `Σ|c|²` at one from then on.
+/// `CollapseSample` inside a real run: three TFIM Trotter steps grow `Z0` past the cache several times, and every layer ends at most `cache` terms long.
 /// The trajectory is a function of the seed.
 #[test]
 fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
@@ -416,7 +416,7 @@ fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
     const CACHE: usize = 6;
     let (circuit, input) = (collapsing_circuit(), z0_sum());
     let run = |seed: u64| {
-        let policy = CollapseSample::new(CACHE, seed);
+        let policy = CollapseSample::new(CACHE, 4, seed);
         let out = propagate(&circuit, input.clone(), &policy, Direction::Heisenberg);
         (out, policy.collapses())
     };
@@ -426,8 +426,6 @@ fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
         let (out, collapses) = run(seed);
         assert!(collapses >= 1, "seed {seed}: the cache must be hit");
         assert!(out.len() <= CACHE, "seed {seed}: {} terms", out.len());
-        let norm: f64 = out.iter().map(|(_, _, c)| c.norm_sqr()).sum();
-        assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: Σ|c|² = {norm}");
 
         let (again, again_collapses) = run(seed);
         assert_terms_close(&again, &out, 1e-12, &format!("seed {seed} repeats"));
@@ -436,6 +434,38 @@ fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
         finals.insert(format!("{:?}", (x, z)));
     }
     assert!(finals.len() > 1, "different seeds give different trajectories");
+}
+
+/// Every collapse is unbiased, so the `⟨0…0|O|0…0⟩` readout of a trajectory that collapses at nearly every layer averages, over 2000 seeds, to the untruncated value within four standard errors.
+#[test]
+fn collapse_sample_readout_is_unbiased() {
+    use paulistrings::test_support::{collapsing_circuit, z0_sum};
+    use paulistrings::{CollapseSample, PauliAxis, ProductBasis};
+
+    let (circuit, input) = (collapsing_circuit(), z0_sum());
+    let zero = ProductBasis::uniform(PauliAxis::Z);
+    let exact = propagate(&circuit, input.clone(), &NoTruncation, Direction::Heisenberg)
+        .expectation_product(&zero)
+        .re;
+    let seeds = 2000u64;
+    let (mut sum, mut squares, mut collapses) = (0.0f64, 0.0f64, 0u64);
+    for seed in 0..seeds {
+        let policy = CollapseSample::new(6, 4, seed);
+        let out = propagate(&circuit, input.clone(), &policy, Direction::Heisenberg);
+        let readout = out.expectation_product(&zero).re;
+        sum += readout;
+        squares += readout * readout;
+        collapses += policy.collapses();
+    }
+    let n = seeds as f64;
+    let mean = sum / n;
+    let error = ((squares / n - mean * mean) / (n - 1.0)).sqrt();
+    assert!(collapses >= 5 * seeds, "{collapses} collapses over {seeds} seeds");
+    assert!(error > 0.0);
+    assert!(
+        (mean - exact).abs() < 4.0 * error,
+        "mean {mean} vs exact {exact}, standard error {error}"
+    );
 }
 
 /// Multiplies every coefficient by `factor`: a channel implemented outside the crate.

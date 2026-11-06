@@ -158,7 +158,7 @@ fn layer_pass_leaves_follow_and() {
     );
     assert!(leaves(&or(T::Weight(3), T::Coefficient(0.1))).is_empty());
     assert!(leaves(&T::Coefficient(0.1)).is_empty());
-    let collapse = T::from(crate::truncation::CollapseSample::new(4, 1));
+    let collapse = T::from(crate::truncation::CollapseSample::new(4, 2, 1));
     assert_eq!(leaves(&and(T::Coefficient(0.1), collapse.clone())), vec![collapse.clone()]);
     assert_eq!(KeepProgram::lower(&collapse).unwrap(), KeepProgram::KEEP);
 }

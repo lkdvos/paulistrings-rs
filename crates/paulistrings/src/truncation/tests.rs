@@ -6,8 +6,9 @@ use crate::test_support::{
     storage_triples, tie_heavy_sum,
 };
 use crate::truncation::builtin::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition, TopN, WeightCutoff,
+    And, ApproxTopN, CoefficientThreshold, Or, PerPartition, TopN, WeightCutoff,
 };
+use crate::truncation::CollapseSample;
 use num_complex::Complex64;
 
 /// Seed for every `PartitionRows` in this module's tests.
@@ -218,14 +219,14 @@ fn an_or_of_filters_runs_no_layer_pass_either_way() {
     }
 }
 
-/// At `P = 1` the collective pick is the unpartitioned one, seed for seed.
+/// At `P = 1` the collective collapse is the unpartitioned one, seed for seed.
 #[test]
-fn collapse_sample_at_one_partition_is_the_unpartitioned_pick() {
+fn collapse_sample_at_one_partition_is_the_unpartitioned_collapse() {
     let input = crate::test_support::rand_sum::<1>(3000, 16, 0xC0C0);
     for seed in 0..20u64 {
         let mut want = input.clone();
-        CollapseSample::new(50, seed).finalize_layer(&mut want);
-        let got = partitioned_finalize(&CollapseSample::new(50, seed), &input, 0);
+        CollapseSample::new(50, 40, seed).finalize_layer(&mut want);
+        let got = partitioned_finalize(&CollapseSample::new(50, 40, seed), &input, 0);
         assert_same_terms(&got, &want, &format!("seed {seed}"));
     }
 }
@@ -235,36 +236,53 @@ fn collapse_sample_at_one_partition_is_the_unpartitioned_pick() {
 fn collapse_sample_partitioned_is_a_no_op_up_to_the_global_cache() {
     let input = rand_sum_real::<1>(600, 32, 0xF00D);
     for pbits in [1u8, 2] {
-        let policy = CollapseSample::new(input.len(), 3);
+        let policy = CollapseSample::new(input.len(), 3, 3);
         let got = partitioned_finalize(&policy, &input, pbits);
         assert_same_terms(&got, &input, &format!("P=2^{pbits}"));
         assert_eq!(policy.collapses(), 0);
     }
 }
 
-/// Above the cache exactly one string survives across the group, counted once, and the picks over 500 seeds match `|c|² / Σ|c|²`.
-#[test]
-fn collapse_sample_partitioned_draws_one_string_by_weight() {
-    use crate::test_support::{
-        assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
-        FOUR_TERM_WEIGHTS,
-    };
-    let keys = four_term_keys::<2>();
-    let input = weighted_four_term_sum::<2>(8);
+/// Above the cache the group draws exactly the systematic points of its terms laid end to end in rank order, then bucket order, counted once; one point leaves one string in the whole group.
+fn check_partitioned_collapse<const W: usize>() {
+    use crate::test_support::{assert_systematic_resample, rand_sum};
+    let input = rand_sum::<W>(2000, 16, 0x5A3D + W as u64);
     for pbits in [1u8, 2] {
-        let rows = PartitionRows::<2>::from_seed(8, pbits, PSEED);
-        let owners: std::collections::HashSet<u32> =
-            keys.iter().map(|p| rows.partition_of(&p.x, &p.z)).collect();
-        assert!(owners.len() > 1, "P=2^{pbits}: the fixture must span partitions");
-
-        let mut counts = [0usize; 4];
-        for seed in 0..500u64 {
-            let policy = CollapseSample::new(3, seed);
+        let parts = split(&input, pbits);
+        let terms: Vec<_> =
+            parts.iter().flat_map(|part| part.iter().map(|(x, z, c)| (*x, *z, c))).collect();
+        for (seed, samples) in [(0u64, 1usize), (1, 3), (2, 500), (3, 4000)] {
+            let policy = CollapseSample::new(100, samples, seed);
             let got = partitioned_finalize(&policy, &input, pbits);
-            counts[collapsed_index(&got, &keys)] += 1;
-            assert_eq!(policy.collapses(), 1, "one collapse, counted once");
+            let u = CollapseSample::new(0, 1, seed).uniform(0);
+            let what = format!("W={W} P=2^{pbits} samples={samples}");
+            assert_systematic_resample(&got, &terms, u, samples, 1e-12, &what);
+            assert_eq!(policy.collapses(), 1, "{what}: one collapse, counted once");
         }
-        assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("P=2^{pbits}"));
+    }
+}
+
+#[test]
+fn collapse_sample_partitioned_draws_the_global_systematic_points() {
+    check_partitioned_collapse::<1>();
+    check_partitioned_collapse::<2>();
+}
+
+/// Under `PerPartition` each partition draws `samples` points from its own slice, keeping its own `Σ|c|`.
+#[test]
+fn per_partition_collapse_sample_resamples_each_slice_alone() {
+    let input = crate::test_support::rand_sum::<1>(1200, 16, 0xBEAD);
+    let l1 = |sum: &PauliSum<1>| sum.iter().map(|(_, _, c)| c.norm()).sum::<f64>();
+    for pbits in [1u8, 2] {
+        let policy = PerPartition(CollapseSample::new(50, 7, 9));
+        let got = partitioned_finalize(&policy, &input, pbits);
+        let parts = 1usize << pbits;
+        assert!(got.len() <= 7 * parts, "P=2^{pbits}: {} terms", got.len());
+        for (part, slice) in split(&got, pbits).iter().zip(split(&input, pbits)) {
+            assert!(part.len() <= 7);
+            assert!((l1(part) - l1(&slice)).abs() < 1e-9 * l1(&slice), "P=2^{pbits}");
+        }
+        assert_eq!(policy.0.collapses() as usize, parts, "every partition's collapse counts");
     }
 }
 
@@ -324,7 +342,7 @@ fn supports_partitioned_names_the_policies_a_partitioned_run_accepts() {
     assert!(supports(WeightCutoff(3)));
     assert!(supports(ApproxTopN(10)));
     assert!(supports(PerPartition(TopN(10))));
-    assert!(supports(CollapseSample::new(10, 1)));
+    assert!(supports(CollapseSample::new(10, 2, 1)));
     assert!(supports(And(CoefficientThreshold(1e-3), ApproxTopN(10))));
     assert!(supports(Or::new(WeightCutoff(10), CoefficientThreshold(1e-3))));
     assert!(!supports(TopN(10)));

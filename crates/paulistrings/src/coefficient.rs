@@ -72,6 +72,9 @@ pub trait Coefficient:
     /// `|c|²`, in `f64`.
     fn norm_sqr(self) -> f64;
 
+    /// `|c|` in `f64`, by `hypot` for a complex type so that no magnitude underflows.
+    fn magnitude(self) -> f64;
+
     /// `self != 0` without a short-circuit across parts: one flag, no branch.
     fn is_nonzero(self) -> bool;
 }
@@ -119,6 +122,11 @@ macro_rules! real_coefficient {
             fn norm_sqr(self) -> f64 {
                 let v = self as f64;
                 v * v
+            }
+
+            #[inline]
+            fn magnitude(self) -> f64 {
+                (self as f64).abs()
             }
 
             #[inline]
@@ -173,6 +181,11 @@ macro_rules! complex_coefficient {
             fn norm_sqr(self) -> f64 {
                 let wide = self.to_complex64();
                 wide.re * wide.re + wide.im * wide.im
+            }
+
+            #[inline]
+            fn magnitude(self) -> f64 {
+                self.to_complex64().norm()
             }
 
             #[inline]

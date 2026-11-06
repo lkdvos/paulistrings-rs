@@ -1,9 +1,9 @@
 //! [`BuiltinTruncation`], every builtin policy and combinator as one runtime value.
 
 use super::builtin::{
-    or_operand_error, And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition,
-    TopN, WeightCutoff,
+    or_operand_error, And, ApproxTopN, CoefficientThreshold, Or, PerPartition, TopN, WeightCutoff,
 };
+use super::collapse_sample::CollapseSample;
 use super::{FusedApproxTopN, TruncationPolicy};
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;

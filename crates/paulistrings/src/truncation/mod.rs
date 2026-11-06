@@ -1,12 +1,12 @@
 //! The [`TruncationPolicy`] trait and the built-in policies.
 
 pub(crate) mod builtin;
+mod collapse_sample;
 pub(crate) mod octave_window;
 mod tree;
 
-pub use builtin::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition, TopN, WeightCutoff,
-};
+pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, PerPartition, TopN, WeightCutoff};
+pub use collapse_sample::CollapseSample;
 pub use tree::BuiltinTruncation;
 
 use crate::coefficient::Coefficient;

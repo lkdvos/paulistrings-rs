@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn collapse_count_sums_distinct_samplers() {
-        let sampler = |seed| BuiltinTruncation::from(CollapseSample::new(1, seed));
+        let sampler = |seed| BuiltinTruncation::from(CollapseSample::new(1, 1, seed));
         assert_eq!(collapse_count(&BuiltinTruncation::Keep), None);
         assert_eq!(collapse_count(&BuiltinTruncation::ApproxTopN(3)), None);
         let (a, b) = (sampler(0), sampler(1));

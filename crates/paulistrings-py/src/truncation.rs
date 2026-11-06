@@ -4,6 +4,7 @@
 
 use crate::truncation_spec::PyTruncation;
 use paulistrings::{ApproxTopN, BuiltinTruncation, CollapseSample, PerPartition, TopN};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 #[pyfunction]
@@ -47,14 +48,21 @@ fn partition_approx_topn(n: usize) -> PyTruncation {
     PyTruncation::new(PerPartition(ApproxTopN(n)).into())
 }
 
-/// Replace the sum by **one** Pauli string with coefficient ``1``, drawn with probability ``|c|**2 / sum |c|**2``, after any layer that leaves more than ``cache`` terms.
+/// After any layer that leaves more than ``cache`` terms, replace the sum by ``samples`` draws in proportion to ``|c|``, an unbiased estimate of it.
 ///
-/// One ``seed`` is one Monte Carlo trajectory: the draw at the ``k``-th layer pass is a pure function of ``(seed, k)``, independent of the thread count, so ``collapse_sample(cache, seed)`` repeats a trajectory exactly.
+/// The draw is systematic: with ``norm = sum |c|`` and the terms laid end to end in storage order, one uniform ``u`` places the points ``(u + k) * norm / samples`` for ``k < samples``, and a term holding ``m`` of them survives with coefficient ``m * norm / samples * c / |c|``.
+/// Every term is drawn ``floor(samples * |c| / norm)`` or ``ceil(...)`` times, so the collapsed sum holds at most ``samples`` terms and its expectation is the sum before it; a collapse resamples even when ``samples`` is at least the length.
+/// The final sum is therefore an unbiased estimate of the exact one, and so is any readout linear in it, such as ``expectation_product``: average such readouts over seeds.
+/// One ``seed`` is one Monte Carlo trajectory: the draw at the ``k``-th layer pass is a pure function of ``(seed, k)``, independent of the thread count, so ``collapse_sample(cache, samples, seed)`` repeats a trajectory exactly.
 /// The returned object *is* that trajectory: propagating with it again, or with a policy composed from it via ``&``/``|``, continues its random sequence rather than restarting it. Call the factory again to start over.
-/// Runs under ``partitions=`` and ``comm=`` too, where every partition draws the same pick; at one partition the trajectory is the unpartitioned one, across partition counts only its distribution agrees. ``PropagationStats.collapses`` counts the collapses of one call.
+/// Runs under ``partitions=`` and ``comm=`` too, where the partitions draw ``samples`` points between them over their terms in rank order; at one partition the trajectory is the unpartitioned one, across partition counts only its distribution agrees. ``PropagationStats.collapses`` counts the collapses of one call.
+/// Raises ``ValueError`` if ``samples`` is zero.
 #[pyfunction]
-fn collapse_sample(cache: usize, seed: u64) -> PyTruncation {
-    PyTruncation::new(BuiltinTruncation::from(CollapseSample::new(cache, seed)))
+fn collapse_sample(cache: usize, samples: usize, seed: u64) -> PyResult<PyTruncation> {
+    if samples == 0 {
+        return Err(PyValueError::new_err("collapse_sample: samples must be at least 1"));
+    }
+    Ok(PyTruncation::new(BuiltinTruncation::from(CollapseSample::new(cache, samples, seed))))
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

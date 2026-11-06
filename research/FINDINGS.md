@@ -631,6 +631,12 @@ NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot`
 Verdict: NCCL is the only exchange of an MPI device group; host staging was removed.
 A four-rank hang on workergpu047 is attributed to that node; every job step is bounded by `scripts/slurm/bounded.sh`; two-node NCCL is unmeasured.
 
+### A cold kernel variant costs seconds, once per key
+
+Each `(W, coefficient, options)` variant on ccqlin038's A6000: NVRTC **6–8 s** (2.4 MB PTX at W ≤ 2), the PTX cache hit 1 ms, the driver's PTX→SASS load **5–8 s** cold and 9 ms from its cache; 21 concurrent in-process NVRTC compiles took 90 s, so compiles barely overlap.
+Any `.cu` edit makes every variant cold: the lib's device tests then outran a 600 s bound, against 85 s warm.
+`kernel_set_with_options` builds a key once while concurrent first requests wait: 15 finalize and collapse tests on cold caches went from 36 compiles and loads of 9 variants, 226 s, to 9 and 94 s.
+
 ## Open
 
 ### Channels above `MAX_LOCAL_SUPPORT = 2`

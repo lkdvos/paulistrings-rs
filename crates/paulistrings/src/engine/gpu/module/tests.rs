@@ -16,6 +16,32 @@ fn every_layout() -> [CoefficientLayout; 4] {
     ]
 }
 
+/// `f` at every width and coefficient layout, each on its own thread since a cold one is seconds of NVRTC and module load; results in width-major order.
+fn on_every_variant<T: Send>(
+    f: impl Fn(usize, CoefficientLayout) -> T + Sync,
+) -> Vec<(usize, CoefficientLayout, T)> {
+    let variants: Vec<_> =
+        [1usize, 2, 4, 8, 16].into_iter().flat_map(|w| every_layout().map(|l| (w, l))).collect();
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = variants
+            .into_iter()
+            .map(|(w, layout)| s.spawn(move || (w, layout, f(w, layout))))
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("variant thread")).collect()
+    })
+}
+
+/// The visible device's architecture, so a compile shares its PTX-cache entry with [`kernel_set`]'s; `compute_80` without one.
+fn test_arch() -> String {
+    if !crate::gpu::cuda_available() {
+        return "compute_80".to_string();
+    }
+    let (major, minor) =
+        device::context(0).and_then(|c| Ok(c.compute_capability()?)).expect("capability");
+    format!("compute_{major}{minor}")
+}
+
 #[test]
 fn a_layout_has_its_types_bytes_and_name() {
     let layouts = every_layout();
@@ -43,20 +69,34 @@ fn kernels_compile_for_every_width() {
     if !libnvrtc_present() {
         return;
     }
-    for w in [1usize, 2, 4, 8, 16] {
-        for layout in every_layout() {
-            compile_ptx(w, layout, "compute_80", &[], kernel_cache::directory())
-                .unwrap_or_else(|e| panic!("W={w} {}: {e}", layout.name()));
-        }
+    let arch = test_arch();
+    for (w, layout, ptx) in
+        on_every_variant(|w, layout| compile_ptx(w, layout, &arch, &[], kernel_cache::directory()))
+    {
+        ptx.unwrap_or_else(|e| panic!("W={w} {}: {e}", layout.name()));
     }
-    compile_ptx(
-        2,
-        c128(),
-        "compute_80",
-        &["-DFINGERPRINT_BITS=8".to_string()],
-        kernel_cache::directory(),
-    )
-    .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
+    compile_ptx(2, c128(), &arch, &["-DFINGERPRINT_BITS=8".to_string()], kernel_cache::directory())
+        .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
+}
+
+/// Concurrent first requests for one key build it once and share it, so tests starting together on a cold cache do not each compile and load the same kernels.
+#[test]
+fn concurrent_first_requests_share_one_kernel_set() {
+    crate::require_cuda!();
+    let options = ["-DPAULISTRINGS_SINGLE_FLIGHT=1".to_string()];
+    let barrier = std::sync::Barrier::new(4);
+    let sets: Vec<Arc<KernelSet>> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                s.spawn(|| {
+                    barrier.wait();
+                    kernel_set_with_options(0, 1, c128(), &options).expect("compile+load")
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("requester")).collect()
+    });
+    assert!(sets.iter().all(|set| Arc::ptr_eq(set, &sets[0])), "each requester built its own set");
 }
 
 #[test]
@@ -78,10 +118,8 @@ fn layer_variants_fit_their_register_budget() {
     use cudarc::driver::sys::CUfunction_attribute::{
         CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, CU_FUNC_ATTRIBUTE_NUM_REGS,
     };
-    for (w, layout) in
-        [1usize, 2, 4, 8, 16].into_iter().flat_map(|w| every_layout().map(|l| (w, l)))
-    {
-        let set = kernel_set(0, w, layout).expect("compile+load");
+    for (w, layout, set) in on_every_variant(|w, layout| kernel_set(0, w, layout)) {
+        let set = set.expect("compile+load");
         let budget = 65_536 / layer_threads(w) as i32;
         let c = layout.name();
         for v in &set.layer {
@@ -119,21 +157,15 @@ fn layer_shared_bytes_matches_the_carve_layout() {
     let context = device::context(0).expect("context");
     let (major, minor) = context.compute_capability().expect("capability");
     let stream = context.default_stream();
-    for (w, layout) in
-        [1usize, 2, 4, 8, 16].into_iter().flat_map(|w| every_layout().map(|l| (w, l)))
-    {
-        let ptx = compile_ptx(
-            w,
-            layout,
-            &format!("compute_{major}{minor}"),
-            &["-DTEST_CARVE_BYTES".to_string()],
-            kernel_cache::directory(),
-        )
-        .expect("compile");
-        let carve_bytes = context
-            .load_module(ptx)
-            .and_then(|module| module.load_function("k_carve_bytes"))
-            .expect("load");
+    let arch = format!("compute_{major}{minor}");
+    let options = ["-DTEST_CARVE_BYTES".to_string()];
+    let loaded = on_every_variant(|w, layout| {
+        let ptx =
+            compile_ptx(w, layout, &arch, &options, kernel_cache::directory()).expect("compile");
+        context.load_module(ptx).and_then(|module| module.load_function("k_carve_bytes"))
+    });
+    for (w, layout, carve_bytes) in loaded {
+        let carve_bytes = carve_bytes.expect("load");
         let threads = layer_threads(w) as usize;
         for capacity in [2, 1000, threads, 2 * threads, 4096, LAYER_CAP] {
             let mut out = stream.alloc_zeros::<u64>(1).unwrap();

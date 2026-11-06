@@ -517,10 +517,16 @@ Reading the batch total after the compaction with the fallback counters (three s
 
 Under a per-term filter the device ran a rotation run's layers one by one through the join; it now groups the strings any layer touches by class (key off the run's qubits) into class buckets, and one block per class bucket applies every layer in shared memory, asking `keep` after each layer as the host does (`engine/gpu/layer/rotation_run.rs`).
 Kicked Ising at `--threshold 2.5e-5` (phase-timing build, SM 1845–1860 MHz, memory 7601 MHz): **21.8 → 8.44 s**, `rx` 20.7 → 7.4 s, readout identical to 12 digits; per run of 8 layers `gather` (classify and gather) 7.5 ms, `merge` (apply) 10.7 ms, `compact` (place and scatter) 5.2 ms at ~1.2e7 terms.
-About 32% of input strings are touched by a run; 5 of 338 runs still outgrow a block (1024 strings) and fall back to the layers one by one.
+About 32% of input strings are touched by a run; 5 of 338 runs outgrew a block (1024 strings), which §A crowded class reruns over global tables now absorbs.
 A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
 Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
 Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
+
+### A crowded class reruns over global tables
+
+A class bucket that outgrows its block lists itself, and only those rerun one block each over tables in global memory sized at four times the largest overflowed input, again at four times the rows on a second overflow; the run falls back to its layers one by one only past 2^22 rows a class bucket or 1 GiB a pass (`apply_wide` in `engine/gpu/layer/rotation_run.rs`).
+On TFIM 16×16 at `--threshold 1e-5` the block fallback had taken 424 of 1240 runs and 3.0 of 3.56 s, 397 of them among the 600 `ZZ` runs: the strings wholly inside a run's qubits share one class, the one with nothing elsewhere, a median 2258 strings in the largest class bucket against the block's 512-string input half, and no class-bit count splits one class.
+`sampling_bench` GPU f64, SM 1845–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM `--threshold 1e-5` **3.698 / 3.684 → 1.347 / 1.297 s (−64%)**, readout identical to 12 digits; `--threshold 3e-6` 41.3 s (phase-timing build) → 9.79 s.
 
 ### NCCL exchange between MPI ranks
 

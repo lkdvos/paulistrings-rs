@@ -1,4 +1,4 @@
-//! Launching the fused layer kernel: position batches that fit the arena, the kernel variant, and the launch itself; and the join layer's launch.
+//! Launching the fused layer kernel: position batches that fit the arena, the kernel variant, and the launch itself.
 
 use crate::coefficient::Coefficient;
 use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
@@ -6,8 +6,8 @@ use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
 use super::TableBuffers;
 use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
-use crate::engine::gpu::module::{layer_shared_bytes, layer_threads, KernelSet, JOIN_THREADS};
-use crate::engine::gpu::prepared::{DevicePrepared, JoinTable};
+use crate::engine::gpu::module::{layer_shared_bytes, layer_threads, KernelSet};
+use crate::engine::gpu::prepared::DevicePrepared;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 
@@ -142,68 +142,6 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize, C: Coefficient>(
                 grid_dim: (num_blocks, 1, 1),
                 block_dim: (layer_threads(W), 1, 1),
                 shared_mem_bytes: smem,
-            })?;
-    }
-    Ok(())
-}
-
-/// Slots of the join layer's table, as `log2`, for source buckets of up to `longest` rows: at most half full.
-pub(in crate::engine::gpu) fn join_table_bits(longest: u32) -> u32 {
-    (2 * longest.max(16)).next_power_of_two().trailing_zeros()
-}
-
-/// The join layer (`k_join` in join.cu) over positions `p0..p0 + num_blocks`, for source buckets of up to `longest` rows; writes what [`launch_fused`] writes, with no fallback.
-#[allow(clippy::too_many_arguments)]
-pub(in crate::engine::gpu) fn launch_join<const W: usize, C: Coefficient>(
-    sum: &GpuSum<W, C>,
-    table: &DevicePrepared<W, C>,
-    join: JoinTable,
-    fused: &FusedTable<'_>,
-    bucket_at: &CudaSlice<u32>,
-    keep: &KeepProgram,
-    longest: u32,
-    (p0, num_blocks): (u32, u32),
-    arena: &mut DeviceColumns<W, C>,
-    rows_per_position: &mut CudaSlice<u32>,
-) -> Result<(), GpuError> {
-    let table_bits = join_table_bits(longest);
-    // SAFETY: arguments match `k_join` in join.cu; the arena holds the batch's pre-dedup rows, `rows_per_position` has `b` entries, and no source bucket exceeds `longest` rows, so the `1 << table_bits` slots stay at most half full.
-    unsafe {
-        sum.stream
-            .launch_builder(&sum.kernels.join)
-            .arg(&sum.columns.x)
-            .arg(&sum.columns.z)
-            .arg(&sum.columns.coeff)
-            .arg(&sum.columns.fingerprint)
-            .arg(&sum.columns.start)
-            .arg(&sum.columns.lengths)
-            .arg(bucket_at)
-            .arg(fused.segment_start)
-            .arg(&table.mode)
-            .arg(&table.support_size)
-            .arg(&table.qubit_0)
-            .arg(&table.qubit_1)
-            .arg(&table.rotation_cos)
-            .arg(&table.rotation_sin)
-            .arg(&fused.table.amplitude)
-            .arg(&fused.table.mask)
-            .arg(&fused.table.nonzero_patterns)
-            .arg(&fused.table.bucket_delta)
-            .arg(&fused.table.fingerprint_delta)
-            .arg(&join.base_entry)
-            .arg(&join.hit_patterns)
-            .arg(&table_bits)
-            .arg(keep)
-            .arg(&p0)
-            .arg(&mut arena.x)
-            .arg(&mut arena.z)
-            .arg(&mut arena.coeff)
-            .arg(&mut arena.fingerprint)
-            .arg(rows_per_position)
-            .launch(LaunchConfig {
-                grid_dim: (num_blocks, 1, 1),
-                block_dim: (JOIN_THREADS, 1, 1),
-                shared_mem_bytes: 4 << table_bits,
             })?;
     }
     Ok(())

@@ -148,6 +148,72 @@ fn a_full_source_bucket_joins_and_one_more_row_refines() {
     }
 }
 
+/// A chain of layers on a many-bucket device sum against the naive layer after every step: join layers, whose output keeps a gap after each bucket, feed another join, the sort path, the permutation scatter, the rescale and a refine.
+fn join_output_feeds_every_path<const W: usize>(num_qubits: usize, n: usize, seed: u64) {
+    let last = num_qubits - 1;
+    let rx = |q: usize, theta: f64| {
+        let mut g = PauliString::<W> { x: [0; W], z: [0; W] };
+        g.x[q / 64] |= 1 << (q % 64);
+        PauliRotation::new(g, theta)
+    };
+    let channels: Vec<(Box<dyn Channel<W>>, bool)> = vec![
+        (Box::new(rx(1, 0.37)), true),
+        (Box::new(zz_rotation::<W>(0, last, 0.21)), true),
+        (Box::new(rx(last, -0.53)), true),
+        (Box::new(PtmChannel::cnot(0, last)), false),
+        (Box::new(rx(0, 0.71)), true),
+        (Box::new(PtmChannel::unitary_2q(1, 2, haar_su4_matrix())), false),
+        (Box::new(rx(2, 0.29)), true),
+        (Box::new(PtmChannel::depolarizing(1, 0.1)), false),
+        (Box::new(rx(3, -0.44)), true),
+    ];
+    let base = rand_sum::<W>(n, num_qubits, seed);
+    let mut want = with_rotation_partners(&base, &rx(1, 0.0).generator(), n / 3, seed ^ 0x5A)
+        .with_hash(Gf2Hash::new(num_qubits, 3, crate::pauli_sum::storage::DEFAULT_HASH_SEED));
+    let mut sum = GpuSum::from_host(&want, 0).expect("upload");
+    let options = GpuLayerOptions { records_per_block: 256, ..GpuLayerOptions::default() };
+    let mut scratch = LayerScratch::new(&sum, options).expect("scratch");
+    let rows = crate::pauli_sum::hash::PartitionRows::<W>::none(num_qubits);
+    let solo = InProcessTransport::group(1);
+    for (step, (channel, joins)) in channels.iter().enumerate() {
+        if step == 6 {
+            sum.refine().expect("refine");
+        }
+        let prepared = channel.prepare(sum.hash(), false).expect("prepared");
+        let plan = PartitionPlan::new(&prepared, &rows, 0);
+        let layer = DeviceLayer {
+            prepared: &prepared,
+            plan: &plan,
+            keep: &KeepProgram::KEEP,
+            target_bits: 0,
+        };
+        apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0]).expect("layer");
+        assert_eq!(scratch.record.joined, *joins, "W={W} step {step}");
+        want = naive_apply_layer(&want, channel.as_ref(), &KeepAll, false);
+        let got = sum.to_host().expect("download");
+        assert!(got.hash().bits() >= 3, "W={W} step {step}");
+        assert_terms_close(&got, &want, 1e-11, &format!("W={W} step {step}"));
+    }
+}
+
+#[test]
+fn join_output_feeds_every_path_w1() {
+    crate::require_cuda!();
+    join_output_feeds_every_path::<1>(12, 3_000, 0x7106);
+}
+
+#[test]
+fn join_output_feeds_every_path_w2() {
+    crate::require_cuda!();
+    join_output_feeds_every_path::<2>(100, 20_000, 0x7107);
+}
+
+#[test]
+fn join_output_feeds_every_path_w4() {
+    crate::require_cuda!();
+    join_output_feeds_every_path::<4>(256, 20_000, 0x7108);
+}
+
 #[test]
 fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
     assert_eq!(permute_threads(1_000_000, 256, 2), 1024);

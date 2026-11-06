@@ -504,7 +504,24 @@ A/B on ccqlin038's A6000 against the radix fused layer, same binary (`GpuLayerOp
 Under the threshold both paths give the same counts and ⟨Z₆₂⟩ = 0.171746373755 to 12 digits; under `ApproxTopN` the readouts differ in the fourth digit, as the boundary octave keeps terms in bucket order, which the join's atomic slot claims do not fix.
 Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16338 → 10822 ms; a saturated rotation layer's coset loop 9273 → 6332 µs, of which `gather` and `compact` (≈2.5 ms together) are unchanged.
 TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
-Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; writing the join's rows straight to the output columns at the pre-dedup offsets, which drops the compaction; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
+Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
+The join's compaction is gone (§Join layers write the output columns directly).
+
+### Join layers write the output columns directly (revisits §Compaction stays; the loose CSR is rejected)
+
+`k_join` writes each output bucket at its position's pre-dedup offset in the output columns and sets the bucket's start and length itself, so a join layer has no arena and no `k_compact`; the output keeps a gap after each bucket, at most the layer's partner rows, which is the loose CSR the fused layer rejected at `su4`'s 15-fold fanout and costs a join at most twice its input (`layer/join.rs`).
+ncu had the compaction at 20% of a kicked Ising 1e7 rotation layer, 1.3 of its 4.4 GB.
+`sampling_bench` release, JCC flag, f64, ABAB against `gpu@42f46085`, 3 rounds, SM 1845–1890 MHz, memory 7601 MHz:
+
+| cell | before (s) | after (s) | Δ |
+|---|---|---|---|
+| kicked Ising `--approx-topn 1e6` | 1.483 / 1.476 / 1.476 | 1.152 / 1.152 / 1.142 | **−22.3 / −22.0 / −22.6%** |
+| kicked Ising `--approx-topn 1e7` | 10.92 / 10.96 / 10.95 | 8.056 / 8.078 / 8.072 | **−26.2 / −26.3 / −26.3%** |
+| kicked Ising `--threshold 2.5e-5` | 8.044 / 8.077 / 8.075 | 7.901 / 7.920 / 7.831 | −1.8 / −1.9 / −3.0% |
+| TFIM 16×16 `--approx-topn 1e6` | 10.37 / 10.45 / 10.81 | 8.045 / 8.500 / 8.020 | **−22.4 / −18.7 / −25.8%** |
+| TFIM 16×16 `--threshold 1e-5` | 3.127 / 3.087 / 3.176 | 2.558 / 2.605 / 2.574 | **−18.2 / −15.6 / −19.0%** |
+
+Threshold readouts are identical to 12 digits; kicked Ising under a threshold runs its rotations mostly as fused runs (§Rotation runs under a per-term filter in one pass), so it gains little.
 
 ### Lone device sums skip cudarc's event tracking
 

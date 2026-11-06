@@ -627,7 +627,15 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     out.buckets = 0;
     out.reserve(out.term_capacity(), b)?;
     grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
-    stream.memset_zeros(&mut scratch.fallback)?;
+    // The join writes no fallback counters, so it neither clears nor reads them.
+    let counts_fallbacks = join.is_none();
+    if counts_fallbacks {
+        stream.memset_zeros(&mut scratch.fallback)?;
+    }
+    // A lone batch whose pre-dedup rows already fit the output compacts at offset 0 without its total, which is read once after the compaction.
+    let deferred_total = batches.len() == 1
+        && (scratch.segment_start_host[b] - scratch.segment_start_host[0]) as usize
+            <= out.term_capacity();
     let mut running = 0u32;
     let mut next_chunk = 0usize;
     for &(p0, p1) in &batches {
@@ -694,18 +702,23 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             &mut scratch.scan,
             &mut scratch.totals,
         )?;
-        let totals = &scratch.totals;
-        let batch_out = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-            let v = stream.clone_dtoh(totals)?;
-            stream.synchronize()?;
-            Ok(v[0])
-        })?;
-        out.len = running as usize;
-        let need = (running + batch_out) as usize;
-        if need > out.term_capacity() {
-            let grown = (2 * out.term_capacity()).max(need).min((records as usize).max(need));
-            out.reserve(grown, b)?;
-        }
+        let batch_out = if deferred_total {
+            0
+        } else {
+            let totals = &scratch.totals;
+            let batch_out = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+                let v = stream.clone_dtoh(totals)?;
+                stream.synchronize()?;
+                Ok(v[0])
+            })?;
+            out.len = running as usize;
+            let need = (running + batch_out) as usize;
+            if need > out.term_capacity() {
+                let grown = (2 * out.term_capacity()).max(need).min((records as usize).max(need));
+                out.reserve(grown, b)?;
+            }
+            batch_out
+        };
         // SAFETY: arguments match `k_compact` in compact.cu; `out` holds `running + batch_out` terms.
         unsafe {
             stream
@@ -732,10 +745,20 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         running += batch_out;
     }
     debug_assert_eq!(next_chunk, chunk_starts.len());
-    let fallbacks = stream.clone_dtoh(&scratch.fallback)?;
-    stream.synchronize()?;
-    scratch.record.high_word_fallbacks += fallbacks[0];
-    scratch.record.full_key_fallbacks += fallbacks[1];
+    if deferred_total || counts_fallbacks {
+        let (totals, fallback) = (&scratch.totals, &scratch.fallback);
+        let (total, fallbacks) =
+            timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+                let total = if deferred_total { stream.clone_dtoh(totals)?[0] } else { 0 };
+                let fallbacks =
+                    if counts_fallbacks { stream.clone_dtoh(fallback)? } else { vec![0, 0] };
+                stream.synchronize()?;
+                Ok((total, fallbacks))
+            })?;
+        running += total;
+        scratch.record.high_word_fallbacks += fallbacks[0];
+        scratch.record.full_key_fallbacks += fallbacks[1];
+    }
     out.len = running as usize;
     out.buckets = b;
     scratch.arena = Some(arena);

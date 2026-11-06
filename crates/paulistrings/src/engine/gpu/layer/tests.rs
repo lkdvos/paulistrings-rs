@@ -8,8 +8,10 @@ use crate::engine::gpu::GPU_MAX_BITS;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::hash::Gf2Hash;
 use crate::test_support::{
-    assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, KeepAll,
+    assert_terms_close, haar_su4_matrix, naive_apply_layer, rand_sum, with_rotation_partners,
+    zz_rotation, KeepAll,
 };
+use crate::{PauliRotation, PauliString, PauliSum};
 use num_complex::Complex64;
 
 /// `SWAP·CNOT` as a matrix: its symplectic map has no fixed nonzero vector, so all 16 deltas are realized and every row emits exactly one record.
@@ -48,6 +50,16 @@ fn single_bucket_layer(
         }
         input = accumulator.finalize();
     }
+    single_bucket_layer_on(input, channel, options)
+}
+
+/// [`single_bucket_layer`] on a given input.
+fn single_bucket_layer_on(
+    input: PauliSum<2>,
+    channel: &dyn Channel<2>,
+    options: GpuLayerOptions,
+) -> Result<Observed, GpuError> {
+    let n = input.len();
     let input = input.with_hash(Gf2Hash::new(128, 0, crate::pauli_sum::storage::DEFAULT_HASH_SEED));
     assert_eq!(input.len(), n);
     let mut sum = GpuSum::from_host(&input, 0)?;
@@ -109,6 +121,31 @@ fn a_full_source_bucket_and_a_full_block_fit_and_one_more_row_refines() {
         single_bucket_layer(record_cap / 15 + 1, true, &su4, capped),
         Err(GpuError::Unsupported(_))
     ));
+}
+
+/// A source bucket of exactly `MAX_BUCKET_LEN` rows, a quarter of them rotation partners of others in the same bucket, joins at the largest table; one more row refines.
+#[test]
+fn a_full_source_bucket_joins_and_one_more_row_refines() {
+    crate::require_cuda!();
+    let options = GpuLayerOptions { records_per_block: 1 << 30, ..GpuLayerOptions::default() };
+    let mut wide = PauliString::<2> { x: [0; 2], z: [0; 2] };
+    wide.x[0] = 0b1011;
+    wide.z[1] = 1 << 7;
+    for rotation in [zz_rotation::<2>(3, 100, 0.4), PauliRotation::new(wide, -0.3)] {
+        let g = rotation.generator();
+        for n in [MAX_BUCKET_LEN, MAX_BUCKET_LEN + 1] {
+            let partners = n / 4;
+            let base = rand_sum::<2>(n - partners, 128, 0x7104 + n as u64);
+            let input = with_rotation_partners(&base, &g, partners, 0x7105);
+            let c = single_bucket_layer_on(input, &rotation, options).unwrap();
+            assert!(c.record.joined, "{c:?}");
+            if n == MAX_BUCKET_LEN {
+                assert_eq!((c.bits, c.refine_passes), (0, 0), "{c:?}");
+            } else {
+                assert!(c.refine_passes > 0 && c.bits > 0, "{c:?}");
+            }
+        }
+    }
 }
 
 #[test]

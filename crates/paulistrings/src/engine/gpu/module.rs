@@ -26,6 +26,7 @@ const REFINE: &str = include_str!("kernels/refine.cu");
 const INVARIANTS: &str = include_str!("kernels/invariants.cu");
 const COUNT: &str = include_str!("kernels/count.cu");
 const LAYER: &str = include_str!("kernels/layer.cu");
+const JOIN: &str = include_str!("kernels/join.cu");
 const EXPORT: &str = include_str!("kernels/export.cu");
 const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
@@ -43,6 +44,7 @@ const KERNEL_SOURCES: &[&str] = &[
     COUNT,
     EXPORT,
     LAYER,
+    JOIN,
     COMPACT,
     RESCALE,
     PERMUTE,
@@ -66,6 +68,9 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
         _ => 256,
     }
 }
+
+/// Block width of the join layer (`kernels/join.cu`); `-DJOIN_THREADS` to the kernels.
+pub(crate) const JOIN_THREADS: u32 = 512;
 
 /// The coefficient type a kernel set compiles for, `-DCOEFF_SINGLE` and `-DCOEFF_COMPLEX` to the kernels, so two types never share a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -159,6 +164,7 @@ pub(crate) struct KernelSet {
     pub(crate) retain: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
+    pub(crate) join: CudaFunction,
     /// The coefficient type the set was compiled for.
     pub(crate) coefficient: CoefficientLayout,
     threads: usize,
@@ -223,6 +229,7 @@ fn compile_options(
         format!("-DW={w}"),
         format!("-DTHREADS={}", layer_threads(w)),
         format!("-DLAYER_CAP={LAYER_CAP}"),
+        format!("-DJOIN_THREADS={JOIN_THREADS}"),
         format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
         format!("-DKEEP_NODES={KEEP_NODES}"),
         format!("-DOP_KEEP={OP_KEEP}"),
@@ -333,6 +340,7 @@ pub(crate) fn kernel_set_with_options(
         boundary_counts: load("k_boundary_counts")?,
         retain: load("k_retain")?,
         layer,
+        join: load("k_join")?,
         coefficient,
         threads,
     });

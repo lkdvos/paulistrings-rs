@@ -39,7 +39,7 @@ mod options;
 
 use fast_paths::{permute_device, rescale_device};
 pub(super) use fused::{
-    arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
+    arena_batches, fused_variant, launch_fused, launch_join, FusedOut, FusedReceived, FusedTable,
 };
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
@@ -545,7 +545,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     let record_cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
     // Oversize blocks and over-long source buckets are known from the count table; a lone partition refines one more bit, which halves both.
-    let (records, records_max) = loop {
+    let (records, records_max, longest) = loop {
         let counted =
             scratch.upload_table(sum, &table).and_then(|()| scratch.count_local(sum, &table));
         if let Err(e) = counted {
@@ -560,7 +560,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             && max_len as usize <= MAX_BUCKET_LEN
             && scratch.export.received_max_segment <= MAX_RECEIVED_SEGMENT
         {
-            break (total, max_segment);
+            break (total, max_segment, max_len);
         }
         if !solo {
             return Err(GpuError::Unsupported(
@@ -578,6 +578,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     let b = sum.hash.num_buckets();
     scratch.record.records = u64::from(records);
     scratch.record.max_block_records = records_max;
+    let join = table.join.filter(|_| scratch.options.join);
+    scratch.record.joined = join.is_some();
 
     let kernels: Arc<KernelSet> = sum.kernels.clone();
     let (func, record_capacity, smem) =
@@ -640,22 +642,37 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             coefficient: &scratch.export.received_coefficient,
             fingerprint: &scratch.export.received_fingerprint,
         };
-        let written = FusedOut {
-            arena: &mut arena,
-            rows_per_position: &mut scratch.rows_per_position,
-            fallback: &mut scratch.fallback,
-        };
-        launch_fused(
-            sum,
-            &table,
-            &fused,
-            &received,
-            &scratch.bucket_at,
-            keep,
-            (func, smem),
-            (p0u, num_blocks),
-            written,
-        )?;
+        if let Some(join) = join {
+            launch_join(
+                sum,
+                &table,
+                join,
+                &fused,
+                &scratch.bucket_at,
+                keep,
+                longest,
+                (p0u, num_blocks),
+                &mut arena,
+                &mut scratch.rows_per_position,
+            )?;
+        } else {
+            let written = FusedOut {
+                arena: &mut arena,
+                rows_per_position: &mut scratch.rows_per_position,
+                fallback: &mut scratch.fallback,
+            };
+            launch_fused(
+                sum,
+                &table,
+                &fused,
+                &received,
+                &scratch.bucket_at,
+                keep,
+                (func, smem),
+                (p0u, num_blocks),
+                written,
+            )?;
+        }
         timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
         let n = p1 - p0;
         timed!(let t1 = scratch.event(sum)?);

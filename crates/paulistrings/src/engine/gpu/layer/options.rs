@@ -32,6 +32,8 @@ pub struct GpuLayerOptions {
     pub exchange_bytes: usize,
     /// Run a local layer whose table is a permutation of keys (every Clifford's) by the scatter path (`k_permute_*`) instead of the fused layer; on by default.
     pub clifford: bool,
+    /// Run a local layer whose table is two entries, one of them the identity mask (every rotation's), by the hash join (`k_join`) instead of the fused layer's sort; on by default.
+    pub join: bool,
 }
 
 /// `PAULISTRINGS_GPU_EXCHANGE_BYTES`, the default of [`GpuLayerOptions::exchange_bytes`]; unbounded when unset.
@@ -58,6 +60,7 @@ impl Default for GpuLayerOptions {
             premerge: true,
             exchange_bytes: *EXCHANGE_BYTES.get(),
             clifford: true,
+            join: true,
         }
     }
 }

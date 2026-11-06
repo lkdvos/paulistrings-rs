@@ -2,6 +2,8 @@
 
 use std::io::Write;
 
+use paulistrings::PartitionLayerRecord;
+
 use crate::cli::{Backend, Config};
 use crate::models::{GateKind, IsingQuench};
 use crate::run::Report;
@@ -14,7 +16,7 @@ struct KindTotals {
     terms_in: u64,
 }
 
-/// What every output form shares, computed once from the trace.
+/// What every output form shares, computed once from the trace; a layer's terms are summed over partitions and its time is the slowest partition's.
 struct Summary {
     total_ns: u64,
     layers: usize,
@@ -31,6 +33,60 @@ struct Summary {
     /// Per step, the largest layer output and the summed layer times.
     step_max_terms: Vec<usize>,
     step_layer_ns: Vec<u64>,
+    partitions: PartitionSummary,
+}
+
+/// Per-partition totals over the trace, in rank order.
+struct PartitionSummary {
+    terms_final: Vec<usize>,
+    terms_max: Vec<usize>,
+    layer_ns: Vec<u64>,
+    /// Wall of the layers that exchanged.
+    remote_layer_ns: Vec<u64>,
+    /// Group calls: bucket-count agreement and the policy's collectives (a collapse's prefix all-reduces).
+    collective_ns: Vec<u64>,
+    finalize_ns: Vec<u64>,
+    rows_sent: Vec<u64>,
+    bytes_sent: Vec<u64>,
+    remote_layers: usize,
+}
+
+fn layer_terms(row: &PartitionLayerRecord) -> usize {
+    row.terms_out.iter().sum()
+}
+
+fn layer_nanos(row: &PartitionLayerRecord) -> u64 {
+    row.nanos.iter().copied().max().unwrap_or(0)
+}
+
+fn summarize_partitions(report: &Report) -> PartitionSummary {
+    let rows = &report.trace.layers;
+    let size = rows.first().map_or(1, |row| row.terms_out.len());
+    let mut out = PartitionSummary {
+        terms_final: rows.last().map_or(vec![0; size], |row| row.terms_out.clone()),
+        terms_max: vec![0; size],
+        layer_ns: vec![0; size],
+        remote_layer_ns: vec![0; size],
+        collective_ns: vec![0; size],
+        finalize_ns: vec![0; size],
+        rows_sent: vec![0; size],
+        bytes_sent: vec![0; size],
+        remote_layers: rows.iter().filter(|row| row.remote_deltas > 0).count(),
+    };
+    for row in rows {
+        for p in 0..size {
+            out.terms_max[p] = out.terms_max[p].max(row.terms_out[p]);
+            out.layer_ns[p] += row.nanos[p];
+            if row.remote_deltas > 0 {
+                out.remote_layer_ns[p] += row.nanos[p];
+            }
+            out.collective_ns[p] += row.phases[p].collective_ns;
+            out.finalize_ns[p] += row.phases[p].finalize_ns;
+            out.rows_sent[p] += row.rows_sent.get(p).map_or(0, |to| to.iter().sum());
+            out.bytes_sent[p] += row.bytes_sent.get(p).map_or(0, |to| to.iter().sum());
+        }
+    }
+    out
 }
 
 fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
@@ -41,9 +97,9 @@ fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
     let mut summary = Summary {
         total_ns: report.step_ns.iter().sum(),
         layers: rows.len(),
-        passes: rows.iter().filter(|row| row.nanos[0] > 0).count(),
-        max_terms: rows.iter().map(|row| row.terms_out[0]).max().unwrap_or(0),
-        mean_terms: rows.iter().map(|row| row.terms_out[0] as f64).sum::<f64>()
+        passes: rows.iter().filter(|row| layer_nanos(row) > 0).count(),
+        max_terms: rows.iter().map(layer_terms).max().unwrap_or(0),
+        mean_terms: rows.iter().map(|row| layer_terms(row) as f64).sum::<f64>()
             / rows.len().max(1) as f64,
         peak_terms: report.trace.peak_terms().unwrap_or(0),
         kinds: Vec::new(),
@@ -53,21 +109,23 @@ fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
         finalize_ns: 0,
         step_max_terms: vec![0; steps],
         step_layer_ns: vec![0; steps],
+        partitions: summarize_partitions(report),
     };
     for (i, row) in rows.iter().enumerate() {
         let kind = kinds[row.circuit_index as usize % per_step];
         let totals = &mut by_kind.iter_mut().find(|(k, _)| *k == kind).expect("both kinds").1;
         totals.layers += 1;
-        totals.nanos += row.nanos[0];
-        totals.terms_in += row.terms_in[0] as u64;
+        totals.nanos += layer_nanos(row);
+        totals.terms_in += row.terms_in.iter().sum::<usize>() as u64;
+        // Phases are partition 0's; the per-partition section carries the rest.
         let phases = &row.phases[0];
         summary.rebucket_ns += phases.rebucket_ns;
         summary.prepare_ns += phases.prepare_ns;
         summary.coset_loop_ns += phases.coset_loop_ns;
         summary.finalize_ns += phases.finalize_ns;
         let step = (i / per_step).min(steps - 1);
-        summary.step_max_terms[step] = summary.step_max_terms[step].max(row.terms_out[0]);
-        summary.step_layer_ns[step] += row.nanos[0];
+        summary.step_max_terms[step] = summary.step_max_terms[step].max(layer_terms(row));
+        summary.step_layer_ns[step] += layer_nanos(row);
     }
     summary.kinds = by_kind.into_iter().filter(|(_, totals)| totals.layers > 0).collect();
     summary
@@ -75,6 +133,20 @@ fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
 
 fn ms(ns: u64) -> f64 {
     ns as f64 * 1e-6
+}
+
+fn backend_label(cfg: &Config, report: &Report) -> String {
+    match cfg.backend {
+        Backend::Cpu => format!("cpu threads={}", cfg.threads),
+        Backend::Gpu => format!("gpu device={}", cfg.device.unwrap_or(0)),
+        Backend::Gpus | Backend::MpiGpu => format!(
+            "{} partitions={} devices={:?} rows={}",
+            cfg.backend.name(),
+            report.devices.len(),
+            report.devices,
+            cfg.rows.name()
+        ),
+    }
 }
 
 pub(crate) fn print_report(
@@ -85,18 +157,15 @@ pub(crate) fn print_report(
     kinds: &[GateKind],
 ) {
     let summary = summarize(report, kinds, cfg.steps);
-    let backend = match cfg.backend {
-        Backend::Cpu => format!("cpu threads={}", cfg.threads),
-        Backend::Gpu => format!("gpu device={}", cfg.device),
-    };
     println!(
-        "model={} qubits={} W={words} observable={} steps={} channels/step={} dtype={} {backend} truncation={}{}",
+        "model={} qubits={} W={words} observable={} steps={} channels/step={} dtype={} {} truncation={}{}",
         quench.name,
         quench.num_qubits,
         quench.observable_label(),
         cfg.steps,
         kinds.len(),
         cfg.dtype,
+        backend_label(cfg, report),
         cfg.truncation.label(),
         if cfg.one_call { " one-call" } else { "" },
     );
@@ -107,7 +176,7 @@ pub(crate) fn print_report(
     for step in 0..cfg.steps {
         let wall = if cfg.one_call { summary.step_layer_ns[step] } else { report.step_ns[step] };
         let terms = if cfg.one_call {
-            report.trace.layers[(step + 1) * kinds.len() - 1].terms_out[0]
+            layer_terms(&report.trace.layers[(step + 1) * kinds.len() - 1])
         } else {
             report.step_terms[step]
         };
@@ -142,19 +211,22 @@ pub(crate) fn print_report(
         );
     }
     println!(
-        "  layer phases ms: rebucket={:.1} prepare={:.1} coset_loop={:.1} finalize={:.1}",
+        "  layer phases ms (partition 0): rebucket={:.1} prepare={:.1} coset_loop={:.1} finalize={:.1}",
         ms(summary.rebucket_ns),
         ms(summary.prepare_ns),
         ms(summary.coset_loop_ns),
         ms(summary.finalize_ns),
     );
-    if cfg.backend == Backend::Gpu {
+    if cfg.backend != Backend::Cpu {
         println!(
             "  upload_ms={:.1} download_ms={:.1} clocks(sm,mem)={}",
             ms(report.upload_ns),
             ms(report.download_ns),
             report.clocks.as_deref().unwrap_or("unknown"),
         );
+    }
+    if report.devices.len() > 1 {
+        print_partitions(report, &summary.partitions, summary.layers);
     }
     #[cfg(feature = "phase-timing")]
     print_phase_stats(&report.stats);
@@ -167,10 +239,47 @@ pub(crate) fn print_report(
     }
 }
 
-#[cfg(feature = "phase-timing")]
-fn print_phase_stats(stats: &paulistrings::PhaseStats) {
+fn print_partitions(report: &Report, parts: &PartitionSummary, layers: usize) {
+    let total_rows: u64 = parts.rows_sent.iter().sum();
+    let total_bytes: u64 = parts.bytes_sent.iter().sum();
     println!(
-        "  phase-timing ms: prepare={:.1} rebucket={:.1} gather={:.1} sort={:.1} merge={:.1} compact={:.1} rescale={:.1} coset_loop={:.1} finalize={:.1} truncate={:.1} h2d={:.1} d2h={:.1}",
+        "  partitions: remote_layers={} of {layers} crossed_bonds={} rows_exchanged={total_rows} bytes_exchanged={total_bytes}",
+        parts.remote_layers,
+        report.crossed_bonds.map_or("-".to_string(), |c| c.to_string()),
+    );
+    println!(
+        "  {:>4} {:>6} {:>13} {:>13} {:>11} {:>15} {:>13} {:>11} {:>12}",
+        "part",
+        "device",
+        "terms_final",
+        "terms_max",
+        "layer_ms",
+        "remote_layer_ms",
+        "collective_ms",
+        "finalize_ms",
+        "rows_sent"
+    );
+    for p in 0..parts.terms_final.len() {
+        println!(
+            "  {:>4} {:>6} {:>13} {:>13} {:>11.1} {:>15.1} {:>13.1} {:>11.1} {:>12}",
+            p,
+            report.devices.get(p).copied().unwrap_or(0),
+            parts.terms_final[p],
+            parts.terms_max[p],
+            ms(parts.layer_ns[p]),
+            ms(parts.remote_layer_ns[p]),
+            ms(parts.collective_ns[p]),
+            ms(parts.finalize_ns[p]),
+            parts.rows_sent[p],
+        );
+    }
+}
+
+#[cfg(feature = "phase-timing")]
+fn print_phase_stats(per_partition: &[paulistrings::PhaseStats]) {
+    let stats = &per_partition[0];
+    println!(
+        "  phase-timing ms (partition 0): prepare={:.1} rebucket={:.1} gather={:.1} sort={:.1} merge={:.1} compact={:.1} rescale={:.1} coset_loop={:.1} finalize={:.1} truncate={:.1} h2d={:.1} d2h={:.1}",
         ms(stats.prepare_ns),
         ms(stats.rebucket_ns),
         ms(stats.gather_ns),
@@ -188,6 +297,17 @@ fn print_phase_stats(stats: &paulistrings::PhaseStats) {
         "  phase-timing counts: layers={} cosets={} runs={} rows_gathered={} rows_sorted={}",
         stats.layers, stats.cosets, stats.runs, stats.rows_gathered, stats.rows_sorted,
     );
+    if per_partition.len() > 1 {
+        for (p, stats) in per_partition.iter().enumerate() {
+            println!(
+                "  phase-timing partition {p}: export={:.1} exchange={:.1} chunk_wait={:.1} truncate={:.1} ms",
+                ms(stats.export_ns),
+                ms(stats.exchange_ns),
+                ms(stats.chunk_wait_ns),
+                ms(stats.truncate_ns),
+            );
+        }
+    }
 }
 
 fn write_layers(path: &str, report: &Report, kinds: &[GateKind]) {
@@ -196,20 +316,23 @@ fn write_layers(path: &str, report: &Report, kinds: &[GateKind]) {
         std::process::exit(2);
     });
     let mut text = String::from(
-        "application\tcircuit_index\tkind\tbits\tterms_in\tterms_out\tnanos\trebucket_ns\tprepare_ns\tcoset_loop_ns\tfinalize_ns\trecords\tbatches\tpermuted\trescaled\n",
+        "application\tcircuit_index\tkind\tbits\tterms_in\tterms_out\tnanos\trebucket_ns\tprepare_ns\tcoset_loop_ns\tfinalize_ns\trecords\tbatches\tpermuted\trescaled\tremote_deltas\trows_exchanged\tterms_out_per_partition\n",
     );
     for row in &report.trace.layers {
         let phases = &row.phases[0];
         let device = row.device[0].unwrap_or_default();
+        let rows_exchanged: u64 = row.rows_sent.iter().flatten().sum();
+        let per_partition =
+            row.terms_out.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
         text.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             row.application_index,
             row.circuit_index,
             kinds[row.circuit_index as usize % kinds.len()].name(),
             row.bits[0],
-            row.terms_in[0],
-            row.terms_out[0],
-            row.nanos[0],
+            row.terms_in.iter().sum::<usize>(),
+            layer_terms(row),
+            layer_nanos(row),
             phases.rebucket_ns,
             phases.prepare_ns,
             phases.coset_loop_ns,
@@ -218,6 +341,9 @@ fn write_layers(path: &str, report: &Report, kinds: &[GateKind]) {
             device.batches,
             u8::from(device.permuted),
             u8::from(device.rescaled),
+            row.remote_deltas,
+            rows_exchanged,
+            per_partition,
         ));
     }
     file.write_all(text.as_bytes()).expect("writing --layers-out");
@@ -243,6 +369,30 @@ fn append_json(
             (kind.name().to_string(), value)
         })
         .collect();
+    let parts = &summary.partitions;
+    #[cfg(feature = "phase-timing")]
+    let (export_ns, exchange_ns): (Vec<u64>, Vec<u64>) =
+        report.stats.iter().map(|s| (s.export_ns, s.exchange_ns)).unzip();
+    #[cfg(not(feature = "phase-timing"))]
+    let (export_ns, exchange_ns): (Option<Vec<u64>>, Option<Vec<u64>>) = (None, None);
+    let partitions = serde_json::json!({
+        "count": parts.terms_final.len(),
+        "devices": report.devices,
+        "per_device": cfg.per_device,
+        "rows": cfg.rows.name(),
+        "crossed_bonds": report.crossed_bonds,
+        "remote_layers": parts.remote_layers,
+        "terms_final": parts.terms_final,
+        "terms_max": parts.terms_max,
+        "layer_ns": parts.layer_ns,
+        "remote_layer_ns": parts.remote_layer_ns,
+        "collective_ns": parts.collective_ns,
+        "finalize_ns": parts.finalize_ns,
+        "rows_sent": parts.rows_sent,
+        "bytes_sent": parts.bytes_sent,
+        "export_ns": export_ns,
+        "exchange_ns": exchange_ns,
+    });
     let line = serde_json::json!({
         "model": quench.name,
         "qubits": quench.num_qubits,
@@ -250,9 +400,9 @@ fn append_json(
         "observable": quench.observable_label(),
         "steps": cfg.steps,
         "dtype": cfg.dtype,
-        "backend": match cfg.backend { Backend::Cpu => "cpu", Backend::Gpu => "gpu" },
+        "backend": cfg.backend.name(),
         "threads": cfg.threads,
-        "device": cfg.device,
+        "device": report.devices.first(),
         "truncation": cfg.truncation.label(),
         "one_call": cfg.one_call,
         "total_ns": summary.total_ns,
@@ -271,6 +421,7 @@ fn append_json(
         "upload_ns": report.upload_ns,
         "download_ns": report.download_ns,
         "clocks": report.clocks,
+        "partitions": partitions,
         "readouts": report.readouts,
         "readout": report.final_readout,
     });

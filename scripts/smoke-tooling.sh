@@ -59,6 +59,9 @@ if nvidia-smi -L >/dev/null 2>&1; then
     step "sampling_bench: one device"
     cargo build --offline --release -p paulistrings --example sampling_bench --features cuda
     "$sampling" --backend gpu --steps 4 --approx-topn 2000 --json-out "$out/sampling.jsonl"
+    step "sampling_bench: four partitions on device 0, cut and seeded rows"
+    "$sampling" --backend gpus --devices 0 --per-device 4 --steps 6 --collapse --cache 2e4 --samples 5e3 --seed 1 --json-out "$out/sampling.jsonl"
+    "$sampling" --backend gpus --devices 0 --per-device 2 --rows seeded --model tfim --lattice 4x4 --steps 2 --approx-topn 2000
 else skip "device cells: no CUDA device"; fi
 if command -v mpirun >/dev/null && [ -n "${LIBCLANG_PATH:-}" ]; then
     step "probe under mpirun -n 2, a paired MPI A/B, and the mpi_ranks net"

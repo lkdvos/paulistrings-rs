@@ -1055,5 +1055,49 @@ mod device {
                 "device distinct-size blocks",
             );
         });
+
+        // Clifford layers keep every |c|, so the group's collapse must tile the whole sum's L1 norm into exactly `SAMPLES` draws of `norm / SAMPLES`: a point lost or drawn twice at a rank boundary breaks the count.
+        r.case("device collapse sample tiles the group's L1 norm", |r| {
+            use paulistrings::CollapseSample;
+            const SAMPLES: usize = 64;
+            let circuit = cnot_ring::<1>(12);
+            let sum = rand_sum::<1>(2_000, 12, 0xB041);
+            let norm: f64 = sum.iter().map(|(_, _, c)| c.norm()).sum();
+            for seed in 0..3u64 {
+                let policy = std::sync::Arc::new(CollapseSample::new(100, SAMPLES, seed));
+                let device = local_device_for_comm(r.world).expect("a device on every rank");
+                let options = GpuScatterOptions {
+                    rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(SEED))),
+                    ..GpuScatterOptions::new(&[device]).expect("placement")
+                };
+                let transport = MpiTransport::from_communicator(r.world);
+                let mut split = MpiGpuSum::scatter_to_device_with(&sum, transport, options)
+                    .expect("device scatter");
+                split
+                    .propagate(
+                        &circuit,
+                        BuiltinTruncation::CollapseSample(policy.clone()),
+                        Direction::Heisenberg,
+                    )
+                    .expect("device propagate");
+                let got = split.gather().expect("device gather");
+                let Some(got) = r.root_result(got, "device collapse") else {
+                    assert_eq!(policy.collapses(), 0, "only rank 0 counts");
+                    continue;
+                };
+                assert_eq!(
+                    policy.collapses(),
+                    1,
+                    "seed {seed}: one collapse, then under the cache"
+                );
+                let draws: Vec<f64> =
+                    got.iter().map(|(_, _, c)| c.norm() * SAMPLES as f64 / norm).collect();
+                for d in &draws {
+                    assert!((d - d.round()).abs() < 1e-9 && d.round() >= 1.0, "seed {seed}: {d}");
+                }
+                let total: f64 = draws.iter().map(|d| d.round()).sum();
+                assert_eq!(total as usize, SAMPLES, "seed {seed}: draws over the group");
+            }
+        });
     }
 }

@@ -5,7 +5,7 @@ use num_complex::Complex64;
 use paulistrings::gpu::GpuPartitionedSum;
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_terms_close, coefficient_tolerance, low_weight_sum, zz_rotation, KeepAll,
+    assert_terms_close_up_to_residues, coefficient_tolerance, low_weight_sum, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, BuildAccumulator, BuiltinTruncation, Circuit, Coefficient, CoefficientThreshold,
@@ -79,14 +79,14 @@ fn agrees<const W: usize>(
         let want = propagate(circuit, sum.clone(), &policy, direction);
         assert!(want.len() > 1, "{name}: the fixture must keep terms");
         let (got, f64_joined) = device_as::<W, f64>(circuit, sum, &policy, direction);
-        assert_terms_close(
+        assert_terms_close_up_to_residues(
             &got,
             &want,
             1e3 * coefficient_tolerance::<f64>(),
             &format!("{name} f64 {direction:?}"),
         );
         let (got, c128_joined) = device_as::<W, Complex64>(circuit, sum, &policy, direction);
-        assert_terms_close(
+        assert_terms_close_up_to_residues(
             &got,
             &want,
             1e3 * coefficient_tolerance::<Complex64>(),

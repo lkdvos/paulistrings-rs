@@ -125,6 +125,40 @@ pub fn assert_terms_close<const W: usize>(
     }
 }
 
+/// [`assert_terms_close`], except that a key on one side only must carry a coefficient within `tol` of zero: two orders of one product can leave a rounding residue where the other cancels exactly.
+pub fn assert_terms_close_up_to_residues<const W: usize>(
+    got: &PauliSum<W>,
+    want: &PauliSum<W>,
+    tol: f64,
+    what: &str,
+) {
+    let (got, want) = (canonical_triples(got), canonical_triples(want));
+    let (mut i, mut j) = (0, 0);
+    while i < got.len() || j < want.len() {
+        let order = match (got.get(i), want.get(j)) {
+            (Some(g), Some(w)) => (g.0, g.1).cmp(&(w.0, w.1)),
+            (Some(_), None) => core::cmp::Ordering::Less,
+            _ => core::cmp::Ordering::Greater,
+        };
+        let (key, delta) = match order {
+            core::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+                ((got[i - 1].0, got[i - 1].1), (got[i - 1].2 - want[j - 1].2).norm())
+            }
+            core::cmp::Ordering::Less => {
+                i += 1;
+                ((got[i - 1].0, got[i - 1].1), got[i - 1].2.norm())
+            }
+            core::cmp::Ordering::Greater => {
+                j += 1;
+                ((want[j - 1].0, want[j - 1].1), want[j - 1].2.norm())
+            }
+        };
+        assert!(delta < tol, "{what}: key {key:?} differs by {delta:e}");
+    }
+}
+
 /// `policy` that also sums, over layers, the 2-norm of the terms it drops for their coefficient: the `Δ` of [`assert_runs_agree`].
 pub struct DiscardMeter<'p, P: ?Sized> {
     policy: &'p P,

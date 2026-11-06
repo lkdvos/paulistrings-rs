@@ -479,14 +479,32 @@ The send side stays whole, the default is unbounded, and the NCCL form is unmeas
 
 Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
 At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
-Shipped from this profile: the Clifford permutation path and the on-disk NVRTC cache.
-Open levers, by estimated gain: rotation dedup as a shared-memory hash join instead of eight radix passes (fused layer −50–65%); fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
+Shipped from this profile: the Clifford permutation path, the rotation join (§Rotation layers join instead of sorting) and the on-disk NVRTC cache.
+Open levers, by estimated gain: fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
 
 ### GPU Clifford permutation path
 
 A permutation table (one emitting entry per pattern, no colliding outputs, no received entries) scatters rows directly (`k_permute_*`), with no sort, arena or compaction.
 **−62.7% to −66.9%** wall on `cnot` from 1e5 to 1.6e7 (5/5); `heavyhex_step` (rotations only) is flat as the control.
 Open: Clifford layers with received entries, and an emitter count replacing `k_permute_count`'s survivor pass.
+
+### Rotation layers join instead of sorting
+
+A two-entry table with one identity-mask entry (every rotation, tabulated or wide) and no received entry runs `k_join`: per output bucket a shared open-addressing table over the base rows a partner can land on, probed by the partner rows; every other row is written as it is read, so there is no sort, no fallback and no segmented sum (`JoinTable` in `engine/gpu/prepared.rs`).
+A/B on ccqlin038's A6000 against the radix fused layer, same binary (`GpuLayerOptions::join`), `sampling_bench` release with the JCC flag, f64, SM 1800–1890 MHz, memory 7601 MHz:
+
+| cell | radix wall | join wall | Δ wall | rotation layer mean, radix → join |
+|---|---|---|---|---|
+| kicked Ising `--approx-topn 1e6` (2 pairs) | 3.264 / 3.381 s | 2.679 / 2.839 s | **−17.9% / −16.0%** | 911 → 696 µs |
+| kicked Ising `--approx-topn 1e7` (2 pairs) | 25.82 / 25.98 s | 20.62 / 20.67 s | **−20.1% / −20.4%** | 7739 → 5695 µs |
+| kicked Ising `--threshold 2.5e-5` (2 pairs) | 38.23 / 38.70 s | 28.81 / 28.63 s | **−24.6% / −26.0%** | 11162 → 7421 µs |
+| TFIM 16×16 `--approx-topn 1e6` (2 pairs) | 15.00 / 15.01 s | 13.43 / 13.36 s | **−10.4% / −11.0%** | 1476 → 1322 µs |
+| TFIM 16×16 `--approx-topn 1e7` (1 pair) | 125.69 s | 123.77 s | −1.5% | 12809 → 12654 µs |
+
+Under the threshold both paths give the same counts and ⟨Z₆₂⟩ = 0.171746373755 to 12 digits; under `ApproxTopN` the readouts differ in the fourth digit, as the boundary octave keeps terms in bucket order, which the join's atomic slot claims do not fix.
+Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16338 → 10822 ms; a saturated rotation layer's coset loop 9273 → 6332 µs, of which `gather` and `compact` (≈2.5 ms together) are unchanged.
+TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
+Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; writing the join's rows straight to the output columns at the pre-dedup offsets, which drops the compaction; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
 
 ### NCCL exchange between MPI ranks
 

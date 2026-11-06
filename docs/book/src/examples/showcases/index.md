@@ -9,7 +9,7 @@ Five measured applications.
 | [B5 Operator backpropagation](b5-operator-backpropagation.md) | hybrid depth reduction: back-propagate the tail classically, hand a QPU the shorter front circuit and an evolved observable | qiskit-Aer statevector, gap 1.7·10⁻¹⁶; task file round-trip gap exactly `0.0` | ~3 s |
 | [B6 Resource probes](b6-resource-probes.md) | difficulty of the evolved operator: Pauli-spectrum entropy (the cost model for *this* engine) against operator entanglement (the cost model for MPO methods) | brute force over all `4ⁿ` traces and a dense SVD; every gap ≤ 8.9·10⁻¹⁶ | under a minute |
 | [B7 Stabilizer-prep](b7-stabilizer-prep.md) | stim prepares a 36-qubit 2D cluster state, a non-Clifford tail is propagated, and the expectation is contracted against the stabilizer state in `O(m·n²/64)`, avoiding a 1.0 TiB state vector | dense statevector and a projector from the generators alone at `n ≤ 12`, plus qiskit Aer; worst gap 2.2·10⁻¹⁵ | 116 s, 10.2 GiB peak RSS (`--quick`: 40 s, 1.5 GiB) |
-| [B8 Operator Loschmidt echo](b8-operator-loschmidt-echo.md) | the 56-qubit ibm_boston echo of arXiv:2607.25998 by collapse-to-one PP-MC, single-node and over MPI ranks | the tracker QASM reproduced gate for gate, and a dense 9-qubit patch, agreeing to 1e-10 | one L = 6 trajectory at cache 5e7: 131 s on 8 threads, 3.9 GB |
+| [B8 Operator Loschmidt echo](b8-operator-loschmidt-echo.md) | the 56-qubit ibm_boston echo of arXiv:2607.25998 by PP-MC over pairs of independent sampled trajectories, single-node and over MPI ranks | the tracker QASM reproduced gate for gate, and a dense 9-qubit patch, agreeing to 1e-10 | one L = 6 trajectory at cache 5e7: 131 s on 8 threads, 3.9 GB |
 
 B3 (variational pre-training) and B4 (QML/QCNN) are not part of this suite.
 

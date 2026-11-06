@@ -2,6 +2,7 @@
 
 Circuits come from the vendored Quantum Advantage Tracker QASM; `echo_half` rebuilds the measured half for any `(L, eta)`.
 Estimators, in numpy over `PauliSum.to_arrays()`: the paper's diagonal OLE from an anticommutation histogram, and the exact `rotated_overlap`.
+Each takes an optional second sum `B` for the bilinear form between two sums, which on two independent sampled trajectories is an unbiased estimate of the echo.
 """
 
 from __future__ import annotations
@@ -205,44 +206,72 @@ def _allreduce(value, comm):
     return value if comm is None else comm.allreduce(value)
 
 
-def anticommute_histogram(A, sites, axis: str = "x", comm=None) -> np.ndarray:
-    """`w[n] = sum |c_P|^2` over the strings `P` anticommuting with exactly `n` of the `G_q`; length `len(sites) + 1`."""
-    x, z, c = A.to_arrays()
+def _paired(A, B):
+    """`(x, z, a, b)` over the union of the two sums' keys, a missing coefficient zero; `B = None` pairs `A` with itself."""
+    x, z, a = A.to_arrays()
+    a = np.asarray(a, dtype=complex)
+    if B is None:
+        return x, z, a, a
+    if B.num_qubits != A.num_qubits:
+        raise ValueError(f"the sums act on {A.num_qubits} and {B.num_qubits} qubits")
+    xb, zb, b = B.to_arrays()
+    keys = np.ascontiguousarray(np.concatenate([np.concatenate([x, z], axis=1), np.concatenate([xb, zb], axis=1)]))
+    rows = keys.view(np.dtype((np.void, keys.dtype.itemsize * keys.shape[1]))).ravel()
+    _, first, inverse = np.unique(rows, return_index=True, return_inverse=True)
+    inverse = inverse.ravel()
+    ca = np.zeros(len(first), dtype=complex)
+    cb = np.zeros(len(first), dtype=complex)
+    ca[inverse[: len(a)]] = a
+    cb[inverse[len(a) :]] = np.asarray(b, dtype=complex)
+    width = x.shape[1]
+    return keys[first, :width], keys[first, width:], ca, cb
+
+
+def anticommute_histogram(A, sites, axis: str = "x", comm=None, B=None) -> np.ndarray:
+    """`w[n] = sum |c_P|^2` over the strings `P` anticommuting with exactly `n` of the `G_q`; length `len(sites) + 1`.
+
+    With a second sum `B`, `w[n] = sum Re(conj(a_P) b_P)` instead.
+    """
+    x, z, a, b = _paired(A, B)
     mask = _site_mask(sites, A.num_qubits, x.shape[1])
     selector, _ = _halves(x, z, axis)
     counts = _popcount(selector & mask)
-    hist = np.bincount(counts, weights=np.abs(c) ** 2, minlength=len(sites) + 1).astype(float)
+    hist = np.bincount(counts, weights=np.real(np.conj(a) * b), minlength=len(sites) + 1).astype(float)
     return _allreduce(hist, comm)
 
 
-def diagonal_echo(hist, delta: float) -> float:
-    """`sum_n w_n cos(2 delta)^n / sum_n w_n`: the class-diagonal part of `rotated_overlap`, normalized by `sum |c|^2`."""
+def diagonal_echo(hist, delta: float, normalize: bool = True) -> float:
+    """`sum_n w_n cos(2 delta)^n / sum_n w_n`: the class-diagonal part of `rotated_overlap`, normalized by `sum |c|^2`.
+
+    `normalize=False` drops the denominator, which is one for an untruncated unitary evolution of a unit-norm observable; a ratio of two estimates would be biased.
+    """
     w = np.asarray(hist, dtype=float)
-    return float(np.dot(w, np.cos(2.0 * delta) ** np.arange(len(w))) / w.sum())
+    value = float(np.dot(w, np.cos(2.0 * delta) ** np.arange(len(w))))
+    return value / w.sum() if normalize else value
 
 
-def rotated_overlap_complex(A, sites, delta: float, axis: str = "x") -> complex:
-    """`2^-n Tr(A^dagger V^dagger A V)` of one sum (or share), without materializing `V^dagger A V`.
+def rotated_overlap_complex(A, sites, delta: float, axis: str = "x", B=None) -> complex:
+    """`2^-n Tr(A^dagger V^dagger B V)` of one sum (or share), `B = A` by default, without materializing `V^dagger B V`.
 
     Strings agreeing off the flipped bits on their anticommuting sites form a class that `V^dagger . V` mixes; each class of `k` strings costs `k^2` pairs.
     """
-    x, z, c = A.to_arrays()
+    x, z, a, b = _paired(A, B)
     mask = _site_mask(sites, A.num_qubits, x.shape[1])
     selector, flip = _halves(x, z, axis)
     k = selector & mask
     moving = _popcount(k) > 0
-    fixed = float(np.sum(np.abs(c[~moving]) ** 2))
-    selector, flip, k, c = selector[moving], flip[moving], k[moving], c[moving]
-    if len(c) == 0:
-        return complex(fixed)
+    fixed = complex(np.sum(np.conj(a[~moving]) * b[~moving]))
+    selector, flip, k, a, b = selector[moving], flip[moving], k[moving], a[moving], b[moving]
+    if len(a) == 0:
+        return fixed
     # Group by class: the selector half and the flip half with its moving bits cleared.
     key = np.concatenate([selector, flip & ~k], axis=1)
     order = np.lexsort(key.T[::-1])
-    key, flip, k, c = key[order], (flip & k)[order], k[order], c[order]
-    new_class = np.ones(len(c), dtype=bool)
+    key, flip, k, a, b = key[order], (flip & k)[order], k[order], a[order], b[order]
+    new_class = np.ones(len(a), dtype=bool)
     new_class[1:] = np.any(key[1:] != key[:-1], axis=1)
     starts = np.flatnonzero(new_class)
-    sizes = np.diff(np.append(starts, len(c)))
+    sizes = np.diff(np.append(starts, len(a)))
     member_size = np.repeat(sizes, sizes)
     member_start = np.repeat(starts, sizes)
     sites_k = _popcount(k)
@@ -253,7 +282,7 @@ def rotated_overlap_complex(A, sites, delta: float, axis: str = "x") -> complex:
     total = 0.0j
     # Every ordered pair (p, q) of one class, in chunks of about `_PAIR_CHUNK` pairs.
     bounds = np.searchsorted(np.cumsum(member_size), np.arange(_PAIR_CHUNK, member_size.sum(), _PAIR_CHUNK))
-    for lo, hi in zip(np.r_[0, bounds], np.r_[bounds, len(c)]):
+    for lo, hi in zip(np.r_[0, bounds], np.r_[bounds, len(a)]):
         if lo == hi:
             continue
         pair_counts = member_size[lo:hi]
@@ -265,13 +294,13 @@ def rotated_overlap_complex(A, sites, delta: float, axis: str = "x") -> complex:
         # R[P, Q] is `-sin 2 delta` where P holds Y against Q's X (Z axis), or P holds Z against Q's Y (X axis).
         negative = _popcount((flip[p] if axis == "z" else flip[q]) & d) % 2 == 1
         magnitude = cos_pow[sites_k[p] - flipped] * sin_pow[flipped]
-        total += np.sum(np.conj(c[p]) * c[q] * np.where(negative, -magnitude, magnitude))
+        total += np.sum(np.conj(a[p]) * b[q] * np.where(negative, -magnitude, magnitude))
     return complex(total + fixed)
 
 
-def rotated_overlap(A, sites, delta: float, axis: str = "x", comm=None) -> float:
-    """The operator Loschmidt echo `2^-n Tr(A V^dagger A V)`: the real part of `rotated_overlap_complex`, which is the echo itself for a Hermitian `A`.
+def rotated_overlap(A, sites, delta: float, axis: str = "x", comm=None, B=None) -> float:
+    """The operator Loschmidt echo `2^-n Tr(A V^dagger A V)`: the real part of `rotated_overlap_complex`, which is the echo itself for a Hermitian `A`; with `B`, `2^-n Re Tr(A V^dagger B V)`.
 
-    With `comm`, every class must lie on one rank; `run_b8.py` ensures it by excluding the flipped bits of `sites` from the partition rows.
+    With `comm`, every class must lie on one rank, in both sums; `run_b8.py` ensures it by excluding the flipped bits of `sites` from the partition rows.
     """
-    return _allreduce(rotated_overlap_complex(A, sites, delta, axis).real, comm)
+    return _allreduce(rotated_overlap_complex(A, sites, delta, axis, B).real, comm)

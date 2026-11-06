@@ -142,18 +142,43 @@ def test_no_scattering_is_a_perfect_echo():
     assert ole.rotated_overlap(A, sites, 0.3, "x") == pytest.approx(1.0, abs=1e-12)
 
 
-def test_ppmc_with_a_large_cache_is_exact_and_a_small_one_collapses():
+def test_ppmc_with_a_large_cache_is_exact():
     from paulistrings import propagated
     ps, *_, obs, circuit, sites = _engine_patch(2, ole.eta_of_alpha(0.15))
     exact = propagated(obs, circuit, direction="heisenberg")
-    big = propagated(obs, circuit, ps.truncation.collapse_sample(10**9, 7), direction="heisenberg")
+    big = propagated(obs, circuit, ps.truncation.collapse_sample(10**9, 4, 7), direction="heisenberg")
     assert np.allclose(ole.anticommute_histogram(big, sites, "x"), ole.anticommute_histogram(exact, sites, "x"), atol=1e-12)
-    runs = []
-    for s in (1, 1, 2):
-        sampled = propagated(obs, circuit, ps.truncation.collapse_sample(8, s), direction="heisenberg")
-        runs.append(ole.diagonal_echo(ole.anticommute_histogram(sampled, sites, "x"), 0.3))
-    assert runs[0] == runs[1]
-    assert all(0.0 <= r <= 1.0 + 1e-12 for r in runs)
+
+
+def test_ppmc_pairs_estimate_the_echo_without_bias():
+    """The first 80 gates of the patch's `L = 2` half, probed on every patch qubit: over 150 pairs of independent trajectories that collapse several times each, both bilinear echoes average to the exact ones within four standard errors.
+
+    The full half collapses after nearly every gate at any cache below its 4^9-term saturation, and the variance of an unbiased estimate then explodes, so this checks the estimator where it is usable.
+    """
+    from paulistrings import propagated, propagated_with_stats
+    ps, qubits, ops, *_, obs, _, _ = _engine_patch(2, ole.eta_of_alpha(0.15))
+    circuit = ole.to_circuit(ops[:80], index={q: i for i, q in enumerate(qubits)})
+    sites = list(range(len(qubits)))
+    delta = ole.spec()["delta"]
+    exact = propagated(obs, circuit, direction="heisenberg")
+    want_diag = ole.diagonal_echo(ole.anticommute_histogram(exact, sites, "x"), delta, normalize=False)
+    want_exact = ole.rotated_overlap(exact, sites, delta, "x")
+    assert want_exact < 0.9
+    diag, full, collapses = [], [], 0
+    for pair in range(150):
+        runs = [
+            propagated_with_stats(obs, circuit, ps.truncation.collapse_sample(3600, 3600, seed), direction="heisenberg")
+            for seed in (2 * pair, 2 * pair + 1)
+        ]
+        (A, a_stats), (B, b_stats) = runs
+        collapses += a_stats.collapses + b_stats.collapses
+        diag.append(ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x", B=B), delta, normalize=False))
+        full.append(ole.rotated_overlap(A, sites, delta, "x", B=B))
+    assert collapses >= 300
+    for values, want in [(diag, want_diag), (full, want_exact)]:
+        values = np.array(values)
+        error = values.std(ddof=1) / math.sqrt(len(values))
+        assert abs(values.mean() - want) < 4 * error, (values.mean(), want, error)
 
 
 def test_quarter_turn_rotations_produce_a_single_clifford_term():

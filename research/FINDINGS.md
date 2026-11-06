@@ -175,8 +175,14 @@ Over MPI they beat random rows **2.4× (2 ranks) to 1.9× (8 ranks)**, and **3.4
 
 ### Collapse-to-one sampling (hybrid PP-MC)
 
-`CollapseSample` reproduces arXiv:2607.25998's hybrid PP-MC, collectively over partitions and ranks.
+These numbers are for the collapse-to-one rule (one string drawn by `|c|²`, restarted at coefficient 1), which reproduced arXiv:2607.25998's hybrid PP-MC; `CollapseSample` now draws `samples` systematic points by `|c|` instead, and B8 pairs independent trajectories.
 56-qubit echo at cache 5e7: **131 s on 8 threads, 3.9 GB** against the paper's ~8 min on 10 cores; cache 3e10 over 16 ranks moves no η outside its standard error.
+
+### Unbiased systematic collapse on the echo
+
+On the 9-qubit B8 patch (`L = 2`, η = 9π/40, one channel per gate, exact echo 0.993 over 262 142 terms), the paired unbiased estimator is unusable below saturation: cache 2e5 with 131 072 samples collapses ~90 times per trajectory and gives **40 ± 22** over 60 pairs, cache 3.3e4 gives ~1e20, and caches ≤ 256 give pairs with no shared string (estimate 0).
+Every collapse after a gate loses the cancellations the echo needs, so `Σ|c|` compounds across collapses; on the first 100 gates probed on all nine qubits, with ~15 collapses per trajectory, the same estimator gives 0.429 ± 0.002 against the exact 0.430 over 200 pairs.
+The 56-qubit `L = 1` pair at cache 2e4 and 1e4 samples shares no string (estimate 0).
 
 ### Partition rows on x-bits for CZ and `rz` circuits
 

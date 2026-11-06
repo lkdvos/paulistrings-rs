@@ -513,6 +513,15 @@ A lone partition's sum now lives on a context object of its own with tracking of
 `sampling_bench` GPU f64, SM 1890–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM 1e5 **1.590 / 1.568 → 1.334 / 1.328 s (−16%)**, kicked Ising 1e5 0.412 / 0.398 → 0.382 / 0.370 s (−8%).
 Reading the batch total after the compaction with the fallback counters (three synchronizations a fused or join layer to two) was within the ±10% noise of these cells on its own.
 
+### Rotation runs under a per-term filter in one pass
+
+Under a per-term filter the device ran a rotation run's layers one by one through the join; it now groups the strings any layer touches by class (key off the run's qubits) into class buckets, and one block per class bucket applies every layer in shared memory, asking `keep` after each layer as the host does (`engine/gpu/layer/rotation_run.rs`).
+Kicked Ising at `--threshold 2.5e-5` (phase-timing build, SM 1845–1860 MHz, memory 7601 MHz): **21.8 → 8.44 s**, `rx` 20.7 → 7.4 s, readout identical to 12 digits; per run of 8 layers `gather` (classify and gather) 7.5 ms, `merge` (apply) 10.7 ms, `compact` (place and scatter) 5.2 ms at ~1.2e7 terms.
+About 32% of input strings are touched by a run; 5 of 338 runs still outgrow a block (1024 strings) and fall back to the layers one by one.
+A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
+Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
+Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).

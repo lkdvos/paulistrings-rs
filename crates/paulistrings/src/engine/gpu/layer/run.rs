@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 
 use super::fast_paths::permute_threads;
+use super::rotation_run::rotation_run_fused;
 use super::{apply_layer_device, timed_transfer, DeviceLayer, LayerScratch, Transfer};
 use crate::channel::prepared::{LocalPtm, Prepared, LOCAL_DIM};
 use crate::coefficient::Coefficient;
@@ -84,7 +85,7 @@ fn step_tables<const W: usize, C: Coefficient>(
 }
 
 /// Refine the device up to the driver's `target_bits`, which a run, unlike a layer, never raises.
-fn refine_to_target<const W: usize, C: Coefficient>(
+pub(super) fn refine_to_target<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     scratch: &mut LayerScratch<W, C>,
     target_bits: u8,
@@ -236,6 +237,12 @@ pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     target_bits: u8,
     scratch: &mut LayerScratch<W, C>,
 ) -> Result<(), GpuError> {
+    if *keep != KeepProgram::KEEP
+        && scratch.options.join
+        && rotation_run_fused(sum, layers, keep, target_bits, scratch)?
+    {
+        return Ok(());
+    }
     let joins = *keep == KeepProgram::KEEP;
     let plan = PartitionPlan::default();
     let mut rest = layers;

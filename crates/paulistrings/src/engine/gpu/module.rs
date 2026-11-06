@@ -30,6 +30,7 @@ const EXPORT: &str = include_str!("kernels/export.cu");
 const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
 const PERMUTE: &str = include_str!("kernels/permute.cu");
+const PERMUTE_RUN: &str = include_str!("kernels/permute_run.cu");
 const TRUNCATE: &str = include_str!("kernels/truncate.cu");
 
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
@@ -46,6 +47,7 @@ const KERNEL_SOURCES: &[&str] = &[
     COMPACT,
     RESCALE,
     PERMUTE,
+    PERMUTE_RUN,
     TRUNCATE,
 ];
 
@@ -152,6 +154,8 @@ pub(crate) struct KernelSet {
     pub(crate) permute_count: CudaFunction,
     pub(crate) permute_lengths: CudaFunction,
     pub(crate) permute_scatter: CudaFunction,
+    pub(crate) permute_run_count: CudaFunction,
+    pub(crate) permute_run_scatter: CudaFunction,
     pub(crate) octave_histogram: CudaFunction,
     pub(crate) radix_histogram: CudaFunction,
     pub(crate) radix_extract: CudaFunction,
@@ -327,6 +331,8 @@ pub(crate) fn kernel_set_with_options(
         permute_count: load("k_permute_count")?,
         permute_lengths: load("k_permute_lengths")?,
         permute_scatter: load("k_permute_scatter")?,
+        permute_run_count: load("k_permute_run_count")?,
+        permute_run_scatter: load("k_permute_run_scatter")?,
         octave_histogram: load("k_octave_histogram")?,
         radix_histogram: load("k_radix_histogram")?,
         radix_extract: load("k_radix_extract")?,

@@ -3,8 +3,8 @@
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
-    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuLayerOptions,
-    LayerScratch,
+    apply_layer_device, gpu_desired_bits, permutation_run_device, prepared_fanout,
+    rotation_run_device, DeviceLayer, GpuLayerOptions, LayerScratch,
 };
 use super::sum::{GpuSum, GPU_MAX_BITS};
 use super::truncation::{layer_pass_leaves, KeepProgram};
@@ -12,7 +12,7 @@ use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
-use crate::engine::bucketed::RowEmitter;
+use crate::engine::bucketed::{RowEmitter, Run, MAX_ROTATION_RUN_LAYERS};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
@@ -326,6 +326,56 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
                 self.record(Err(e));
                 failed_counts(plan, size)
             }
+        }
+    }
+
+    /// Permutation runs whenever the scatter path is on.
+    fn takes_runs(&self) -> bool {
+        self.scratch.as_ref().is_some_and(|scratch| scratch.options.clifford)
+    }
+
+    /// A lone partition's rotation runs, of any span, since the device holds no coset in cache.
+    fn rotation_run_dimension(&self) -> Option<usize> {
+        (self.group_size == 1).then_some(MAX_ROTATION_RUN_LAYERS)
+    }
+
+    fn apply_run(&mut self, run: Run<'_, W, C>, _policy: &BuiltinTruncation) {
+        let layers = match run {
+            Run::Rotations(layers) => layers.len(),
+            Run::Permutations(steps) => steps.len(),
+        };
+        let first = self.layers_applied;
+        self.layers_applied += layers;
+        if let Some(scratch) = self.scratch.as_mut() {
+            scratch.record = DeviceLayerRecord::default();
+            scratch.refine_passes = 0;
+            scratch.receive_chunks = 0;
+        }
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.fail_at_layer.is_some_and(|layer| (first..self.layers_applied).contains(&layer)) {
+            self.record(Err(GpuError::Unsupported("injected before the exchange")));
+        }
+        let _ = first;
+        let (keep, target_bits) = (self.keep, self.hash.bits());
+        let Some((sum, scratch)) = self.healthy_parts() else {
+            return;
+        };
+        timed!(let (started, before) = (std::time::Instant::now(), scratch.stats));
+        let result = match run {
+            Run::Permutations(steps) => {
+                permutation_run_device(sum, steps, &keep, target_bits, scratch)
+            }
+            Run::Rotations(layers) => rotation_run_device(sum, layers, &keep, target_bits, scratch),
+        };
+        timed!(fold_layer_stats(
+            scratch,
+            &before,
+            started.elapsed().as_nanos() as u64,
+            sum.hash().bits(),
+        ));
+        match result {
+            Ok(()) => self.resync_hash(),
+            Err(e) => self.record(Err(e)),
         }
     }
 

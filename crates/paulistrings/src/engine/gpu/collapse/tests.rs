@@ -260,25 +260,28 @@ fn a_device_group_collapse_is_the_hosts_partitioned_collapse() {
     check_group::<1, f32>(2);
 }
 
-/// `circuit`'s channels one per circuit, in the order a Heisenberg run applies them.
-fn heisenberg_layers(mut circuit: Circuit<1>) -> Vec<Circuit<1>> {
+/// `circuit`'s channels cut into the segments a Heisenberg run applies between its layer passes, `passes_after[i]` marking the application-order layer a pass follows; each segment is a circuit whose own Heisenberg run applies its layers in that order.
+fn heisenberg_segments(mut circuit: Circuit<1>, passes_after: &[bool]) -> Vec<Circuit<1>> {
     let n = circuit.num_qubits;
-    circuit
-        .channels
-        .drain(..)
-        .rev()
-        .map(|channel| {
-            let mut layer = Circuit::new(n);
-            layer.push_boxed(channel);
-            layer
-        })
-        .collect()
+    let mut segments = Vec::new();
+    let mut segment = Vec::new();
+    for (channel, &pass) in circuit.channels.drain(..).rev().zip(passes_after) {
+        segment.push(channel);
+        if pass {
+            let mut layers = Circuit::new(n);
+            for channel in segment.drain(..).rev() {
+                layers.push_boxed(channel);
+            }
+            segments.push(layers);
+        }
+    }
+    segments
 }
 
 /// A run's policy around its sampler.
 type PolicyOf = fn(CollapseSample) -> T;
 
-/// A device run with `CollapseSample` alone or after a per-term filter is its replay layer by layer: the filter in the layer, then, at the end of each layer or run the trace shows, a collapse at `u` of pass `k` whenever the sum outgrew the cache.
+/// A device run with `CollapseSample` alone or after a per-term filter is its replay segment by segment: the filter over each layer or run the trace shows, then a collapse at `u` of pass `k` whenever the sum outgrew the cache.
 #[test]
 fn a_device_run_collapses_as_its_layer_by_layer_replay() {
     crate::require_cuda!();
@@ -311,13 +314,9 @@ fn a_device_run_collapses_as_its_layer_by_layer_replay() {
             let reference = CollapseSample::new(CACHE, SAMPLES, seed);
             let mut replay = GpuPartitionedSum::from_host(&z0_sum(), 0).unwrap();
             let (mut collapses, mut call) = (0, 0u64);
-            for (layer, pass) in
-                heisenberg_layers(collapsing_circuit()).into_iter().zip(passes_after)
-            {
-                replay.propagate(&layer, filter.clone(), Direction::Heisenberg).unwrap();
-                if !pass {
-                    continue;
-                }
+            // Each segment repeats the run's own joins and walks, so the sum matches the run's storage order the collapse draws in.
+            for segment in heisenberg_segments(collapsing_circuit(), &passes_after) {
+                replay.propagate(&segment, filter.clone(), Direction::Heisenberg).unwrap();
                 let (sum, scratch) = replay.backends_mut()[0].parts_mut();
                 if sum.len() > CACHE {
                     resample_device(sum, scratch, reference.uniform(call), SAMPLES).unwrap();

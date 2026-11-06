@@ -22,7 +22,7 @@ All seven live in the `paulistrings.truncation` module and run after every chann
 ## `topn` vs. `approx_topn`
 
 Both keep every term above a boundary and fill up to `k` from the boundary itself: for `topn` the terms tied at the `k`-th largest magnitude, for `approx_topn` the octave of `|c|**2` where the count from the top first exceeds `k`.
-Boundary terms are taken in storage order on the CPU (bucket order, rank order across partitions) and in no fixed order on a GPU, so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
+Boundary terms are taken in storage order (bucket order, rank order across partitions), so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 `topn` raises `NotImplementedError` under `partitions=`/`comm=`; `approx_topn` is the partitioned/distributed default in that case.
 
 See [Truncation](../manual/propagation/truncation.md#choosing-a-policy) for guidance and [Truncation](../manual/propagation/truncation.md) for the mechanism.

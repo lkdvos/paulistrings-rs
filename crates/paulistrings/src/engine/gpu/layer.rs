@@ -116,7 +116,7 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     pub(super) radix_histogram: CudaSlice<u64>,
     /// The radix-select's extracted singleton bits.
     pub(super) radix_out: CudaSlice<u64>,
-    /// `k_cut`'s row flags, one byte per row of the columns' capacity, and its `[boundary tickets taken, terms kept]`.
+    /// `k_cut`'s row flags, one byte per row of the columns' capacity, and its kept-term count.
     pub(super) cut_flag: CudaSlice<u8>,
     pub(super) cut_counters: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
@@ -212,7 +212,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             radix_histogram: stream.alloc_zeros(256)?,
             radix_out: stream.alloc_zeros(2)?,
             cut_flag: stream.alloc_zeros(1)?,
-            cut_counters: stream.alloc_zeros(2)?,
+            cut_counters: stream.alloc_zeros(1)?,
             fallback: stream.alloc_zeros(2)?,
             table: TableBuffers::new(stream, W)?,
             entry_of: stream.alloc_zeros(16)?,

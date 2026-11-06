@@ -135,6 +135,9 @@ fn cut_matches<const W: usize>() {
             let got = dev.to_host().expect("download");
             assert_eq!(got.len(), dev.len(), "{what} n={n}: the kept count is the buckets'");
             assert_cut(&got, &sum, edge, quota, &format!("{what} n={n}"));
+            let mut want = sum.clone();
+            retain_at_edge(&mut want, edge, quota);
+            assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: the host's terms");
             if let EdgeDecision::Boundary { .. } = edge {
                 assert_eq!(dev.len(), n, "{what} n={n}: exactly n kept");
             }
@@ -143,14 +146,48 @@ fn cut_matches<const W: usize>() {
 }
 
 #[test]
-fn the_cut_keeps_the_terms_above_the_edge_and_the_quota_at_it() {
+fn the_cut_keeps_the_hosts_terms() {
     crate::require_cuda!();
     cut_matches::<1>();
     cut_matches::<2>();
     cut_matches::<4>();
 }
 
-/// A second cut reads the first one's loose layout (buckets at their old offsets, gaps after them) in place.
+fn real_cut_matches<const W: usize>() {
+    let cases = [
+        ("rand real", crate::test_support::rand_sum_real::<W>(50_000, 64 * W, 0x2EA1)),
+        ("one long bucket", one_long_bucket::<W>(5_000)),
+    ];
+    for (what, sum) in cases {
+        let real = sum.cast::<f64>(0.0).expect("real coefficients");
+        let len = sum.len();
+        for n in [1, len / 3, len / 2, len - 1] {
+            let mut dev = GpuSum::<W, f64>::from_host(&real, 0).expect("upload");
+            let mut scratch = LayerScratch::new(&dev, GpuLayerOptions::default()).expect("scratch");
+            let histogram = octave_histogram_device(&dev, &mut scratch).expect("histogram");
+            let edge = octave_edge(&histogram[1..], len, n);
+            retain_at_edge_device(&mut dev, &mut scratch, edge, quota_of(edge), &histogram)
+                .expect("cut");
+            dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
+            let got = dev.to_host().expect("download").cast::<Complex64>(0.0).expect("complex");
+            assert_eq!((got.len(), dev.len()), (n, n), "{what} n={n}: exactly n kept");
+            assert_cut(&got, &sum, edge, quota_of(edge), &format!("real {what} n={n}"));
+            let mut want = sum.clone();
+            retain_at_edge(&mut want, edge, quota_of(edge));
+            assert_eq!(got.to_arrays(), want.to_arrays(), "real {what} n={n}: the host's terms");
+        }
+    }
+}
+
+#[test]
+fn the_cut_on_real_coefficients_keeps_the_same_terms() {
+    crate::require_cuda!();
+    real_cut_matches::<1>();
+    real_cut_matches::<2>();
+    real_cut_matches::<4>();
+}
+
+/// A second cut reads the first one's loose layout (buckets at their old offsets, gaps after them) in place; the first reordered rows within buckets, so which boundary terms stay is checked as a set.
 #[test]
 fn a_second_cut_reads_the_first_ones_layout() {
     crate::require_cuda!();

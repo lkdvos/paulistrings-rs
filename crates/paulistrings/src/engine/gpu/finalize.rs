@@ -77,7 +77,7 @@ fn retain_at_edge_device<const W: usize, C: Coefficient>(
     }
 }
 
-/// `k_cut` at octave `bin`: every term above it and `local_quota` of those at it stay, at the front of their bucket.
+/// `k_cut` at octave `bin`: every term above it and the first `local_quota` at it in bucket order stay, at the front of their bucket, which of them stays as `retain_device` would choose.
 /// The kept count follows from `histogram` unless its top octave, which a NaN shares and never stays in, is populated; then it is read back.
 fn cut_device<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
@@ -92,9 +92,39 @@ fn cut_device<const W: usize, C: Coefficient>(
     stream.memset_zeros(&mut scratch.cut_counters)?;
     let (buckets_u32, boundary, shift, quota) =
         (buckets as u32, bin as u64, 52u32, local_quota as u64);
+    let at = histogram[1 + bin] as usize;
+    // Only a quota that splits the boundary octave needs its terms in bucket order.
+    let ordered = local_quota != 0 && local_quota < at;
     timed!(let started = scratch.event(sum)?);
+    if ordered {
+        grow(&stream, &mut scratch.counts, buckets, sum.device())?;
+        grow(&stream, &mut scratch.destination_offsets, buckets + 1, sum.device())?;
+        // SAFETY: arguments match `k_boundary_counts` in truncate.cu; `counts` holds `buckets` entries.
+        unsafe {
+            stream
+                .launch_builder(&sum.kernels.boundary_counts)
+                .arg(&sum.columns.coeff)
+                .arg(&sum.columns.start)
+                .arg(&sum.columns.lengths)
+                .arg(&buckets_u32)
+                .arg(&boundary)
+                .arg(&shift)
+                .arg(&mut scratch.counts)
+                .launch(warp_per_bucket(buckets))?;
+        }
+        exclusive_scan(
+            &stream,
+            &sum.kernels,
+            &scratch.counts.slice(0..buckets),
+            &mut scratch.destination_offsets.slice_mut(0..buckets + 1),
+            buckets,
+            &mut scratch.scan,
+            &mut scratch.totals,
+        )?;
+    }
+    let ordered_u32 = u32::from(ordered);
     let columns = &mut sum.columns;
-    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_flag` holds a byte per row of the columns' capacity, which bounds every bucket, and `cut_counters` two entries.
+    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_flag` holds a byte per row of the columns' capacity, which bounds every bucket, `cut_counters` one entry, and `destination_offsets`, read only when `ordered`, the boundary terms ahead of each bucket.
     unsafe {
         stream
             .launch_builder(&sum.kernels.cut)
@@ -108,18 +138,19 @@ fn cut_device<const W: usize, C: Coefficient>(
             .arg(&boundary)
             .arg(&shift)
             .arg(&quota)
+            .arg(&scratch.destination_offsets)
+            .arg(&ordered_u32)
             .arg(&mut scratch.cut_counters)
             .arg(&mut scratch.cut_flag)
             .launch(warp_per_bucket(buckets))?;
     }
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
-    let at = histogram[1 + bin] as usize;
     let kept = if histogram[APPROX_BINS] == 0 {
         histogram[2 + bin..].iter().sum::<u64>() as usize + local_quota.min(at)
     } else {
         let counters = stream.clone_dtoh(&scratch.cut_counters)?;
         stream.synchronize()?;
-        counters[1] as usize
+        counters[0] as usize
     };
     sum.columns.len = kept;
     sum.debug_check();

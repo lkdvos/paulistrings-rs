@@ -358,9 +358,14 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             scratch.refine_passes = 0;
             scratch.receive_chunks = 0;
         }
+        // An injected failure names its own layer of the run, as the one-by-one path would.
         #[cfg(any(test, feature = "test-utils"))]
-        if self.fail_at_layer.is_some_and(|layer| (first..self.layers_applied).contains(&layer)) {
+        if let Some(layer) =
+            self.fail_at_layer.filter(|layer| (first..first + layers).contains(layer))
+        {
+            self.layers_applied = layer + 1;
             self.record(Err(GpuError::Unsupported("injected before the exchange")));
+            self.layers_applied = first + layers;
         }
         let _ = first;
         let (keep, target_bits) = (self.keep, self.hash.bits());

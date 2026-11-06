@@ -278,7 +278,7 @@ fn heisenberg_layers(mut circuit: Circuit<1>) -> Vec<Circuit<1>> {
 /// A run's policy around its sampler.
 type PolicyOf = fn(CollapseSample) -> T;
 
-/// A device run with `CollapseSample` alone or after a per-term filter is its replay layer by layer: the filter in the layer, then a collapse at `u` of pass `k` whenever the sum outgrew the cache.
+/// A device run with `CollapseSample` alone or after a per-term filter is its replay layer by layer: the filter in the layer, then, at the end of each layer or run the trace shows, a collapse at `u` of pass `k` whenever the sum outgrew the cache.
 #[test]
 fn a_device_run_collapses_as_its_layer_by_layer_replay() {
     crate::require_cuda!();
@@ -298,19 +298,32 @@ fn a_device_run_collapses_as_its_layer_by_layer_replay() {
             let what = format!("{name}, seed {seed}");
             let policy = policy_of(CollapseSample::new(CACHE, SAMPLES, seed));
             let mut run = GpuPartitionedSum::from_host(&z0_sum(), 0).unwrap();
+            run.enable_trace();
             run.propagate(&collapsing_circuit(), policy.clone(), Direction::Heisenberg).unwrap();
+            // A layer inside a run past its first records no time of its own, and the pass follows the run's last layer.
+            let rows = run.take_trace().unwrap().layers;
+            let passes_after: Vec<bool> = (0..rows.len())
+                .map(|i| rows.get(i + 1).is_none_or(|next| next.nanos[0] != 0))
+                .collect();
+            assert!(passes_after.contains(&false), "{what}: the run took no run");
             let run = run.gather().unwrap();
 
             let reference = CollapseSample::new(CACHE, SAMPLES, seed);
             let mut replay = GpuPartitionedSum::from_host(&z0_sum(), 0).unwrap();
-            let mut collapses = 0;
-            for (call, layer) in heisenberg_layers(collapsing_circuit()).into_iter().enumerate() {
+            let (mut collapses, mut call) = (0, 0u64);
+            for (layer, pass) in
+                heisenberg_layers(collapsing_circuit()).into_iter().zip(passes_after)
+            {
                 replay.propagate(&layer, filter.clone(), Direction::Heisenberg).unwrap();
+                if !pass {
+                    continue;
+                }
                 let (sum, scratch) = replay.backends_mut()[0].parts_mut();
                 if sum.len() > CACHE {
-                    resample_device(sum, scratch, reference.uniform(call as u64), SAMPLES).unwrap();
+                    resample_device(sum, scratch, reference.uniform(call), SAMPLES).unwrap();
                     collapses += 1;
                 }
+                call += 1;
             }
             assert!(collapses >= 3, "{what}: {collapses} collapses");
             assert!(run.len() <= CACHE, "{what}: {} terms", run.len());

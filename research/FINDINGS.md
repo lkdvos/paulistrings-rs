@@ -506,6 +506,12 @@ Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16
 TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
 Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; writing the join's rows straight to the output columns at the pre-dedup offsets, which drops the compaction; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
 
+### Kernel keys stay in registers
+
+ncu (2025.1 runs on ccqlin038; nsys does not) on steady-state launches put `k_join` at 87% of DRAM peak, but a third of its traffic was local memory: `support_bits` indexed a key word at run time (`k.x[q >> 6]`), which spills the whole key to local memory, at 1.4 useful bytes of 32 per sector (`k_join` W = 2: 160 B stack frame, W = 4: 320 B and 84 registers; `k_count` 32/64 B; the permutation run's `run_bit` select too, as ptxas folds a select chain back into an index).
+`key_bit` masks the word out of every word instead: no stack frame left on `k_join` (W = 2), `k_count` or `k_permute_run_*`, and `k_join` W = 4 at 64 registers.
+A/B (`sampling_bench` release, JCC flag, f64, ABAB, SM 1800–1875 MHz, memory 7601 MHz): kicked Ising `--approx-topn 1e7` **15.03 / 15.26 → 11.36 / 11.55 s (−24.4% / −24.3%)**, TFIM 16×16 `--approx-topn 1e6` **14.81 / 14.13 / 13.39 → 12.18 / 11.45 / 11.73 s (−17.7% / −19.0% / −12.4%)**.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).

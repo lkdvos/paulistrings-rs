@@ -223,17 +223,19 @@ __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
     return (1ull << (num_qubits - lo)) - 1ull;
 }
 
+// Bit q of a key column, masked out of every word: a runtime word index, or a select ptxas folds back into one, puts the key in local memory.
+__device__ __forceinline__ u32 key_bit(const u64 (&v)[W], u32 q) {
+    u64 word = 0;
+#pragma unroll
+    for (int w = 0; w < W; ++w) word |= v[w] & (0ull - (u64)((u32)w == (q >> 6)));
+    return (u32)((word >> (q & 63)) & 1ull);
+}
+
 // `LocalPtm::support_bits`: bit 2j is the x-bit of support qubit j, bit 2j+1 its z-bit.
 __device__ __forceinline__ u32 support_bits(const Key& k, u32 support_size, u32 qubit_0, u32 qubit_1) {
     u32 s = 0;
-    if (support_size > 0) {
-        s |= (u32)((k.x[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull);
-        s |= (u32)((k.z[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull) << 1;
-    }
-    if (support_size > 1) {
-        s |= (u32)((k.x[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 2;
-        s |= (u32)((k.z[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 3;
-    }
+    if (support_size > 0) s |= key_bit(k.x, qubit_0) | key_bit(k.z, qubit_0) << 1;
+    if (support_size > 1) s |= key_bit(k.x, qubit_1) << 2 | key_bit(k.z, qubit_1) << 3;
     return s;
 }
 

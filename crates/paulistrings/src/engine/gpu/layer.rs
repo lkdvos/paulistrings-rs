@@ -566,8 +566,32 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     }
     let record_cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
+    let join = table.join.filter(|_| scratch.options.join);
+    scratch.record.joined = join.is_some();
+    if let Some(join) = join {
+        debug_assert!(!has_remote, "a join table has no received entry");
+        // A join writes straight into the output, so only its source buckets' length is capped: `k_join`'s 13-bit row index.
+        let (records, longest) = loop {
+            scratch.upload_table(sum, &table)?;
+            let (records, longest) = scratch.join_sizes(sum)?;
+            if longest as usize <= MAX_BUCKET_LEN {
+                break (records, longest);
+            }
+            if sum.hash.bits() >= max_bits {
+                return Err(GpuError::Unsupported(
+                    "a source bucket exceeds the join's row index at the bucket-bit limit",
+                ));
+            }
+            refine(sum, scratch, sum.hash.bits() + 1)?;
+            table.rehash(&sum.hash);
+        };
+        scratch.record.records = u64::from(records);
+        scratch.record.batches = 1;
+        join_layer(sum, scratch, &table, join, keep, longest, records)?;
+        return Ok(counts);
+    }
     // Oversize blocks and over-long source buckets are known from the count table; a layer that may refine takes one more bit, which halves both.
-    let (records, records_max, longest) = loop {
+    let (records, records_max, _) = loop {
         let counted =
             scratch.upload_table(sum, &table).and_then(|()| scratch.count_local(sum, &table));
         if let Err(e) = counted {
@@ -600,13 +624,6 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     let b = sum.hash.num_buckets();
     scratch.record.records = u64::from(records);
     scratch.record.max_block_records = records_max;
-    let join = table.join.filter(|_| scratch.options.join);
-    scratch.record.joined = join.is_some();
-    if let Some(join) = join {
-        scratch.record.batches = 1;
-        join_layer(sum, scratch, &table, join, keep, longest, records)?;
-        return Ok(counts);
-    }
 
     let kernels: Arc<KernelSet> = sum.kernels.clone();
     let (func, record_capacity, smem) =

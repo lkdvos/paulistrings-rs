@@ -187,6 +187,7 @@ pub(crate) struct KernelSet {
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
     pub(crate) join: CudaFunction,
+    pub(crate) join_rows: CudaFunction,
     pub(crate) rotation_run_classify: CudaFunction,
     pub(crate) rotation_run_gather: CudaFunction,
     pub(crate) rotation_run_apply: CudaFunction,
@@ -386,6 +387,7 @@ pub(crate) fn kernel_set_with_options(
         collapse_pick: load("k_collapse_pick")?,
         layer,
         join: load("k_join")?,
+        join_rows: load("k_join_rows")?,
         rotation_run_classify: load("k_rotation_run_classify")?,
         rotation_run_gather: load("k_rotation_run_gather")?,
         rotation_run_apply,

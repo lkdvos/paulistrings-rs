@@ -187,8 +187,13 @@ fn join_output_feeds_every_path<const W: usize>(num_qubits: usize, n: usize, see
             keep: &KeepProgram::KEEP,
             target_bits: 0,
         };
+        let n_in = sum.len() as u64;
         apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0]).expect("layer");
         assert_eq!(scratch.record.joined, *joins, "W={W} step {step}");
+        if *joins {
+            // Positions run over every bucket once, so the two source lengths per position sum to twice the input.
+            assert_eq!(scratch.record.records, 2 * n_in, "W={W} step {step}: sized by lengths");
+        }
         want = naive_apply_layer(&want, channel.as_ref(), &KeepAll, false);
         let got = sum.to_host().expect("download");
         assert!(got.hash().bits() >= 3, "W={W} step {step}");

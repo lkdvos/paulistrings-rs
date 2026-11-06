@@ -3,6 +3,9 @@
 use crate::coefficient::Coefficient;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
+use crate::engine::gpu::module::thread_per;
+use crate::engine::gpu::scan::exclusive_scan;
+
 use super::{timed_transfer, LayerScratch, Transfer};
 use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
@@ -17,7 +20,55 @@ pub(in crate::engine::gpu) fn join_table_bits(longest: u32) -> u32 {
     (2 * longest.max(16)).next_power_of_two().trailing_zeros()
 }
 
-/// Apply `table`'s join to `sum` over every position, each output bucket written at its position's pre-dedup offset in `scratch.segment_start` (`records` rows in all), for source buckets of up to `longest` rows; the previous columns become `sum.spare`.
+impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
+    /// `k_join_rows` and its scan into `segment_start`: each position's bound, the lengths of the two source buckets it reads; returns `(records, longest local bucket)` behind one synchronization.
+    /// It replaces `k_count` and `k_rows` for a join, at the cost of output room for the rows the partner entry does not emit.
+    pub(super) fn join_sizes(&mut self, sum: &GpuSum<W, C>) -> Result<(u32, u32), GpuError> {
+        let stream = &sum.stream;
+        let b = sum.hash.num_buckets();
+        let b32 = b as u32;
+        timed!(let t = self.event(sum)?);
+        // SAFETY: arguments match `k_join_rows` in join.cu; `bucket_at` and `rows` hold `b` entries and `bucket_delta` the table's two.
+        unsafe {
+            stream
+                .launch_builder(&sum.kernels.join_rows)
+                .arg(&sum.columns.lengths)
+                .arg(&self.bucket_at)
+                .arg(&self.table.bucket_delta)
+                .arg(&mut self.rows)
+                .arg(&b32)
+                .launch(thread_per(b, 1024))?;
+        }
+        exclusive_scan(
+            stream,
+            &sum.kernels,
+            &self.rows.slice(0..b),
+            &mut self.segment_start.slice_mut(0..b + 1),
+            b,
+            &mut self.scan,
+            &mut self.totals,
+        )?;
+        let known = self.longest;
+        if known.is_none() {
+            self.scan_lens(sum)?;
+        }
+        timed!(self.lap(sum, t, |stats| &mut stats.gather_ns)?);
+        let (totals, length_totals) = (&self.totals, &self.length_totals);
+        let (records, longest) = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
+            let records = stream.clone_dtoh(totals)?[0];
+            let longest = match known {
+                Some(l) => l,
+                None => stream.clone_dtoh(length_totals)?[1],
+            };
+            stream.synchronize()?;
+            Ok((records, longest))
+        })?;
+        self.longest = Some(longest);
+        Ok((records, longest))
+    }
+}
+
+/// Apply `table`'s join to `sum` over every position, each output bucket written at its position's offset in `scratch.segment_start` from [`LayerScratch::join_sizes`] (`records` rows in all), for source buckets of up to `longest` rows; the previous columns become `sum.spare`.
 /// The output keeps a gap after each bucket, so its extent is `records` and no compaction runs.
 pub(super) fn join_layer<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,

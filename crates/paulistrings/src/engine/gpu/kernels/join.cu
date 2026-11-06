@@ -31,6 +31,15 @@ __device__ __forceinline__ void join_write(u64* __restrict__ out_x, u64* __restr
     coeff_store(out_c, slot, v);
 }
 
+// k_join_rows: rows[p] = the lengths of the two source buckets position p reads, which bound its output, so sizing a join reads no key.
+extern "C" __global__ void k_join_rows(const u32* __restrict__ in_len, const u32* __restrict__ bucket_at,
+                                       const u32* __restrict__ bucket_delta, u32* __restrict__ rows, u32 B) {
+    const u32 p = blockIdx.x * blockDim.x + threadIdx.x;
+    if (p >= B) return;
+    const u32 beta = bucket_at[p];
+    rows[p] = in_len[beta ^ bucket_delta[0]] + in_len[beta ^ bucket_delta[1]];
+}
+
 extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
     const u32* __restrict__ in_start, const u32* __restrict__ in_len, const u32* __restrict__ bucket_at,

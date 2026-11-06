@@ -480,7 +480,7 @@ The send side stays whole, the default is unbounded, and the NCCL form is unmeas
 Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
 At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
 Shipped from this profile: the Clifford permutation path, the rotation join (§Rotation layers join instead of sorting) and the on-disk NVRTC cache.
-Open levers, by estimated gain: fewer host round trips, then a captured graph (~2× at 1e4); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
+Open levers, by estimated gain: fewer host round trips (taken for joins and `ApproxTopN`, §Device layers read their lengths back a layer late), then a captured graph (~2× at 1e4); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
 
 ### GPU Clifford permutation path
 
@@ -618,6 +618,54 @@ Sized at twice its input, an exactly reserved output reallocated at nearly every
 
 Kicked Ising `1e7`'s 14-bit rx layers went from 5246 to 4321 ms at identical bucket bits.
 Together with the in-place cut, against `gpu@baf06f04` (SM 1800–1860 MHz): kicked Ising `--approx-topn 1e6` 1.165 / 1.196 / 1.122 → 0.836 / 0.853 / 0.840 s, `1e7` 8.08 / 8.07 / 8.02 → 5.19 / 5.15 / 5.15 s, TFIM `--approx-topn 1e6` 7.99 / 8.04 / 8.03 → 4.83 / 4.80 / 4.80 s, `1e5` 2.48 / 2.47 / 2.57 → 1.56 / 1.56 / 1.69 s, both thresholds flat.
+
+### Device layers read their lengths back a layer late
+
+A lone sum's join and `ApproxTopN` layers read nothing back: the host carries an upper bound on the length and the longest bucket (`LengthTracker` in `engine/gpu/length.rs`), each publishing step copies the device's `[len, longest]` into pinned memory behind an event, and the host consumes a read-back only once a later one is in flight; the edge of a lone `ApproxTopN` pass is decided on the device (`k_octave_edge`).
+Decisions read only the bound and consumed anchors, never a read-back that happens to have landed, so they do not depend on timing; the bucket policy reads the last anchor with joins taken as keeping the length, so a refine lags its sum by a layer.
+Host synchronizations, counted by a probe around every read-back (`sampling_bench` release, f64):
+
+| layer | before | after |
+|---|---|---|
+| join (`join_sizes`, join total) | 2 | 0, or 1 when the longest-bucket bound passes `MAX_BUCKET_LEN` (33 in a TFIM `--approx-topn 1e5` run) |
+| lone `ApproxTopN` pass (histogram) | 1 | 0 |
+| rescale, permutation, permutation run (total) | 1 | 0 |
+| fused layer, rotation run under a filter | 3, 2 | unchanged |
+| any publishing step | | one lagged wait on the read-back before it |
+
+TFIM 16×16 `--approx-topn 1e5`: 9466 joins spent 731 ms of a 1.62 s run blocked in 27 543 synchronizations; afterwards the lagged waits take 557 ms, the device being now behind the host.
+`sampling_bench` release, JCC flag, f64, interleaved against `gpu@10a369b1`, 3 rounds, SM 1800–1905 MHz, memory 7601 MHz:
+
+| cell | before (s) | after (s) | Δ |
+|---|---|---|---|
+| TFIM 16×16 `--approx-topn 1e5` | 1.551 / 1.614 / 1.600 | 1.212 / 1.204 / 1.204 | **−21.8 / −25.4 / −24.7%** |
+| kicked Ising `--approx-topn 1e5` | 0.351 / 0.354 / 0.324 | 0.306 / 0.291 / 0.328 | −12.8 / −17.8 / +1.0% |
+| TFIM 16×16 `--approx-topn 1e6` | 4.808 / 4.782 / 4.852 | 4.416 / 4.441 / 4.465 | −8.2 / −7.1 / −8.0% |
+| kicked Ising `--approx-topn 1e6` | 0.825 / 0.829 / 0.825 | 0.771 / 0.769 / 0.785 | −6.6 / −7.2 / −4.8% |
+| TFIM 16×16 `--threshold 1e-5` | 1.030 / 0.964 / 1.022 | 0.934 / 0.919 / 0.908 | −9.3 / −4.7 / −11.1% |
+| kicked Ising `--threshold 2.5e-5` | 6.341 / 6.332 / 6.368 | 6.204 / 6.219 / 6.215 | −2.2 / −1.8 / −2.4% |
+
+Threshold readouts are identical to 12 digits; `ApproxTopN` readouts at `1e5` already differ run to run in the fourth digit on the base (TFIM 0.2015 / 0.2006 / 0.2006), as rows land in a bucket in atomic order.
+Not built: a redo from a checkpoint on a device overflow flag; with the bound proving `k_join`'s row index safe, or a synchronous settle when it cannot, no layer can overflow, and the lag keeps the device fed.
+
+### Fewer stream operations per device layer
+
+With the round trips gone the device is the bottleneck at `1e5` (the host waits on its lagged read-backs), so the stream operations of a layer count: a scan of at most 4096 elements is one launch, `k_octave_edge` and `k_join_rows` zero the next pass's buffers so a lone `ApproxTopN` join layer issues no memset, and a layer's tables and position map go up as one packed copy that `k_unpack_table` scatters, from about 24 operations a layer to 9.
+Against the previous entry, same protocol (SM 1800–1905 MHz): TFIM `--approx-topn 1e5` **1.202 / 1.173 / 1.212 → 1.134 / 1.062 / 1.094 s (−5.7 / −9.4 / −9.7%)**, kicked Ising `1e5` −15.3 / −12.1 / −5.9%, TFIM `1e6` −2.8 / −1.8 / −3.8%, kicked Ising `1e6` −5.3 / −3.6 / −4.2%, TFIM `--threshold 1e-5` −8.4 / −3.4 / −1.0%, kicked Ising `--threshold 2.5e-5` flat.
+Phase timing at TFIM `1e5` puts `k_join` at 45 µs a layer, about its DRAM traffic (every source row read twice and the output written once), and the `ApproxTopN` pass (histogram, edge, cut over 128 one-warp buckets) at 47 µs.
+Not attempted: a captured graph of a step's layers, since the host now waits on the device rather than the reverse.
+
+### A lone `ApproxTopN` join counts its output's octave histogram
+
+`k_join` bins each row it writes into a 2048-bin shared histogram after its table and folds it into `[len, bins…]`, so the lone pass after a join skips `k_octave_histogram`'s launch and its read of every coefficient (`LayerScratch::histogram_fresh`, cleared by every mutating layer).
+Against the previous entry, same protocol (SM 1815–1875 MHz): TFIM `--approx-topn 1e5` **1.097 / 1.147 / 1.101 → 1.025 / 0.971 / 1.016 s (−6.5 / −15.3 / −7.7%)**, TFIM `1e6` **4.342 / 4.310 / 4.332 → 3.864 / 3.847 / 3.883 s (−11.0 / −10.7 / −10.4%)**, kicked Ising `1e6` −2.2 / −3.7 / −4.4%, kicked Ising `1e5` mixed (−2.3 / +1.9 / −10.5%); the thresholds, which never count, read −2.3 / +1.8 / +7.8% (TFIM) and +0.6 / +0.4 / +0.5% (kicked Ising).
+Against 32 CPU threads in the same session (`--backend cpu --threads 32`): TFIM `1e5` 1.016 s median against 1.357 s, kicked Ising `1e5` 0.256 s against 0.305 s; before this series the device lost both (1.600 against 1.429 s, 0.351 against 0.314 s).
+
+### A join's output over-reserves up to twice the run's ceiling
+
+Grown by half again without a ceiling, both alternating output columns ratcheted to about `3n` under `ApproxTopN(n)`, and the exact fallback reallocated while the old spare was still held, so kicked Ising `--approx-topn 2e8` failed on a 19.2 GB request.
+A join's output now grows by half again only up to twice the policy's run length limit (`n` for `ApproxTopN`), and empty columns release their term columns before growing (`DeviceColumns::reserve`).
+Peak device memory (`nvidia-smi` every 200 ms, A6000 48 GB): kicked Ising `1e8` **25 352 → 21 864 MiB**, `2e8` out of memory → 42 760 MiB (17.3 s), TFIM 16×16 `1e8` **45 578 → 36 106 MiB** (211 s), about 4.5 × n × bytes per term; TFIM `1.5e8` still fails on a 20.1 GB request, as two `2n` output columns alone take 48 GB at 80 bytes a term.
 
 ### NCCL exchange between MPI ranks
 

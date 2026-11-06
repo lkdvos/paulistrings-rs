@@ -2,7 +2,7 @@
 
 *Source: `examples/b8_ole/`*
 
-<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by the paper's hybrid Pauli-propagation Monte Carlo (PP-MC), with caches that extend past one node through the MPI engine.</p>
+<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by a hybrid Pauli-propagation Monte Carlo (PP-MC) over pairs of independent sampled trajectories, with caches that extend past one node through the MPI engine.</p>
 
 ## The circuit
 
@@ -17,22 +17,26 @@ The echo is `S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)`, where `A = C†OC`, `O = Z^{�
 ```python
 import ole
 from paulistrings import propagated, truncation
-policy = truncation.collapse_sample(cache=500_000_000, seed=s)
-A = propagated(O, C, policy, direction="heisenberg")
-S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
+def trajectory(seed):
+    policy = truncation.collapse_sample(cache=500_000_000, samples=100_000_000, seed=seed)
+    return propagated(O, C, policy, direction="heisenberg")
+
+A, A2 = trajectory(2 * s), trajectory(2 * s + 1)
+S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x", B=A2), 0.3, normalize=False)
 ```
 
 - `collapse_sample` propagates exactly until a gate leaves more than `cache` strings.
-- It then draws one string with probability `b_P²/Σb²` and restarts from it.
-- The last block is kept whole.
-- The diagonal estimator `Σ b_P² cos(2δ)^{n_P} / Σ b²` is the resummed moment series of the paper's Eq. (C34).
-- `ole.rotated_overlap` gives the exact echo of the same `A`, off-diagonal terms included.
+- It then replaces the sum by `samples` systematic draws by `|b_P|`, each worth `Σ|b|/samples`, so every collapse and the final `A` are unbiased.
+- The echo is quadratic in `A`, so each estimate pairs two independent trajectories; its expectation is the exact echo.
+- The diagonal estimator `Σ b_P b'_P cos(2δ)^{n_P}` is the resummed moment series of the paper's Eq. (C34), unnormalized since `‖A‖₂ = 1`.
+- `ole.rotated_overlap(A, ..., B=A2)` gives the exact echo of the pair, off-diagonal terms included.
+- The paper's PP-MC instead restarts from one string drawn by `b_P²` at coefficient 1 and normalizes a single trajectory's diagonal echo.
 - Both estimators are numpy over `A.to_arrays()`; under MPI each rank reads its share of a `PauliSum.partition(comm=...)` split (`.local()`) and `comm.allreduce` sums the values.
-- `collapse_sample` draws the same string whatever the thread count.
+- `collapse_sample` draws the same strings whatever the thread count.
 
 ## Cost
 
-One L = 6 trajectory at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):
+One L = 6 trajectory of the collapse-to-one rule this example used to run, at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):
 
 | cache | wall | peak RSS |
 |---|---|---|

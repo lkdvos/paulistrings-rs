@@ -92,6 +92,35 @@ def test_agrees_with_materializing_the_rotation(num_qubits, window):
             assert abs(got - want) < 1e-10 * max(abs(want), 1.0), (seed, axis, sites)
 
 
+@pytest.mark.parametrize("num_qubits,window", [(8, [1, 2, 3, 4, 6]), (70, [62, 63, 64, 65, 67])])
+def test_the_bilinear_forms_agree_with_materializing_the_rotation(num_qubits, window):
+    """`Tr(A^dagger V^dagger B V)` over two sums sharing some keys, and the histogram over their shared keys."""
+    from paulistrings import propagated
+
+    for seed, sites in [(4, [window[0], window[2]]), (5, window)]:
+        A = _rand_sum_on(200, num_qubits, window, seed)
+        B = _rand_sum_on(200, num_qubits, window, seed + 100)
+        for axis in "zx":
+            circuit = ps.Circuit(num_qubits)
+            for q in sites:
+                (circuit.rx if axis == "x" else circuit.rz)(2.0 * DELTA, q)
+            want = A.overlap(propagated(B, circuit, direction="heisenberg"))
+            got = ole.rotated_overlap_complex(A, sites, DELTA, axis, B=B)
+            assert abs(got - want) < 1e-10 * max(abs(want), 1.0), (seed, axis, sites)
+            assert ole.rotated_overlap_complex(A, sites, DELTA, axis, B=A) == pytest.approx(
+                ole.rotated_overlap_complex(A, sites, DELTA, axis), abs=1e-10
+            )
+        np.testing.assert_allclose(ole.anticommute_histogram(A, sites, "x", B=A), ole.anticommute_histogram(A, sites, "x"))
+
+
+def test_histogram_of_two_sums_hand_values():
+    """`w[n] = sum Re(conj(a_P) b_P)` over the shared keys only: `X0` is shared, `Z0` and `Y0Y1` are not."""
+    A = _sum([("XI", 0.5), ("ZI", 2.0)])
+    B = _sum([("XI", -0.25), ("YY", 3.0)])
+    np.testing.assert_array_equal(ole.anticommute_histogram(A, [0, 1], "z", B=B), [0.0, -0.125, 0.0])
+    assert ole.diagonal_echo([0.0, -0.125, 0.0], DELTA, normalize=False) == pytest.approx(-0.125 * math.cos(2 * DELTA))
+
+
 def test_histogram_hand_values_and_the_diagonal_limit():
     """With no class of two, the overlap is the histogram's diagonal sum: `a X0 + b Z0 + c Y0Y1 + d I`."""
     a, b, c, d = 0.5, -0.25, 0.75, 0.125

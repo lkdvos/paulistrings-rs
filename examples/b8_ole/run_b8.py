@@ -1,7 +1,7 @@
-"""PP-MC trajectories and deterministic baselines for the 56-qubit OLE; one JSON per seed.
+"""PP-MC trajectory pairs and deterministic baselines for the 56-qubit OLE; one JSON per seed, or per pair of seeds under ppmc.
 
-    python run_b8.py --alpha 0.15 --L 6 --policy ppmc --cache 5e8 --seeds 0:40 --out results/ppmc
-    mpirun -n 8 python run_b8.py --mpi --alpha 0.05 --L 6 --policy ppmc --cache 8e9 --seeds 0:4 --out results/mpi
+    python run_b8.py --alpha 0.15 --L 6 --policy ppmc --cache 5e8 --samples 1e8 --seeds 0:40 --out results/ppmc
+    mpirun -n 8 python run_b8.py --mpi --alpha 0.05 --L 6 --policy ppmc --cache 8e9 --samples 1e9 --seeds 0:4 --out results/mpi
     python run_b8.py --alpha 0.15 --L 3 --policy coeff --eps 1e-6 --exact-overlap --out results/exact
 """
 
@@ -38,7 +38,7 @@ def build_policy(args, seed: int):
 
     parts = []
     if args.policy == "ppmc":
-        parts.append(truncation.collapse_sample(int(args.cache), seed))
+        parts.append(truncation.collapse_sample(int(args.cache), int(args.samples), seed))
     elif args.policy == "approx_topn":
         parts.append(truncation.approx_topn(int(args.cache)))
     base = make_policy(args.max_weight, args.eps)
@@ -56,19 +56,37 @@ def parse_args(argv=None):
     ap.add_argument("--delta", type=float, default=None, help="probe strength (default: spec, 0.3)")
     ap.add_argument("--policy", choices=["ppmc", "approx_topn", "coeff", "none"], default="ppmc")
     ap.add_argument("--cache", type=float, default=5e8, help="PP-MC cache size, or the ApproxTopN budget")
+    ap.add_argument("--samples", type=float, default=None, help="PP-MC draws per collapse (required with --policy ppmc)")
     ap.add_argument("--eps", type=float, default=None, help="additional coefficient threshold")
     ap.add_argument("--max-weight", type=int, default=None)
-    ap.add_argument("--seeds", default="0", help="'lo:hi' or comma list; one trajectory per seed")
+    ap.add_argument("--seeds", default="0", help="'lo:hi' or comma list; one trajectory per seed, paired in order under ppmc")
     ap.add_argument("--exact-overlap", action="store_true", help="also compute the exact rotated_overlap S_delta")
     ap.add_argument("--mpi", action="store_true", help="one partition per MPI rank (needs the `mpi` build and mpi4py)")
     ap.add_argument("--partitions", default=None, help="in-process NUMA partitions: an int or 'auto'")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--tag", default=None, help="subdirectory name; default derived from the configuration")
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    if args.policy == "ppmc":
+        if args.samples is None or args.samples < 1:
+            ap.error("--policy ppmc needs --samples >= 1")
+        if len(_seeds(args.seeds)) % 2:
+            ap.error("--policy ppmc pairs its seeds; give an even number")
+    return args
+
+
+def _propagate(args, obs, circuit, seed, comm, exclude, kwargs):
+    """One trajectory: this rank's share of the propagated `A` (the whole of it without `comm`) and its stats."""
+    from paulistrings import propagated_with_stats
+
+    if comm is not None:
+        # Each rank keeps its own share; the estimators read it and sum over `comm`.
+        split = obs.partition(comm=comm, partition_row_exclude=exclude)
+        stats = split.propagate_with_stats(circuit, build_policy(args, seed), direction="heisenberg")
+        return split.local(), stats
+    return propagated_with_stats(obs, circuit, build_policy(args, seed), direction="heisenberg", **kwargs)
 
 
 def main(argv=None) -> int:
-    from paulistrings import propagated_with_stats
     args = parse_args(argv)
     delta = ole.spec()["delta"] if args.delta is None else args.delta
     eta = ole.eta_of_alpha(args.alpha) if args.alpha is not None else args.eta
@@ -91,6 +109,7 @@ def main(argv=None) -> int:
     tag = args.tag or (
         f"L{args.L}_eta{eta:.4f}_d{delta:g}_{args.policy}"
         + (f"_M{args.cache:.0e}" if args.policy in ("ppmc", "approx_topn") else "")
+        + (f"_N{args.samples:.0e}" if args.policy == "ppmc" else "")
         + (f"_eps{args.eps:.0e}" if args.eps is not None else "")
     )
     outdir = args.out / tag
@@ -107,17 +126,19 @@ def main(argv=None) -> int:
         kwargs["partitions"] = args.partitions if args.partitions == "auto" else int(args.partitions)
         kwargs["partition_row_exclude"] = exclude
 
-    for seed in _seeds(args.seeds):
+    # Every collapse is unbiased, so a trajectory's `A` is an unbiased estimate of the exact one, but the echo is quadratic in `A`:
+    # under ppmc each record pairs two independent trajectories, whose bilinear echo is unbiased and needs no normalization.
+    seeds = _seeds(args.seeds)
+    groups = [seeds[i : i + 2] for i in range(0, len(seeds), 2)] if args.policy == "ppmc" else [[s] for s in seeds]
+    for group in groups:
+        seed = group[0]
         t0 = time.perf_counter()
-        if comm is not None:
-            # Each rank keeps its own share; the estimators below read it and sum over `comm`.
-            split = obs.partition(comm=comm, partition_row_exclude=exclude)
-            stats = split.propagate_with_stats(circuit, build_policy(args, seed), direction="heisenberg")
-            result = split.local()
-        else:
-            result, stats = propagated_with_stats(obs, circuit, build_policy(args, seed), direction="heisenberg", **kwargs)
+        runs = [_propagate(args, obs, circuit, s, comm, exclude, kwargs) for s in group]
         t_prop = time.perf_counter() - t0
-        hist = ole.anticommute_histogram(result, sites, "x", comm=comm)
+        result = runs[0][0]
+        other = runs[1][0] if len(runs) == 2 else None
+        hist = ole.anticommute_histogram(result, sites, "x", comm=comm, B=other)
+        collapses = [stats.collapses for _, stats in runs]
         record = {
             "config": {
                 "L": args.L,
@@ -126,30 +147,35 @@ def main(argv=None) -> int:
                 "delta": delta,
                 "policy": args.policy,
                 "cache": int(args.cache) if args.policy in ("ppmc", "approx_topn") else None,
+                "samples": int(args.samples) if args.policy == "ppmc" else None,
                 "eps": args.eps,
                 "max_weight": args.max_weight,
                 "seed": seed,
+                "seeds": group,
                 "mpi_ranks": comm.Get_size() if comm is not None else 1,
                 "partitions": args.partitions,
             },
-            "S_diag": ole.diagonal_echo(hist, delta),
+            "S_diag": ole.diagonal_echo(hist, delta, normalize=other is None),
             "norm": float(sum(hist)),
             "hist": [float(w) for w in hist],
-            "collapses": stats.collapses,
-            "final_terms": stats.final_terms,
+            "collapses": None if collapses[0] is None else sum(collapses),
+            "final_terms": sum(stats.final_terms for _, stats in runs),
             "propagate_s": t_prop,
         }
         if args.exact_overlap:
             t1 = time.perf_counter()
-            raw = ole.rotated_overlap(result, sites, delta, "x", comm=comm)
-            record["S_exact"] = raw / record["norm"] if record["norm"] > 0 else math.nan
+            raw = ole.rotated_overlap(result, sites, delta, "x", comm=comm, B=other)
+            if other is not None:
+                record["S_exact"] = raw
+            else:
+                record["S_exact"] = raw / record["norm"] if record["norm"] > 0 else math.nan
             record["overlap_s"] = time.perf_counter() - t1
         peak_kb = peak_memory_kb() or 0.0
         if comm is not None:
             from mpi4py import MPI
 
             peak_kb = comm.allreduce(peak_kb, op=MPI.MAX)
-            record["final_terms"] = comm.allreduce(len(result), op=MPI.SUM)
+            record["final_terms"] = comm.allreduce(sum(len(r) for r, _ in runs), op=MPI.SUM)
         record["peak_rss_kb_max_rank"] = peak_kb
         if rank == 0:
             provenance = collect_provenance(repo_root=HERE)
@@ -168,8 +194,8 @@ def main(argv=None) -> int:
                 + f" collapses={record['collapses']} terms={record['final_terms']} {t_prop:.1f}s",
                 flush=True,
             )
-        # The result keeps its peak bucket capacity; drop it before the next seed propagates.
-        del result, stats
+        # The results keep their peak bucket capacity; drop them before the next seed propagates.
+        del result, other, runs
     return 0
 
 

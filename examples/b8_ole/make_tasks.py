@@ -1,7 +1,7 @@
 """Write a disBatch task file: one line per (alpha, seed block), each line one `run_b8.py` call.
 
     python make_tasks.py --alphas 0,0.05,0.1,0.15,0.2,0.25 --seeds 0:800 --block 10 \
-        --threads 16 --cache 5e8 --out results/ppmc > tasks.txt
+        --threads 16 --cache 5e8 --samples 1e8 --out results/ppmc > tasks.txt
 """
 
 from __future__ import annotations
@@ -19,13 +19,15 @@ def main(argv=None) -> int:
     ap.add_argument("--alphas", default="0,0.05,0.1,0.15,0.2,0.25")
     ap.add_argument("--L", default="6", help="comma list of Floquet layer counts")
     ap.add_argument("--seeds", default="0:800")
-    ap.add_argument("--block", type=int, default=10, help="seeds per task, amortizing import and circuit build")
+    ap.add_argument("--block", type=int, default=10, help="seeds per task, amortizing import and circuit build; even, since ppmc pairs seeds")
     ap.add_argument("--threads", type=int, required=True, help="RAYON_NUM_THREADS per task")
     ap.add_argument("--python", default="python")
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("extra", nargs=argparse.REMAINDER, help="passed through to run_b8.py after `--`")
     args, run_args = ap.parse_known_args(argv)
     lo, hi = (int(x) for x in args.seeds.split(":"))
+    if args.block % 2 or (hi - lo) % 2:
+        ap.error("ppmc pairs seeds: --block and the seed count must be even")
     passthrough = [a for a in (args.extra or []) if a != "--"] + run_args
     script = HERE / "run_b8.py"
     for L in args.L.split(","):

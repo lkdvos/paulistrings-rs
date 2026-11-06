@@ -25,6 +25,20 @@ fn a_layout_has_its_types_bytes_and_name() {
 
 /// CI-runnable: needs NVRTC only, no device or driver.
 #[test]
+fn warp_per_bucket_narrows_its_blocks_below_1024_buckets_a_warp() {
+    let shape = |b: usize| {
+        let c = warp_per_bucket(b);
+        (c.grid_dim.0, c.block_dim.0)
+    };
+    assert_eq!(shape(1), (1, 32));
+    assert_eq!(shape(1024), (1024, 32), "one warp a block");
+    assert_eq!(shape(3000), (1500, 64), "two warps a block");
+    assert_eq!(shape(5000), (1250, 128), "four warps a block");
+    assert_eq!(shape(16384), (2048, 256), "eight warps a block, the widest");
+    assert_eq!(shape(1 << 20), (131072, 256));
+}
+
+#[test]
 fn kernels_compile_for_every_width() {
     if !libnvrtc_present() {
         return;

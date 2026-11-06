@@ -168,15 +168,45 @@ __device__ __forceinline__ u32 lane_id() { return threadIdx.x & 31u; }
 __device__ __forceinline__ u32 warp_id() { return threadIdx.x >> 5; }
 __device__ __forceinline__ u32 lanemask_lt() { return (1u << lane_id()) - 1u; }
 
+// An even W moves a row's words as 16-byte vectors: every key column and every slice of one starts at a row, so they are aligned.
 __device__ __forceinline__ Key load_key(const u64* __restrict__ x, const u64* __restrict__ z, size_t i) {
     Key k;
+#if W % 2 == 0
+#pragma unroll
+    for (int w = 0; w < W; w += 2) {
+        const ulonglong2 a = *reinterpret_cast<const ulonglong2*>(x + i * W + w);
+        const ulonglong2 b = *reinterpret_cast<const ulonglong2*>(z + i * W + w);
+        k.x[w] = a.x;
+        k.x[w + 1] = a.y;
+        k.z[w] = b.x;
+        k.z[w + 1] = b.y;
+    }
+#else
 #pragma unroll
     for (int w = 0; w < W; ++w) {
         k.x[w] = x[i * W + w];
         k.z[w] = z[i * W + w];
     }
+#endif
     return k;
 }
+
+__device__ __forceinline__ void store_key(u64* __restrict__ x, u64* __restrict__ z, size_t i, const Key& k) {
+#if W % 2 == 0
+#pragma unroll
+    for (int w = 0; w < W; w += 2) {
+        *reinterpret_cast<ulonglong2*>(x + i * W + w) = make_ulonglong2(k.x[w], k.x[w + 1]);
+        *reinterpret_cast<ulonglong2*>(z + i * W + w) = make_ulonglong2(k.z[w], k.z[w + 1]);
+    }
+#else
+#pragma unroll
+    for (int w = 0; w < W; ++w) {
+        x[i * W + w] = k.x[w];
+        z[i * W + w] = k.z[w];
+    }
+#endif
+}
+
 
 __device__ __forceinline__ bool key_eq(const Key& a, const Key& b) {
     bool eq = true;
@@ -223,17 +253,19 @@ __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
     return (1ull << (num_qubits - lo)) - 1ull;
 }
 
+// Bit q of a key column, masked out of every word: a runtime word index, or a select ptxas folds back into one, puts the key in local memory.
+__device__ __forceinline__ u32 key_bit(const u64 (&v)[W], u32 q) {
+    u64 word = 0;
+#pragma unroll
+    for (int w = 0; w < W; ++w) word |= v[w] & (0ull - (u64)((u32)w == (q >> 6)));
+    return (u32)((word >> (q & 63)) & 1ull);
+}
+
 // `LocalPtm::support_bits`: bit 2j is the x-bit of support qubit j, bit 2j+1 its z-bit.
 __device__ __forceinline__ u32 support_bits(const Key& k, u32 support_size, u32 qubit_0, u32 qubit_1) {
     u32 s = 0;
-    if (support_size > 0) {
-        s |= (u32)((k.x[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull);
-        s |= (u32)((k.z[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull) << 1;
-    }
-    if (support_size > 1) {
-        s |= (u32)((k.x[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 2;
-        s |= (u32)((k.z[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 3;
-    }
+    if (support_size > 0) s |= key_bit(k.x, qubit_0) | key_bit(k.z, qubit_0) << 1;
+    if (support_size > 1) s |= key_bit(k.x, qubit_1) << 2 | key_bit(k.z, qubit_1) << 3;
     return s;
 }
 

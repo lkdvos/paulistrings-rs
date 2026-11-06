@@ -11,14 +11,6 @@ struct RunSteps {
     u32 n;
 };
 
-// Bit q of a key column, through a select rather than a dynamic index, so the key stays in registers.
-__device__ __forceinline__ u32 run_bit(const u64 (&v)[W], u32 q) {
-    u64 word = 0;
-#pragma unroll
-    for (int w = 0; w < W; ++w) word = ((u32)w == (q >> 6)) ? v[w] : word;
-    return (u32)((word >> (q & 63)) & 1ull);
-}
-
 __device__ __forceinline__ void run_flip(u64 (&v)[W], u32 q, u32 bit) {
 #pragma unroll
     for (int w = 0; w < W; ++w) v[w] ^= ((u32)w == (q >> 6)) ? ((u64)bit << (q & 63)) : 0ull;
@@ -35,7 +27,7 @@ __device__ __forceinline__ bool run_walk(const RunSteps& R, const KeepProg& prog
     for (u32 i = 0; i < R.n; ++i) {
         const u32* step = R.info + (size_t)i * RUN_INFO_WORDS;
         const u32 q0 = step[0], q1 = step[1];
-        const u32 s = run_bit(k.x, q0) | run_bit(k.z, q0) << 1 | ((run_bit(k.x, q1) | run_bit(k.z, q1) << 1) & step[2]) << 2;
+        const u32 s = key_bit(k.x, q0) | key_bit(k.z, q0) << 1 | ((key_bit(k.x, q1) | key_bit(k.z, q1) << 1) & step[2]) << 2;
         if ((step[3] >> s) & 1u) continue;
         if (!tested && i > 0 && !run_survives(prog, k, c)) return false;
         const u32 d = (step[4 + (s >> 2)] >> (8 * (s & 3))) & 0xFFu;
@@ -106,11 +98,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_permute_run_scatter(
         base = __shfl_sync(~0u, base, leader);
         if (destination != NO_ENTRY) {
             const size_t slot = (size_t)base + __popc(peers & lanemask_lt());
-#pragma unroll
-            for (int w = 0; w < W; ++w) {
-                ox[slot * W + w] = k.x[w];
-                oz[slot * W + w] = k.z[w];
-            }
+            store_key(ox, oz, slot, k);
             coeff_store(oc, slot, v);
             og[slot] = g_in[(size_t)start + r] ^ (g & fingerprint_mask());
         }

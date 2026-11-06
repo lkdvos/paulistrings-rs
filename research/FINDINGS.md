@@ -528,6 +528,27 @@ A class bucket that outgrows its block lists itself, and only those rerun one bl
 On TFIM 16×16 at `--threshold 1e-5` the block fallback had taken 424 of 1240 runs and 3.0 of 3.56 s, 397 of them among the 600 `ZZ` runs: the strings wholly inside a run's qubits share one class, the one with nothing elsewhere, a median 2258 strings in the largest class bucket against the block's 512-string input half, and no class-bit count splits one class.
 `sampling_bench` GPU f64, SM 1845–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM `--threshold 1e-5` **3.698 / 3.684 → 1.347 / 1.297 s (−64%)**, readout identical to 12 digits; `--threshold 3e-6` 41.3 s (phase-timing build) → 9.79 s.
 
+### Kernel keys stay in registers
+
+ncu (2025.1 runs on ccqlin038; nsys does not) on steady-state launches put `k_join` at 87% of DRAM peak, but a third of its traffic was local memory: `support_bits` indexed a key word at run time (`k.x[q >> 6]`), which spills the whole key to local memory, at 1.4 useful bytes of 32 per sector (`k_join` W = 2: 160 B stack frame, W = 4: 320 B and 84 registers; `k_count` 32/64 B; the permutation run's `run_bit` select too, as ptxas folds a select chain back into an index).
+`key_bit` masks the word out of every word instead: no stack frame left on `k_join` (W = 2), `k_count` or `k_permute_run_*`, and `k_join` W = 4 at 64 registers.
+A/B (`sampling_bench` release, JCC flag, f64, ABAB, SM 1800–1875 MHz, memory 7601 MHz): kicked Ising `--approx-topn 1e7` **15.03 / 15.26 → 11.36 / 11.55 s (−24.4% / −24.3%)**, TFIM 16×16 `--approx-topn 1e6` **14.81 / 14.13 / 13.39 → 12.18 / 11.45 / 11.73 s (−17.7% / −19.0% / −12.4%)**.
+
+### Warp-per-bucket kernels narrow their blocks at few buckets
+
+TFIM 16×16 and kicked Ising at `--approx-topn 1e6` run at 1024 buckets, where eight-warp blocks make a 128-block grid: 44 of 84 SMs hold two blocks and 40 hold one, so `k_retain`, `k_count`, `k_boundary_counts` ran at 23–26% achieved occupancy and `k_retain` at 505 GB/s (ncu).
+`warp_per_bucket` keeps at least 1024 blocks by narrowing to one warp a block: `k_retain` 324 → 265 µs (617 GB/s), `k_count` 130 → 103 µs.
+Wall (ABAB, 3 rounds, SM 1770–1890 MHz, memory 7601 MHz): TFIM `--approx-topn 1e6` **−4.8% / −3.7% / −3.9%**, kicked Ising 1e6 −0.9% / −1.9% / +0.2% (not consistent), kicked Ising 1e7 (16384 buckets, unchanged shape) flat as the control.
+
+### Keys move as 16-byte vectors
+
+ncu found `k_join`'s global loads using 14.5 and its stores 16.4 of 32 bytes per sector per request, one 8-byte word per lane per instruction; `load_key`/`store_key` move an even W's words as `ulonglong2` in the join, compaction, retain and permutation-run scatter.
+Same DRAM bytes, half the LSU requests: TFIM `--approx-topn 1e6` −2.6 / −1.8 / −2.0 / −3.9 / −2.5 / −2.1% (6/6), kicked Ising 1e7 −0.9 / −0.8 / −1.0 / −0.9 / −0.5% (5/5), threshold 2.5e-5 −0.3 / −0.2%, kicked Ising 1e6 mixed (−3.3 to +1.6%).
+
+### A shared-memory carveout hint on `k_join` is flat
+
+ncu showed `k_join` W = 4 limited to one block per SM by shared memory under the driver's default carveout; `CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 100` lifts that to five, but wall moved +1.3% / 0.0% / +1.0% on TFIM `--approx-topn 1e6` and +0.2% / +0.8% / +0.3% on kicked Ising 1e7 (3 rounds), since the join is at 83–87% of DRAM peak either way; rejected.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).

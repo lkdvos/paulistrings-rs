@@ -1,7 +1,7 @@
 //! A rotation run applied in one pass over the sum (`kernels/rotation_run.cu`), every layer inside shared memory.
 //!
 //! Contracts: the result agrees with the run's layers applied one by one to floating-point tolerance, `keep` asked after every layer about every string that layer changed and after the first about every string, as `apply_rotation_run` does (engine/bucketed/rotation_layer.rs); the Clifford arm drops its identity residues as the host's rotation layer does.
-//! A layer moves a string only within its class, its key off the run's qubits, so a block holding whole classes needs no other block; a class bucket that outgrows its block reruns alone over tables in global memory, and only one that outgrows [`WIDE_MAX_ROWS`] leaves the sum untouched for the caller to run the layers one by one.
+//! A layer moves a string only within its class, its key off the run's qubits, so a block holding whole classes needs no other block; apply blocks pack consecutive class buckets, one that outgrows shared memory reruns over tables in global memory, and only one that outgrows [`WIDE_MAX_ROWS`] leaves the sum untouched for the caller to run the layers one by one.
 
 use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg};
 
@@ -24,11 +24,16 @@ const MAX_QUBITS: usize = 16;
 /// Block width of the per-bucket passes.
 const BUCKET_THREADS: u32 = 256;
 
-/// Touched strings per class bucket the class-bucket count aims for, a quarter of a block's input half.
-const CLASS_TARGET: usize = RR_ROWS / 8;
+/// Strings per class bucket the class-bucket count aims for, touched or not; apply blocks pack consecutive class buckets.
+const CLASS_TARGET: usize = 32;
 
-/// Most rows a class bucket's global tables hold, and most bytes all of a wide pass's tables take, before the run falls back to its layers one by one.
+/// Touched strings an apply block aims for, a quarter of its input half, so a run's growth seldom outgrows it.
+const BLOCK_ROWS: usize = RR_ROWS / 8;
+
+/// Most rows an apply block's global tables hold before the run falls back to its layers one by one.
 const WIDE_MAX_ROWS: usize = 1 << 22;
+
+/// Most bytes one launch of the wide pass gives its blocks' tables; a longer overflow list runs in several launches.
 const WIDE_MAX_BYTES: usize = 1 << 30;
 
 /// `RunInfo` in `kernels/rotation_run.cu`.
@@ -146,6 +151,8 @@ pub(crate) struct RotationRunScratch<const W: usize, C: Coefficient> {
     arena_bucket: CudaSlice<u32>,
     class_count: CudaSlice<u32>,
     class_start: CudaSlice<u32>,
+    /// Each apply block's first class bucket, `k_rotation_run_ranges`.
+    block_lo: CudaSlice<u32>,
     inert: CudaSlice<u32>,
     total: CudaSlice<u32>,
     cursor: CudaSlice<u32>,
@@ -168,6 +175,7 @@ impl<const W: usize, C: Coefficient> RotationRunScratch<W, C> {
             arena_bucket: stream.alloc_zeros(1)?,
             class_count: stream.alloc_zeros(2)?,
             class_start: stream.alloc_zeros(2)?,
+            block_lo: stream.alloc_zeros(2)?,
             inert: stream.alloc_zeros(1)?,
             total: stream.alloc_zeros(1)?,
             cursor: stream.alloc_zeros(1)?,
@@ -189,7 +197,7 @@ pub(crate) fn apply_shared_bytes(coefficient_bytes: usize) -> u32 {
     (RR_ROWS * row_bytes(coefficient_bytes)) as u32
 }
 
-/// Rows a wide pass gives each class bucket: four times the largest input that overflowed and four times the previous pass's rows, a power of two.
+/// Rows a wide pass may give an apply block: four times the largest input that overflowed and four times the previous pass's rows, a power of two; each block takes four times its own input, at least four times the previous pass's rows.
 fn wide_rows(largest_input: u32, previous: usize) -> usize {
     (4 * largest_input as usize).max(4 * previous).next_power_of_two()
 }
@@ -217,9 +225,6 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
         None => RotationRunScratch::new(sum)?,
     };
     grow(&stream, &mut buffers.class_count, classes, ordinal)?;
-    for list in &mut buffers.overflow {
-        grow(&stream, list, classes, ordinal)?;
-    }
     grow(&stream, &mut buffers.class_start, classes + 1, ordinal)?;
     grow(&stream, &mut buffers.inert, b, ordinal)?;
     grow(&stream, &mut buffers.total, b, ordinal)?;
@@ -291,6 +296,31 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
             .arg(&mut buffers.gathered_bucket)
             .launch(per_bucket)?;
     }
+    let totals = &scratch.totals;
+    let touched = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+        let total = stream.clone_dtoh(totals)?;
+        stream.synchronize()?;
+        Ok(total[0] as usize)
+    })?;
+    let blocks = touched.div_ceil(BLOCK_ROWS);
+    grow(&stream, &mut buffers.block_lo, blocks + 1, ordinal)?;
+    for list in &mut buffers.overflow {
+        grow(&stream, list, blocks.max(1), ordinal)?;
+    }
+    if blocks > 0 {
+        let (classes32, per_block, blocks32) = (classes as u32, BLOCK_ROWS as u32, blocks as u32);
+        // SAFETY: arguments match `k_rotation_run_ranges`; `class_start` holds `classes + 1` offsets ending at `touched`, and `block_lo` holds `blocks + 1` entries.
+        unsafe {
+            stream
+                .launch_builder(&kernels.rotation_run_ranges)
+                .arg(&buffers.class_start)
+                .arg(&classes32)
+                .arg(&per_block)
+                .arg(&blocks32)
+                .arg(&mut buffers.block_lo)
+                .launch(thread_per(classes + 1, 256))?;
+        }
+    }
     timed!(scratch.lap(sum, t0, |stats| &mut stats.gather_ns)?);
 
     let mut out = match sum.spare.take() {
@@ -311,34 +341,37 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
         timed!(let t1 = scratch.event(sum)?);
         stream.memcpy_dtod(&buffers.inert.slice(0..b), &mut buffers.total.slice_mut(0..b))?;
         stream.memset_zeros(&mut buffers.counters)?;
-        // SAFETY: arguments match `k_rotation_run_apply`; `class_start` holds `classes + 1` offsets into `gathered`, the arena holds `arena_cap` rows, `total` one counter per bucket, and the dynamic shared bytes are the kernel's `RR_SHARED_BYTES`.
-        unsafe {
-            let arena = &mut buffers.arena;
-            stream
-                .launch_builder(&kernels.rotation_run_apply)
-                .arg(&buffers.gathered.x)
-                .arg(&buffers.gathered.z)
-                .arg(&buffers.gathered.coeff)
-                .arg(&buffers.gathered.fingerprint)
-                .arg(&buffers.gathered_bucket)
-                .arg(&buffers.class_start)
-                .arg(&info)
-                .arg(&buffers.amplitude)
-                .arg(keep)
-                .arg(&mut arena.x)
-                .arg(&mut arena.z)
-                .arg(&mut arena.coeff)
-                .arg(&mut arena.fingerprint)
-                .arg(&mut buffers.arena_bucket)
-                .arg(&arena_cap)
-                .arg(&mut buffers.counters)
-                .arg(&mut buffers.total)
-                .arg(&mut buffers.overflow[0])
-                .launch(LaunchConfig {
-                    grid_dim: (classes as u32, 1, 1),
-                    block_dim: (RR_THREADS, 1, 1),
-                    shared_mem_bytes: shared,
-                })?;
+        if blocks > 0 {
+            // SAFETY: arguments match `k_rotation_run_apply`; `class_start` holds `classes + 1` offsets into `gathered`, `block_lo` the `blocks + 1` ranges over them, the arena holds `arena_cap` rows, `total` one counter per bucket, and the dynamic shared bytes are the kernel's `RR_SHARED_BYTES`.
+            unsafe {
+                let arena = &mut buffers.arena;
+                stream
+                    .launch_builder(&kernels.rotation_run_apply)
+                    .arg(&buffers.gathered.x)
+                    .arg(&buffers.gathered.z)
+                    .arg(&buffers.gathered.coeff)
+                    .arg(&buffers.gathered.fingerprint)
+                    .arg(&buffers.gathered_bucket)
+                    .arg(&buffers.class_start)
+                    .arg(&buffers.block_lo)
+                    .arg(&info)
+                    .arg(&buffers.amplitude)
+                    .arg(keep)
+                    .arg(&mut arena.x)
+                    .arg(&mut arena.z)
+                    .arg(&mut arena.coeff)
+                    .arg(&mut arena.fingerprint)
+                    .arg(&mut buffers.arena_bucket)
+                    .arg(&arena_cap)
+                    .arg(&mut buffers.counters)
+                    .arg(&mut buffers.total)
+                    .arg(&mut buffers.overflow[0])
+                    .launch(LaunchConfig {
+                        grid_dim: (blocks as u32, 1, 1),
+                        block_dim: (RR_THREADS, 1, 1),
+                        shared_mem_bytes: shared,
+                    })?;
+            }
         }
         let (mut counters, mut total) = scan_totals(sum, &buffers, &mut out, scratch)?;
         if counters[1] != 0 {
@@ -447,7 +480,7 @@ fn scan_totals<const W: usize, C: Coefficient>(
     })
 }
 
-/// Rerun the class buckets the apply pass listed in `overflow[0]` over global tables, each pass's overflows again at four times the rows; the final counters, or `None` once a class bucket would outgrow [`WIDE_MAX_ROWS`] or a pass [`WIDE_MAX_BYTES`].
+/// Rerun the apply blocks the apply pass listed in `overflow[0]` over global tables, each pass's overflows again at four times the rows; the final counters, or `None` once a block would outgrow [`WIDE_MAX_ROWS`].
 fn apply_wide<const W: usize, C: Coefficient>(
     sum: &GpuSum<W, C>,
     buffers: &mut RotationRunScratch<W, C>,
@@ -465,48 +498,57 @@ fn apply_wide<const W: usize, C: Coefficient>(
         if pending == 0 {
             return Ok(Some(counters));
         }
+        let min_rows = 4 * rows;
         rows = wide_rows(counters[3], rows);
-        if rows > WIDE_MAX_ROWS || pending * rows * row_bytes > WIDE_MAX_BYTES {
+        if rows > WIDE_MAX_ROWS {
             return Ok(None);
         }
-        grow(stream, &mut buffers.tables, pending * rows * row_bytes, ordinal)?;
+        let per_launch = (WIDE_MAX_BYTES / (rows * row_bytes)).clamp(1, pending);
+        grow(stream, &mut buffers.tables, per_launch * rows * row_bytes, ordinal)?;
         let next = 3 - listed;
         stream.memset_zeros(&mut buffers.counters.slice_mut(next..next + 1))?;
-        let (rows32, next32) = (rows as u32, next as u32);
+        let (rows32, min_rows32, next32) = (rows as u32, min_rows as u32, next as u32);
         let [first, second] = &mut buffers.overflow;
-        let (overflow_in, overflow_out) = if listed == 1 { (first, second) } else { (second, first) };
-        // SAFETY: arguments match `k_rotation_run_apply_wide` in rotation_run.cu; `overflow_in` lists `pending` class buckets, `tables` holds `rows` rows of `RR_ROW_BYTES` for each, and `overflow_out` has room for every class bucket.
-        unsafe {
-            let arena = &mut buffers.arena;
-            stream
-                .launch_builder(&sum.kernels.rotation_run_apply_wide)
-                .arg(&buffers.gathered.x)
-                .arg(&buffers.gathered.z)
-                .arg(&buffers.gathered.coeff)
-                .arg(&buffers.gathered.fingerprint)
-                .arg(&buffers.gathered_bucket)
-                .arg(&buffers.class_start)
-                .arg(info)
-                .arg(&buffers.amplitude)
-                .arg(keep)
-                .arg(&mut arena.x)
-                .arg(&mut arena.z)
-                .arg(&mut arena.coeff)
-                .arg(&mut arena.fingerprint)
-                .arg(&mut buffers.arena_bucket)
-                .arg(&arena_cap)
-                .arg(&mut buffers.counters)
-                .arg(&mut buffers.total)
-                .arg(&*overflow_in)
-                .arg(&mut buffers.tables)
-                .arg(&rows32)
-                .arg(&next32)
-                .arg(overflow_out)
-                .launch(LaunchConfig {
-                    grid_dim: (pending as u32, 1, 1),
-                    block_dim: (RR_WIDE_THREADS, 1, 1),
-                    shared_mem_bytes: 0,
-                })?;
+        let (overflow_in, overflow_out) =
+            if listed == 1 { (first, second) } else { (second, first) };
+        for start in (0..pending).step_by(per_launch) {
+            let (start32, grid) = (start as u32, per_launch.min(pending - start) as u32);
+            // SAFETY: arguments match `k_rotation_run_apply_wide` in rotation_run.cu; `overflow_in` lists `pending` apply blocks, `tables` holds `rows` rows of `RR_ROW_BYTES` for each of the `grid` launched, and `overflow_out` has room for every apply block.
+            unsafe {
+                let arena = &mut buffers.arena;
+                stream
+                    .launch_builder(&sum.kernels.rotation_run_apply_wide)
+                    .arg(&buffers.gathered.x)
+                    .arg(&buffers.gathered.z)
+                    .arg(&buffers.gathered.coeff)
+                    .arg(&buffers.gathered.fingerprint)
+                    .arg(&buffers.gathered_bucket)
+                    .arg(&buffers.class_start)
+                    .arg(&buffers.block_lo)
+                    .arg(info)
+                    .arg(&buffers.amplitude)
+                    .arg(keep)
+                    .arg(&mut arena.x)
+                    .arg(&mut arena.z)
+                    .arg(&mut arena.coeff)
+                    .arg(&mut arena.fingerprint)
+                    .arg(&mut buffers.arena_bucket)
+                    .arg(&arena_cap)
+                    .arg(&mut buffers.counters)
+                    .arg(&mut buffers.total)
+                    .arg(&*overflow_in)
+                    .arg(&start32)
+                    .arg(&mut buffers.tables)
+                    .arg(&rows32)
+                    .arg(&min_rows32)
+                    .arg(&next32)
+                    .arg(&mut *overflow_out)
+                    .launch(LaunchConfig {
+                        grid_dim: (grid, 1, 1),
+                        block_dim: (RR_WIDE_THREADS, 1, 1),
+                        shared_mem_bytes: 0,
+                    })?;
+            }
         }
         counters = timed_transfer(stream, &mut scratch.stats, Transfer::D2h, || {
             let counters = stream.clone_dtoh(&buffers.counters)?;

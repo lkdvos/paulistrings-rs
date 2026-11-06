@@ -1,7 +1,7 @@
 // A run of rotation tables applied layer by layer inside shared memory, `keep` asked after every layer; launch and contracts in engine/gpu/layer/rotation_run.rs.
 // A string's class is its key with the run's qubits cleared: every layer moves a string within its class, so classes are independent and one block holds whole classes.
 // k_rotation_run_classify counts each touched string into its class bucket and each untouched survivor into its bucket, k_rotation_run_gather lists the touched strings by class bucket,
-// k_rotation_run_apply runs every layer over one class bucket and appends the survivors to the arena, k_rotation_run_apply_wide does so for the class buckets that outgrew a block, and k_rotation_run_place / k_rotation_run_scatter write the tight output.
+// k_rotation_run_ranges packs consecutive class buckets into apply blocks of about a fixed row count, k_rotation_run_apply runs every layer over one block's rows and appends the survivors to the arena, k_rotation_run_apply_wide does so for the blocks that outgrew shared memory, and k_rotation_run_place / k_rotation_run_scatter write the tight output.
 
 #if !defined(RR_ROWS) || !defined(RR_THREADS) || !defined(RR_WIDE_THREADS)
 #error "RR_ROWS, RR_THREADS and RR_WIDE_THREADS must be defined"
@@ -220,25 +220,38 @@ __device__ __forceinline__ RrTables rr_tables(unsigned char* base, u32 rows) {
     return t;
 }
 
-// Class bucket `cb` through every layer in tables of `rows` rows: rows [class_start[cb], class_start[cb + 1]) of the gathered columns;
+// k_rotation_run_ranges: the class buckets of apply block i, [block_lo[i], block_lo[i + 1]), the first whose rows start at or past i * per_block, so blocks hold whole class buckets and about per_block rows; thread j covers the blocks whose first class bucket is j.
+extern "C" __global__ void k_rotation_run_ranges(const u32* __restrict__ class_start, u32 classes, u32 per_block, u32 blocks,
+                                                 u32* __restrict__ block_lo) {
+    const u32 j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j == 0) {
+        block_lo[0] = 0;
+        block_lo[blocks] = classes;
+    }
+    if (j == 0 || j > classes) return;
+    const u32 last = min(class_start[j] / per_block, blocks - 1u);
+    for (u32 i = class_start[j - 1] / per_block + 1u; i <= last; ++i) block_lo[i] = j;
+}
+
+// Apply block `block` through every layer in tables of `rows` rows: the gathered rows of its class buckets, [class_start[block_lo[block]], class_start[block_lo[block + 1]]);
 // each layer sums a string's identity part and its partner's generator part, and asks `keep` about every string it changed (about every string after the first layer);
 // survivors go to the arena at a block slot claimed from counters[0], and total[beta'] counts each into its output bucket.
-// A class bucket that outgrows `rows` writes nothing, lists itself at overflow_list[counters[overflow_slot]++] and raises counters[3] to its input length;
+// A block that outgrows `rows` writes nothing, lists itself at overflow_list[counters[overflow_slot]++] and raises counters[3] to its input length;
 // counters[0] past arena_cap means the arena was too small, and nothing past the cap is written.
 __device__ __forceinline__ void rr_apply_block(
     const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
-    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const RunInfo& info,
+    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const u32* __restrict__ block_lo, const RunInfo& info,
     const real_t* __restrict__ amplitude, const KeepProg& prog, u64* __restrict__ ax, u64* __restrict__ az,
     real_t* __restrict__ ac, u64* __restrict__ ag, u32* __restrict__ abucket, u32 arena_cap, u32* __restrict__ counters,
-    u32* __restrict__ total, u32 cb, const RrTables& t, u32 rows, u32 overflow_slot, u32* __restrict__ overflow_list) {
+    u32* __restrict__ total, u32 block, const RrTables& t, u32 rows, u32 overflow_slot, u32* __restrict__ overflow_list) {
     __shared__ real_t s_amp[RR_MAX_LAYERS * 2 * LOCAL_DIM * COEFF_PARTS];
     __shared__ u32 s_rows, s_out, s_base, s_overflow;
-    const u32 seg0 = class_start[cb];
-    const u32 n_in = class_start[cb + 1] - seg0;
+    const u32 seg0 = class_start[block_lo[block]];
+    const u32 n_in = class_start[block_lo[block + 1]] - seg0;
     if (n_in == 0) return;
     const auto overflow = [&]() {
         if (threadIdx.x == 0) {
-            overflow_list[atomicAdd(&counters[overflow_slot], 1u)] = cb;
+            overflow_list[atomicAdd(&counters[overflow_slot], 1u)] = block;
             atomicMax(&counters[3], n_in);
         }
     };
@@ -403,30 +416,37 @@ __device__ __forceinline__ void rr_apply_block(
     }
 }
 
-// k_rotation_run_apply: class bucket blockIdx.x through rr_apply_block in shared memory, an overflow listed in counters[1].
+// k_rotation_run_apply: apply block blockIdx.x through rr_apply_block in shared memory, an overflow listed in counters[1].
 extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
     const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
-    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const __grid_constant__ RunInfo info,
+    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const u32* __restrict__ block_lo,
+    const __grid_constant__ RunInfo info,
     const real_t* __restrict__ amplitude, const __grid_constant__ KeepProg prog, u64* __restrict__ ax, u64* __restrict__ az,
     real_t* __restrict__ ac, u64* __restrict__ ag, u32* __restrict__ abucket, u32 arena_cap, u32* __restrict__ counters,
     u32* __restrict__ total, u32* __restrict__ overflow_list) {
     extern __shared__ __align__(16) unsigned char rr_shared[];
     const RrTables t = rr_tables(rr_shared, RR_ROWS);
-    rr_apply_block(x, z, c, g, row_bucket, class_start, info, amplitude, prog, ax, az, ac, ag, abucket, arena_cap, counters,
+    rr_apply_block(x, z, c, g, row_bucket, class_start, block_lo, info, amplitude, prog, ax, az, ac, ag, abucket, arena_cap, counters,
                    total, blockIdx.x, t, RR_ROWS, 1u, overflow_list);
 }
 
-// k_rotation_run_apply_wide: class bucket overflow_in[blockIdx.x] through rr_apply_block in `rows` rows of global tables at `tables`, one stretch per block, an overflow listed in counters[overflow_slot].
+// k_rotation_run_apply_wide: apply block overflow_in[first + blockIdx.x] through rr_apply_block over global tables at `tables`, a stretch of `rows` rows per block of which it takes
+// four times its input as a power of two, at least `min_rows`, an overflow listed in counters[overflow_slot].
 extern "C" __global__ void __launch_bounds__(RR_WIDE_THREADS) k_rotation_run_apply_wide(
     const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
-    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const __grid_constant__ RunInfo info,
+    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const u32* __restrict__ block_lo,
+    const __grid_constant__ RunInfo info,
     const real_t* __restrict__ amplitude, const __grid_constant__ KeepProg prog, u64* __restrict__ ax, u64* __restrict__ az,
     real_t* __restrict__ ac, u64* __restrict__ ag, u32* __restrict__ abucket, u32 arena_cap, u32* __restrict__ counters,
-    u32* __restrict__ total, const u32* __restrict__ overflow_in, unsigned char* __restrict__ tables, u32 rows,
-    u32 overflow_slot, u32* __restrict__ overflow_list) {
-    const RrTables t = rr_tables(tables + (size_t)blockIdx.x * rows * RR_ROW_BYTES, rows);
-    rr_apply_block(x, z, c, g, row_bucket, class_start, info, amplitude, prog, ax, az, ac, ag, abucket, arena_cap, counters,
-                   total, overflow_in[blockIdx.x], t, rows, overflow_slot, overflow_list);
+    u32* __restrict__ total, const u32* __restrict__ overflow_in, u32 first, unsigned char* __restrict__ tables, u32 rows,
+    u32 min_rows, u32 overflow_slot, u32* __restrict__ overflow_list) {
+    const u32 block = overflow_in[first + blockIdx.x];
+    const u32 n_in = class_start[block_lo[block + 1]] - class_start[block_lo[block]];
+    u32 own = min_rows;
+    while (own < 4u * n_in && own < rows) own <<= 1;
+    const RrTables t = rr_tables(tables + (size_t)blockIdx.x * rows * RR_ROW_BYTES, own);
+    rr_apply_block(x, z, c, g, row_bucket, class_start, block_lo, info, amplitude, prog, ax, az, ac, ag, abucket, arena_cap, counters,
+                   total, block, t, own, overflow_slot, overflow_list);
 }
 
 // k_rotation_run_place: bucket blockIdx.x's untouched survivors at the front of its output, its output length, and cursor[beta] past them for k_rotation_run_scatter.

@@ -550,6 +550,18 @@ Same DRAM bytes, half the LSU requests: TFIM `--approx-topn 1e6` −2.6 / −1.8
 
 ncu showed `k_join` W = 4 limited to one block per SM by shared memory under the driver's default carveout; `CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 100` lifts that to five, but wall moved +1.3% / 0.0% / +1.0% on TFIM `--approx-topn 1e6` and +0.2% / +0.8% / +0.3% on kicked Ising 1e7 (3 rounds), since the join is at 83–87% of DRAM peak either way; rejected.
 
+### Apply blocks pack class buckets by touched rows
+
+Class buckets sized from every string, touched or not, left an apply block a handful of rows on TFIM, where a run touches about 7% of the sum, so per-block setup (table clears, eight layers of barriers) dominated `merge`; class buckets now aim at 32 strings each and `k_rotation_run_ranges` packs consecutive ones into blocks of about 128 touched rows, after one synchronization reads the touched count (`BLOCK_ROWS` in `engine/gpu/layer/rotation_run.rs`).
+`sampling_bench` GPU f64, SM 1890–1905 MHz, memory 7601 MHz, interleaved: TFIM 16×16 `--threshold 1e-5` **1.140 / 1.159 / 1.120 → 0.955 / 0.938 / 0.960 s (−16%)**, `--threshold 3e-6` 8.40 → 6.73 / 6.73 s (−20%), readouts identical; phase timing at 1e-5, `merge` 559 → 275 ms.
+Blocks of 256 touched rows: 0.990 / 0.971 / 0.975 s and 6.75 / 6.72 s, and kicked Ising `--threshold 2.5e-5` 7.07 / 7.11 → 6.27 s; of 512: 1.027 / 1.025 / 1.053 s.
+
+### No exact run rule admits `ApproxTopN` rotation runs at the cap
+
+`ApproxTopN(n)` keeps exactly `n` terms whenever a layer leaves more, and at the cap every TFIM rotation layer adds strings, so its pass is never the no-op a deferred pass needs (`TruncationPolicy::run_length_limit`); only layers whose pass kept every term could join a run under any exact rule.
+TFIM 16×16 on the device, `--layers-out`: at `--approx-topn 1e5` those are 1309 of 9920 layers, 0.158 of 2.678 s wall with 0.016 s of passes, and at `1e6` 1438 layers, 0.229 of 10.21 s; the `len × fanout ≤ n` rule already saves 749 and 1123 passes among them.
+Rejected: a tighter rule gains at most 6% and 2%.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).

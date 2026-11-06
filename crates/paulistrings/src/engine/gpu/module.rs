@@ -193,6 +193,7 @@ pub(crate) struct KernelSet {
     pub(crate) rotation_run_gather: CudaFunction,
     pub(crate) rotation_run_apply: CudaFunction,
     pub(crate) rotation_run_apply_wide: CudaFunction,
+    pub(crate) rotation_run_ranges: CudaFunction,
     pub(crate) rotation_run_place: CudaFunction,
     pub(crate) rotation_run_scatter: CudaFunction,
     /// The coefficient type the set was compiled for.
@@ -393,6 +394,7 @@ pub(crate) fn kernel_set_with_options(
         rotation_run_gather: load("k_rotation_run_gather")?,
         rotation_run_apply,
         rotation_run_apply_wide: load("k_rotation_run_apply_wide")?,
+        rotation_run_ranges: load("k_rotation_run_ranges")?,
         rotation_run_place: load("k_rotation_run_place")?,
         rotation_run_scatter: load("k_rotation_run_scatter")?,
         coefficient,

@@ -1,35 +1,13 @@
 use super::*;
-use crate::pauli_string::PauliString;
-use crate::pauli_sum::accumulator::BuildAccumulator;
 use crate::pauli_sum::Gf2Hash;
 use crate::test_support::{
-    assert_systematic_resample, assert_terms_close, coefficient_tolerance, rand_sum, rand_sum_real,
-    weighted_four_term_sum,
+    assert_systematic_resample, assert_terms_close, coefficient_tolerance, ordered_sum, rand_sum,
+    rand_sum_real, weighted_four_term_sum,
 };
 use num_complex::Complex64;
 
 /// The largest `u` [`Rng::uniform`] returns.
 const LAST_UNIFORM: f64 = 1.0 - 1.0 / (1u64 << 53) as f64;
-
-/// `X`-strings with `x[0] = 1, 2, 3, …` carrying `coefficients` in that (iteration) order; a zero coefficient is kept as a term.
-fn ordered_sum<const W: usize, C: Coefficient>(coefficients: &[C]) -> PauliSum<W, C> {
-    let key = |i: usize| {
-        let mut p = PauliString::<W>::identity();
-        p.x[0] = i as u64 + 1;
-        p
-    };
-    let mut acc = BuildAccumulator::<W, C>::new(8);
-    for i in 0..coefficients.len() {
-        acc.add_term(key(i), C::ONE);
-    }
-    let mut sum = acc.finalize();
-    sum.update_per_bucket(|_| {
-        |x: &[u64; W], _: &[u64; W], _: C| Some(coefficients[x[0] as usize - 1])
-    });
-    let order: Vec<u64> = sum.iter().map(|(x, _, _)| x[0]).collect();
-    assert_eq!(order, (1..=coefficients.len() as u64).collect::<Vec<_>>(), "iteration order");
-    sum
-}
 
 /// `sum` after one systematic resample at offset `u` with `samples` points.
 fn resampled<const W: usize, C: Coefficient>(

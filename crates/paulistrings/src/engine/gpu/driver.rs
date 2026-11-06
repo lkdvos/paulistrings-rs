@@ -37,6 +37,7 @@ use crate::engine::LOG_TARGET;
 /// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) or [`scatter_to_devices_with`](Self::scatter_to_devices_with) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
 ///
 /// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form, and a `PerPartition` as its policy on each device alone.
+/// A `CollapseSample` collapses on the device (`collapse.rs`), its stretches in the device's storage order, so a device trajectory has the host's law but not its draws.
 ///
 /// `C` is the per-term [`Coefficient`], `Complex64` by default; the device stores it natively, so a real `f32` sum moves 4 bytes of coefficient a term.
 ///
@@ -57,9 +58,6 @@ pub(super) fn lower_for_run<const W: usize, C: Coefficient>(
 ) -> Result<KeepProgram, GpuError> {
     if !policy.supports_partitioned() && !single_partition {
         return Err(GpuError::Unsupported("exact TopN on device"));
-    }
-    if policy.contains_collapse_sample() {
-        return Err(GpuError::Unsupported("CollapseSample on device"));
     }
     let keep = KeepProgram::lower(policy)?;
     let adjoint = matches!(direction, Direction::Heisenberg);

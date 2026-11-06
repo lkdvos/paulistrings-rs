@@ -1,7 +1,7 @@
 //! The [`TruncationPolicy`] trait and the built-in policies.
 
 pub(crate) mod builtin;
-mod collapse_sample;
+pub(crate) mod collapse_sample;
 pub(crate) mod octave_window;
 mod tree;
 

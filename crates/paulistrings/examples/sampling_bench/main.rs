@@ -15,10 +15,8 @@ use cli::{parse_args, Backend, Config, Truncation, USAGE};
 use models::IsingQuench;
 use paulistrings::Coefficient;
 
-/// The one construction of [`CollapseSample`], so a constructor that takes `samples` is a one-line change here; the current one has no such parameter.
 fn collapse_sample(cache: usize, samples: usize, seed: u64) -> CollapseSample {
-    let _ = samples;
-    CollapseSample::new(cache, seed)
+    CollapseSample::new(cache, samples, seed)
 }
 
 /// `--threshold`, `--approx-topn` or `--collapse` as the device drivers take it.

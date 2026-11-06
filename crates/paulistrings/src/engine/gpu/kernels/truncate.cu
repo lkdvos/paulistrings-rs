@@ -144,10 +144,33 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
     }
 }
 
-// `ApproxTopN`'s cut in place: keep the terms whose key exceeds `boundary`, and of those equal to it the first `quota` in bucket order, `boundary_before[beta]` (from `k_boundary_counts` and its scan) ahead of bucket beta; without `ordered` the quota covers every boundary term or none, so it needs no order; `counters[0]` sums the kept terms.
+// `ApproxTopN`'s cut in place: keep the terms whose key exceeds `boundary`, and of those equal to it the first `quota` in bucket order; `counters[0]` sums the kept terms.
 // One warp per bucket: a flag per row (0 dropped, 1 kept, 2 at the boundary), then the dropped rows below the bucket's kept count take the kept rows above it, so the bucket keeps its start and its kept terms fill its front, in no particular order.
+// The boundary terms ahead of a bucket come from a decoupled look-back over `prefix` (zeroed, one entry per bucket); a warp takes its bucket from `counters[1]` in launch order, so every lower bucket's warp is already running and the look-back never waits on an unscheduled one.
 #define CUT_QUEUE 64
 #define CUT_WARPS 8
+#define CUT_AGGREGATE (1ull << 62)
+#define CUT_INCLUSIVE (2ull << 62)
+#define CUT_VALUE (CUT_AGGREGATE - 1ull)
+
+// The boundary terms of buckets `0..beta`, publishing bucket beta's `at_n` first as its aggregate and then as an inclusive prefix; lane 0's result.
+__device__ __forceinline__ unsigned long long cut_look_back(unsigned long long* prefix, u32 beta, u32 at_n) {
+    volatile unsigned long long* p = prefix;
+    if (beta == 0) {
+        p[0] = CUT_INCLUSIVE | at_n;
+        return 0;
+    }
+    p[beta] = CUT_AGGREGATE | at_n;
+    unsigned long long before = 0;
+    for (u32 j = beta - 1;; --j) {
+        unsigned long long v;
+        do v = p[j]; while (v == 0);
+        before += v & CUT_VALUE;
+        if (v & CUT_INCLUSIVE) break;
+    }
+    p[beta] = CUT_INCLUSIVE | (before + at_n);
+    return before;
+}
 
 __device__ __forceinline__ void cut_move(u64* x, u64* z, real_t* c, u64* g, size_t dst, size_t src) {
     store_key(x, z, dst, load_key(x, z, src));
@@ -167,12 +190,14 @@ __device__ __forceinline__ u32 cut_scan(u32* q, u32 n, u32 from, u32 end, Want w
 
 extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
     u64* x, u64* z, real_t* c, u64* g, const u32* __restrict__ start, u32* __restrict__ lens, u32 B, u64 boundary,
-    u32 shift, u64 quota, const u32* __restrict__ boundary_before, u32 ordered, unsigned long long* __restrict__ counters,
+    u32 shift, u64 quota, unsigned long long* prefix, u32 ordered, unsigned long long* __restrict__ counters,
     u8* __restrict__ flag) {
     __shared__ u32 queue[CUT_WARPS][2][CUT_QUEUE];
     const u32 lane = lane_id(), w = warp_id();
-    const u32 beta = blockIdx.x * (blockDim.x / WARP) + w;
-    if (beta >= B) return;
+    if (blockIdx.x * (blockDim.x / WARP) + w >= B) return;
+    u32 beta = 0;
+    if (lane == 0) beta = (u32)atomicAdd(&counters[1], 1ull);
+    beta = __shfl_sync(~0u, beta, 0);
     const u32 s = start[beta], len = lens[beta];
     u8* f = flag + s;
     u32 above_n = 0, at_n = 0;
@@ -187,7 +212,9 @@ extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
         above_n += __popc(__ballot_sync(~0u, v == 1));
         at_n += __popc(__ballot_sync(~0u, v == 2));
     }
-    unsigned long long first = ordered ? boundary_before[beta] : 0ull;
+    unsigned long long first = 0;
+    if (ordered && lane == 0) first = cut_look_back(prefix, beta, at_n);
+    first = __shfl_sync(~0u, first, 0);
     const u32 at_kept = first >= quota ? 0u : (u32)min((unsigned long long)at_n, quota - first);
     const u32 kept = above_n + at_kept;
     __syncwarp();

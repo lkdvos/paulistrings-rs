@@ -95,36 +95,14 @@ fn cut_device<const W: usize, C: Coefficient>(
     let at = histogram[1 + bin] as usize;
     // Only a quota that splits the boundary octave needs its terms in bucket order.
     let ordered = local_quota != 0 && local_quota < at;
-    timed!(let started = scratch.event(sum)?);
     if ordered {
-        grow(&stream, &mut scratch.counts, buckets, sum.device())?;
-        grow(&stream, &mut scratch.destination_offsets, buckets + 1, sum.device())?;
-        // SAFETY: arguments match `k_boundary_counts` in truncate.cu; `counts` holds `buckets` entries.
-        unsafe {
-            stream
-                .launch_builder(&sum.kernels.boundary_counts)
-                .arg(&sum.columns.coeff)
-                .arg(&sum.columns.start)
-                .arg(&sum.columns.lengths)
-                .arg(&buckets_u32)
-                .arg(&boundary)
-                .arg(&shift)
-                .arg(&mut scratch.counts)
-                .launch(warp_per_bucket(buckets))?;
-        }
-        exclusive_scan(
-            &stream,
-            &sum.kernels,
-            &scratch.counts.slice(0..buckets),
-            &mut scratch.destination_offsets.slice_mut(0..buckets + 1),
-            buckets,
-            &mut scratch.scan,
-            &mut scratch.totals,
-        )?;
+        grow(&stream, &mut scratch.cut_prefix, buckets, sum.device())?;
+        stream.memset_zeros(&mut scratch.cut_prefix.slice_mut(0..buckets))?;
     }
+    timed!(let started = scratch.event(sum)?);
     let ordered_u32 = u32::from(ordered);
     let columns = &mut sum.columns;
-    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_flag` holds a byte per row of the columns' capacity, which bounds every bucket, `cut_counters` one entry, and `destination_offsets`, read only when `ordered`, the boundary terms ahead of each bucket.
+    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_flag` holds a byte per row of the columns' capacity, which bounds every bucket, `cut_counters` two zeroed entries, and `cut_prefix`, read only when `ordered`, a zeroed entry per bucket.
     unsafe {
         stream
             .launch_builder(&sum.kernels.cut)
@@ -138,7 +116,7 @@ fn cut_device<const W: usize, C: Coefficient>(
             .arg(&boundary)
             .arg(&shift)
             .arg(&quota)
-            .arg(&scratch.destination_offsets)
+            .arg(&mut scratch.cut_prefix)
             .arg(&ordered_u32)
             .arg(&mut scratch.cut_counters)
             .arg(&mut scratch.cut_flag)

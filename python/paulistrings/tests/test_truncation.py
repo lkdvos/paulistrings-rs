@@ -16,6 +16,7 @@ truncation arithmetic.
 
 import math
 
+import numpy as np
 import pytest
 
 from paulistrings import (
@@ -172,9 +173,9 @@ def test_approx_topn_composes_with_the_operators():
     [
         lambda: truncation.topn(3),
         lambda: truncation.approx_topn(3),
-        lambda: truncation.collapse_sample(3, 1),
+        lambda: truncation.collapse_sample(3, 2, 1),
         lambda: truncation.coeff(0.1) & truncation.topn(3),
-        lambda: truncation.weight(2) & truncation.collapse_sample(3, 1),
+        lambda: truncation.weight(2) & truncation.collapse_sample(3, 2, 1),
     ],
     ids=["topn", "approx_topn", "collapse_sample", "coeff & topn", "weight & collapse"],
 )
@@ -262,7 +263,7 @@ def test_coeff_factory_is_a_truncation_object():
 
 
 def _splitting_circuit(layers):
-    """``rx`` rotations on qubit 0: from ``Z`` or ``Y`` every layer makes two terms, so ``collapse_sample(1, ...)`` collapses on every layer."""
+    """``rx`` rotations on qubit 0: from ``Z`` or ``Y`` every layer makes two terms, so ``collapse_sample(1, 1, ...)`` collapses on every layer."""
     c = Circuit(1)
     for _ in range(layers):
         c.rx(0.7, 0)
@@ -283,32 +284,33 @@ def _fanout_case():
 def test_collapse_sample_above_the_final_size_is_a_no_op():
     s, c = _fanout_case()
     want = propagated(s, c, direction="heisenberg")
-    got, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 5), direction="heisenberg")
+    got, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 4, 5), direction="heisenberg")
     _assert_close(got, want)
     assert stats.collapses == 0
 
 
 def test_collapse_sample_collapses_on_every_oversized_layer():
+    """One draw per layer keeps one string worth the layer's ``sum |c|``, which every ``rx(0.7)`` layer multiplies by ``cos 0.7 + sin 0.7``."""
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
-    out, stats = propagated_with_stats(s, _splitting_circuit(6), truncation.collapse_sample(1, 3))
+    out, stats = propagated_with_stats(s, _splitting_circuit(6), truncation.collapse_sample(1, 1, 3))
     assert stats.collapses == 6
     assert stats.terms_out == [1] * 6
     (coeff,) = out.coefficients()
-    assert coeff == 1.0
+    assert abs(coeff) == pytest.approx((math.cos(0.7) + math.sin(0.7)) ** 6, rel=1e-12)
 
 
 def test_collapse_sample_bounds_every_layer_by_the_cache():
     s, c = _fanout_case()
-    stats = s.copy().propagate_with_stats(c, truncation.collapse_sample(20, 1), direction="heisenberg")
+    stats = s.copy().propagate_with_stats(c, truncation.collapse_sample(20, 4, 1), direction="heisenberg")
     assert stats.collapses >= 1
     assert all(t <= 20 for t in stats.terms_out)
-    assert stats.terms_out.count(1) >= stats.collapses
+    assert sum(t <= 4 for t in stats.terms_out) >= stats.collapses
 
 
 def test_collapse_sample_is_reproducible_per_seed():
     s, c = _fanout_case()
     runs = {
-        seed: [propagated(s, c, truncation.collapse_sample(20, seed), direction="heisenberg") for _ in range(2)]
+        seed: [propagated(s, c, truncation.collapse_sample(20, 5, seed), direction="heisenberg") for _ in range(2)]
         for seed in range(6)
     }
     for first, second in runs.values():
@@ -320,34 +322,42 @@ def test_collapse_sample_counts_per_call_and_continues_its_sequence():
     """One object is one trajectory: a second call continues the draws, and `collapses` counts that call only."""
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     circuit = _splitting_circuit(4)
-    policy = truncation.collapse_sample(1, 11)
+    policy = truncation.collapse_sample(1, 1, 11)
     first = s.copy().propagate_with_stats(circuit, policy)
     second = s.copy().propagate_with_stats(circuit, policy)
     assert first.collapses == second.collapses == 4
     # Two four-layer calls on one object draw what one eight-layer call draws.
-    policy = truncation.collapse_sample(1, 11)
+    policy = truncation.collapse_sample(1, 1, 11)
     chained = propagated(s, circuit, policy)
     chained.propagate(circuit, policy)
-    _assert_close(chained, propagated(s, _splitting_circuit(8), truncation.collapse_sample(1, 11)))
+    _assert_close(chained, propagated(s, _splitting_circuit(8), truncation.collapse_sample(1, 1, 11)))
 
 
-def test_collapse_sample_draws_by_squared_magnitude():
-    """One ``rx(theta)`` layer on ``Z`` gives ``cos(theta) Z`` and ``sin(theta) Y``; the survivor is ``Z`` with probability ``cos(theta)**2``."""
+def test_collapse_sample_draws_by_magnitude_without_bias():
+    """One ``rx(theta)`` layer on ``Z`` gives ``cos(theta) Z + sin(theta) Y``; one draw keeps ``Z`` with probability ``cos / (cos + sin)``, worth ``cos + sin``, so its mean coefficient is ``cos(theta)``."""
     theta = 0.7
     c = Circuit(1)
     c.rx(theta, 0)
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     seeds = 2000
-    kept_z = sum(
-        propagated(s, c, truncation.collapse_sample(1, seed)).x_array()[0, 0] == 0 for seed in range(seeds)
-    )
-    p = math.cos(theta) ** 2
-    assert abs(kept_z / seeds - p) < 5 * math.sqrt(p * (1 - p) / seeds)
+    z_key = ((0,), (1,))
+    z = np.array([_as_dict(propagated(s, c, truncation.collapse_sample(1, 1, seed))).get(z_key, 0.0).real for seed in range(seeds)])
+    p = math.cos(theta) / (math.cos(theta) + math.sin(theta))
+    assert abs(np.mean(z != 0) - p) < 5 * math.sqrt(p * (1 - p) / seeds)
+    assert np.allclose(z[z != 0], math.cos(theta) + math.sin(theta))
+    assert abs(z.mean() - math.cos(theta)) < 5 * z.std() / math.sqrt(seeds)
+
+
+def test_collapse_sample_rejects_zero_samples_and_the_old_signature():
+    with pytest.raises(ValueError, match="samples"):
+        truncation.collapse_sample(10, 0, 1)
+    with pytest.raises(TypeError):
+        truncation.collapse_sample(10, 1)
 
 
 def test_collapse_sample_composes_and_reports_none_without_a_sampler():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
-    policy = truncation.collapse_sample(1, 0) & truncation.coeff(1e-12)
+    policy = truncation.collapse_sample(1, 1, 0) & truncation.coeff(1e-12)
     assert "CollapseSample" in repr(policy)
     stats = s.copy().propagate_with_stats(_splitting_circuit(3), policy)
     assert stats.collapses == 3

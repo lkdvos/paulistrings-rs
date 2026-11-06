@@ -682,21 +682,21 @@ def _collapse_case(num_qubits=WIDTHS[0]):
 def test_collapse_sample_at_one_partition_is_the_unpartitioned_trajectory():
     s, c = _collapse_case()
     for seed in range(4):
-        want, want_stats = propagated_with_stats(s, c, truncation.collapse_sample(8, seed), direction="heisenberg")
-        got, got_stats = propagated_with_stats(s, c, truncation.collapse_sample(8, seed), direction="heisenberg", partitions=_cpu_sets(1))
+        want, want_stats = propagated_with_stats(s, c, truncation.collapse_sample(8, 3, seed), direction="heisenberg")
+        got, got_stats = propagated_with_stats(s, c, truncation.collapse_sample(8, 3, seed), direction="heisenberg", partitions=_cpu_sets(1))
         _assert_terms_close(got, want)
         assert got_stats.collapses == want_stats.collapses >= 1
 
 
-def test_collapse_sample_across_partitions_keeps_one_string_per_collapse():
+def test_collapse_sample_across_partitions_keeps_samples_strings_at_most_per_collapse():
     s, c = _collapse_case()
     want = propagated(s, c, direction="heisenberg")
-    big, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 0), direction="heisenberg", partitions=_cpu_sets())
+    big, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 3, 0), direction="heisenberg", partitions=_cpu_sets())
     _assert_terms_close(big, want)
     assert stats.collapses == 0
 
-    policy = truncation.collapse_sample(8, 3) & truncation.coeff(1e-12)
+    policy = truncation.collapse_sample(8, 3, 3) & truncation.coeff(1e-12)
     stats = s.copy().propagate_with_stats(c, policy, direction="heisenberg", partitions=_cpu_sets())
     assert stats.collapses >= 1
     assert all(t <= 8 for t in stats.terms_out)
-    assert stats.terms_out.count(1) >= stats.collapses
+    assert sum(t <= 3 for t in stats.terms_out) >= stats.collapses

@@ -230,10 +230,9 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
     u32* row_slots = pat + RR_ROWS;
     u32* class_slots = row_slots + 2 * RR_ROWS;
     u16* cls_of = (u16*)(class_slots + RR_ROWS);
-    // At most half full once every row is in.
-    u32 row_n_slots = 64;
-    while (row_n_slots < 8u * n_in && row_n_slots < 2u * RR_ROWS) row_n_slots <<= 1;
-    const u32 row_cap = min((u32)RR_ROWS, row_n_slots / 2u);
+    // At most half full at the block's capacity: one class with a string on every run qubit grows 2^layers-fold, so a small input does not bound the rows.
+    const u32 row_n_slots = 2u * RR_ROWS;
+    const u32 row_cap = RR_ROWS;
     u32 class_n_slots = 32;
     while (class_n_slots < 2u * n_in) class_n_slots <<= 1;
     const u32 layers = info.layers;

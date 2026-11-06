@@ -506,6 +506,15 @@ Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16
 TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
 Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; writing the join's rows straight to the output columns at the pre-dedup offsets, which drops the compaction; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
 
+### Rotation runs under a per-term filter in one pass
+
+Under a per-term filter the device ran a rotation run's layers one by one through the join; it now groups the strings any layer touches by class (key off the run's qubits) into class buckets, and one block per class bucket applies every layer in shared memory, asking `keep` after each layer as the host does (`engine/gpu/layer/rotation_run.rs`).
+Kicked Ising at `--threshold 2.5e-5` (phase-timing build, SM 1845–1860 MHz, memory 7601 MHz): **21.8 → 8.44 s**, `rx` 20.7 → 7.4 s, readout identical to 12 digits; per run of 8 layers `gather` (classify and gather) 7.5 ms, `merge` (apply) 10.7 ms, `compact` (place and scatter) 5.2 ms at ~1.2e7 terms.
+About 32% of input strings are touched by a run; 5 of 338 runs still outgrow a block (1024 strings) and fall back to the layers one by one.
+A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
+Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
+Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).

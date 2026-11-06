@@ -84,6 +84,9 @@ pub(crate) const RR_ROWS: usize = 1024;
 /// Block width of the fused rotation run's apply kernel; `-DRR_THREADS` to the kernels.
 pub(crate) const RR_THREADS: u32 = 256;
 
+/// Block width of the fused rotation run's apply kernel for class buckets that outgrew a block; `-DRR_WIDE_THREADS` to the kernels.
+pub(crate) const RR_WIDE_THREADS: u32 = 512;
+
 /// The coefficient type a kernel set compiles for, `-DCOEFF_SINGLE` and `-DCOEFF_COMPLEX` to the kernels, so two types never share a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct CoefficientLayout {
@@ -191,6 +194,8 @@ pub(crate) struct KernelSet {
     pub(crate) rotation_run_classify: CudaFunction,
     pub(crate) rotation_run_gather: CudaFunction,
     pub(crate) rotation_run_apply: CudaFunction,
+    pub(crate) rotation_run_apply_wide: CudaFunction,
+    pub(crate) rotation_run_ranges: CudaFunction,
     pub(crate) rotation_run_place: CudaFunction,
     pub(crate) rotation_run_scatter: CudaFunction,
     /// The coefficient type the set was compiled for.
@@ -260,6 +265,7 @@ fn compile_options(
         format!("-DJOIN_THREADS={JOIN_THREADS}"),
         format!("-DRR_ROWS={RR_ROWS}u"),
         format!("-DRR_THREADS={RR_THREADS}"),
+        format!("-DRR_WIDE_THREADS={RR_WIDE_THREADS}"),
         format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
         format!("-DKEEP_NODES={KEEP_NODES}"),
         format!("-DOP_KEEP={OP_KEEP}"),
@@ -391,6 +397,8 @@ pub(crate) fn kernel_set_with_options(
         rotation_run_classify: load("k_rotation_run_classify")?,
         rotation_run_gather: load("k_rotation_run_gather")?,
         rotation_run_apply,
+        rotation_run_apply_wide: load("k_rotation_run_apply_wide")?,
+        rotation_run_ranges: load("k_rotation_run_ranges")?,
         rotation_run_place: load("k_rotation_run_place")?,
         rotation_run_scatter: load("k_rotation_run_scatter")?,
         coefficient,

@@ -534,15 +534,22 @@ Reading the batch total after the compaction with the fallback counters (three s
 
 Under a per-term filter the device ran a rotation run's layers one by one through the join; it now groups the strings any layer touches by class (key off the run's qubits) into class buckets, and one block per class bucket applies every layer in shared memory, asking `keep` after each layer as the host does (`engine/gpu/layer/rotation_run.rs`).
 Kicked Ising at `--threshold 2.5e-5` (phase-timing build, SM 1845–1860 MHz, memory 7601 MHz): **21.8 → 8.44 s**, `rx` 20.7 → 7.4 s, readout identical to 12 digits; per run of 8 layers `gather` (classify and gather) 7.5 ms, `merge` (apply) 10.7 ms, `compact` (place and scatter) 5.2 ms at ~1.2e7 terms.
-About 32% of input strings are touched by a run; 5 of 338 runs still outgrow a block (1024 strings) and fall back to the layers one by one.
+About 32% of input strings are touched by a run; 5 of 338 runs outgrew a block (1024 strings), which §A crowded class reruns over global tables now absorbs.
 A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
 Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
 Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
+
+### A crowded class reruns over global tables
+
+A class bucket that outgrows its block lists itself, and only those rerun one block each over tables in global memory sized at four times the largest overflowed input, again at four times the rows on a second overflow; the run falls back to its layers one by one only past 2^22 rows a class bucket or 1 GiB a pass (`apply_wide` in `engine/gpu/layer/rotation_run.rs`).
+On TFIM 16×16 at `--threshold 1e-5` the block fallback had taken 424 of 1240 runs and 3.0 of 3.56 s, 397 of them among the 600 `ZZ` runs: the strings wholly inside a run's qubits share one class, the one with nothing elsewhere, a median 2258 strings in the largest class bucket against the block's 512-string input half, and no class-bit count splits one class.
+`sampling_bench` GPU f64, SM 1845–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM `--threshold 1e-5` **3.698 / 3.684 → 1.347 / 1.297 s (−64%)**, readout identical to 12 digits; `--threshold 3e-6` 41.3 s (phase-timing build) → 9.79 s.
 
 ### Kernel keys stay in registers
 
 ncu (2025.1 runs on ccqlin038; nsys does not) on steady-state launches put `k_join` at 87% of DRAM peak, but a third of its traffic was local memory: `support_bits` indexed a key word at run time (`k.x[q >> 6]`), which spills the whole key to local memory, at 1.4 useful bytes of 32 per sector (`k_join` W = 2: 160 B stack frame, W = 4: 320 B and 84 registers; `k_count` 32/64 B; the permutation run's `run_bit` select too, as ptxas folds a select chain back into an index).
 `key_bit` masks the word out of every word instead: no stack frame left on `k_join` (W = 2), `k_count` or `k_permute_run_*`, and `k_join` W = 4 at 64 registers.
+The rotation run's `rr_bit` and `rr_with_pattern` had the same defect (64–384 B stack frames on `k_rotation_run_*`); with `key_bit` and per-word masks none is left, and TFIM 16×16 `--threshold 1e-5` went **1.299 / 1.322 / 1.313 → 1.153 / 1.126 / 1.149 s (−11% to −15%)**, readout identical (SM 1890–1905 MHz, memory 7601 MHz).
 A/B (`sampling_bench` release, JCC flag, f64, ABAB, SM 1800–1875 MHz, memory 7601 MHz): kicked Ising `--approx-topn 1e7` **15.03 / 15.26 → 11.36 / 11.55 s (−24.4% / −24.3%)**, TFIM 16×16 `--approx-topn 1e6` **14.81 / 14.13 / 13.39 → 12.18 / 11.45 / 11.73 s (−17.7% / −19.0% / −12.4%)**.
 
 ### Warp-per-bucket kernels narrow their blocks at few buckets
@@ -559,6 +566,18 @@ Same DRAM bytes, half the LSU requests: TFIM `--approx-topn 1e6` −2.6 / −1.8
 ### A shared-memory carveout hint on `k_join` is flat
 
 ncu showed `k_join` W = 4 limited to one block per SM by shared memory under the driver's default carveout; `CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 100` lifts that to five, but wall moved +1.3% / 0.0% / +1.0% on TFIM `--approx-topn 1e6` and +0.2% / +0.8% / +0.3% on kicked Ising 1e7 (3 rounds), since the join is at 83–87% of DRAM peak either way; rejected.
+
+### Apply blocks pack class buckets by touched rows
+
+Class buckets sized from every string, touched or not, left an apply block a handful of rows on TFIM, where a run touches about 7% of the sum, so per-block setup (table clears, eight layers of barriers) dominated `merge`; class buckets now aim at 32 strings each and `k_rotation_run_ranges` packs consecutive ones into blocks of about 128 touched rows, after one synchronization reads the touched count (`BLOCK_ROWS` in `engine/gpu/layer/rotation_run.rs`).
+`sampling_bench` GPU f64, SM 1890–1905 MHz, memory 7601 MHz, interleaved: TFIM 16×16 `--threshold 1e-5` **1.140 / 1.159 / 1.120 → 0.955 / 0.938 / 0.960 s (−16%)**, `--threshold 3e-6` 8.40 → 6.73 / 6.73 s (−20%), readouts identical; phase timing at 1e-5, `merge` 559 → 275 ms.
+Blocks of 256 touched rows: 0.990 / 0.971 / 0.975 s and 6.75 / 6.72 s, and kicked Ising `--threshold 2.5e-5` 7.07 / 7.11 → 6.27 s; of 512: 1.027 / 1.025 / 1.053 s.
+
+### No exact run rule admits `ApproxTopN` rotation runs at the cap
+
+`ApproxTopN(n)` keeps exactly `n` terms whenever a layer leaves more, and at the cap every TFIM rotation layer adds strings, so its pass is never the no-op a deferred pass needs (`TruncationPolicy::run_length_limit`); only layers whose pass kept every term could join a run under any exact rule.
+TFIM 16×16 on the device, `--layers-out`: at `--approx-topn 1e5` those are 1309 of 9920 layers, 0.158 of 2.678 s wall with 0.016 s of passes, and at `1e6` 1438 layers, 0.229 of 10.21 s; the `len × fanout ≤ n` rule already saves 749 and 1123 passes among them.
+Rejected: a tighter rule gains at most 6% and 2%.
 
 ### NCCL exchange between MPI ranks
 

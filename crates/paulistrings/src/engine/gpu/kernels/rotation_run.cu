@@ -1,10 +1,10 @@
 // A run of rotation tables applied layer by layer inside shared memory, `keep` asked after every layer; launch and contracts in engine/gpu/layer/rotation_run.rs.
 // A string's class is its key with the run's qubits cleared: every layer moves a string within its class, so classes are independent and one block holds whole classes.
 // k_rotation_run_classify counts each touched string into its class bucket and each untouched survivor into its bucket, k_rotation_run_gather lists the touched strings by class bucket,
-// k_rotation_run_apply runs every layer over one class bucket and appends the survivors to the arena, and k_rotation_run_place / k_rotation_run_scatter write the tight output.
+// k_rotation_run_ranges packs consecutive class buckets into apply blocks of about a fixed row count, k_rotation_run_apply runs every layer over one block's rows and appends the survivors to the arena, k_rotation_run_apply_wide does so for the blocks that outgrew shared memory, and k_rotation_run_place / k_rotation_run_scatter write the tight output.
 
-#if !defined(RR_ROWS) || !defined(RR_THREADS)
-#error "RR_ROWS and RR_THREADS must be defined"
+#if !defined(RR_ROWS) || !defined(RR_THREADS) || !defined(RR_WIDE_THREADS)
+#error "RR_ROWS, RR_THREADS and RR_WIDE_THREADS must be defined"
 #endif
 #define RR_MAX_LAYERS 8
 #define RR_MAX_QUBITS 16
@@ -31,19 +31,12 @@ struct RunInfo {
 };
 static_assert(sizeof(RunInfo) == 648, "RunInfo matches RotationRunInfo");
 
-__device__ __forceinline__ u32 rr_bit(const u64 (&v)[W], u32 q) {
-    u64 word = 0;
-#pragma unroll
-    for (int w = 0; w < W; ++w) word = ((u32)w == (q >> 6)) ? v[w] : word;
-    return (u32)((word >> (q & 63)) & 1ull);
-}
-
 // Bit 2j is the x-bit of run qubit j, bit 2j+1 its z-bit.
 __device__ __forceinline__ u32 rr_pattern(const RunInfo& R, const Key& k) {
     u32 p = 0;
     for (u32 j = 0; j < R.qubits_len; ++j) {
         const u32 q = R.qubits[j];
-        p |= rr_bit(k.x, q) << (2 * j) | rr_bit(k.z, q) << (2 * j + 1);
+        p |= key_bit(k.x, q) << (2 * j) | key_bit(k.z, q) << (2 * j + 1);
     }
     return p;
 }
@@ -84,17 +77,18 @@ __device__ __forceinline__ u32 rr_class_bucket(u64 class_fingerprint, u32 class_
     return class_bits == 0 ? 0u : (u32)(rr_mix(class_fingerprint) >> (64u - class_bits));
 }
 
-// The key with the run's qubits cleared, then set from pattern p.
+// The key with the run's qubits cleared, then set from pattern p; every word is masked, as in `key_bit`, so the key stays in registers.
 __device__ __forceinline__ Key rr_with_pattern(const RunInfo& R, Key k, u32 p) {
     for (u32 j = 0; j < R.qubits_len; ++j) {
         const u32 q = R.qubits[j];
         const u64 bit = 1ull << (q & 63);
+        const u64 x_bit = 0ull - (u64)((p >> (2 * j)) & 1u);
+        const u64 z_bit = 0ull - (u64)((p >> (2 * j + 1)) & 1u);
 #pragma unroll
         for (int w = 0; w < W; ++w) {
-            if ((u32)w == (q >> 6)) {
-                k.x[w] = (k.x[w] & ~bit) | (((p >> (2 * j)) & 1u) ? bit : 0ull);
-                k.z[w] = (k.z[w] & ~bit) | (((p >> (2 * j + 1)) & 1u) ? bit : 0ull);
-            }
+            const u64 m = bit & (0ull - (u64)((u32)w == (q >> 6)));
+            k.x[w] = (k.x[w] & ~m) | (m & x_bit);
+            k.z[w] = (k.z[w] & ~m) | (m & z_bit);
         }
     }
     return k;
@@ -183,12 +177,12 @@ __device__ __forceinline__ u32 rr_home(u64 key, u32 slots) { return (u32)(rr_mix
 
 __device__ __forceinline__ u64 rr_row_key(u32 cls, u32 p) { return (u64)cls << 32 | p; }
 
-// The row of class `cls` at pattern `p`, or RR_ROWS when absent.
-__device__ __forceinline__ u32 rr_find(const volatile u32* slots, u32 n_slots, const u16* cls_of, const u32* pat, u32 cls, u32 p) {
+// The row of class `cls` at pattern `p`, or NO_ENTRY when absent.
+__device__ __forceinline__ u32 rr_find(const volatile u32* slots, u32 n_slots, const u32* cls_of, const u32* pat, u32 cls, u32 p) {
     u32 s = rr_home(rr_row_key(cls, p), n_slots);
     for (;;) {
         const u32 e = slots[s];
-        if (e == RR_EMPTY) return RR_ROWS;
+        if (e == RR_EMPTY) return NO_ENTRY;
         if (cls_of[e - 1] == cls && pat[e - 1] == p) return e - 1;
         s = (s + 1u) & (n_slots - 1u);
     }
@@ -199,40 +193,82 @@ __device__ __forceinline__ void rr_insert(u32* slots, u32 n_slots, u32 cls, u32 
     while (atomicCAS(&slots[s], RR_EMPTY, row + 1u) != RR_EMPTY) s = (s + 1u) & (n_slots - 1u);
 }
 
-// Shared bytes of k_rotation_run_apply: two coefficient columns, the class fingerprints of the input half, patterns, row and class tables, and class indices.
-#define RR_SHARED_BYTES (2u * RR_ROWS * COEFF_PARTS * sizeof(real_t) + (RR_ROWS / 2u) * 8u + RR_ROWS * 4u + 2u * RR_ROWS * 4u + RR_ROWS * 4u + RR_ROWS * 2u)
+// Bytes per row of a block's tables at `rows` rows: two coefficient columns, the class fingerprints of the input half, patterns, row and class tables, and class indices.
+#define RR_ROW_BYTES (2u * COEFF_PARTS * sizeof(real_t) + 4u + 4u + 2u * 4u + 4u + 4u)
+#define RR_SHARED_BYTES (RR_ROWS * RR_ROW_BYTES)
 
-// k_rotation_run_apply: class bucket blockIdx.x, rows [class_start[cb], class_start[cb + 1]) of the gathered columns, through every layer;
+// The tables of a block holding `rows` rows, carved from `base`.
+struct RrTables {
+    real_t* coef;
+    real_t* coef_new;
+    u64* class_fp;
+    u32* pat;
+    u32* row_slots;
+    u32* class_slots;
+    u32* cls_of;
+};
+
+__device__ __forceinline__ RrTables rr_tables(unsigned char* base, u32 rows) {
+    RrTables t;
+    t.coef = (real_t*)base;
+    t.coef_new = t.coef + (size_t)rows * COEFF_PARTS;
+    t.class_fp = (u64*)(t.coef_new + (size_t)rows * COEFF_PARTS);
+    t.pat = (u32*)(t.class_fp + rows / 2);
+    t.row_slots = t.pat + rows;
+    t.class_slots = t.row_slots + 2 * (size_t)rows;
+    t.cls_of = t.class_slots + rows;
+    return t;
+}
+
+// k_rotation_run_ranges: the class buckets of apply block i, [block_lo[i], block_lo[i + 1]), the first whose rows start at or past i * per_block, so blocks hold whole class buckets and about per_block rows; thread j covers the blocks whose first class bucket is j.
+extern "C" __global__ void k_rotation_run_ranges(const u32* __restrict__ class_start, u32 classes, u32 per_block, u32 blocks,
+                                                 u32* __restrict__ block_lo) {
+    const u32 j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j == 0) {
+        block_lo[0] = 0;
+        block_lo[blocks] = classes;
+    }
+    if (j == 0 || j > classes) return;
+    const u32 last = min(class_start[j] / per_block, blocks - 1u);
+    for (u32 i = class_start[j - 1] / per_block + 1u; i <= last; ++i) block_lo[i] = j;
+}
+
+// Apply block `block` through every layer in tables of `rows` rows: the gathered rows of its class buckets, [class_start[block_lo[block]], class_start[block_lo[block + 1]]);
 // each layer sums a string's identity part and its partner's generator part, and asks `keep` about every string it changed (about every string after the first layer);
 // survivors go to the arena at a block slot claimed from counters[0], and total[beta'] counts each into its output bucket.
-// counters[1] is set when a class bucket outgrows the block, counters[0] past arena_cap means the arena was too small; either way nothing past the cap is written.
-extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
+// A block that outgrows `rows` writes nothing, lists itself at overflow_list[counters[overflow_slot]++] and raises counters[3] to its input length;
+// counters[0] past arena_cap means the arena was too small, and nothing past the cap is written.
+__device__ __forceinline__ void rr_apply_block(
     const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
-    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const __grid_constant__ RunInfo info,
-    const real_t* __restrict__ amplitude, const __grid_constant__ KeepProg prog, u64* __restrict__ ax, u64* __restrict__ az,
+    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const u32* __restrict__ block_lo, const RunInfo& info,
+    const real_t* __restrict__ amplitude, const KeepProg& prog, u64* __restrict__ ax, u64* __restrict__ az,
     real_t* __restrict__ ac, u64* __restrict__ ag, u32* __restrict__ abucket, u32 arena_cap, u32* __restrict__ counters,
-    u32* __restrict__ total) {
-    extern __shared__ __align__(16) unsigned char rr_shared[];
+    u32* __restrict__ total, u32 block, const RrTables& t, u32 rows, u32 overflow_slot, u32* __restrict__ overflow_list) {
     __shared__ real_t s_amp[RR_MAX_LAYERS * 2 * LOCAL_DIM * COEFF_PARTS];
     __shared__ u32 s_rows, s_out, s_base, s_overflow;
-    const u32 cb = blockIdx.x;
-    const u32 seg0 = class_start[cb];
-    const u32 n_in = class_start[cb + 1] - seg0;
+    const u32 seg0 = class_start[block_lo[block]];
+    const u32 n_in = class_start[block_lo[block + 1]] - seg0;
     if (n_in == 0) return;
-    if (n_in > RR_ROWS / 2) {
-        if (threadIdx.x == 0) atomicOr(&counters[1], 1u);
+    const auto overflow = [&]() {
+        if (threadIdx.x == 0) {
+            overflow_list[atomicAdd(&counters[overflow_slot], 1u)] = block;
+            atomicMax(&counters[3], n_in);
+        }
+    };
+    if (n_in > rows / 2) {
+        overflow();
         return;
     }
-    real_t* coef = (real_t*)rr_shared;
-    real_t* coef_new = coef + RR_ROWS * COEFF_PARTS;
-    u64* class_fp = (u64*)(coef_new + RR_ROWS * COEFF_PARTS);
-    u32* pat = (u32*)(class_fp + RR_ROWS / 2);
-    u32* row_slots = pat + RR_ROWS;
-    u32* class_slots = row_slots + 2 * RR_ROWS;
-    u16* cls_of = (u16*)(class_slots + RR_ROWS);
+    real_t* coef = t.coef;
+    real_t* coef_new = t.coef_new;
+    u64* class_fp = t.class_fp;
+    u32* pat = t.pat;
+    u32* row_slots = t.row_slots;
+    u32* class_slots = t.class_slots;
+    u32* cls_of = t.cls_of;
     // At most half full at the block's capacity: one class with a string on every run qubit grows 2^layers-fold, so a small input does not bound the rows.
-    const u32 row_n_slots = 2u * RR_ROWS;
-    const u32 row_cap = RR_ROWS;
+    const u32 row_n_slots = 2u * rows;
+    const u32 row_cap = rows;
     u32 class_n_slots = 32;
     while (class_n_slots < 2u * n_in) class_n_slots <<= 1;
     const u32 layers = info.layers;
@@ -278,14 +314,15 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
             }
             s = (s + 1u) & (class_n_slots - 1u);
         }
-        cls_of[r] = (u16)cls;
+        cls_of[r] = cls;
     }
     __syncthreads();
     for (u32 r = threadIdx.x; r < n_in; r += blockDim.x) rr_insert(row_slots, row_n_slots, cls_of[r], pat[r], r);
     __syncthreads();
 
+    // A layer's starting row count is read before the barrier that ends the previous layer: past it, a fast warp's appends move `s_rows`.
+    u32 n0 = s_rows;
     for (u32 i = 0; i < layers; ++i) {
-        const u32 n0 = s_rows;
         const u32 flip = info.flip[i], active = info.active[i];
         const bool clifford = info.clifford[i] != 0;
         const real_t* a0 = s_amp + (2 * i) * LOCAL_DIM * COEFF_PARTS;
@@ -299,7 +336,7 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
             const Coeff v = coeff_load(coef, r);
             Coeff sum = clifford ? coeff_zero() : coeff_mul(v, coeff_load(a0, s));
             const u32 j = rr_find(row_slots, row_n_slots, cls_of, pat, cls, q);
-            if (j != RR_ROWS) {
+            if (j != NO_ENTRY) {
                 sum = coeff_add(sum, coeff_mul(coeff_load(coef, j), coeff_load(a1, rr_support(info, i, q))));
             } else {
                 const Coeff partner = coeff_mul(v, coeff_load(a1, s));
@@ -307,7 +344,7 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
                     const u32 t = atomicAdd(&s_rows, 1u);
                     if (t < row_cap) {
                         pat[t] = q;
-                        cls_of[t] = (u16)cls;
+                        cls_of[t] = cls;
                         coeff_store(coef_new, t, partner);
                         __threadfence_block();
                         rr_insert(row_slots, row_n_slots, cls, q, t);
@@ -320,7 +357,7 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
         }
         __syncthreads();
         if (s_overflow) {
-            if (threadIdx.x == 0) atomicOr(&counters[1], 1u);
+            overflow();
             return;
         }
         const u32 n1 = s_rows;
@@ -336,6 +373,7 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
             }
             coeff_store(coef, r, keep ? v : coeff_zero());
         }
+        n0 = n1;
         __syncthreads();
     }
 
@@ -376,6 +414,39 @@ extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
         ag[slot] = (g[(size_t)seg0 + rep] ^ rr_fingerprint(info, d)) & fingerprint_mask();
         abucket[slot] = beta;
     }
+}
+
+// k_rotation_run_apply: apply block blockIdx.x through rr_apply_block in shared memory, an overflow listed in counters[1].
+extern "C" __global__ void __launch_bounds__(RR_THREADS) k_rotation_run_apply(
+    const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
+    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const u32* __restrict__ block_lo,
+    const __grid_constant__ RunInfo info,
+    const real_t* __restrict__ amplitude, const __grid_constant__ KeepProg prog, u64* __restrict__ ax, u64* __restrict__ az,
+    real_t* __restrict__ ac, u64* __restrict__ ag, u32* __restrict__ abucket, u32 arena_cap, u32* __restrict__ counters,
+    u32* __restrict__ total, u32* __restrict__ overflow_list) {
+    extern __shared__ __align__(16) unsigned char rr_shared[];
+    const RrTables t = rr_tables(rr_shared, RR_ROWS);
+    rr_apply_block(x, z, c, g, row_bucket, class_start, block_lo, info, amplitude, prog, ax, az, ac, ag, abucket, arena_cap, counters,
+                   total, blockIdx.x, t, RR_ROWS, 1u, overflow_list);
+}
+
+// k_rotation_run_apply_wide: apply block overflow_in[first + blockIdx.x] through rr_apply_block over global tables at `tables`, a stretch of `rows` rows per block of which it takes
+// four times its input as a power of two, at least `min_rows`, an overflow listed in counters[overflow_slot].
+extern "C" __global__ void __launch_bounds__(RR_WIDE_THREADS) k_rotation_run_apply_wide(
+    const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
+    const u32* __restrict__ row_bucket, const u32* __restrict__ class_start, const u32* __restrict__ block_lo,
+    const __grid_constant__ RunInfo info,
+    const real_t* __restrict__ amplitude, const __grid_constant__ KeepProg prog, u64* __restrict__ ax, u64* __restrict__ az,
+    real_t* __restrict__ ac, u64* __restrict__ ag, u32* __restrict__ abucket, u32 arena_cap, u32* __restrict__ counters,
+    u32* __restrict__ total, const u32* __restrict__ overflow_in, u32 first, unsigned char* __restrict__ tables, u32 rows,
+    u32 min_rows, u32 overflow_slot, u32* __restrict__ overflow_list) {
+    const u32 block = overflow_in[first + blockIdx.x];
+    const u32 n_in = class_start[block_lo[block + 1]] - class_start[block_lo[block]];
+    u32 own = min_rows;
+    while (own < 4u * n_in && own < rows) own <<= 1;
+    const RrTables t = rr_tables(tables + (size_t)blockIdx.x * rows * RR_ROW_BYTES, own);
+    rr_apply_block(x, z, c, g, row_bucket, class_start, block_lo, info, amplitude, prog, ax, az, ac, ag, abucket, arena_cap, counters,
+                   total, block, t, own, overflow_slot, overflow_list);
 }
 
 // k_rotation_run_place: bucket blockIdx.x's untouched survivors at the front of its output, its output length, and cursor[beta] past them for k_rotation_run_scatter.

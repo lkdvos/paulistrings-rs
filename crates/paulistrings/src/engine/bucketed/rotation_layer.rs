@@ -507,22 +507,23 @@ fn fill_rotation_run<const W: usize, C: Coefficient, T>(
 /// Most layers a rotation run joins.
 pub(crate) const MAX_ROTATION_RUN_LAYERS: usize = 8;
 
-/// Largest span dimension of a rotation run's bucket deltas, so a coset of `2^r` buckets at the bucket target stays within a core's L2 (research/FINDINGS.md §Consecutive rotation tables run as one coset loop).
-const MAX_ROTATION_RUN_DIMENSION: usize = 3;
+/// Largest span dimension of a host rotation run's bucket deltas, so a coset of `2^r` buckets at the bucket target stays within a core's L2 (research/FINDINGS.md §Consecutive rotation tables run as one coset loop).
+pub(crate) const MAX_ROTATION_RUN_DIMENSION: usize = 3;
 
 /// The bucket deltas of a rotation run being joined, at one bucket count.
 pub(crate) struct RotationRunSpan {
     deltas: Vec<u32>,
     bits: u8,
+    max_dimension: usize,
 }
 
 impl RotationRunSpan {
-    /// An empty run at `bits` bucket bits.
-    pub(crate) fn new(bits: u8) -> Self {
-        Self { deltas: Vec::new(), bits }
+    /// An empty run at `bits` bucket bits whose span may reach `max_dimension`.
+    pub(crate) fn new(bits: u8, max_dimension: usize) -> Self {
+        Self { deltas: Vec::new(), bits, max_dimension }
     }
 
-    /// Join `layer` if it is a rotation table that keeps the run's span within [`MAX_ROTATION_RUN_DIMENSION`]; returns whether it joined.
+    /// Join `layer` if it is a rotation table that keeps the run's span within its maximum dimension; returns whether it joined.
     pub(crate) fn join<const W: usize, C: Coefficient>(&mut self, layer: &Prepared<W, C>) -> bool {
         let Prepared::Local(ptm) = layer else { return false };
         if RotationLayer::of(ptm).is_none() {
@@ -530,7 +531,7 @@ impl RotationRunSpan {
         }
         let joined = self.deltas.len();
         self.deltas.extend(ptm.bucket_deltas());
-        if Gf2Span::new(&self.deltas, self.bits).dimension() > MAX_ROTATION_RUN_DIMENSION {
+        if Gf2Span::new(&self.deltas, self.bits).dimension() > self.max_dimension {
             self.deltas.truncate(joined);
             return false;
         }
@@ -540,7 +541,7 @@ impl RotationRunSpan {
 
 /// Apply `run`, consecutive rotation tables a [`RotationRunSpan`] joined under the current hash, as one coset loop over their joint span, each coset taking every layer in order while its buckets are in cache.
 ///
-/// Each layer moves a string only within its own coset of the joint span, so the cosets stay independent and every output of every layer passes `keep_term` as when the layers run one by one; no layer pass runs between them, so the policy must have none.
+/// Each layer moves a string only within its own coset of the joint span, so the cosets stay independent and every output of every layer passes `keep_term` as when the layers run one by one; no layer pass runs between them (`TruncationPolicy::run_length_limit`).
 pub(crate) fn apply_rotation_run<const W: usize, C: Coefficient, T>(
     sum: &mut PauliSum<W, C>,
     run: &[Prepared<W, C>],
@@ -550,7 +551,6 @@ pub(crate) fn apply_rotation_run<const W: usize, C: Coefficient, T>(
     T: TruncationPolicy<W, C> + ?Sized,
 {
     stamp!(stamp);
-    debug_assert!(!policy.finalizes_layer(), "a layer pass would run between the run's layers");
     if let Some(cut) = scratch.octaves.pending.take() {
         cut.apply(sum);
     }

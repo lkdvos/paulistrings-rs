@@ -224,6 +224,19 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
             | Self::Or(_, _) => None,
         }
     }
+
+    fn run_length_limit(&self) -> usize {
+        match self {
+            Self::TopN(n) | Self::ApproxTopN(n) => *n,
+            Self::CollapseSample(s) => {
+                <CollapseSample as TruncationPolicy<W, C>>::run_length_limit(s)
+            }
+            Self::And(a, b) => <Self as TruncationPolicy<W, C>>::run_length_limit(a)
+                .min(<Self as TruncationPolicy<W, C>>::run_length_limit(b)),
+            Self::PerPartition(inner) => <Self as TruncationPolicy<W, C>>::run_length_limit(inner),
+            Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => usize::MAX,
+        }
+    }
 }
 
 impl From<CoefficientThreshold> for BuiltinTruncation {

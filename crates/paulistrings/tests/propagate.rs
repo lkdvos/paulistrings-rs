@@ -436,7 +436,7 @@ fn collapse_sample_fires_mid_circuit_and_is_reproducible() {
     assert!(finals.len() > 1, "different seeds give different trajectories");
 }
 
-/// Every collapse is unbiased, so the `⟨0…0|O|0…0⟩` readout of a trajectory that collapses at nearly every layer averages, over 2000 seeds, to the untruncated value within four standard errors.
+/// Every collapse is unbiased, so the `⟨0…0|O|0…0⟩` readout of a trajectory that collapses at nearly every layer, or at the end of each rotation run it takes, averages, over 2000 seeds, to the untruncated value within four standard errors.
 #[test]
 fn collapse_sample_readout_is_unbiased() {
     use paulistrings::test_support::{collapsing_circuit, z0_sum};

@@ -40,7 +40,8 @@ pub(super) use coset_fill::{fill_coset, CosetScratch, MIN_COSETS_FOR_PARALLEL};
 pub(crate) use export_ahead::{BucketAhead, RowEmitter};
 pub(crate) use permutation_run::{apply_permutation_run, PermutationScratch, PermutationStep};
 pub(crate) use rotation_layer::{
-    apply_rotation_run, BucketSupports, RotationRunSpan, MAX_ROTATION_RUN_LAYERS,
+    apply_rotation_run, BucketSupports, RotationRunSpan, MAX_ROTATION_RUN_DIMENSION,
+    MAX_ROTATION_RUN_LAYERS,
 };
 
 /// Reusable layer working set for [`propagate_with`](crate::propagate_with), which keeps its capacity across layers and calls and carries the opt-in traces.

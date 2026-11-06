@@ -24,6 +24,9 @@ use super::PerPartition;
 /// Partitioned, the stretches run in rank order and then bucket order, and each partition takes exactly the points that fall in its own: the group draws `samples` points, every term's multiplicity has its unpartitioned law, and a partition with no point clears; passes and collapses count on rank 0's policy only.
 /// Inside a [`PerPartition`] each partition instead draws `samples` points from its own slice whenever that slice exceeds `cache`.
 /// A collapse panics if `‖O‖₁` is zero or not finite.
+///
+/// A lone partition may apply a run of local layers (consecutive one-to-one channels, or rotations the engine joins) as one pass and check the cache once, at the run's end, while the run's worst case, its input length times the product of its layers' fanouts, stays within [`RUN_GROWTH`](Self::RUN_GROWTH)` × cache`.
+/// Every collapse is unbiased given the sum it draws from, so every schedule of them is, and the run's estimate keeps the expectation of the layer-by-layer one; fewer passes take fewer pass indices, so the trajectory a seed names depends on the runs taken.
 #[derive(Debug)]
 pub struct CollapseSample {
     /// Largest sum left untouched.
@@ -39,6 +42,9 @@ pub struct CollapseSample {
 }
 
 impl CollapseSample {
+    /// How far past `cache` a run of local layers may grow, worst case, before its one collapse check.
+    pub const RUN_GROWTH: usize = 8;
+
     /// A fresh trajectory: above `cache` terms, collapse to `samples` draws keyed by `seed`.
     ///
     /// # Panics
@@ -247,6 +253,10 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for CollapseSample {
 
     fn supports_partitioned(&self) -> bool {
         true
+    }
+
+    fn run_length_limit(&self) -> usize {
+        self.cache.saturating_mul(Self::RUN_GROWTH)
     }
 }
 

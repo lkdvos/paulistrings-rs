@@ -212,3 +212,17 @@ fn collapse_sample_rejects_an_all_zero_sum() {
 fn collapse_sample_rejects_zero_samples() {
     let _ = CollapseSample::new(1, 0, 0);
 }
+
+/// A lone partition checks the cache once per run of local layers within `RUN_GROWTH × cache`: the collapsing circuit, whose rotations run, takes fewer passes than layers, and the last pass still leaves at most `cache` terms.
+#[test]
+fn a_run_defers_the_collapse_check_to_its_end() {
+    use crate::test_support::{collapsing_circuit, z0_sum};
+    let circuit = collapsing_circuit();
+    let policy = CollapseSample::new(6, 4, 3);
+    let out = crate::propagate(&circuit, z0_sum(), &policy, crate::Direction::Heisenberg);
+    let passes = policy.calls.load(Ordering::Relaxed);
+    assert!(passes < circuit.channels.len() as u64, "{passes} passes");
+    assert!(policy.collapses() >= 1);
+    assert!(out.len() <= 6, "{} terms", out.len());
+    assert_eq!(<CollapseSample as TruncationPolicy<1>>::run_length_limit(&policy), 48);
+}

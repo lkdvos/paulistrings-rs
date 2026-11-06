@@ -10,6 +10,7 @@ use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::bucketed::{
     apply_permutation_run, apply_rotation_run, max_fanout, LayerScratch, RowEmitter, Run,
+    MAX_ROTATION_RUN_DIMENSION,
 };
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
@@ -83,11 +84,15 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         ahead: Option<&RowEmitter<'_, W, C>>,
     ) -> LayerExchangeCounts;
     fn finalize_layer(&mut self, policy: &T, collectives: &dyn Collectives);
-    /// Whether [`apply_run`](Self::apply_run) is implemented; the driver asks before it looks ahead for a run.
+    /// Whether [`apply_run`](Self::apply_run) takes permutation runs; the driver asks before it looks ahead for a run.
     fn takes_runs(&self) -> bool {
         false
     }
-    /// Apply `run` in one pass; called only when [`takes_runs`](Self::takes_runs) and the policy has no layer pass.
+    /// The largest bucket-delta span dimension of a rotation run [`apply_run`](Self::apply_run) takes, or `None` for no rotation runs.
+    fn rotation_run_dimension(&self) -> Option<usize> {
+        self.takes_runs().then_some(MAX_ROTATION_RUN_DIMENSION)
+    }
+    /// Apply `run` in one pass; called only when the backend takes its kind and the run's worst case is within the policy's [`run_length_limit`](TruncationPolicy::run_length_limit), with the policy's layer pass, if any, once after it.
     fn apply_run(&mut self, run: Run<'_, W, C>, policy: &T) {
         let _ = (run, policy);
         unreachable!("the backend takes no runs");
@@ -222,12 +227,16 @@ where
     fn apply_run(&mut self, run: Run<'_, W, C>, policy: &T) {
         match run {
             Run::Rotations(layers) => {
-                self.state.layer.octaves.begin_layer(1, policy.fused_approx_top_n(), false);
+                let fanout = layers
+                    .iter()
+                    .fold(1usize, |product, layer| product.saturating_mul(max_fanout(layer)));
+                self.state.layer.octaves.begin_layer(fanout, policy.fused_approx_top_n(), false);
                 apply_rotation_run(&mut self.sum, layers, policy, &mut self.state.layer);
             }
             Run::Permutations(steps) => {
                 stamp!(stamp);
                 self.state.layer.octaves.apply_pending(&mut self.sum);
+                self.state.layer.octaves.begin_layer(1, policy.fused_approx_top_n(), false);
                 // A run rehashes every string into new buckets.
                 self.state.layer.supports.forget();
                 let layer = &mut self.state.layer;

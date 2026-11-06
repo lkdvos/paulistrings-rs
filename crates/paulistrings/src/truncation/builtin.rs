@@ -143,6 +143,10 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for TopN {
         );
         self.finalize_layer(local);
     }
+
+    fn run_length_limit(&self) -> usize {
+        self.0
+    }
 }
 
 /// Where a boundary quota runs out when the buckets' boundary terms are taken in bucket order: buckets before `bucket` keep all of theirs, `bucket` its first `remaining`, the buckets after it none.
@@ -460,6 +464,10 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for ApproxTopN {
     fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         Some(FusedApproxTopN { n: self.0, agreed: true })
     }
+
+    fn run_length_limit(&self) -> usize {
+        self.0
+    }
 }
 
 /// Both policies: a term is kept if both keep it, and both layer passes run, first then second.
@@ -514,6 +522,10 @@ where
             _ => None,
         }
     }
+
+    fn run_length_limit(&self) -> usize {
+        self.0.run_length_limit().min(self.1.run_length_limit())
+    }
 }
 
 /// The wrapped policy run on each partition's own slice as if it were the whole sum, with no collective.
@@ -555,6 +567,10 @@ impl<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>> TruncationPolicy
 
     fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         self.0.fused_approx_top_n().map(|fused| FusedApproxTopN { agreed: false, ..fused })
+    }
+
+    fn run_length_limit(&self) -> usize {
+        self.0.run_length_limit()
     }
 }
 

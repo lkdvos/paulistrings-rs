@@ -307,8 +307,9 @@ __device__ __forceinline__ void rr_apply_block(
     for (u32 r = threadIdx.x; r < n_in; r += blockDim.x) rr_insert(row_slots, row_n_slots, cls_of[r], pat[r], r);
     __syncthreads();
 
+    // A layer's starting row count is read before the barrier that ends the previous layer: past it, a fast warp's appends move `s_rows`.
+    u32 n0 = s_rows;
     for (u32 i = 0; i < layers; ++i) {
-        const u32 n0 = s_rows;
         const u32 flip = info.flip[i], active = info.active[i];
         const bool clifford = info.clifford[i] != 0;
         const real_t* a0 = s_amp + (2 * i) * LOCAL_DIM * COEFF_PARTS;
@@ -359,6 +360,7 @@ __device__ __forceinline__ void rr_apply_block(
             }
             coeff_store(coef, r, keep ? v : coeff_zero());
         }
+        n0 = n1;
         __syncthreads();
     }
 

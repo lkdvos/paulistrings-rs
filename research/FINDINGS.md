@@ -226,6 +226,12 @@ Every parser uses the core's Hermitian convention, `Y ↔ (x=1, z=1)` with no ph
 
 `apply`/`apply_adjoint` were swapped; caught by the PauliPropagation.jl baseline, now pinned from both sides.
 
+### Resolved: the debug-build Rayon stack overflow
+
+`octave_histogram` reduced `[u32; 2048]` partials by value, and a debug build keeps each move through Rayon's join frames: **~200 KiB of stack per split level**, 2.0 MiB over 10 levels at 32 threads, so a 2 MiB worker overflowed (flakily in the suite, wherever stealing nested deep enough).
+Heap partials take ~5 KiB a level and fit 128 KiB; the 16 MiB `RUST_MIN_STACK` in `.cargo/config.toml` is gone, and `octave_histogram_fits_a_small_worker_stack` holds the line.
+Never move a multi-KiB value through a Rayon reduction.
+
 ### `Gf2Hash` rows are splitmix64, not xorshift successors
 
 Consecutive xorshift64 rows satisfy `rows_z = M·rows_x`, so 64 weight-~6 deltas hashed to 0 under every seed.

@@ -15,7 +15,7 @@ use super::trace::PartitionTrace;
 use super::transport::SoloTransport;
 use crate::channel::prepared::{LocalPtm, Prepared, PreparedRotation, LOCAL_DIM};
 use crate::collectives::Collectives;
-use crate::pauli_sum::storage::{BucketColumns, PauliSum};
+use crate::pauli_sum::storage::{BucketColumns, ColumnsRef, PauliSum};
 use crate::truncation::builtin::{approx_top_n_pass, EdgeDecision};
 use crate::truncation::octave_window::{
     decide_from_window, BoundaryCut, BucketOctaves, OctaveWindow, WindowTotals,
@@ -350,6 +350,12 @@ pub(crate) trait ExtraRows<const W: usize, C: Coefficient = num_complex::Complex
     /// Append original bucket `beta`'s rows onto the run's rest columns.
     fn append_into(&self, beta: u32, rest: &mut BucketColumns<W, C>) {
         let _ = (beta, rest);
+    }
+
+    /// Original bucket `beta`'s rows borrowed in place, when they are one contiguous run; the rows [`append_into`](Self::append_into) would push, in the same order.
+    fn segment(&self, beta: u32) -> Option<ColumnsRef<'_, W, C>> {
+        let _ = beta;
+        None
     }
 }
 

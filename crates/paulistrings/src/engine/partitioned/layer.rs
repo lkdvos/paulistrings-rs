@@ -17,7 +17,7 @@ use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::{tally, timed};
 use crate::engine::transport::{ChunkMap, ChunkWait, Transport};
 use crate::pauli_sum::hash::PartitionRows;
-use crate::pauli_sum::storage::{BucketColumns, PauliSum};
+use crate::pauli_sum::storage::{BucketColumns, ColumnsRef, PauliSum};
 use crate::truncation::TruncationPolicy;
 use std::time::Instant;
 
@@ -103,12 +103,7 @@ impl<const W: usize, C: Coefficient> ExtraRows<W, C> for ReceivedRows<'_, W, C> 
 
     fn append_into(&self, beta: u32, rest: &mut BucketColumns<W, C>) {
         timed!(let start = std::time::Instant::now());
-        let position = self.order.position_of(beta);
-        // A whole coset is inside one chunk, so this is one wait per task.
-        self.wait.wait_chunk(self.map.chunk_of_position(position));
-        timed!(self
-            .chunk_wait_ns
-            .fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed,));
+        let position = self.wait_for(beta);
         for block in &self.blocks {
             let Some(block) = block else { continue };
             let (segment_x, segment_z, segment_coeff) = block.segment(position);
@@ -119,6 +114,30 @@ impl<const W: usize, C: Coefficient> ExtraRows<W, C> for ReceivedRows<'_, W, C> 
         timed!(self
             .append_ns
             .fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed,));
+    }
+
+    fn segment(&self, beta: u32) -> Option<ColumnsRef<'_, W, C>> {
+        let [Some(block)] = self.blocks[..] else { return None };
+        timed!(let start = std::time::Instant::now());
+        let (x, z, coeff) = block.segment(self.wait_for(beta));
+        timed!(self
+            .append_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed,));
+        Some(ColumnsRef { x, z, coeff })
+    }
+}
+
+impl<const W: usize, C: Coefficient> ReceivedRows<'_, W, C> {
+    /// Wait for the chunk holding bucket `beta`'s rows; returns its position.
+    fn wait_for(&self, beta: u32) -> u32 {
+        timed!(let start = std::time::Instant::now());
+        let position = self.order.position_of(beta);
+        // A whole coset is inside one chunk, so this is one wait per task.
+        self.wait.wait_chunk(self.map.chunk_of_position(position));
+        timed!(self
+            .chunk_wait_ns
+            .fetch_add(start.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed,));
+        position
     }
 }
 

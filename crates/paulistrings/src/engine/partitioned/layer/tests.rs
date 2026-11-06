@@ -30,7 +30,7 @@ impl super::ChunkWait for WaitSpy {
     }
 }
 
-/// `count` and `append_into` read the block at the destination position, and each waits for exactly the chunk that position falls in.
+/// `count`, `append_into` and `segment` read the block at the destination position, and each read waits for exactly the chunk that position falls in.
 #[test]
 fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
     const BITS: u8 = 5;
@@ -74,10 +74,15 @@ fn received_rows_are_read_by_position_and_wait_for_their_own_chunk() {
                 assert_eq!(rest.x, vec![[u64::from(p)]], "bucket {beta} read position {p}");
                 assert_eq!(rest.z, vec![[0u64]]);
                 assert_eq!(rest.coeff, vec![Complex64::new(f64::from(p), 0.0)]);
+                let segment = rows.segment(beta).expect("one block, so one segment");
+                assert_eq!(segment.x, &rest.x[..], "bucket {beta}: segment keys");
+                assert_eq!(segment.z, &rest.z[..], "bucket {beta}: segment z");
+                assert_eq!(segment.coeff, &rest.coeff[..], "bucket {beta}: segment coefficients");
             }
             let waited = spy.0.into_inner().expect("spy");
-            assert_eq!(waited.len(), n as usize, "one wait per append_into");
-            for (beta, &k) in waited.iter().enumerate() {
+            assert_eq!(waited.len(), 2 * n as usize, "one wait per append_into and per segment");
+            for (call, &k) in waited.iter().enumerate() {
+                let beta = call / 2;
                 assert_eq!(
                     k,
                     map.chunk_of_position(order.position_of(beta as u32)),

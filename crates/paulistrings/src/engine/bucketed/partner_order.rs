@@ -2,7 +2,7 @@
 
 use crate::channel::prepared::MAX_LOCAL_SUPPORT;
 use crate::coefficient::Coefficient;
-use crate::pauli_sum::storage::BucketColumns;
+use crate::pauli_sum::storage::{BucketColumns, ColumnsRef};
 
 /// Set bits a two-qubit key delta can have.
 const MAX_LEVELS: usize = 2 * MAX_LOCAL_SUPPORT;
@@ -49,12 +49,12 @@ impl<const W: usize> PartnerOrder<W> {
     /// Write `run`, whose keys are `k ⊕ g` for distinct `k` in key order, into `out` in key order; `divergence` is scratch.
     pub(super) fn order<C: Coefficient>(
         &self,
-        run: &BucketColumns<W, C>,
+        run: ColumnsRef<'_, W, C>,
         out: &mut BucketColumns<W, C>,
         divergence: &mut Vec<u32>,
     ) {
         out.clear();
-        let len = run.len();
+        let len = run.coeff.len();
         out.x.reserve(len);
         out.z.reserve(len);
         out.coeff.reserve(len);
@@ -68,7 +68,7 @@ impl<const W: usize> PartnerOrder<W> {
 
 /// The significance rank of the first bit at which rows `a` and `b` differ.
 fn first_difference<const W: usize, C: Coefficient>(
-    run: &BucketColumns<W, C>,
+    run: ColumnsRef<'_, W, C>,
     a: usize,
     b: usize,
 ) -> u32 {
@@ -89,7 +89,7 @@ fn first_difference<const W: usize, C: Coefficient>(
 
 /// One [`PartnerOrder::order`] call; `divergence[i]` is the first differing bit of rows `i - 1` and `i`.
 struct Placer<'a, const W: usize, C: Coefficient = num_complex::Complex64> {
-    run: &'a BucketColumns<W, C>,
+    run: ColumnsRef<'a, W, C>,
     out: &'a mut BucketColumns<W, C>,
     divergence: &'a [u32],
     levels: &'a [u32],

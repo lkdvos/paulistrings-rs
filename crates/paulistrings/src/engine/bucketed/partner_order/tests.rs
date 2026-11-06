@@ -35,7 +35,7 @@ fn a_single_bit_mask_swaps_sibling_halves() {
     let run = partner_run::<1>(keys, ([0b10], [0]));
     assert_eq!(run.x, vec![[0b10], [0b11], [0b00], [0b01]]);
     let mut out = BucketColumns::default();
-    PartnerOrder::new(&[0b10], &[0]).order(&run, &mut out, &mut Vec::new());
+    PartnerOrder::new(&[0b10], &[0]).order(run.view(), &mut out, &mut Vec::new());
     assert_eq!(out.x, vec![[0b00], [0b01], [0b10], [0b11]]);
     assert_eq!(out.coeff, [2.0, 3.0, 0.0, 1.0].map(Complex64::from));
 }
@@ -66,7 +66,7 @@ fn assert_orders_like_a_sort<const W: usize>(seed: u64, bits_in_mask: usize, key
             .collect();
         let run = partner_run::<W>(keys, mask);
         let mut out = BucketColumns::default();
-        PartnerOrder::new(&mask.0, &mask.1).order(&run, &mut out, &mut Vec::new());
+        PartnerOrder::new(&mask.0, &mask.1).order(run.view(), &mut out, &mut Vec::new());
         assert_eq!(rows(&out), sorted_by_key(&run), "seed {seed} trial {trial} mask {mask:?}");
     }
 }
@@ -87,13 +87,13 @@ fn orders_like_a_sort() {
 fn edge_bits_and_empty_runs() {
     let mut out = BucketColumns::<2>::default();
     PartnerOrder::new(&[0, 0], &[0, 1 << 63]).order(
-        &BucketColumns::default(),
+        BucketColumns::default().view(),
         &mut out,
         &mut Vec::new(),
     );
     assert_eq!(out.len(), 0);
     let keys = (0..8u64).map(|k| ([k, 0], [0, k << 61])).collect();
     let run = partner_run::<2>(keys, ([1 << 63, 0], [0, 1 << 63]));
-    PartnerOrder::new(&[1 << 63, 0], &[0, 1 << 63]).order(&run, &mut out, &mut Vec::new());
+    PartnerOrder::new(&[1 << 63, 0], &[0, 1 << 63]).order(run.view(), &mut out, &mut Vec::new());
     assert_eq!(rows(&out), sorted_by_key(&run));
 }

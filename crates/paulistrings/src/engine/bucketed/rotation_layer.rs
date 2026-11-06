@@ -357,19 +357,29 @@ pub(super) fn fill_received_rotation_bucket<const W: usize, C: Coefficient, T, X
     layer.scale(bucket);
     let CosetScratch { runs, old, sort, .. } = scratch;
     let run = &mut runs[0];
-    run.rest.clear();
-    extra.append_into(betas[0], &mut run.rest);
-    lap!(stamp, scratch.stats.gather_ns);
-    tally!(scratch.stats.rows_gathered, run.rest.len());
-    tally!(scratch.stats.rows_sorted, run.rest.len());
-    let partners = match layer.partner_order() {
-        Some(order) => {
-            order.order(&run.rest, &mut run.identity, sort.indices());
-            run.identity.view()
-        }
-        None => {
-            SortKernel::Comparison.sort(&mut run.rest, sort);
-            run.rest.view()
+    // `PartnerOrder` reads the partners where they arrived when `extra` holds them contiguously; the sort needs its own copy.
+    let received = layer.partner_order().and_then(|order| Some((order, extra.segment(betas[0])?)));
+    let partners = if let Some((order, received)) = received {
+        lap!(stamp, scratch.stats.gather_ns);
+        tally!(scratch.stats.rows_gathered, received.coeff.len());
+        tally!(scratch.stats.rows_sorted, received.coeff.len());
+        order.order(received, &mut run.identity, sort.indices());
+        run.identity.view()
+    } else {
+        run.rest.clear();
+        extra.append_into(betas[0], &mut run.rest);
+        lap!(stamp, scratch.stats.gather_ns);
+        tally!(scratch.stats.rows_gathered, run.rest.len());
+        tally!(scratch.stats.rows_sorted, run.rest.len());
+        match layer.partner_order() {
+            Some(order) => {
+                order.order(run.rest.view(), &mut run.identity, sort.indices());
+                run.identity.view()
+            }
+            None => {
+                SortKernel::Comparison.sort(&mut run.rest, sort);
+                run.rest.view()
+            }
         }
     };
     lap!(stamp, scratch.stats.sort_ns);
@@ -444,7 +454,7 @@ pub(super) fn fill_rotation_coset<const W: usize, C: Coefficient, T>(
         }
         tally!(scratch.stats.rows_gathered, run.rest.len());
         tally!(scratch.stats.rows_sorted, run.rest.len());
-        layer.order.order(&run.rest, &mut run.identity, scratch.sort.indices());
+        layer.order.order(run.rest.view(), &mut run.identity, scratch.sort.indices());
         lap!(stamp, scratch.stats.sort_ns);
         fold_hits(bucket, &scratch.hits[j], &mut run.identity, floor);
         let dirty = known.then_some(scratch.hits[j].as_slice());

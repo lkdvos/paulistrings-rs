@@ -10,6 +10,7 @@ use super::columns::DeviceColumns;
 use super::device;
 use super::error::GpuError;
 use super::fingerprint::FingerprintRows;
+use super::length::{Growth, LengthTracker, Lengths, LONE_LAG};
 use super::module::{self, thread_per, warp_per_bucket, CoefficientLayout, KernelSet};
 use super::scan::{exclusive_scan, ScanScratch};
 use super::staging::HostStaging;
@@ -59,6 +60,10 @@ pub struct GpuSum<const W: usize, C: Coefficient = Complex64> {
     pub(super) fingerprint_rows: CudaSlice<u64>,
     /// The refine's scan buffers and `[total, max]`.
     scan: (ScanScratch, CudaSlice<u32>),
+    /// The scan [`Self::settle_lengths`] writes, one entry per bucket plus one.
+    lengths_scan: CudaSlice<u32>,
+    /// The host's bound on `columns.len` and the longest bucket; `columns.len` is always its bound.
+    pub(super) length: LengthTracker,
     /// Page-locked download staging, allocated on first [`Self::to_host`] and reused.
     staging: Mutex<HostStaging<C>>,
 }
@@ -106,7 +111,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
     /// The first call per `(ordinal, W, C)` compiles the kernels through NVRTC.
     pub fn from_host(sum: &PauliSum<W, C>, ordinal: u32) -> Result<Self, GpuError> {
         let kernels = module::kernel_set(ordinal, W, CoefficientLayout::of::<C>())?;
-        Self::upload(sum, device::context(ordinal)?, kernels)
+        Self::upload(sum, device::context(ordinal)?, kernels, false)
     }
 
     /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook; `alone` puts the sum on [`untracked_context`], for a sum no other stream ever touches.
@@ -126,6 +131,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
                 CoefficientLayout::of::<C>(),
                 extra_options,
             )?,
+            alone,
         )
     }
 
@@ -133,6 +139,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         sum: &PauliSum<W, C>,
         context: Arc<CudaContext>,
         kernels: Arc<KernelSet>,
+        alone: bool,
     ) -> Result<Self, GpuError> {
         let ordinal = context.ordinal() as u32;
         let stream = context.new_stream()?;
@@ -177,7 +184,12 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
             n,
         )?;
         let scan = (ScanScratch::new(&stream)?, stream.alloc_zeros::<u32>(2)?);
+        let lengths_scan = stream.alloc_zeros::<u32>(1)?;
         stream.synchronize()?;
+        let longest = lens.iter().copied().max().unwrap_or(0);
+        let lag = if alone { LONE_LAG } else { 0 };
+        let length =
+            LengthTracker::new(context.clone(), Lengths { len: n, longest: Some(longest) }, lag);
         let staging = Mutex::new(HostStaging::new(&context));
         let uploaded = Self {
             context,
@@ -191,6 +203,8 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
             fingerprints,
             fingerprint_rows,
             scan,
+            lengths_scan,
+            length,
             staging,
         };
         uploaded.debug_check();
@@ -238,14 +252,67 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         Ok(PauliSum::from_buckets(buckets, self.hash.clone(), self.num_qubits))
     }
 
-    /// Total number of terms.
+    /// Total number of terms, or an upper bound on it after a layer whose count is still on the device; exact after [`Self::settle_lengths`].
     pub fn len(&self) -> usize {
         self.columns.len
     }
 
-    /// `true` if the sum has no terms.
+    /// `true` if the sum has no terms; `false` may be an upper bound's, as [`Self::len`].
     pub fn is_empty(&self) -> bool {
         self.columns.len == 0
+    }
+
+    /// An upper bound on the longest bucket, `None` when no step since the last anchor bounds it.
+    pub(crate) fn longest_bound(&self) -> Option<u32> {
+        self.length.bound().longest
+    }
+
+    /// The last anchor's length carried through the steps since with joins taken as keeping it: deterministic, for heuristics, and no bound.
+    pub(crate) fn len_estimate(&self) -> usize {
+        self.length.estimate().len
+    }
+
+    /// A step bounded by `growth`, after which `published` holds the device's `[len, longest]` (`LengthTracker::step`).
+    pub(super) fn record_step(
+        &mut self,
+        growth: Growth,
+        published: Option<&CudaSlice<u32>>,
+    ) -> Result<(), GpuError> {
+        self.length.step(growth, published.map(|device| (&self.stream, device)))?;
+        self.columns.len = self.length.bound().len;
+        Ok(())
+    }
+
+    /// The sum holds exactly `len` terms, read synchronously, and its longest bucket is at most `longest`.
+    pub(super) fn record_exact(&mut self, len: usize, longest: Option<u32>) {
+        self.length.set_exact(Lengths { len, longest });
+        self.columns.len = len;
+    }
+
+    /// Make [`Self::len`] and the longest bucket exact: consume every read-back and, if a step published none, scan the bucket lengths behind one synchronization.
+    pub(crate) fn settle_lengths(&mut self) -> Result<(), GpuError> {
+        self.length.consume(0)?;
+        if self.length.is_exact() && self.length.bound().longest.is_some() {
+            self.columns.len = self.length.bound().len;
+            return Ok(());
+        }
+        let b = self.hash.num_buckets();
+        let ordinal = self.device();
+        super::columns::grow(&self.stream, &mut self.lengths_scan, b + 1, ordinal)?;
+        let (scan, totals) = &mut self.scan;
+        exclusive_scan(
+            &self.stream,
+            &self.kernels,
+            &self.columns.lengths.slice(0..b),
+            &mut self.lengths_scan.slice_mut(0..b + 1),
+            b,
+            scan,
+            totals,
+        )?;
+        let read = self.stream.clone_dtoh(totals)?;
+        self.stream.synchronize()?;
+        self.record_exact(read[0] as usize, Some(read[1]));
+        Ok(())
     }
 
     /// The partitioning hash, identical to the host sum's.
@@ -360,6 +427,8 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         for _ in 0..delta {
             self.hash.refine();
         }
+        self.length.step(Growth::Shrink { cap: usize::MAX }, Some((&self.stream, &self.scan.1)))?;
+        self.columns.len = self.length.bound().len;
         self.debug_check();
         Ok(())
     }
@@ -410,10 +479,19 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
             )));
         }
         let total: usize = lens.iter().map(|&l| l as usize).sum();
-        if total != columns.len {
+        let longest = lens.iter().copied().max().unwrap_or(0);
+        if self.longest_bound().is_some_and(|bound| longest > bound) {
             return Ok(Err(format!(
-                "GpuSum: bucket lengths sum to {total}, cached len is {}",
-                columns.len
+                "GpuSum: a bucket of {longest} terms above the longest-bucket bound {:?}",
+                self.longest_bound()
+            )));
+        }
+        let exact = self.length.is_exact();
+        if total > columns.len || (exact && total != columns.len) {
+            return Ok(Err(format!(
+                "GpuSum: bucket lengths sum to {total}, cached len is {}{}",
+                columns.len,
+                if exact { "" } else { " (a bound)" }
             )));
         }
         let mut spans: Vec<(usize, usize, usize)> = (0..b)

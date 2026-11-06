@@ -336,7 +336,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
         grow(&stream, &mut buffers.arena_bucket, n_in, ordinal)?;
     }
     let shared = apply_shared_bytes(DeviceColumns::<W, C>::COEFFICIENT_BYTES);
-    let (claimed, total) = loop {
+    let (claimed, total, longest) = loop {
         let arena_cap = buffers.arena.term_capacity() as u32;
         timed!(let t1 = scratch.event(sum)?);
         stream.memcpy_dtod(&buffers.inert.slice(0..b), &mut buffers.total.slice_mut(0..b))?;
@@ -373,7 +373,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
                     })?;
             }
         }
-        let (mut counters, mut total) = scan_totals(sum, &buffers, &mut out, scratch)?;
+        let (mut counters, mut total, mut longest) = scan_totals(sum, &buffers, &mut out, scratch)?;
         if counters[1] != 0 {
             match apply_wide(sum, &mut buffers, &info, keep, arena_cap, counters, scratch)? {
                 Some(widened) => counters = widened,
@@ -384,7 +384,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
                     return Ok(false);
                 }
             }
-            total = scan_totals(sum, &buffers, &mut out, scratch)?.1;
+            (_, total, longest) = scan_totals(sum, &buffers, &mut out, scratch)?;
         }
         timed!(scratch.lap(sum, t1, |stats| &mut stats.merge_ns)?);
         if counters[0] as usize > buffers.arena.term_capacity() {
@@ -394,7 +394,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
             grow(&stream, &mut buffers.arena_bucket, buffers.arena.term_capacity(), ordinal)?;
             continue;
         }
-        break (counters[0], total);
+        break (counters[0], total, longest);
     };
     out.reserve(total as usize, b)?;
     timed!(let t2 = scratch.event(sum)?);
@@ -446,6 +446,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
     out.buckets = b;
     scratch.rotation_run = Some(buffers);
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_exact(total as usize, Some(longest));
     scratch.extent = sum.len();
     scratch.record.records = n_in as u64;
     scratch.record.joined = true;
@@ -454,13 +455,13 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
     Ok(true)
 }
 
-/// The exclusive scan of the output bucket totals into `out.start`, and the counters with the scan's total.
+/// The exclusive scan of the output bucket totals into `out.start`, and the counters with the scan's total and longest bucket.
 fn scan_totals<const W: usize, C: Coefficient>(
     sum: &GpuSum<W, C>,
     buffers: &RotationRunScratch<W, C>,
     out: &mut DeviceColumns<W, C>,
     scratch: &mut LayerScratch<W, C>,
-) -> Result<(Vec<u32>, u32), GpuError> {
+) -> Result<(Vec<u32>, u32, u32), GpuError> {
     let (stream, b) = (&sum.stream, sum.hash.num_buckets());
     exclusive_scan(
         stream,
@@ -476,7 +477,7 @@ fn scan_totals<const W: usize, C: Coefficient>(
         let counters = stream.clone_dtoh(counters)?;
         let total = stream.clone_dtoh(totals)?;
         stream.synchronize()?;
-        Ok((counters, total[0]))
+        Ok((counters, total[0], total[1]))
     })
 }
 

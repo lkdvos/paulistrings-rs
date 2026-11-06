@@ -6,6 +6,7 @@ use cudarc::driver::{LaunchConfig, PushKernelArg};
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
 use super::layer::LayerScratch;
+use super::length::Growth;
 use super::module::warp_per_bucket;
 use super::scan::exclusive_scan;
 use super::sum::GpuSum;
@@ -25,12 +26,12 @@ pub(super) fn whole_sum_launch(buckets: usize) -> LaunchConfig {
     }
 }
 
-/// `[len, bin 0, …, bin 2047]` of `sum`, the packed layout of the host's collective `ApproxTopN` pass.
-fn octave_histogram_device<const W: usize, C: Coefficient>(
+/// Enqueue `[len, bin 0, …, bin 2047]` of `sum` into `scratch.histogram`, the packed layout of the host's collective `ApproxTopN` pass.
+fn enqueue_octave_histogram<const W: usize, C: Coefficient>(
     sum: &GpuSum<W, C>,
     scratch: &mut LayerScratch<W, C>,
-) -> Result<Vec<u64>, GpuError> {
-    let stream = sum.stream.clone();
+) -> Result<(), GpuError> {
+    let stream = &sum.stream;
     let buckets = sum.hash.num_buckets();
     stream.memset_zeros(&mut scratch.histogram)?;
     let buckets_u32 = buckets as u32;
@@ -47,9 +48,18 @@ fn octave_histogram_device<const W: usize, C: Coefficient>(
             .launch(whole_sum_launch(buckets))?;
     }
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
-    let packed = stream.clone_dtoh(&scratch.histogram)?;
-    stream.synchronize()?;
-    debug_assert_eq!(packed[0] as usize, sum.len(), "histogram term count");
+    Ok(())
+}
+
+/// `[len, bin 0, …, bin 2047]` of `sum`, read back.
+fn octave_histogram_device<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+) -> Result<Vec<u64>, GpuError> {
+    enqueue_octave_histogram(sum, scratch)?;
+    let packed = sum.stream.clone_dtoh(&scratch.histogram)?;
+    sum.stream.synchronize()?;
+    debug_assert!(packed[0] as usize <= sum.len(), "histogram term count");
     Ok(packed)
 }
 
@@ -57,7 +67,7 @@ fn octave_histogram_device<const W: usize, C: Coefficient>(
 fn clear_device<const W: usize, C: Coefficient>(sum: &mut GpuSum<W, C>) -> Result<(), GpuError> {
     let buckets = sum.hash.num_buckets();
     sum.stream.memset_zeros(&mut sum.columns.lengths.slice_mut(0..buckets))?;
-    sum.columns.len = 0;
+    sum.record_exact(0, Some(0));
     sum.debug_check();
     Ok(())
 }
@@ -86,23 +96,39 @@ fn cut_device<const W: usize, C: Coefficient>(
     local_quota: usize,
     histogram: &[u64],
 ) -> Result<(), GpuError> {
-    let stream = sum.stream.clone();
-    let buckets = sum.hash.num_buckets();
-    grow(&stream, &mut scratch.cut_flag, sum.columns.term_capacity(), sum.device())?;
-    stream.memset_zeros(&mut scratch.cut_counters)?;
-    let (buckets_u32, boundary, shift, quota) =
-        (buckets as u32, bin as u64, 52u32, local_quota as u64);
     let at = histogram[1 + bin] as usize;
     // Only a quota that splits the boundary octave needs its terms in bucket order.
     let ordered = local_quota != 0 && local_quota < at;
-    if ordered {
-        grow(&stream, &mut scratch.cut_prefix, buckets, sum.device())?;
-        stream.memset_zeros(&mut scratch.cut_prefix.slice_mut(0..buckets))?;
-    }
+    let decision = [0, bin as u64, local_quota as u64, u64::from(ordered)];
+    sum.stream.memcpy_htod(&decision, &mut scratch.cut_decision)?;
+    enqueue_cut(sum, scratch)?;
+    let kept = if histogram[APPROX_BINS] == 0 {
+        histogram[2 + bin..].iter().sum::<u64>() as usize + local_quota.min(at)
+    } else {
+        let counters = sum.stream.clone_dtoh(&scratch.cut_counters)?;
+        sum.stream.synchronize()?;
+        counters[0] as usize
+    };
+    sum.record_exact(kept, sum.longest_bound());
+    sum.debug_check();
+    Ok(())
+}
+
+/// Enqueue `k_cut` under the decision in `scratch.cut_decision`.
+fn enqueue_cut<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+) -> Result<(), GpuError> {
+    let stream = sum.stream.clone();
+    let buckets = sum.hash.num_buckets();
+    grow(&stream, &mut scratch.cut_flag, sum.columns.term_capacity(), sum.device())?;
+    grow(&stream, &mut scratch.cut_prefix, buckets, sum.device())?;
+    stream.memset_zeros(&mut scratch.cut_counters)?;
+    stream.memset_zeros(&mut scratch.cut_prefix.slice_mut(0..buckets))?;
+    let (buckets_u32, shift) = (buckets as u32, 52u32);
     timed!(let started = scratch.event(sum)?);
-    let ordered_u32 = u32::from(ordered);
     let columns = &mut sum.columns;
-    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_flag` holds a byte per row of the columns' capacity, which bounds every bucket, `cut_counters` two zeroed entries, and `cut_prefix`, read only when `ordered`, a zeroed entry per bucket.
+    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_decision` holds its four words, `cut_flag` a byte per row of the columns' capacity, which bounds every bucket, `cut_counters` two zeroed entries, and `cut_prefix` a zeroed entry per bucket.
     unsafe {
         stream
             .launch_builder(&sum.kernels.cut)
@@ -113,24 +139,38 @@ fn cut_device<const W: usize, C: Coefficient>(
             .arg(&columns.start)
             .arg(&mut columns.lengths)
             .arg(&buckets_u32)
-            .arg(&boundary)
+            .arg(&scratch.cut_decision)
             .arg(&shift)
-            .arg(&quota)
             .arg(&mut scratch.cut_prefix)
-            .arg(&ordered_u32)
             .arg(&mut scratch.cut_counters)
             .arg(&mut scratch.cut_flag)
             .launch(warp_per_bucket(buckets))?;
     }
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
-    let kept = if histogram[APPROX_BINS] == 0 {
-        histogram[2 + bin..].iter().sum::<u64>() as usize + local_quota.min(at)
-    } else {
-        let counters = stream.clone_dtoh(&scratch.cut_counters)?;
-        stream.synchronize()?;
-        counters[0] as usize
-    };
-    sum.columns.len = kept;
+    Ok(())
+}
+
+/// A lone device's `ApproxTopN(n)` pass for `n >= 1`, decided on the device: the histogram, `k_octave_edge` and `k_cut` run back to back and nothing is read.
+fn cut_on_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+    n: usize,
+) -> Result<(), GpuError> {
+    enqueue_octave_histogram(sum, scratch)?;
+    let n64 = n as u64;
+    timed!(let started = scratch.event(sum)?);
+    // SAFETY: arguments match `k_octave_edge` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries and `cut_decision` four.
+    unsafe {
+        sum.stream
+            .launch_builder(&sum.kernels.octave_edge)
+            .arg(&scratch.histogram)
+            .arg(&n64)
+            .arg(&mut scratch.cut_decision)
+            .launch(LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 })?;
+    }
+    timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
+    enqueue_cut(sum, scratch)?;
+    sum.record_step(Growth::Shrink { cap: n }, None)?;
     sum.debug_check();
     Ok(())
 }
@@ -154,9 +194,13 @@ pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
         }
         return Ok(());
     };
-    // A lone partition within `n` keeps everything: its reduction is the identity and the histogram would decide nothing.
-    if collectives.size() == 1 && sum.len() <= n {
-        return Ok(());
+    // A lone partition's reduction is the identity, so the device decides its edge; within `n` it keeps everything.
+    if collectives.size() == 1 {
+        return match n {
+            _ if sum.len() <= n => Ok(()),
+            0 => clear_device(sum),
+            _ => cut_on_device(sum, scratch, n),
+        };
     }
     let local = octave_histogram_device(sum, scratch);
     let mut packed = match &local {
@@ -330,11 +374,12 @@ fn retain_device<const W: usize, C: Coefficient>(
         &mut scratch.totals,
     )?;
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
-    let total = stream.clone_dtoh(&scratch.totals)?[0];
+    let totals = stream.clone_dtoh(&scratch.totals)?;
     stream.synchronize()?;
-    out.len = total as usize;
+    out.len = totals[0] as usize;
     out.buckets = buckets;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_exact(totals[0] as usize, Some(totals[1]));
     sum.debug_check();
     Ok(())
 }
@@ -345,6 +390,9 @@ pub(crate) fn top_n_device<const W: usize, C: Coefficient>(
     scratch: &mut LayerScratch<W, C>,
     n: usize,
 ) -> Result<(), GpuError> {
+    if sum.len() > n {
+        sum.settle_lengths()?;
+    }
     if sum.len() <= n {
         return Ok(());
     }

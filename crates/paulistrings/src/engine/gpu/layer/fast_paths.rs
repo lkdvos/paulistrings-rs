@@ -5,6 +5,7 @@ use cudarc::driver::{LaunchConfig, PushKernelArg};
 use super::*;
 use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
+use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::module::{layer_threads, thread_per, warp_per_bucket};
 use crate::engine::gpu::prepared::DevicePrepared;
 use crate::engine::gpu::scan::exclusive_scan;
@@ -73,15 +74,10 @@ pub(super) fn rescale_device<const W: usize, C: Coefficient>(
         &mut scratch.totals,
     )?;
     timed!(scratch.lap(sum, t0, |stats| &mut stats.rescale_ns)?);
-    let totals = &scratch.totals;
-    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-        let v = stream.clone_dtoh(totals)?;
-        stream.synchronize()?;
-        Ok(v[0])
-    })?;
-    out.len = total as usize;
+    out.len = sum.len();
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_step(Growth::Shrink { cap: usize::MAX }, Some(&scratch.totals))?;
     scratch.record.rescaled = true;
     sum.debug_check();
     Ok(())
@@ -211,15 +207,10 @@ pub(super) fn permute_device<const W: usize, C: Coefficient>(
             .launch(block_per_bucket)?;
     }
     timed!(scratch.lap(sum, t2, |stats| &mut stats.merge_ns)?);
-    let totals = &scratch.totals;
-    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-        let v = stream.clone_dtoh(totals)?;
-        stream.synchronize()?;
-        Ok(v[0])
-    })?;
-    out.len = total as usize;
+    out.len = n_in;
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_step(Growth::Regroup, Some(&scratch.totals))?;
     scratch.extent = sum.len();
     scratch.record.records = n_in as u64;
     scratch.record.permuted = true;

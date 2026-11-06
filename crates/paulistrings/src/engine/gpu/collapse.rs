@@ -187,6 +187,7 @@ fn pick<const W: usize, C: Coefficient>(
     out.len = kept[0] as usize;
     out.buckets = buckets;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_exact(kept[0] as usize, None);
     sum.debug_check();
     Ok(())
 }
@@ -219,6 +220,9 @@ pub(crate) fn collapse_sample_device<const W: usize, C: Coefficient>(
             return Ok(());
         };
         let call = policy.next_call();
+        if sum.len() > policy.cache {
+            sum.settle_lengths()?;
+        }
         let len = sum.len();
         if len <= policy.cache {
             return Ok(());
@@ -244,6 +248,10 @@ fn group_collapse<const W: usize, C: Coefficient>(
 ) -> Result<(), GpuError> {
     let (rank, size) = (collectives.rank() as usize, collectives.size() as usize);
     let call = if rank == 0 { policy.next_call() } else { 0 };
+    let settled = match parts.as_mut() {
+        Some((sum, _)) => sum.settle_lengths(),
+        None => Ok(()),
+    };
     let local_len = parts.as_ref().map_or(0, |(sum, _)| sum.len());
     let mut head = [local_len as u64, call];
     collectives.allreduce_sum_u64(&mut head);
@@ -272,6 +280,7 @@ fn group_collapse<const W: usize, C: Coefficient>(
         }
     }
     collectives.allreduce_sum_u64(&mut wholes);
+    settled?;
     failure?;
     let Some((sum, scratch)) = parts else {
         return Ok(());

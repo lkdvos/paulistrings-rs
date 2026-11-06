@@ -1,3 +1,4 @@
+// `total` gathers `[output terms, longest output bucket]`.
 // k_join: the fused layer of a two-entry table with one identity-mask entry (every rotation), one block per output position, writing its bucket straight into the output columns at the position's pre-dedup offset; contracts on `JoinTable` in prepared.rs.
 // The base entry's rows of bucket beta are unique keys, and so are the partner entry's rows from beta ^ delta, so the only merge is a partner landing on a base row: a shared open-addressing table over the hittable base rows joins them, and every other row is written as it is read.
 
@@ -68,6 +69,9 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
         return;
     }
     const u32 partner_entry = base_entry ^ 1u;
+    const u32 base_start = in_start[beta], base_len = in_len[beta];
+    // A block's table holds its own base bucket, at most half full, within the launch's `table_bits`.
+    table_bits = min(table_bits, 32u - __clz(2u * max(base_len, 16u) - 1u));
     const u32 n_slots = 1u << table_bits;
     for (u32 i = tid; i < n_slots; i += JOIN_THREADS) slots[i] = 0;
     if (mode == MODE_LOCAL) for (u32 i = tid; i < 2 * LOCAL_DIM * COEFF_PARTS; i += JOIN_THREADS) s_amplitude[i] = amplitude[i];
@@ -94,7 +98,6 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     const size_t out0 = seg0;
 
     // Base rows: a hittable one enters the table, every other one is final.
-    const u32 base_start = in_start[beta], base_len = in_len[beta];
     for (u32 r0 = warp * WARP; r0 < base_len; r0 += warps * WARP) {
         const u32 r = r0 + lane;
         bool emit = false, insert = false;
@@ -198,6 +201,9 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     if (tid == 0) {
         out_start[beta] = seg0;
         out_len[beta] = s_out;
-        if (s_out != 0) atomicAdd(total, s_out);
+        if (s_out != 0) {
+            atomicAdd(&total[0], s_out);
+            atomicMax(&total[1], s_out);
+        }
     }
 }

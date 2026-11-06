@@ -149,7 +149,13 @@ fn a_full_source_bucket_joins_and_one_more_row_refines() {
 }
 
 /// A chain of layers on a many-bucket device sum against the naive layer after every step: join layers, whose output keeps a gap after each bucket, feed another join, the sort path, the permutation scatter, the rescale and a refine.
-fn join_output_feeds_every_path<const W: usize>(num_qubits: usize, n: usize, seed: u64) {
+/// `alone` leaves a read-back in flight, as a lone partition's sum does; `forget` drops the longest-bucket bound before every layer, so each join settles the lengths first.
+fn join_output_feeds_every_path<const W: usize>(
+    num_qubits: usize,
+    n: usize,
+    seed: u64,
+    (alone, forget): (bool, bool),
+) {
     let last = num_qubits - 1;
     let rx = |q: usize, theta: f64| {
         let mut g = PauliString::<W> { x: [0; W], z: [0; W] };
@@ -170,7 +176,7 @@ fn join_output_feeds_every_path<const W: usize>(num_qubits: usize, n: usize, see
     let base = rand_sum::<W>(n, num_qubits, seed);
     let mut want = with_rotation_partners(&base, &rx(1, 0.0).generator(), n / 3, seed ^ 0x5A)
         .with_hash(Gf2Hash::new(num_qubits, 3, crate::pauli_sum::storage::DEFAULT_HASH_SEED));
-    let mut sum = GpuSum::from_host(&want, 0).expect("upload");
+    let mut sum = GpuSum::from_host_with_options(&want, 0, &[], alone).expect("upload");
     let options = GpuLayerOptions { records_per_block: 256, ..GpuLayerOptions::default() };
     let mut scratch = LayerScratch::new(&sum, options).expect("scratch");
     let rows = crate::pauli_sum::hash::PartitionRows::<W>::none(num_qubits);
@@ -187,14 +193,21 @@ fn join_output_feeds_every_path<const W: usize>(num_qubits: usize, n: usize, see
             keep: &KeepProgram::KEEP,
             target_bits: 0,
         };
+        if forget {
+            sum.length.forget_longest();
+        }
         let n_in = sum.len() as u64;
         apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0]).expect("layer");
         assert_eq!(scratch.record.joined, *joins, "W={W} step {step}");
         if *joins {
-            // Positions run over every bucket once, so the two source lengths per position sum to twice the input.
+            // Positions run over every bucket once, so the two source lengths per position sum to twice the input, which its bound bounds.
             assert_eq!(scratch.record.records, 2 * n_in, "W={W} step {step}: sized by lengths");
         }
         want = naive_apply_layer(&want, channel.as_ref(), &KeepAll, false);
+        assert!(sum.len() >= want.len(), "W={W} step {step}: the length is a bound");
+        sum.debug_check();
+        sum.settle_lengths().expect("settle");
+        assert_eq!(sum.len(), want.len(), "W={W} step {step}: settled exactly");
         let got = sum.to_host().expect("download");
         assert!(got.hash().bits() >= 3, "W={W} step {step}");
         assert_terms_close(&got, &want, 1e-11, &format!("W={W} step {step}"));
@@ -204,19 +217,22 @@ fn join_output_feeds_every_path<const W: usize>(num_qubits: usize, n: usize, see
 #[test]
 fn join_output_feeds_every_path_w1() {
     crate::require_cuda!();
-    join_output_feeds_every_path::<1>(12, 3_000, 0x7106);
+    join_output_feeds_every_path::<1>(12, 3_000, 0x7106, (false, false));
+    join_output_feeds_every_path::<1>(12, 3_000, 0x7106, (true, false));
 }
 
 #[test]
 fn join_output_feeds_every_path_w2() {
     crate::require_cuda!();
-    join_output_feeds_every_path::<2>(100, 20_000, 0x7107);
+    join_output_feeds_every_path::<2>(100, 20_000, 0x7107, (false, false));
+    join_output_feeds_every_path::<2>(100, 20_000, 0x7107, (true, true));
 }
 
 #[test]
 fn join_output_feeds_every_path_w4() {
     crate::require_cuda!();
-    join_output_feeds_every_path::<4>(256, 20_000, 0x7108);
+    join_output_feeds_every_path::<4>(256, 20_000, 0x7108, (true, false));
+    join_output_feeds_every_path::<4>(256, 20_000, 0x7108, (true, true));
 }
 
 #[test]

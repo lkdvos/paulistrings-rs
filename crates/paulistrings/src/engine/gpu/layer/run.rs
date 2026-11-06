@@ -15,6 +15,7 @@ use crate::coefficient::Coefficient;
 use crate::engine::bucketed::PermutationStep;
 use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
+use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::fingerprint::FingerprintRows;
 use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::{GpuSum, REFINE_MAX_DELTA};
@@ -199,15 +200,10 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     }
     timed!(scratch.lap(sum, t1, |stats| &mut stats.merge_ns)?);
     scratch.run = Some(buffers);
-    let totals = &scratch.totals;
-    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-        let v = stream.clone_dtoh(totals)?;
-        stream.synchronize()?;
-        Ok(v[0])
-    })?;
-    out.len = total as usize;
+    out.len = n_in;
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_step(Growth::Regroup, Some(&scratch.totals))?;
     scratch.extent = sum.len();
     scratch.record.records = n_in as u64;
     scratch.record.permuted = true;

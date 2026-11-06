@@ -120,6 +120,8 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     pub(super) cut_flag: CudaSlice<u8>,
     pub(super) cut_counters: CudaSlice<u64>,
     pub(super) cut_prefix: CudaSlice<u64>,
+    /// `k_cut`'s decision, `CUT_KEEP_ALL`… in truncate.cu.
+    pub(super) cut_decision: CudaSlice<u64>,
     fallback: CudaSlice<u32>,
     pub(super) table: TableBuffers,
     entry_of: CudaSlice<u32>,
@@ -147,6 +149,8 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
+    /// The run policy's ceiling on a layer's input (`TruncationPolicy::run_length_limit`), which caps how far an output over-reserves; `None` without one.
+    pub(crate) ceiling: Option<usize>,
     /// The current layer's device counters, read into its trace row.
     pub(crate) record: DeviceLayerRecord,
     /// The current layer's refine passes.
@@ -215,6 +219,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             cut_flag: stream.alloc_zeros(1)?,
             cut_counters: stream.alloc_zeros(2)?,
             cut_prefix: stream.alloc_zeros(1)?,
+            cut_decision: stream.alloc_zeros(4)?,
             fallback: stream.alloc_zeros(2)?,
             table: TableBuffers::new(stream, W)?,
             entry_of: stream.alloc_zeros(16)?,
@@ -233,6 +238,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             export: DeviceExport::new(sum)?,
             extent: sum.len(),
             options,
+            ceiling: None,
             record: DeviceLayerRecord::default(),
             refine_passes: 0,
             receive_chunks: 0,
@@ -553,7 +559,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         target_bits.max(sum.hash.bits())
     };
     let want = if refines {
-        gpu_desired_bits(n_in, table.fanout, scratch.options.records_per_block, sum.hash.bits())
+        let estimate = sum.len_estimate();
+        gpu_desired_bits(estimate, table.fanout, scratch.options.records_per_block, sum.hash.bits())
             .min(max_bits)
             .max(target_bits)
     } else {
@@ -572,12 +579,19 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     scratch.record.joined = join.is_some();
     if let Some(join) = join {
         debug_assert!(!has_remote, "a join table has no received entry");
-        // A join writes straight into the output, so only its source buckets' length is capped: `k_join`'s 13-bit row index.
-        let (records, longest) = loop {
+        // A join writes straight into the output, so only its source buckets' length is capped: `k_join`'s 13-bit row index; a bound past the cap is settled before it refines.
+        let longest = loop {
             scratch.upload_table(sum, &table)?;
-            let (records, longest) = scratch.join_sizes(sum)?;
+            let longest = match sum.longest_bound() {
+                Some(bound) if bound as usize <= MAX_BUCKET_LEN => bound,
+                _ => {
+                    sum.settle_lengths()?;
+                    sum.longest_bound().expect("settled lengths know the longest bucket")
+                }
+            };
             if longest as usize <= MAX_BUCKET_LEN {
-                break (records, longest);
+                scratch.join_sizes(sum)?;
+                break longest;
             }
             if sum.hash.bits() >= max_bits {
                 return Err(GpuError::Unsupported(
@@ -587,6 +601,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             refine(sum, scratch, sum.hash.bits() + 1)?;
             table.rehash(&sum.hash);
         };
+        // `k_join_rows` totals exactly twice the input, so twice its bound bounds the output.
+        let records = (2 * sum.len()) as u32;
         scratch.record.records = u64::from(records);
         scratch.record.batches = 1;
         join_layer(sum, scratch, &table, join, keep, longest, records)?;
@@ -777,6 +793,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     out.buckets = b;
     scratch.arena = Some(arena);
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.record_exact(running as usize, None);
     scratch.extent = sum.len();
     sum.debug_check();
     Ok(counts)

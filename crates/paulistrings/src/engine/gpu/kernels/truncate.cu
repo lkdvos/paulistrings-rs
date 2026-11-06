@@ -148,6 +148,11 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
 // One warp per bucket: a flag per row (0 dropped, 1 kept, 2 at the boundary), then the dropped rows below the bucket's kept count take the kept rows above it, so the bucket keeps its start and its kept terms fill its front, in no particular order.
 // The boundary terms ahead of a bucket come from a decoupled look-back over `prefix` (zeroed, one entry per bucket); a warp takes its bucket from `counters[1]` in launch order, so every lower bucket's warp is already running and the look-back never waits on an unscheduled one.
 #define CUT_QUEUE 64
+// `decision`'s words, `CutDecision` in finalize.rs: keep every term, else the boundary octave, its quota, and whether the quota splits the octave.
+#define CUT_KEEP_ALL 0
+#define CUT_BOUNDARY 1
+#define CUT_QUOTA 2
+#define CUT_ORDERED 3
 #define CUT_WARPS 8
 #define CUT_AGGREGATE (1ull << 62)
 #define CUT_INCLUSIVE (2ull << 62)
@@ -189,12 +194,14 @@ __device__ __forceinline__ u32 cut_scan(u32* q, u32 n, u32 from, u32 end, Want w
 }
 
 extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
-    u64* x, u64* z, real_t* c, u64* g, const u32* __restrict__ start, u32* __restrict__ lens, u32 B, u64 boundary,
-    u32 shift, u64 quota, unsigned long long* prefix, u32 ordered, unsigned long long* __restrict__ counters,
+    u64* x, u64* z, real_t* c, u64* g, const u32* __restrict__ start, u32* __restrict__ lens, u32 B,
+    const u64* __restrict__ decision, u32 shift, unsigned long long* prefix, unsigned long long* __restrict__ counters,
     u8* __restrict__ flag) {
     __shared__ u32 queue[CUT_WARPS][2][CUT_QUEUE];
     const u32 lane = lane_id(), w = warp_id();
-    if (blockIdx.x * (blockDim.x / WARP) + w >= B) return;
+    if (blockIdx.x * (blockDim.x / WARP) + w >= B || decision[CUT_KEEP_ALL] != 0) return;
+    const u64 boundary = decision[CUT_BOUNDARY], quota = decision[CUT_QUOTA];
+    const u32 ordered = (u32)decision[CUT_ORDERED];
     u32 beta = 0;
     if (lane == 0) beta = (u32)atomicAdd(&counters[1], 1ull);
     beta = __shfl_sync(~0u, beta, 0);
@@ -267,5 +274,49 @@ extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
     if (lane == 0) {
         lens[beta] = kept;
         if (kept != 0) atomicAdd(&counters[0], (unsigned long long)kept);
+    }
+}
+
+// k_octave_edge: the host's `octave_edge` for `n >= 1` over `[len, bins…]`, into `decision` for `k_cut`; one block, each thread summing EDGE_PER octaves from the top down.
+#define EDGE_THREADS 256
+#define EDGE_PER (APPROX_BINS / EDGE_THREADS)
+extern "C" __global__ void __launch_bounds__(EDGE_THREADS) k_octave_edge(const u64* __restrict__ hist, u64 n,
+                                                                         u64* __restrict__ decision) {
+    __shared__ u64 sums[EDGE_THREADS];
+    const u32 t = threadIdx.x;
+    const u32 top = APPROX_BINS - 1 - t * EDGE_PER;
+    u64 own = 0;
+    for (u32 k = 0; k < EDGE_PER; ++k) own += hist[1 + top - k];
+    sums[t] = own;
+    __syncthreads();
+    for (u32 d = 1; d < EDGE_THREADS; d <<= 1) {
+        const u64 v = t >= d ? sums[t - d] : 0;
+        __syncthreads();
+        sums[t] += v;
+        __syncthreads();
+    }
+    if (hist[0] <= n) {
+        if (t == 0) {
+            decision[CUT_KEEP_ALL] = 1;
+            decision[CUT_BOUNDARY] = 0;
+            decision[CUT_QUOTA] = 0;
+            decision[CUT_ORDERED] = 0;
+        }
+        return;
+    }
+    // The one thread whose octaves cross `n` walks them; the top octaves always hold more than `n` in all.
+    u64 kept = t == 0 ? 0 : sums[t - 1];
+    if (kept > n || sums[t] <= n) return;
+    for (u32 k = 0; k < EDGE_PER; ++k) {
+        const u64 population = hist[1 + top - k];
+        if (kept + population > n) {
+            const u64 quota = n - kept;
+            decision[CUT_KEEP_ALL] = 0;
+            decision[CUT_BOUNDARY] = top - k;
+            decision[CUT_QUOTA] = quota;
+            decision[CUT_ORDERED] = quota != 0 && quota < population;
+            return;
+        }
+        kept += population;
     }
 }

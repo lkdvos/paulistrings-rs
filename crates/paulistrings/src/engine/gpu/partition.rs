@@ -197,6 +197,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
 }
 
 impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<W, C> {
+    /// An upper bound on the terms mid-call, as [`GpuSum::len`], so the driver's run admission stays safe; exact once the call settles.
     fn len(&self) -> usize {
         self.sum.as_ref().map_or(0, GpuSum::len)
     }
@@ -215,13 +216,15 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
     }
 
     /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
+    /// Both read [`GpuSum::len_estimate`] rather than the bound, so a bucket count lags its sum by a layer instead of overshooting it.
     fn proposed_bits(
         &self,
         prepared: &Prepared<W, C>,
         target_bucket_len: usize,
         min_buckets: usize,
     ) -> u8 {
-        let host = desired_bits(self.len(), target_bucket_len, min_buckets).max(self.hash.bits());
+        let estimate = self.sum.as_ref().map_or(0, GpuSum::len_estimate);
+        let host = desired_bits(estimate, target_bucket_len, min_buckets).max(self.hash.bits());
         let Some(scratch) = self.scratch.as_ref() else {
             return host;
         };
@@ -231,7 +234,7 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
             records => (records / 2).max(1),
         };
         let device = gpu_desired_bits(
-            self.len(),
+            estimate,
             prepared_fanout(prepared),
             records_per_block,
             self.hash.bits(),
@@ -241,14 +244,16 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         host.max(device)
     }
 
-    /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so.
+    /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so, and make the length exact.
     fn settle(&mut self) {
         let bits = self.hash.bits();
         if let Some((sum, _)) = self.healthy_parts() {
-            if sum.hash.bits() < bits {
-                let result = sum.refine_to(bits);
-                self.record(result);
-            }
+            let result = match sum.hash.bits() < bits {
+                true => sum.refine_to(bits),
+                false => Ok(()),
+            };
+            let result = result.and_then(|()| sum.settle_lengths());
+            self.record(result);
         }
     }
 
@@ -282,7 +287,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         prepared: &Prepared<W, C>,
         plan: &PartitionPlan,
         _rows: &PartitionRows<W>,
-        _policy: &BuiltinTruncation,
+        policy: &BuiltinTruncation,
         transport: &X,
         _clocked: bool,
         _ahead: Option<&RowEmitter<'_, W, C>>,
@@ -293,6 +298,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             scratch.record = DeviceLayerRecord::default();
             scratch.refine_passes = 0;
             scratch.receive_chunks = 0;
+            scratch.ceiling = input_ceiling::<W, C>(policy);
         }
         #[cfg(any(test, feature = "test-utils"))]
         if self.fail_at_layer == Some(self.layers_applied - 1) {
@@ -346,7 +352,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         (self.group_size == 1).then_some(MAX_ROTATION_RUN_LAYERS)
     }
 
-    fn apply_run(&mut self, run: Run<'_, W, C>, _policy: &BuiltinTruncation) {
+    fn apply_run(&mut self, run: Run<'_, W, C>, policy: &BuiltinTruncation) {
         let layers = match run {
             Run::Rotations(layers) => layers.len(),
             Run::Permutations(steps) => steps.len(),
@@ -357,6 +363,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             scratch.record = DeviceLayerRecord::default();
             scratch.refine_passes = 0;
             scratch.receive_chunks = 0;
+            scratch.ceiling = input_ceiling::<W, C>(policy);
         }
         // An injected failure names its own layer of the run, as the one-by-one path would.
         #[cfg(any(test, feature = "test-utils"))]
@@ -408,6 +415,12 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             self.record(result);
         }
     }
+}
+
+/// The policy's ceiling on a layer's input, its run length limit, which every layer of a run stays within; `None` when it sets none.
+fn input_ceiling<const W: usize, C: Coefficient>(policy: &BuiltinTruncation) -> Option<usize> {
+    let limit = <BuiltinTruncation as crate::TruncationPolicy<W, C>>::run_length_limit(policy);
+    (limit != 0 && limit != usize::MAX).then_some(limit)
 }
 
 /// A failed or skipped layer's counts: nothing moved, but the remote-delta count the group agrees on.

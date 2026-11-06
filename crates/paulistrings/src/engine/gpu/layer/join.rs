@@ -6,7 +6,8 @@ use cudarc::driver::{LaunchConfig, PushKernelArg};
 use crate::engine::gpu::module::thread_per;
 use crate::engine::gpu::scan::exclusive_scan;
 
-use super::{timed_transfer, LayerScratch, Transfer};
+use super::LayerScratch;
+use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::module::JOIN_THREADS;
@@ -21,9 +22,9 @@ pub(in crate::engine::gpu) fn join_table_bits(longest: u32) -> u32 {
 }
 
 impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
-    /// `k_join_rows` and its scan into `segment_start`: each position's bound, the lengths of the two source buckets it reads; returns `(records, longest local bucket)` behind one synchronization.
+    /// `k_join_rows` and its scan into `segment_start`: each position's bound, the lengths of the two source buckets it reads, `2 · len` rows in all; nothing is read back.
     /// It replaces `k_count` and `k_rows` for a join, at the cost of output room for the rows the partner entry does not emit.
-    pub(super) fn join_sizes(&mut self, sum: &GpuSum<W, C>) -> Result<(u32, u32), GpuError> {
+    pub(super) fn join_sizes(&mut self, sum: &GpuSum<W, C>) -> Result<(), GpuError> {
         let stream = &sum.stream;
         let b = sum.hash.num_buckets();
         let b32 = b as u32;
@@ -48,28 +49,13 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             &mut self.scan,
             &mut self.totals,
         )?;
-        let known = self.longest;
-        if known.is_none() {
-            self.scan_lens(sum)?;
-        }
         timed!(self.lap(sum, t, |stats| &mut stats.gather_ns)?);
-        let (totals, length_totals) = (&self.totals, &self.length_totals);
-        let (records, longest) = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
-            let records = stream.clone_dtoh(totals)?[0];
-            let longest = match known {
-                Some(l) => l,
-                None => stream.clone_dtoh(length_totals)?[1],
-            };
-            stream.synchronize()?;
-            Ok((records, longest))
-        })?;
-        self.longest = Some(longest);
-        Ok((records, longest))
+        Ok(())
     }
 }
 
-/// Apply `table`'s join to `sum` over every position, each output bucket written at its position's offset in `scratch.segment_start` from [`LayerScratch::join_sizes`] (`records` rows in all), for source buckets of up to `longest` rows; the previous columns become `sum.spare`.
-/// The output keeps a gap after each bucket, so its extent is `records` and no compaction runs.
+/// Apply `table`'s join to `sum` over every position, each output bucket written at its position's offset in `scratch.segment_start` from [`LayerScratch::join_sizes`] (at most `records` rows in all), for source buckets of up to `longest` rows; the previous columns become `sum.spare`.
+/// The output keeps a gap after each bucket, so its extent is at most `records` and no compaction runs; its length and longest bucket stay on the device, published to the sum's length tracker.
 pub(super) fn join_layer<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     scratch: &mut LayerScratch<W, C>,
@@ -89,8 +75,10 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     out.buckets = 0;
     let need = records as usize;
     if need > out.term_capacity() {
-        // A growing sum would otherwise reallocate at nearly every join; growing by half again keeps that logarithmic.
-        let roomy = need.max(out.term_capacity() + out.term_capacity() / 2);
+        // A growing sum would otherwise reallocate at nearly every join; growing by half again keeps that logarithmic, up to twice the policy's ceiling on a layer's input.
+        let roomy = (out.term_capacity() + out.term_capacity() / 2)
+            .min(scratch.ceiling.map_or(usize::MAX, |ceiling| ceiling.saturating_mul(2)))
+            .max(need);
         if out.reserve(roomy, b).is_err() {
             out.reserve(need, b)?;
         }
@@ -140,16 +128,11 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
             })?;
     }
     timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
-    let totals = &scratch.totals;
-    let total = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-        let v = stream.clone_dtoh(totals)?;
-        stream.synchronize()?;
-        Ok(v[0])
-    })?;
-    out.len = total as usize;
+    out.len = records as usize;
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.extent = records as usize;
+    sum.record_step(Growth::Join, Some(&scratch.totals))?;
     sum.debug_check();
     Ok(())
 }

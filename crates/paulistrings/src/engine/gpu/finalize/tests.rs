@@ -1,6 +1,7 @@
 use super::*;
 use crate::engine::gpu::layer::GpuLayerOptions;
 use crate::pauli_sum::PauliSum;
+use crate::engine::transport::SoloTransport;
 use crate::test_support::{rand_sum, tie_heavy_sum};
 use crate::truncation::builtin::{octave_histogram, retain_at_edge};
 use crate::TruncationPolicy;
@@ -291,4 +292,36 @@ fn top_n_tie_rules_match_the_host_on_device() {
         dev.assert_invariants_device().unwrap();
         assert_eq!(dev.to_host().unwrap().to_arrays(), want.to_arrays(), "{what}");
     }
+}
+
+fn device_decided_cut_matches<const W: usize>() {
+    let mut cases = fixtures::<W>();
+    cases.push(("one long bucket", one_long_bucket::<W>(5_000)));
+    for (what, sum) in cases {
+        let len = sum.len();
+        let hist = octave_histogram(&sum);
+        for n in [1usize, len / 3, len / 2, len.saturating_sub(1), len, len + 5] {
+            let edge = octave_edge(&hist, len, n);
+            let (mut dev, mut scratch) = device(&sum);
+            approx_top_n_device(Some((&mut dev, &mut scratch)), n, &SoloTransport).expect("cut");
+            dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
+            let got = dev.to_host().expect("download");
+            let mut want = sum.clone();
+            retain_at_edge(&mut want, edge, quota_of(edge));
+            assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: the host's terms");
+            if let EdgeDecision::Boundary { bin, quota, .. } = edge {
+                let decision = dev.stream.clone_dtoh(&scratch.cut_decision).expect("decision");
+                assert_eq!(&decision[..3], &[0, bin as u64, quota as u64], "{what} n={n}");
+            }
+        }
+    }
+}
+
+/// A lone device decides `ApproxTopN`'s edge on the device and keeps exactly the host's terms.
+#[test]
+fn the_device_decided_cut_keeps_the_hosts_terms() {
+    crate::require_cuda!();
+    device_decided_cut_matches::<1>();
+    device_decided_cut_matches::<2>();
+    device_decided_cut_matches::<4>();
 }

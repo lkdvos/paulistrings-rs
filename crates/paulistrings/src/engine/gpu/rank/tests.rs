@@ -424,6 +424,31 @@ mod protocol {
         );
     }
 
+    /// A local layer whose one source bucket outgrows `MAX_BUCKET_LEN` between agreements: the group member refines past it, as a lone partition would, and matches the host.
+    #[test]
+    fn a_local_layer_over_the_bucket_cap_refines_in_a_group() {
+        crate::require_cuda!(exclusive);
+        let mut c = Circuit::<1>::new(64);
+        c.push(zz_rotation::<1>(0, 1, 0.3));
+        let input = x0_terms_identity_on_q63(2 * MAX_BUCKET_LEN, 0x10CA)
+            .with_hash(crate::pauli_sum::hash::Gf2Hash::new(64, 0, 0xF0));
+        let run = Run {
+            options: PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 },
+            ..Run::new(&input, rows_reading_z63(), &c)
+        };
+        let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+            split.set_layer_options(GpuLayerOptions {
+                records_per_block: 1 << 30,
+                ..GpuLayerOptions::default()
+            });
+        };
+        let (group, tally) = wired(2);
+        let got = rank0(run.on(group, &wide));
+        assert_eq!(tally.groups(), 0, "every row stays on rank 0");
+        assert!(got.len() > input.len(), "terms anticommuting with Z0 Z1 split");
+        assert_terms_close(&got, &run.want(), 1e-12, "a refined local layer");
+    }
+
     /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.
     #[test]
     fn a_wire_failure_after_the_vote_fails_every_rank_and_none_hangs() {

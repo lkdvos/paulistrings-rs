@@ -87,7 +87,15 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     };
     out.len = 0;
     out.buckets = 0;
-    out.reserve(records as usize, b)?;
+    let need = records as usize;
+    if need > out.term_capacity() {
+        // A growing sum would otherwise reallocate at nearly every join; growing by half again keeps that logarithmic.
+        let roomy = need.max(out.term_capacity() + out.term_capacity() / 2);
+        if out.reserve(roomy, b).is_err() {
+            out.reserve(need, b)?;
+        }
+    }
+    out.reserve(need, b)?;
     stream.memset_zeros(&mut scratch.totals)?;
     let table_bits = join_table_bits(longest);
     timed!(let t0 = scratch.event(sum)?);

@@ -98,11 +98,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_permute_run_scatter(
         base = __shfl_sync(~0u, base, leader);
         if (destination != NO_ENTRY) {
             const size_t slot = (size_t)base + __popc(peers & lanemask_lt());
-#pragma unroll
-            for (int w = 0; w < W; ++w) {
-                ox[slot * W + w] = k.x[w];
-                oz[slot * W + w] = k.z[w];
-            }
+            store_key(ox, oz, slot, k);
             coeff_store(oc, slot, v);
             og[slot] = g_in[(size_t)start + r] ^ (g & fingerprint_mask());
         }

@@ -168,15 +168,45 @@ __device__ __forceinline__ u32 lane_id() { return threadIdx.x & 31u; }
 __device__ __forceinline__ u32 warp_id() { return threadIdx.x >> 5; }
 __device__ __forceinline__ u32 lanemask_lt() { return (1u << lane_id()) - 1u; }
 
+// An even W moves a row's words as 16-byte vectors: every key column and every slice of one starts at a row, so they are aligned.
 __device__ __forceinline__ Key load_key(const u64* __restrict__ x, const u64* __restrict__ z, size_t i) {
     Key k;
+#if W % 2 == 0
+#pragma unroll
+    for (int w = 0; w < W; w += 2) {
+        const ulonglong2 a = *reinterpret_cast<const ulonglong2*>(x + i * W + w);
+        const ulonglong2 b = *reinterpret_cast<const ulonglong2*>(z + i * W + w);
+        k.x[w] = a.x;
+        k.x[w + 1] = a.y;
+        k.z[w] = b.x;
+        k.z[w + 1] = b.y;
+    }
+#else
 #pragma unroll
     for (int w = 0; w < W; ++w) {
         k.x[w] = x[i * W + w];
         k.z[w] = z[i * W + w];
     }
+#endif
     return k;
 }
+
+__device__ __forceinline__ void store_key(u64* __restrict__ x, u64* __restrict__ z, size_t i, const Key& k) {
+#if W % 2 == 0
+#pragma unroll
+    for (int w = 0; w < W; w += 2) {
+        *reinterpret_cast<ulonglong2*>(x + i * W + w) = make_ulonglong2(k.x[w], k.x[w + 1]);
+        *reinterpret_cast<ulonglong2*>(z + i * W + w) = make_ulonglong2(k.z[w], k.z[w + 1]);
+    }
+#else
+#pragma unroll
+    for (int w = 0; w < W; ++w) {
+        x[i * W + w] = k.x[w];
+        z[i * W + w] = k.z[w];
+    }
+#endif
+}
+
 
 __device__ __forceinline__ bool key_eq(const Key& a, const Key& b) {
     bool eq = true;

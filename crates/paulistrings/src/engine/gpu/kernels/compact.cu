@@ -18,11 +18,7 @@ extern "C" __global__ void k_compact(const u64* __restrict__ ax, const u64* __re
     }
     for (u32 k = threadIdx.x; k < n; k += blockDim.x) {
         const size_t s = src0 + k, d = dst0 + k;
-#pragma unroll
-        for (int w = 0; w < W; ++w) {
-            ox[d * W + w] = ax[s * W + w];
-            oz[d * W + w] = az[s * W + w];
-        }
+        store_key(ox, oz, d, load_key(ax, az, s));
         coeff_store(oc, d, coeff_load(ac, s));
         og[d] = ag[s];
     }

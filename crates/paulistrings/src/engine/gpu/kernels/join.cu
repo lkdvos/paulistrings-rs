@@ -26,11 +26,7 @@ __device__ __forceinline__ u32 join_claim(u32* counter, bool keep) {
 
 __device__ __forceinline__ void join_write(u64* __restrict__ out_x, u64* __restrict__ out_z, real_t* __restrict__ out_c,
                                            u64* __restrict__ out_g, size_t slot, const Key& k, u64 f, Coeff v) {
-#pragma unroll
-    for (int w = 0; w < W; ++w) {
-        out_x[slot * W + w] = k.x[w];
-        out_z[slot * W + w] = k.z[w];
-    }
+    store_key(out_x, out_z, slot, k);
     out_g[slot] = f;
     coeff_store(out_c, slot, v);
 }

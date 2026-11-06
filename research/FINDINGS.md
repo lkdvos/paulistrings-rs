@@ -518,6 +518,11 @@ TFIM 16×16 and kicked Ising at `--approx-topn 1e6` run at 1024 buckets, where e
 `warp_per_bucket` keeps at least 1024 blocks by narrowing to one warp a block: `k_retain` 324 → 265 µs (617 GB/s), `k_count` 130 → 103 µs.
 Wall (ABAB, 3 rounds, SM 1770–1890 MHz, memory 7601 MHz): TFIM `--approx-topn 1e6` **−4.8% / −3.7% / −3.9%**, kicked Ising 1e6 −0.9% / −1.9% / +0.2% (not consistent), kicked Ising 1e7 (16384 buckets, unchanged shape) flat as the control.
 
+### Keys move as 16-byte vectors
+
+ncu found `k_join`'s global loads using 14.5 and its stores 16.4 of 32 bytes per sector per request, one 8-byte word per lane per instruction; `load_key`/`store_key` move an even W's words as `ulonglong2` in the join, compaction, retain and permutation-run scatter.
+Same DRAM bytes, half the LSU requests: TFIM `--approx-topn 1e6` −2.6 / −1.8 / −2.0 / −3.9 / −2.5 / −2.1% (6/6), kicked Ising 1e7 −0.9 / −0.8 / −1.0 / −0.9 / −0.5% (5/5), threshold 2.5e-5 −0.3 / −0.2%, kicked Ising 1e6 mixed (−3.3 to +1.6%).
+
 ### A shared-memory carveout hint on `k_join` is flat
 
 ncu showed `k_join` W = 4 limited to one block per SM by shared memory under the driver's default carveout; `CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 100` lifts that to five, but wall moved +1.3% / 0.0% / +1.0% on TFIM `--approx-topn 1e6` and +0.2% / +0.8% / +0.3% on kicked Ising 1e7 (3 rounds), since the join is at 83–87% of DRAM peak either way; rejected.

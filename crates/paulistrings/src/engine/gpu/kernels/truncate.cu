@@ -132,11 +132,7 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
         if (ok) {
             const size_t src = (size_t)start + r;
             const size_t dst = (size_t)start + run + __popc(bal & lanemask_lt());
-#pragma unroll
-            for (int w = 0; w < W; ++w) {
-                ox[dst * W + w] = x[src * W + w];
-                oz[dst * W + w] = z[src * W + w];
-            }
+            store_key(ox, oz, dst, load_key(x, z, src));
             coeff_store(oc, dst, v);
             og[dst] = g[src];
         }

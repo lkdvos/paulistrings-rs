@@ -579,6 +579,46 @@ Blocks of 256 touched rows: 0.990 / 0.971 / 0.975 s and 6.75 / 6.72 s, and kicke
 TFIM 16×16 on the device, `--layers-out`: at `--approx-topn 1e5` those are 1309 of 9920 layers, 0.158 of 2.678 s wall with 0.016 s of passes, and at `1e6` 1438 layers, 0.229 of 10.21 s; the `len × fanout ≤ n` rule already saves 749 and 1123 passes among them.
 Rejected: a tighter rule gains at most 6% and 2%.
 
+### `ApproxTopN` cuts in place on device
+
+`k_cut` replaces `k_boundary_counts`, its scan and `k_retain` for `ApproxTopN`: a byte of flag per row, then the dropped rows below a bucket's kept count take the kept rows above it, so the bucket keeps its start and no column is copied (`finalize.rs`); exact `TopN` keeps the order-preserving `retain_device`.
+The kept count follows from the octave histogram unless its top bin, which a NaN shares, is populated, and a lone device within `n` skips the histogram.
+A quota that splits the boundary octave goes to the buckets in index order, found by a decoupled look-back inside `k_cut` (a warp takes its bucket from an atomic counter, so every lower bucket is already running), so a single cut keeps exactly the host's `retain_at_edge` terms.
+`sampling_bench` release, JCC flag, f64, ABAB, 3 rounds, memory 7601 MHz:
+
+| change | cell | Δ |
+|---|---|---|
+| in-place cut, atomic-ticket quota, vs `gpu@9b821531` (SM 1830–1905 MHz) | kicked Ising `--approx-topn 1e6` | −16.5 / −17.8 / −16.1% |
+| | kicked Ising `--approx-topn 1e7` | −23.8 / −23.4 / −23.7% |
+| | TFIM 16×16 `--approx-topn 1e6` | −29.0 / −30.1 / −30.6% |
+| quota in bucket order by `k_boundary_counts` and a scan, vs tickets | kicked Ising `--approx-topn 1e7` | +1.3 / +1.6 / +1.6% |
+| | TFIM 16×16 `--approx-topn 1e6` | +6.9 / +5.5 / +5.8% |
+| look-back instead of that pass (SM 1815–1890 MHz) | TFIM 16×16 `--approx-topn 1e5` | −4.4 / −7.9 / −8.9% |
+| | TFIM 16×16 `--approx-topn 1e6` | −2.5 / −3.4 / −5.3% |
+| | kicked Ising `--approx-topn 1e7` | −1.9 / −2.7 / −2.9% |
+
+Rejected: the atomic-ticket quota, which hands the boundary octave to buckets in arrival order.
+It is a valid `ApproxTopN` cut and agrees with the host under `assert_runs_agree`, but TFIM 16×16 at `--approx-topn 1e6` read 0.3027–0.3047 at step 10 against 0.2895–0.2898 for the bucket-order device cut, 0.2892 on the CPU and 0.2837 at `1e7`, drifting from step 3; bucket order reads 0.2894–0.2900.
+
+### Join layers size their output from the source bucket lengths
+
+A join position reads two source buckets, so `in_len[β ^ δ₀] + in_len[β ^ δ₁]` bounds its output: `k_join_rows` and one scan replace `k_count`, `k_rows` and the segment-start download, and the bound totals exactly twice the input rows (`layer/join.rs`).
+The join's refine loop caps only the source bucket length (`k_join`'s 13-bit row index); `--layers-out` traces of kicked Ising `1e7` and TFIM `--threshold 1e-5` ran every layer at the same bucket bits without the fused layer's record cap.
+Sized at twice its input, an exactly reserved output reallocated at nearly every join of a growing run, which cost TFIM `--threshold 1e-5` +30–36%; the output now grows by half again.
+`sampling_bench` release, JCC flag, f64, ABAB, 3 rounds, SM 1800–1905 MHz, memory 7601 MHz:
+
+| change | cell | Δ |
+|---|---|---|
+| sizing from lengths, vs the in-place cut | kicked Ising `--approx-topn 1e6` | −13.0 / −12.0 / −11.6% |
+| | kicked Ising `--approx-topn 1e7` | −15.7 / −15.2 / −14.7% |
+| | TFIM 16×16 `--approx-topn 1e6` | −15.2 / −15.3 / −14.0% |
+| | kicked Ising `--threshold 2.5e-5` | +0.2 / −1.2 / −0.3% |
+| growth by half again, vs exact | TFIM 16×16 `--threshold 1e-5` | −3.3 / −5.1 / −5.1% |
+| | TFIM 16×16 `--approx-topn 1e5` | −0.7 / −2.5 / −5.0% |
+
+Kicked Ising `1e7`'s 14-bit rx layers went from 5246 to 4321 ms at identical bucket bits.
+Together with the in-place cut, against `gpu@baf06f04` (SM 1800–1860 MHz): kicked Ising `--approx-topn 1e6` 1.165 / 1.196 / 1.122 → 0.836 / 0.853 / 0.840 s, `1e7` 8.08 / 8.07 / 8.02 → 5.19 / 5.15 / 5.15 s, TFIM `--approx-topn 1e6` 7.99 / 8.04 / 8.03 → 4.83 / 4.80 / 4.80 s, `1e5` 2.48 / 2.47 / 2.57 → 1.56 / 1.56 / 1.69 s, both thresholds flat.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).

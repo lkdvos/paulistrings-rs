@@ -321,6 +321,26 @@ fn an_op_naming_a_peer_outside_the_group_is_refused_before_nccl() {
     assert!(wire.is_healthy());
 }
 
+/// An exchange chunk with no rows either way posts an empty group, here straight after the warm-up's connecting group on the same thread, as a rank with nothing to exchange at the first remote layer does.
+#[test]
+fn an_empty_group_after_the_warm_up_is_harmless() {
+    let Some((_nccl, comm, stream)) = one_rank() else {
+        return;
+    };
+    comm.warm_up(&stream).expect("the warm-up completes");
+    WireGroup::new().post(&comm).expect("an empty group posts");
+    comm.wait(&stream).expect("an empty group completes");
+    let source = stream.clone_htod(&[7u64; 8]).expect("upload");
+    let mut destination = stream.alloc_zeros::<u64>(8).expect("alloc");
+    let mut group = WireGroup::new();
+    group.send(source.as_view(), 0, &stream);
+    group.receive(destination.as_view_mut(), 0, &stream);
+    group.post(&comm).expect("the next group posts");
+    comm.wait(&stream).expect("the next group completes");
+    assert_eq!(stream.clone_dtoh(&destination).expect("download"), vec![7u64; 8]);
+    assert!(comm.is_healthy());
+}
+
 impl NcclComm {
     /// Replace the wait bound, so a test can force a timeout without waiting out the default.
     pub(crate) fn set_timeout(&self, timeout: Duration) {

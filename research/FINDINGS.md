@@ -480,7 +480,7 @@ The send side stays whole, the default is unbounded, and the NCCL form is unmeas
 Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
 At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
 Shipped from this profile: the Clifford permutation path, the rotation join (§Rotation layers join instead of sorting) and the on-disk NVRTC cache.
-Open levers, by estimated gain: fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
+Open levers, by estimated gain: fewer host round trips, then a captured graph (~2× at 1e4); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
 
 ### GPU Clifford permutation path
 
@@ -505,6 +505,22 @@ Under the threshold both paths give the same counts and ⟨Z₆₂⟩ = 0.171746
 Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16338 → 10822 ms; a saturated rotation layer's coset loop 9273 → 6332 µs, of which `gather` and `compact` (≈2.5 ms together) are unchanged.
 TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
 Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; writing the join's rows straight to the output columns at the pre-dedup offsets, which drops the compaction; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
+
+### Lone device sums skip cudarc's event tracking
+
+With more than one stream on a context, cudarc waits on and records an event per slice argument of every launch; host timers in `apply_layer_body` at TFIM 16×16 `--collapse --cache 1e5 --samples 2.5e4` (≈40k terms, ~530 µs a pass) put 87 µs in the table upload and `k_count`, 172 µs in `sizes` and 127 µs in the batch loop's five launches with no synchronization in it, ~25 µs a launch.
+A lone partition's sum now lives on a context object of its own with tracking off (`untracked_context` in `engine/gpu/sum.rs`); group members, whose buffers meet peer and NCCL streams, keep it.
+`sampling_bench` GPU f64, SM 1890–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM 1e5 **1.590 / 1.568 → 1.334 / 1.328 s (−16%)**, kicked Ising 1e5 0.412 / 0.398 → 0.382 / 0.370 s (−8%).
+Reading the batch total after the compaction with the fallback counters (three synchronizations a fused or join layer to two) was within the ±10% noise of these cells on its own.
+
+### Rotation runs under a per-term filter in one pass
+
+Under a per-term filter the device ran a rotation run's layers one by one through the join; it now groups the strings any layer touches by class (key off the run's qubits) into class buckets, and one block per class bucket applies every layer in shared memory, asking `keep` after each layer as the host does (`engine/gpu/layer/rotation_run.rs`).
+Kicked Ising at `--threshold 2.5e-5` (phase-timing build, SM 1845–1860 MHz, memory 7601 MHz): **21.8 → 8.44 s**, `rx` 20.7 → 7.4 s, readout identical to 12 digits; per run of 8 layers `gather` (classify and gather) 7.5 ms, `merge` (apply) 10.7 ms, `compact` (place and scatter) 5.2 ms at ~1.2e7 terms.
+About 32% of input strings are touched by a run; 5 of 338 runs still outgrow a block (1024 strings) and fall back to the layers one by one.
+A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
+Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
+Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
 
 ### Kernel keys stay in registers
 

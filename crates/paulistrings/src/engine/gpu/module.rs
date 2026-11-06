@@ -34,6 +34,7 @@ const PERMUTE: &str = include_str!("kernels/permute.cu");
 const PERMUTE_RUN: &str = include_str!("kernels/permute_run.cu");
 const TRUNCATE: &str = include_str!("kernels/truncate.cu");
 const COLLAPSE: &str = include_str!("kernels/collapse.cu");
+const ROTATION_RUN: &str = include_str!("kernels/rotation_run.cu");
 
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
 const KERNEL_SOURCES: &[&str] = &[
@@ -53,6 +54,7 @@ const KERNEL_SOURCES: &[&str] = &[
     PERMUTE_RUN,
     TRUNCATE,
     COLLAPSE,
+    ROTATION_RUN,
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; `-DLAYER_CAP` to the kernels.
@@ -75,6 +77,12 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
 
 /// Block width of the join layer (`kernels/join.cu`); `-DJOIN_THREADS` to the kernels.
 pub(crate) const JOIN_THREADS: u32 = 512;
+
+/// Strings a fused rotation-run block holds (`kernels/rotation_run.cu`), input and generated alike; `-DRR_ROWS` to the kernels.
+pub(crate) const RR_ROWS: usize = 1024;
+
+/// Block width of the fused rotation run's apply kernel; `-DRR_THREADS` to the kernels.
+pub(crate) const RR_THREADS: u32 = 256;
 
 /// The coefficient type a kernel set compiles for, `-DCOEFF_SINGLE` and `-DCOEFF_COMPLEX` to the kernels, so two types never share a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -178,6 +186,11 @@ pub(crate) struct KernelSet {
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
     pub(crate) join: CudaFunction,
+    pub(crate) rotation_run_classify: CudaFunction,
+    pub(crate) rotation_run_gather: CudaFunction,
+    pub(crate) rotation_run_apply: CudaFunction,
+    pub(crate) rotation_run_place: CudaFunction,
+    pub(crate) rotation_run_scatter: CudaFunction,
     /// The coefficient type the set was compiled for.
     pub(crate) coefficient: CoefficientLayout,
     threads: usize,
@@ -243,6 +256,8 @@ fn compile_options(
         format!("-DTHREADS={}", layer_threads(w)),
         format!("-DLAYER_CAP={LAYER_CAP}"),
         format!("-DJOIN_THREADS={JOIN_THREADS}"),
+        format!("-DRR_ROWS={RR_ROWS}u"),
+        format!("-DRR_THREADS={RR_THREADS}"),
         format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
         format!("-DKEEP_NODES={KEEP_NODES}"),
         format!("-DOP_KEEP={OP_KEEP}"),
@@ -322,6 +337,13 @@ pub(crate) fn kernel_set_with_options(
         layer.push(LayerVariant { items, serial, segscan });
         items *= 2;
     }
+    let rotation_run_apply = load("k_rotation_run_apply")?;
+    rotation_run_apply
+        .set_attribute(
+            CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+            super::layer::rotation_run_shared_bytes(coefficient.bytes()) as i32,
+        )
+        .map_err(GpuError::from)?;
     if layer.is_empty() {
         return Err(GpuError::Unsupported(
             "device opt-in shared memory too small for the fused layer",
@@ -362,6 +384,11 @@ pub(crate) fn kernel_set_with_options(
         collapse_pick: load("k_collapse_pick")?,
         layer,
         join: load("k_join")?,
+        rotation_run_classify: load("k_rotation_run_classify")?,
+        rotation_run_gather: load("k_rotation_run_gather")?,
+        rotation_run_apply,
+        rotation_run_place: load("k_rotation_run_place")?,
+        rotation_run_scatter: load("k_rotation_run_scatter")?,
         coefficient,
         threads,
     });

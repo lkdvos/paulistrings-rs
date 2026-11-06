@@ -116,6 +116,38 @@ fn runs_agree<const W: usize>(num_qubits: usize, seed: u64) {
     }
 }
 
+/// Strings with `Z` on all of qubits `0..8` and distinct elsewhere, under `R_X` on those eight: each grows 256-fold within its class, so the one device block outgrows its rows and the run falls back to its layers one by one.
+fn crowded_classes<const W: usize>(num_qubits: usize, strings: usize) {
+    let mut acc = BuildAccumulator::<W>::new(num_qubits);
+    for i in 0..strings {
+        let mut p = PauliString::<W>::z(0);
+        for q in 1..8 {
+            p.z[q / 64] |= 1 << (q % 64);
+        }
+        let q = 8 + i % (num_qubits - 8);
+        p.x[q / 64] |= 1 << (q % 64);
+        if i >= num_qubits - 8 {
+            p.z[q / 64] |= 1 << (q % 64);
+        }
+        acc.add_term(p, Complex64::new(1.0 + 0.1 * i as f64, 0.0));
+    }
+    let input = acc.finalize();
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for q in 0..8 {
+        circuit.push(PauliRotation::new(PauliString::<W>::x(q), 0.4 + 0.1 * q as f64));
+    }
+    let name = format!("crowded W={W}");
+    agrees(&circuit, &input, CoefficientThreshold(1e-3), &name);
+    agrees(&circuit, &input, CoefficientThreshold(1e-9), &name);
+}
+
+#[test]
+fn crowded_rotation_classes_agree_with_the_host() {
+    require_cuda!();
+    crowded_classes::<1>(20, 12);
+    crowded_classes::<2>(90, 24);
+}
+
 #[test]
 fn device_runs_agree_with_the_host_w1() {
     require_cuda!();

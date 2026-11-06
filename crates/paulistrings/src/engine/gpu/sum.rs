@@ -63,6 +63,17 @@ pub struct GpuSum<const W: usize, C: Coefficient = Complex64> {
     staging: Mutex<HostStaging<C>>,
 }
 
+/// A context object of its own on `ordinal`'s primary context, with cudarc's event tracking off, so a launch costs no per-argument event wait and record (research/FINDINGS.md §Lone device sums skip cudarc's event tracking).
+///
+/// Contract: every buffer allocated through it is used on the one stream its sum creates, in stream order, so no event is needed; a group member's buffers meet other streams and stay on the tracked [`device::context`].
+fn untracked_context(ordinal: u32) -> Result<Arc<CudaContext>, GpuError> {
+    device::context(ordinal)?;
+    let context = CudaContext::new(ordinal as usize)?;
+    // SAFETY: no slice exists on the new context object yet, and the contract above keeps every later one on a single stream.
+    unsafe { context.disable_event_tracking() };
+    Ok(context)
+}
+
 /// `k_fingerprint`: the fingerprint of rows `0..n` of `(x, z)` into `g`, enqueued on `stream`.
 pub(super) fn launch_fingerprint(
     stream: &Arc<CudaStream>,
@@ -94,18 +105,21 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
     /// Upload `sum` to device `ordinal`, bucket by bucket in the host's order, and compute every term's fingerprint on the device.
     /// The first call per `(ordinal, W, C)` compiles the kernels through NVRTC.
     pub fn from_host(sum: &PauliSum<W, C>, ordinal: u32) -> Result<Self, GpuError> {
-        Self::upload(sum, ordinal, module::kernel_set(ordinal, W, CoefficientLayout::of::<C>())?)
+        let kernels = module::kernel_set(ordinal, W, CoefficientLayout::of::<C>())?;
+        Self::upload(sum, device::context(ordinal)?, kernels)
     }
 
-    /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook.
+    /// As [`Self::from_host`] with extra NVRTC options, the `-DFINGERPRINT_BITS=<b>` collision hook; `alone` puts the sum on [`untracked_context`], for a sum no other stream ever touches.
     pub(crate) fn from_host_with_options(
         sum: &PauliSum<W, C>,
         ordinal: u32,
         extra_options: &[String],
+        alone: bool,
     ) -> Result<Self, GpuError> {
+        let context = if alone { untracked_context(ordinal)? } else { device::context(ordinal)? };
         Self::upload(
             sum,
-            ordinal,
+            context,
             module::kernel_set_with_options(
                 ordinal,
                 W,
@@ -117,10 +131,10 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
 
     fn upload(
         sum: &PauliSum<W, C>,
-        ordinal: u32,
+        context: Arc<CudaContext>,
         kernels: Arc<KernelSet>,
     ) -> Result<Self, GpuError> {
-        let context = device::context(ordinal)?;
+        let ordinal = context.ordinal() as u32;
         let stream = context.new_stream()?;
         let hash = sum.hash().clone();
         let (n, b) = (sum.len(), hash.num_buckets());

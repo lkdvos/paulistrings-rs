@@ -1,7 +1,7 @@
 //! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale.
 //!
 //! Within a bucket the device keeps unique keys in no particular order; the fused layer sorts records by fingerprint and falls back to the full key on a collision, so equal keys always end adjacent.
-//! A block's records and a source bucket's rows are checked against `LAYER_CAP` and `MAX_BUCKET_LEN` before the launch: a lone partition refines past a violation up to `GpuLayerOptions::max_bits`, while a group member reports `Unsupported`, since nobody refines off-schedule.
+//! A block's records and a source bucket's rows are checked against `LAYER_CAP` and `MAX_BUCKET_LEN` before the launch: a lone partition or a local layer refines past a violation up to `GpuLayerOptions::max_bits`, while a remote layer reports `Unsupported`, since its count is agreed.
 //! A permutation table takes the scatter path instead of the fused layer only when the layer has no received rows.
 
 use crate::coefficient::Coefficient;
@@ -37,6 +37,7 @@ use crate::truncation::builtin::APPROX_BINS;
 mod fast_paths;
 mod fused;
 mod options;
+mod rotation_run;
 mod run;
 
 use fast_paths::{permute_device, rescale_device};
@@ -45,6 +46,7 @@ pub(super) use fused::{
 };
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
+pub(crate) use rotation_run::apply_shared_bytes as rotation_run_shared_bytes;
 pub(crate) use run::{permutation_run_device, rotation_run_device};
 
 /// The partition's phase counters under `phase-timing` (`benchmarks/PROFILING.md` contract (a)), nothing otherwise.
@@ -118,6 +120,8 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     pub(super) arena: Option<DeviceColumns<W, C>>,
     /// A permutation run's step tables, allocated by the first run.
     run: Option<run::RunBuffers>,
+    /// A fused rotation run's buffers, allocated by the first.
+    rotation_run: Option<rotation_run::RotationRunScratch<W, C>>,
     segment_start_host: Vec<u32>,
     /// The coset order `bucket_at` uploads the inverse of, and that inverse on the host.
     order: CosetOrder,
@@ -207,6 +211,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             entry_of: stream.alloc_zeros(16)?,
             arena: None,
             run: None,
+            rotation_run: None,
             segment_start_host: Vec::new(),
             order: CosetOrder::default(),
             bucket_at_host: Vec::new(),
@@ -531,13 +536,14 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         pair(scratch, sum.hash.bits());
         return Err(GpuError::Unsupported("more than 2^32 pre-dedup records in one layer"));
     }
-    // A partition of a group runs at exactly `target_bits`, steered through `proposed_bits` alone, and never refines off-schedule (engine/driver.rs).
-    let max_bits = if solo {
+    // A remote layer runs at exactly the agreed `target_bits`, since partners index its blocks by the count; a local layer refines freely, as counts already differ mid-call (engine/driver.rs).
+    let refines = solo || !has_remote;
+    let max_bits = if refines {
         scratch.options.max_bits.min(sum.max_bits())
     } else {
         target_bits.max(sum.hash.bits())
     };
-    let want = if solo {
+    let want = if refines {
         gpu_desired_bits(n_in, table.fanout, scratch.options.records_per_block, sum.hash.bits())
             .min(max_bits)
             .max(target_bits)
@@ -553,7 +559,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     }
     let record_cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
-    // Oversize blocks and over-long source buckets are known from the count table; a lone partition refines one more bit, which halves both.
+    // Oversize blocks and over-long source buckets are known from the count table; a layer that may refine takes one more bit, which halves both.
     let (records, records_max, longest) = loop {
         let counted =
             scratch.upload_table(sum, &table).and_then(|()| scratch.count_local(sum, &table));
@@ -571,7 +577,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         {
             break (total, max_segment, max_len);
         }
-        if !solo {
+        if !refines {
             return Err(GpuError::Unsupported(
                 "a fused-layer block or a received segment exceeds the record cap at the agreed bucket count",
             ));

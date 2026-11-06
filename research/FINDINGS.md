@@ -93,6 +93,12 @@ Idea (branch `rotation-fusion`, `5d579b52`): scale a remote rotation's identity 
 Rejected: gather −23% / −57%, but sort +29% / +67%, merge +20% / +26% and export +18% / +13%, net wall **+1.15%** on `heavyhex_step` at 4 MPI ranks (job 7400720) and **+1.96%** on 24-qubit `tfim_step` at P = 2 (job 7400713), 5/5 pairs each.
 The reads it removed reappeared cold in the next pass: at saturation moving a pass does not help, only removing one does.
 
+### Received rotation partners ordered straight from the block segment
+
+Idea (branch `rotation-partners-from-segment-prototype`, `30557c57`, a port of `rotation-fusion`'s `d1fc08ac`): a remote rotation's single block holds each bucket's partners contiguously, so `PartnerOrder` reads them from `ExchangeBlock::segment` instead of through the `append_into` copy into `run.rest`.
+Rejected: `rotation_remote`, P = 2 in process on ccqlin038, 32 threads, JCC flags, `abba` pairs at load 4–14, counts identical: 1e6 wall **−0.98%, 8/15 negative**, 1e7 **−0.63%, 4/7 negative**.
+The copy's busy time moved whole into the sort, which now takes the block's cold read: at 1e7 worker-busy gather 4235 → 2477 ms and sort 516 → 2305 ms, gather + sort +0.58% (3/7), the same transfer as §Remote rotation's identity scaling folded into the export fill.
+
 ### Out-of-place rotation merge
 
 Idea: merge every rotation bucket into the scratch buffer and swap it in, dropping the in-place merge's closing shift.

@@ -185,7 +185,11 @@ fn cut_on_device<const W: usize, C: Coefficient>(
             .arg(&mut scratch.cut_counters)
             .arg(&mut scratch.cut_prefix)
             .arg(&buckets)
-            .launch(LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 })?;
+            .launch(LaunchConfig {
+                grid_dim: (1, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            })?;
     }
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
     scratch.histogram_clean = true;

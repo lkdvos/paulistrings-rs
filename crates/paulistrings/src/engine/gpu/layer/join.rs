@@ -7,9 +7,9 @@ use crate::engine::gpu::module::thread_per;
 use crate::engine::gpu::scan::exclusive_scan;
 
 use super::LayerScratch;
-use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
+use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::module::JOIN_THREADS;
 use crate::engine::gpu::prepared::{DevicePrepared, JoinTable};
 use crate::engine::gpu::sum::GpuSum;

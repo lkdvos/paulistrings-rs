@@ -1,7 +1,7 @@
 use super::*;
 use crate::engine::gpu::layer::GpuLayerOptions;
-use crate::pauli_sum::PauliSum;
 use crate::engine::transport::SoloTransport;
+use crate::pauli_sum::PauliSum;
 use crate::test_support::{rand_sum, tie_heavy_sum};
 use crate::truncation::builtin::{octave_histogram, retain_at_edge};
 use crate::TruncationPolicy;

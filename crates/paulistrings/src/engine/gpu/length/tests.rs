@@ -28,7 +28,11 @@ fn a_read_back_anchors_the_bound_after_lag_more_steps() {
     assert_eq!(length.bound(), Lengths { len: 14, longest: Some(6) }, "still in flight");
     assert_eq!(length.estimate(), SEVEN);
     length.step(Growth::Shrink { cap: 8 }, Some((&stream, &after_cut))).unwrap();
-    assert_eq!(length.bound(), Lengths { len: 8, longest: Some(4) }, "the join's read-back, capped");
+    assert_eq!(
+        length.bound(),
+        Lengths { len: 8, longest: Some(4) },
+        "the join's read-back, capped"
+    );
     assert_eq!(length.estimate(), Lengths { len: 8, longest: Some(4) });
     assert!(!length.is_exact());
     length.consume(0).unwrap();

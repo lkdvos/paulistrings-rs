@@ -181,7 +181,7 @@ fn eight_bit_fingerprints_still_round_trip_and_refine() {
     crate::require_cuda!();
     let options = ["-DFINGERPRINT_BITS=8".to_string()];
     let sum = rand_sum::<2>(50_000, 128, 0x88);
-    let mut dev = GpuSum::from_host_with_options(&sum, 0, &options).expect("upload");
+    let mut dev = GpuSum::from_host_with_options(&sum, 0, &options, false).expect("upload");
     check_fingerprints(&sum, 0xFF, &dev);
     dev.assert_invariants_device().expect("invariants");
     assert_same_buckets(&dev.to_host().unwrap(), &sum, "FINGERPRINT_BITS=8 round trip");

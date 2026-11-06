@@ -145,10 +145,10 @@ pub(super) fn upload_share<const W: usize, C: Coefficient>(
     (layer, extra_options): (GpuLayerOptions, &[String]),
 ) -> Result<DevicePartition<W, C>, GpuError> {
     let device_sum = if size == 1 {
-        GpuSum::from_host_with_options(sum, device, extra_options)?
+        GpuSum::from_host_with_options(sum, device, extra_options, true)?
     } else {
         let local = scatter_local(sum, rows, rank, collectives);
-        GpuSum::from_host_with_options(&local, device, extra_options)?
+        GpuSum::from_host_with_options(&local, device, extra_options, false)?
     };
     let mut partition = DevicePartition::new(device_sum, layer)?;
     partition.group_size = size;

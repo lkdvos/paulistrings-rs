@@ -37,6 +37,7 @@ use crate::truncation::builtin::APPROX_BINS;
 mod fast_paths;
 mod fused;
 mod options;
+mod rotation_run;
 mod run;
 
 use fast_paths::{permute_device, rescale_device};
@@ -45,6 +46,7 @@ pub(super) use fused::{
 };
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
+pub(crate) use rotation_run::apply_shared_bytes as rotation_run_shared_bytes;
 pub(crate) use run::{permutation_run_device, rotation_run_device};
 
 /// The partition's phase counters under `phase-timing` (`benchmarks/PROFILING.md` contract (a)), nothing otherwise.
@@ -118,6 +120,8 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     pub(super) arena: Option<DeviceColumns<W, C>>,
     /// A permutation run's step tables, allocated by the first run.
     run: Option<run::RunBuffers>,
+    /// A fused rotation run's buffers, allocated by the first.
+    rotation_run: Option<rotation_run::RotationRunScratch<W, C>>,
     segment_start_host: Vec<u32>,
     /// The coset order `bucket_at` uploads the inverse of, and that inverse on the host.
     order: CosetOrder,
@@ -207,6 +211,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             entry_of: stream.alloc_zeros(16)?,
             arena: None,
             run: None,
+            rotation_run: None,
             segment_start_host: Vec::new(),
             order: CosetOrder::default(),
             bucket_at_host: Vec::new(),

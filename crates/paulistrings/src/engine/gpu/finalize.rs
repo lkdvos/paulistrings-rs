@@ -62,23 +62,71 @@ fn clear_device<const W: usize, C: Coefficient>(sum: &mut GpuSum<W, C>) -> Resul
     Ok(())
 }
 
-/// Apply `edge` to `sum` in place of [`retain_at_edge`](crate::truncation::builtin::retain_at_edge), keeping `local_quota` boundary-octave terms, each bucket's order and its start offset.
+/// Apply `edge` to `sum` in place of [`retain_at_edge`](crate::truncation::builtin::retain_at_edge), keeping `local_quota` boundary-octave terms, which ones free, and each bucket's start offset; `histogram` is `sum`'s `[len, bins…]`.
 fn retain_at_edge_device<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     scratch: &mut LayerScratch<W, C>,
     edge: EdgeDecision,
     local_quota: usize,
+    histogram: &[u64],
 ) -> Result<(), GpuError> {
     match edge {
         EdgeDecision::KeepAll => Ok(()),
         EdgeDecision::Clear => clear_device(sum),
-        EdgeDecision::Boundary { bin, .. } => {
-            retain_device(sum, scratch, bin as u64, 52, local_quota as u64)
-        }
+        EdgeDecision::Boundary { bin, .. } => cut_device(sum, scratch, bin, local_quota, histogram),
     }
 }
 
-/// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, histogram…]`, the edge, at a boundary one more of the per-rank boundary counts, retain.
+/// `k_cut` at octave `bin`: every term above it and `local_quota` of those at it stay, at the front of their bucket.
+/// The kept count follows from `histogram` unless its top octave, which a NaN shares and never stays in, is populated; then it is read back.
+fn cut_device<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+    bin: usize,
+    local_quota: usize,
+    histogram: &[u64],
+) -> Result<(), GpuError> {
+    let stream = sum.stream.clone();
+    let buckets = sum.hash.num_buckets();
+    grow(&stream, &mut scratch.cut_flag, sum.columns.term_capacity(), sum.device())?;
+    stream.memset_zeros(&mut scratch.cut_counters)?;
+    let (buckets_u32, boundary, shift, quota) =
+        (buckets as u32, bin as u64, 52u32, local_quota as u64);
+    timed!(let started = scratch.event(sum)?);
+    let columns = &mut sum.columns;
+    // SAFETY: arguments match `k_cut` in truncate.cu; `cut_flag` holds a byte per row of the columns' capacity, which bounds every bucket, and `cut_counters` two entries.
+    unsafe {
+        stream
+            .launch_builder(&sum.kernels.cut)
+            .arg(&mut columns.x)
+            .arg(&mut columns.z)
+            .arg(&mut columns.coeff)
+            .arg(&mut columns.fingerprint)
+            .arg(&columns.start)
+            .arg(&mut columns.lengths)
+            .arg(&buckets_u32)
+            .arg(&boundary)
+            .arg(&shift)
+            .arg(&quota)
+            .arg(&mut scratch.cut_counters)
+            .arg(&mut scratch.cut_flag)
+            .launch(warp_per_bucket(buckets))?;
+    }
+    timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
+    let at = histogram[1 + bin] as usize;
+    let kept = if histogram[APPROX_BINS] == 0 {
+        histogram[2 + bin..].iter().sum::<u64>() as usize + local_quota.min(at)
+    } else {
+        let counters = stream.clone_dtoh(&scratch.cut_counters)?;
+        stream.synchronize()?;
+        counters[1] as usize
+    };
+    sum.columns.len = kept;
+    sum.debug_check();
+    Ok(())
+}
+
+/// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, histogram…]`, the edge, at a boundary one more of the per-rank boundary counts, the in-place cut.
 /// `sum` is `None` on a partition that already failed; it still enters both reductions, with zeros, so the group stays in lock-step.
 pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
     sum: Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)>,
@@ -112,8 +160,8 @@ pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
         EdgeDecision::Boundary { quota, .. } => quota,
         EdgeDecision::KeepAll | EdgeDecision::Clear => 0,
     };
-    local?;
-    retain_at_edge_device(sum, scratch, edge, local_quota)
+    let histogram = local?;
+    retain_at_edge_device(sum, scratch, edge, local_quota, &histogram)
 }
 
 /// The radix-select: the exact bit pattern of the `n`-th largest `|c|²` (1-indexed from the top), one 8-bit digit per pass from the top byte down, and its rank among the terms tied at it, which is how many of them `TopN(n)` keeps.

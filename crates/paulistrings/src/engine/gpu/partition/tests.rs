@@ -22,7 +22,24 @@ fn part(input: &crate::PauliSum<1>, tree: &T) -> DevicePartition<1> {
     part
 }
 
-/// A device layer pass issues one reduction per reached `ApproxTopN`, as the host's collective form does above one partition, and keeps the host's terms.
+/// `got` keeps the terms `want` does up to `ApproxTopN`'s free choice within a boundary octave: as many, the same octave populations, and each an input term with its coefficient.
+fn assert_same_cut(
+    got: &crate::PauliSum<1>,
+    want: &crate::PauliSum<1>,
+    input: &crate::PauliSum<1>,
+    what: &str,
+) {
+    use crate::truncation::builtin::octave_histogram;
+    assert_eq!(got.len(), want.len(), "{what}: len");
+    assert_eq!(octave_histogram(got), octave_histogram(want), "{what}: octave populations");
+    let terms: std::collections::HashMap<_, _> =
+        input.iter().map(|(x, z, c)| ((*x, *z), c)).collect();
+    for (x, z, c) in got.iter() {
+        assert_eq!(terms.get(&(*x, *z)), Some(&c), "{what}: a kept term is an input term");
+    }
+}
+
+/// A device layer pass issues one reduction per reached `ApproxTopN`, as the host's collective form does above one partition, and keeps the host's terms up to the boundary octave's free choice.
 #[test]
 fn a_layer_pass_issues_the_hosts_collectives() {
     crate::require_cuda!();
@@ -42,11 +59,8 @@ fn a_layer_pass_issues_the_hosts_collectives() {
         <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut want_sum);
         assert_eq!(reductions(&device), want, "{tree:?}: device");
         assert_eq!(part.len(), want_sum.len(), "{tree:?}: len");
-        assert_eq!(
-            part.sum().to_host().unwrap().to_arrays(),
-            want_sum.to_arrays(),
-            "{tree:?}: terms"
-        );
+        let got = part.sum().to_host().unwrap();
+        assert_same_cut(&got, &want_sum, &input, &format!("{tree:?}"));
     }
 }
 

@@ -243,7 +243,7 @@ pub(crate) const APPROX_BINS: usize = 2048;
 
 /// Retain `n` terms, cutting at an octave of `|c|²` instead of selecting exactly.
 ///
-/// Every octave of `|c|²` that fits whole is kept from the top down; the first that does not fit, the boundary octave, contributes as many terms as fit in `n`, the first in bucket order (rank order across partitions).
+/// Every octave of `|c|²` that fits whole is kept from the top down; the first that does not fit, the boundary octave, contributes as many terms as fit in `n`: on the host the first in bucket order (rank order across partitions), on a device any.
 /// A sum of more than `n` terms keeps exactly `n` (fewer only if coefficients are NaN), and `n == 0` clears.
 /// Which boundary-octave terms survive is not a semantic promise.
 /// Partition-exact: a split sum's octave histogram is the sum of its partitions', so every partition cuts at the boundary one partition would.

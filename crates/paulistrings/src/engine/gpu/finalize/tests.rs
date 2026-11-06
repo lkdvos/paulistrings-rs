@@ -72,21 +72,69 @@ fn quota_of(edge: EdgeDecision) -> usize {
     }
 }
 
-fn retain_matches<const W: usize>() {
-    for (what, sum) in fixtures::<W>() {
+/// `got` is `input` cut at `edge`: every term above the boundary octave and `quota` of those in it, none below, each with its input coefficient.
+fn assert_cut<const W: usize>(
+    got: &PauliSum<W>,
+    input: &PauliSum<W>,
+    edge: EdgeDecision,
+    quota: usize,
+    what: &str,
+) {
+    let mut above = input.clone();
+    let mut through = input.clone();
+    if let EdgeDecision::Boundary { bin, .. } = edge {
+        retain_at_edge(&mut above, edge, 0);
+        retain_at_edge(
+            &mut through,
+            EdgeDecision::Boundary { bin, kept_above: 0, quota: usize::MAX },
+            usize::MAX,
+        );
+    } else {
+        retain_at_edge(&mut above, edge, quota);
+        retain_at_edge(&mut through, edge, quota);
+    }
+    assert_eq!(got.len(), above.len() + quota.min(through.len() - above.len()), "{what}: len");
+    let kept: std::collections::HashMap<_, _> = got.iter().map(|(x, z, c)| ((*x, *z), c)).collect();
+    for (x, z, c) in above.iter() {
+        assert_eq!(kept.get(&(*x, *z)), Some(&c), "{what}: a term above the edge");
+    }
+    let through: std::collections::HashMap<_, _> =
+        through.iter().map(|(x, z, c)| ((*x, *z), c)).collect();
+    for (key, c) in &kept {
+        assert_eq!(through.get(key), Some(c), "{what}: a kept term at or above the edge");
+    }
+}
+
+/// One bucket of `n` terms whose octaves interleave, so most of the kept rows sit behind dropped ones and the move queues fill.
+fn one_long_bucket<const W: usize>(n: u64) -> PauliSum<W> {
+    PauliSum::<W>::from_sorted_columns(
+        (0..n).map(|i| std::array::from_fn(|w| if w == 0 { i } else { 0 })).collect(),
+        vec![[0u64; W]; n as usize],
+        (0..n)
+            .map(|i| {
+                Complex64::new(0.5f64.powi((i * 7 % 13) as i32) * (1.0 + (i % 5) as f64 / 8.0), 0.0)
+            })
+            .collect(),
+        64 * W,
+    )
+}
+
+fn cut_matches<const W: usize>() {
+    let mut cases = fixtures::<W>();
+    cases.push(("one long bucket", one_long_bucket::<W>(5_000)));
+    for (what, sum) in cases {
         let len = sum.len();
         let hist = octave_histogram(&sum);
         for n in [0usize, 1, len / 3, len / 2, len.saturating_sub(1), len] {
             let edge = octave_edge(&hist, len, n);
             let quota = quota_of(edge);
-            let mut want = sum.clone();
-            retain_at_edge(&mut want, edge, quota);
             let (mut dev, mut scratch) = device(&sum);
-            retain_at_edge_device(&mut dev, &mut scratch, edge, quota).expect("retain");
-            assert_eq!(dev.len(), want.len(), "{what} n={n}: len");
+            let histogram = octave_histogram_device(&dev, &mut scratch).expect("histogram");
+            retain_at_edge_device(&mut dev, &mut scratch, edge, quota, &histogram).expect("cut");
             dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download");
-            assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: terms");
+            assert_eq!(got.len(), dev.len(), "{what} n={n}: the kept count is the buckets'");
+            assert_cut(&got, &sum, edge, quota, &format!("{what} n={n}"));
             if let EdgeDecision::Boundary { .. } = edge {
                 assert_eq!(dev.len(), n, "{what} n={n}: exactly n kept");
             }
@@ -95,26 +143,57 @@ fn retain_matches<const W: usize>() {
 }
 
 #[test]
-fn retain_equals_the_hosts_term_for_term() {
+fn the_cut_keeps_the_terms_above_the_edge_and_the_quota_at_it() {
     crate::require_cuda!();
-    retain_matches::<1>();
-    retain_matches::<2>();
+    cut_matches::<1>();
+    cut_matches::<2>();
+    cut_matches::<4>();
 }
 
-/// A second retain reads the first one's loose layout (buckets at their old offsets, gaps between them) and reuses its spare columns.
+/// A second cut reads the first one's loose layout (buckets at their old offsets, gaps after them) in place.
 #[test]
-fn retain_twice_reuses_the_spare_and_stays_valid() {
+fn a_second_cut_reads_the_first_ones_layout() {
     crate::require_cuda!();
     let sum = rand_sum::<1>(30_000, 64, 0x2E7);
     let (mut dev, mut scratch) = device(&sum);
-    let mut host = sum.clone();
     for n in [20_000usize, 12_000] {
-        let edge = octave_edge(&octave_histogram(&host), host.len(), n);
-        retain_at_edge(&mut host, edge, quota_of(edge));
-        retain_at_edge_device(&mut dev, &mut scratch, edge, quota_of(edge)).expect("retain");
+        let before = dev.to_host().unwrap();
+        let histogram = octave_histogram_device(&dev, &mut scratch).expect("histogram");
+        let edge = octave_edge(&histogram[1..], dev.len(), n);
+        retain_at_edge_device(&mut dev, &mut scratch, edge, quota_of(edge), &histogram)
+            .expect("cut");
+        dev.assert_invariants_device().unwrap();
+        let got = dev.to_host().unwrap();
+        assert_eq!(got.len(), n, "exactly n kept");
+        assert_eq!(dev.len(), n, "exactly n counted");
+        assert_cut(&got, &before, edge, quota_of(edge), &format!("n={n}"));
     }
-    assert_eq!(host.len(), 12_000, "the second pass keeps exactly n");
-    assert_eq!(dev.to_host().unwrap().to_arrays(), host.to_arrays());
+}
+
+/// A NaN shares the top octave's histogram bin but never stays, so the kept count is read back: 40 of 64 terms with one NaN keep 39.
+#[test]
+fn a_nan_in_the_top_bin_is_cut_and_not_counted() {
+    crate::require_cuda!();
+    let mut c: Vec<Complex64> = (0..64).map(|i| Complex64::new(1.0 + i as f64, 0.0)).collect();
+    c[5] = Complex64::new(f64::NAN, 0.0);
+    c[9] = Complex64::new(f64::INFINITY, 0.0);
+    let sum = PauliSum::<1>::from_sorted_columns(
+        (0u64..64).map(|i| [i]).collect(),
+        vec![[0u64]; 64],
+        c,
+        8,
+    );
+    let (mut dev, mut scratch) = device(&sum);
+    let histogram = octave_histogram_device(&dev, &mut scratch).expect("histogram");
+    let edge = octave_edge(&histogram[1..], dev.len(), 40);
+    retain_at_edge_device(&mut dev, &mut scratch, edge, quota_of(edge), &histogram).expect("cut");
+    dev.assert_invariants_device().unwrap();
+    let got = dev.to_host().unwrap();
+    assert_eq!(got.len(), 39, "the NaN counts toward n but is cut");
+    assert_eq!(dev.len(), 39, "the read-back count");
+    assert_cut(&got, &sum, edge, quota_of(edge), "nan");
+    assert!(got.iter().all(|(_, _, c)| !c.re.is_nan()), "the NaN is cut");
+    assert!(got.iter().any(|(_, _, c)| c.re.is_infinite()), "the infinity stays");
 }
 
 fn top_n_matches<const W: usize>() {

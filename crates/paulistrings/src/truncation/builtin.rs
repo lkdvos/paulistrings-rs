@@ -285,17 +285,16 @@ pub(crate) fn classify_octave(norm_sqr: f64, bin: usize) -> core::cmp::Ordering 
     }
 }
 
-/// Population of each octave of `|c|²`, binned by the exponent bits `norm_sqr().to_bits() >> 52`.
-pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(
-    sum: &PauliSum<W, C>,
-) -> [u32; APPROX_BINS] {
+/// Population of each octave of `|c|²`, binned by the exponent bits `norm_sqr().to_bits() >> 52`, [`APPROX_BINS`] long.
+pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> Vec<u32> {
     debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
     let num_buckets = sum.num_buckets();
     let tasks = (rayon::current_num_threads() * 4).clamp(1, num_buckets);
     (0..tasks)
         .into_par_iter()
+        // Partials live on the heap, never by value through Rayon's joins: research/FINDINGS.md §Resolved: the debug-build Rayon stack overflow.
         .map(|t| {
-            let mut h = [0u32; APPROX_BINS];
+            let mut h = vec![0u32; APPROX_BINS];
             for b in (num_buckets * t / tasks)..(num_buckets * (t + 1) / tasks) {
                 for c in sum.bucket(b).2 {
                     h[octave(c.norm_sqr())] += 1;
@@ -303,15 +302,13 @@ pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(
             }
             h
         })
-        .reduce(
-            || [0u32; APPROX_BINS],
-            |mut a, b| {
-                for (x, y) in a.iter_mut().zip(b.iter()) {
-                    *x += y;
-                }
-                a
-            },
-        )
+        .reduce_with(|mut a, b| {
+            for (x, y) in a.iter_mut().zip(b.iter()) {
+                *x += y;
+            }
+            a
+        })
+        .unwrap_or_else(|| vec![0u32; APPROX_BINS])
 }
 
 /// The boundary octave [`ApproxTopN`] cuts at, from a histogram of the whole sum, local or all-reduced.

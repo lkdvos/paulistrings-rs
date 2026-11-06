@@ -283,7 +283,9 @@ fn compile_options(
 }
 
 type CacheKey = (u32, usize, CoefficientLayout, Vec<String>);
-type KernelCache = Mutex<HashMap<CacheKey, Arc<KernelSet>>>;
+/// A key's set once built; its mutex is held while building, so concurrent first requests wait for one build instead of each compiling.
+type KernelSlot = Arc<Mutex<Option<Arc<KernelSet>>>>;
+type KernelCache = Mutex<HashMap<CacheKey, KernelSlot>>;
 static KERNEL_CACHE: OnceLock<KernelCache> = OnceLock::new();
 
 fn cache() -> &'static KernelCache {
@@ -307,9 +309,24 @@ pub(crate) fn kernel_set_with_options(
     extra_options: &[String],
 ) -> Result<Arc<KernelSet>, GpuError> {
     let key = (ordinal, w, coefficient, extra_options.to_vec());
-    if let Some(set) = cache().lock().expect("kernel cache mutex poisoned").get(&key) {
+    let slot = cache().lock().expect("kernel cache mutex poisoned").entry(key).or_default().clone();
+    // A build that panicked left the slot empty; the next request builds afresh.
+    let mut slot = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(set) = slot.as_ref() {
         return Ok(set.clone());
     }
+    let set = build_kernel_set(ordinal, w, coefficient, extra_options)?;
+    *slot = Some(set.clone());
+    Ok(set)
+}
+
+/// Compiles (through the PTX cache) and loads the [`KernelSet`] for one key.
+fn build_kernel_set(
+    ordinal: u32,
+    w: usize,
+    coefficient: CoefficientLayout,
+    extra_options: &[String],
+) -> Result<Arc<KernelSet>, GpuError> {
     let context = device::context(ordinal)?;
     let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
@@ -408,7 +425,6 @@ pub(crate) fn kernel_set_with_options(
         coefficient,
         threads,
     });
-    cache().lock().expect("kernel cache mutex poisoned").insert(key, set.clone());
     Ok(set)
 }
 

@@ -226,6 +226,12 @@ Every parser uses the core's Hermitian convention, `Y ↔ (x=1, z=1)` with no ph
 
 `apply`/`apply_adjoint` were swapped; caught by the PauliPropagation.jl baseline, now pinned from both sides.
 
+### Resolved: the debug-build Rayon stack overflow
+
+`octave_histogram` reduced `[u32; 2048]` partials by value, and a debug build keeps each move through Rayon's join frames: **~200 KiB of stack per split level**, 2.0 MiB over 10 levels at 32 threads, so a 2 MiB worker overflowed (flakily in the suite, wherever stealing nested deep enough).
+Heap partials take ~5 KiB a level and fit 128 KiB; the 16 MiB `RUST_MIN_STACK` in `.cargo/config.toml` is gone, and `octave_histogram_fits_a_small_worker_stack` holds the line.
+Never move a multi-KiB value through a Rayon reduction.
+
 ### `Gf2Hash` rows are splitmix64, not xorshift successors
 
 Consecutive xorshift64 rows satisfy `rows_z = M·rows_x`, so 64 weight-~6 deltas hashed to 0 under every seed.
@@ -672,6 +678,12 @@ Peak device memory (`nvidia-smi` every 200 ms, A6000 48 GB): kicked Ising `1e8` 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).
 Verdict: NCCL is the only exchange of an MPI device group; host staging was removed.
 A four-rank hang on workergpu047 is attributed to that node; every job step is bounded by `scripts/slurm/bounded.sh`; two-node NCCL is unmeasured.
+
+### A cold kernel variant costs seconds, once per key
+
+Each `(W, coefficient, options)` variant on ccqlin038's A6000: NVRTC **6–8 s** (2.4 MB PTX at W ≤ 2), the PTX cache hit 1 ms, the driver's PTX→SASS load **5–8 s** cold and 9 ms from its cache; 21 concurrent in-process NVRTC compiles took 90 s, so compiles barely overlap.
+Any `.cu` edit makes every variant cold: the lib's device tests then outran a 600 s bound, against 85 s warm.
+`kernel_set_with_options` builds a key once while concurrent first requests wait: 15 finalize and collapse tests on cold caches went from 36 compiles and loads of 9 variants, 226 s, to 9 and 94 s.
 
 ## Open
 

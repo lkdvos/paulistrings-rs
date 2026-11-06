@@ -2,6 +2,26 @@ use super::*;
 use num_complex::Complex64;
 use proptest::prelude::*;
 
+/// A 256 KiB worker stack holds the histogram's reduction at 32 threads, a debug build included; an overflow aborts the binary on a thread named after this test.
+#[test]
+fn octave_histogram_fits_a_small_worker_stack() {
+    let sum = crate::test_support::rand_sum::<1>(20_000, 64, 0x57AC);
+    assert!(sum.num_buckets() >= 128, "too few buckets to split 32 threads × 4 ways");
+    let want = octave_histogram(&sum);
+    assert_eq!(want.iter().map(|&count| count as usize).sum::<usize>(), sum.len());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(32)
+        .stack_size(256 << 10)
+        .thread_name(|i| format!("octave_histogram_fits_a_small_worker_stack-{i}"))
+        .build()
+        .expect("pool");
+    pool.install(|| {
+        for _ in 0..50 {
+            assert_eq!(octave_histogram(&sum), want);
+        }
+    });
+}
+
 /// At `ε = 0` a magnitude whose square underflows is dropped: `(1e-100)²` survives, `(1e-200)²` rounds to `0.0`.
 #[test]
 fn coefficient_threshold_drops_squares_that_underflow_to_zero() {

@@ -145,6 +145,10 @@ pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
         }
         return Ok(());
     };
+    // A lone partition within `n` keeps everything: its reduction is the identity and the histogram would decide nothing.
+    if collectives.size() == 1 && sum.len() <= n {
+        return Ok(());
+    }
     let local = octave_histogram_device(sum, scratch);
     let mut packed = match &local {
         Ok(histogram) => histogram.clone(),

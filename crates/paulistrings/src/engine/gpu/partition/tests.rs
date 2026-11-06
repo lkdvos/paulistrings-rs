@@ -123,3 +123,19 @@ fn a_failed_partition_still_enters_the_reduction() {
     assert!(matches!(part.take_error(), Err(GpuError::Unsupported("injected"))));
     assert_eq!(part.len(), input.len(), "a failed partition keeps its terms");
 }
+
+/// A lone partition already within `n` keeps every term with no histogram and no reduction; one term more runs the pass.
+#[test]
+fn a_lone_partition_within_n_skips_the_approx_pass() {
+    crate::require_cuda!();
+    let input = rand_sum_real::<1>(500, 32, 0x1E55);
+    for (n, want) in [(500, 0), (499, 1)] {
+        let tree = T::ApproxTopN(n);
+        let mut part = part(&input, &tree);
+        let group = one_rank();
+        PartitionBackend::<1, Complex64, T>::finalize_layer(&mut part, &tree, &group);
+        part.take_error().expect("device layer pass");
+        assert_eq!(reductions(&group), want, "n={n}");
+        assert_eq!(part.len(), n, "n={n}");
+    }
+}

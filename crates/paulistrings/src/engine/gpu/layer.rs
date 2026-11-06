@@ -64,8 +64,12 @@ type KernelSlot = fn(&mut DeviceStats) -> &mut u64;
 /// Bytes of a [`DevicePrepared`]'s amplitudes in the widest coefficient type, so one allocation serves every type.
 const AMPLITUDE_BYTES: usize = 16 * LOCAL_DIM * std::mem::size_of::<num_complex::Complex64>();
 
-/// A [`DevicePrepared`]'s per-entry tables on the device.
+/// A [`DevicePrepared`]'s per-entry tables on the device, and the packed upload [`Self::upload_packed`] stages them through.
 pub(super) struct TableBuffers {
+    packed: CudaSlice<u32>,
+    staging: Vec<u32>,
+    /// The map segment's destination when no map is uploaded.
+    no_map: CudaSlice<u32>,
     pub(super) amplitude: CudaSlice<u8>,
     pub(super) mask: CudaSlice<u64>,
     pub(super) nonzero_patterns: CudaSlice<u32>,
@@ -77,6 +81,9 @@ pub(super) struct TableBuffers {
 impl TableBuffers {
     pub(super) fn new(stream: &Arc<CudaStream>, w: usize) -> Result<Self, GpuError> {
         Ok(Self {
+            packed: stream.alloc_zeros(1)?,
+            staging: Vec::new(),
+            no_map: stream.alloc_zeros(1)?,
             amplitude: stream.alloc_zeros(AMPLITUDE_BYTES)?,
             mask: stream.alloc_zeros(32 * w)?,
             nonzero_patterns: stream.alloc_zeros(16)?,
@@ -84,6 +91,65 @@ impl TableBuffers {
             fingerprint_delta: stream.alloc_zeros(16)?,
             received_slot: stream.alloc_zeros(16)?,
         })
+    }
+
+    /// Copy every table of `table` up, and `bucket_at` into `map` if given, as one copy and one `k_unpack_table`.
+    pub(super) fn upload_packed<const W: usize, C: Coefficient>(
+        &mut self,
+        stream: &Arc<CudaStream>,
+        kernels: &KernelSet,
+        table: &DevicePrepared<W, C>,
+        map: Option<(&[u32], &mut CudaSlice<u32>)>,
+    ) -> Result<(), GpuError> {
+        let staging = &mut self.staging;
+        staging.clear();
+        let mut lengths = [0u32; 7];
+        let mut push = |segment: usize, words: &[u32]| {
+            staging.extend_from_slice(words);
+            lengths[segment] = words.len() as u32;
+        };
+        push(0, bytemuck::cast_slice::<C, u32>(&table.amplitude));
+        push(1, bytemuck::cast_slice::<u64, u32>(&table.mask));
+        push(2, &table.nonzero_patterns);
+        push(3, &table.bucket_delta);
+        push(4, bytemuck::cast_slice::<u64, u32>(&table.fingerprint_delta));
+        push(5, &table.received_slot);
+        let ordinal = stream.context().ordinal() as u32;
+        let (map_host, map) = match map {
+            Some((host, device)) => (host, Some(device)),
+            None => (&[][..], None),
+        };
+        push(6, map_host);
+        let words = staging.len();
+        super::columns::grow(stream, &mut self.packed, words, ordinal)?;
+        stream.memcpy_htod(&staging[..], &mut self.packed.slice_mut(0..words))?;
+        let map = match map {
+            Some(map) => map,
+            None => &mut self.no_map,
+        };
+        let [n0, n1, n2, n3, n4, n5, n6] = lengths;
+        // SAFETY: arguments match `k_unpack_table` in count.cu; every destination holds its segment's words: the table buffers their `DevicePrepared` sizes, `map` the bucket count, and a skipped segment has length 0.
+        unsafe {
+            stream
+                .launch_builder(&kernels.unpack_table)
+                .arg(&self.packed)
+                .arg(&mut self.amplitude)
+                .arg(&n0)
+                .arg(&mut self.mask)
+                .arg(&n1)
+                .arg(&mut self.nonzero_patterns)
+                .arg(&n2)
+                .arg(&mut self.bucket_delta)
+                .arg(&n3)
+                .arg(&mut self.fingerprint_delta)
+                .arg(&n4)
+                .arg(&mut self.received_slot)
+                .arg(&n5)
+                .arg(&mut *map)
+                .arg(&n6)
+                .launch(thread_per(words.min(1 << 16), 256))?;
+        }
+        Ok(())
     }
 
     /// Copy every table of `table` up; the copies are synchronous.
@@ -110,8 +176,9 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     segment_start: CudaSlice<u32>,
     rows_per_position: CudaSlice<u32>,
     pub(super) destination_offsets: CudaSlice<u32>,
-    /// The octave histogram's `[len, bins…]`.
+    /// The octave histogram's `[len, bins…]`, and whether it is all zero, as `k_octave_edge` leaves it.
     pub(super) histogram: CudaSlice<u64>,
+    pub(super) histogram_clean: bool,
     /// The radix-select's 256-bin digit histogram, reused across passes.
     pub(super) radix_histogram: CudaSlice<u64>,
     /// The radix-select's extracted singleton bits.
@@ -144,6 +211,8 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     /// Scan totals, two slots so a count's pair of scans can be read together.
     pub(super) totals: CudaSlice<u32>,
     length_totals: CudaSlice<u32>,
+    /// `k_join`'s `[output terms, longest output bucket]`, zeroed by `k_join_rows`.
+    pub(super) join_totals: CudaSlice<u32>,
     /// Export, exchange and receive buffers.
     pub(super) export: DeviceExport<W, C>,
     /// Highest live row index plus one; differs from `len` only after a rescale, whose output keeps the input's offsets.
@@ -214,6 +283,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             rows_per_position: stream.alloc_zeros(1)?,
             destination_offsets: stream.alloc_zeros(2)?,
             histogram: stream.alloc_zeros(1 + APPROX_BINS)?,
+            histogram_clean: true,
             radix_histogram: stream.alloc_zeros(256)?,
             radix_out: stream.alloc_zeros(2)?,
             cut_flag: stream.alloc_zeros(1)?,
@@ -235,6 +305,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             collapse: CollapseScratch::new(stream)?,
             totals: stream.alloc_zeros(2)?,
             length_totals: stream.alloc_zeros(2)?,
+            join_totals: stream.alloc_zeros(2)?,
             export: DeviceExport::new(sum)?,
             extent: sum.len(),
             options,
@@ -320,11 +391,9 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
         grow(stream, &mut self.destination_offsets, b + 1, ordinal)?;
         let (bucket_at_host, bucket_at) = (&self.bucket_at_host, &mut self.bucket_at);
         let buffers = &mut self.table;
+        let map = map_stale.then_some((&bucket_at_host[..], bucket_at));
         timed_transfer(stream, &mut self.stats, Transfer::H2d, || {
-            if map_stale {
-                stream.memcpy_htod(bucket_at_host, &mut bucket_at.slice_mut(0..b))?;
-            }
-            buffers.upload(stream, table)
+            buffers.upload_packed(stream, &sum.kernels, table, map)
         })?;
         if map_stale {
             self.bucket_at_key = Some(key);

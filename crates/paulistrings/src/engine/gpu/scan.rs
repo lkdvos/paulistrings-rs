@@ -1,4 +1,4 @@
-//! Device-wide exclusive scan of a `u32` column, the three launches of `kernels/scan.cu`.
+//! Device-wide exclusive scan of a `u32` column, the three launches of `kernels/scan.cu`, one up to `SCAN_BLOCK` elements.
 
 use std::sync::Arc;
 
@@ -56,11 +56,16 @@ pub(crate) fn exclusive_scan(
             .arg(&mut *block_sum)
             .arg(&mut *block_max)
             .arg(&n32)
+            .arg(&mut *total_max)
             .launch(LaunchConfig {
                 grid_dim: (nb32, 1, 1),
                 block_dim: block,
                 shared_mem_bytes: 0,
             })?;
+        // A one-block scan is finished by its block.
+        if nb == 1 {
+            return Ok(());
+        }
         stream
             .launch_builder(&kernels.scan_single)
             .arg(&mut *block_sum)

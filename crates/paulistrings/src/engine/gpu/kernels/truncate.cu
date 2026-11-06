@@ -278,10 +278,14 @@ extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
 }
 
 // k_octave_edge: the host's `octave_edge` for `n >= 1` over `[len, bins…]`, into `decision` for `k_cut`; one block, each thread summing EDGE_PER octaves from the top down.
+// It then zeroes the histogram, `k_cut`'s counters and its `B` look-back entries, so the next histogram and this cut need no fill.
 #define EDGE_THREADS 256
 #define EDGE_PER (APPROX_BINS / EDGE_THREADS)
-extern "C" __global__ void __launch_bounds__(EDGE_THREADS) k_octave_edge(const u64* __restrict__ hist, u64 n,
-                                                                         u64* __restrict__ decision) {
+extern "C" __global__ void __launch_bounds__(EDGE_THREADS) k_octave_edge(u64* __restrict__ hist, u64 n,
+                                                                         u64* __restrict__ decision,
+                                                                         unsigned long long* __restrict__ counters,
+                                                                         unsigned long long* __restrict__ prefix,
+                                                                         u32 B) {
     __shared__ u64 sums[EDGE_THREADS];
     const u32 t = threadIdx.x;
     const u32 top = APPROX_BINS - 1 - t * EDGE_PER;
@@ -295,28 +299,34 @@ extern "C" __global__ void __launch_bounds__(EDGE_THREADS) k_octave_edge(const u
         sums[t] += v;
         __syncthreads();
     }
-    if (hist[0] <= n) {
+    const u64 len = hist[0];
+    if (len <= n) {
         if (t == 0) {
             decision[CUT_KEEP_ALL] = 1;
             decision[CUT_BOUNDARY] = 0;
             decision[CUT_QUOTA] = 0;
             decision[CUT_ORDERED] = 0;
         }
-        return;
-    }
-    // The one thread whose octaves cross `n` walks them; the top octaves always hold more than `n` in all.
-    u64 kept = t == 0 ? 0 : sums[t - 1];
-    if (kept > n || sums[t] <= n) return;
-    for (u32 k = 0; k < EDGE_PER; ++k) {
-        const u64 population = hist[1 + top - k];
-        if (kept + population > n) {
-            const u64 quota = n - kept;
-            decision[CUT_KEEP_ALL] = 0;
-            decision[CUT_BOUNDARY] = top - k;
-            decision[CUT_QUOTA] = quota;
-            decision[CUT_ORDERED] = quota != 0 && quota < population;
-            return;
+    } else {
+        // The one thread whose octaves cross `n` walks them; the top octaves always hold more than `n` in all.
+        u64 kept = t == 0 ? 0 : sums[t - 1];
+        if (kept <= n && sums[t] > n) {
+            for (u32 k = 0; k < EDGE_PER; ++k) {
+                const u64 population = hist[1 + top - k];
+                if (kept + population > n) {
+                    const u64 quota = n - kept;
+                    decision[CUT_KEEP_ALL] = 0;
+                    decision[CUT_BOUNDARY] = top - k;
+                    decision[CUT_QUOTA] = quota;
+                    decision[CUT_ORDERED] = quota != 0 && quota < population;
+                    break;
+                }
+                kept += population;
+            }
         }
-        kept += population;
     }
+    __syncthreads();
+    for (u32 i = t; i < 1 + APPROX_BINS; i += EDGE_THREADS) hist[i] = 0;
+    for (u32 i = t; i < B; i += EDGE_THREADS) prefix[i] = 0;
+    if (t < 2) counters[t] = 0;
 }

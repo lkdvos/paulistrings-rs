@@ -6,8 +6,10 @@
 #define SCAN_ITEMS 4
 #define SCAN_BLOCK (SCAN_THREADS * SCAN_ITEMS)
 
+// A one-block grid finishes the scan itself: `out[n]` and `tot_max` as `k_scan_single` writes them.
 extern "C" __global__ void k_scan_block(const u32* __restrict__ in, u32* __restrict__ out,
-                                        u32* __restrict__ block_sum, u32* __restrict__ block_max, u32 n) {
+                                        u32* __restrict__ block_sum, u32* __restrict__ block_max, u32 n,
+                                        u32* __restrict__ tot_max) {
     __shared__ u32 sv[SCAN_BLOCK];
     __shared__ u32 swarp[36];
     __shared__ u32 smax[SCAN_WARPS];
@@ -36,6 +38,11 @@ extern "C" __global__ void k_scan_block(const u32* __restrict__ in, u32* __restr
         for (int w = 0; w < SCAN_WARPS; ++w) m2 = max(m2, smax[w]);
         block_sum[blockIdx.x] = total;
         block_max[blockIdx.x] = m2;
+        if (gridDim.x == 1) {
+            out[n] = total;
+            tot_max[0] = total;
+            tot_max[1] = m2;
+        }
     }
 }
 

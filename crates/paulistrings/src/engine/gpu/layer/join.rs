@@ -38,6 +38,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
                 .arg(&self.table.bucket_delta)
                 .arg(&mut self.rows)
                 .arg(&b32)
+                .arg(&mut self.join_totals)
                 .launch(thread_per(b, 1024))?;
         }
         exclusive_scan(
@@ -84,7 +85,6 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
         }
     }
     out.reserve(need, b)?;
-    stream.memset_zeros(&mut scratch.totals)?;
     let table_bits = join_table_bits(longest);
     timed!(let t0 = scratch.event(sum)?);
     // SAFETY: arguments match `k_join` in join.cu; `out` holds `records` terms and `b` buckets, `segment_start` holds `b + 1` offsets ending at `records`, and no source bucket exceeds `longest` rows, so the `1 << table_bits` slots stay at most half full.
@@ -120,7 +120,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
             .arg(&mut out.fingerprint)
             .arg(&mut out.start)
             .arg(&mut out.lengths)
-            .arg(&mut scratch.totals)
+            .arg(&mut scratch.join_totals)
             .launch(LaunchConfig {
                 grid_dim: (b as u32, 1, 1),
                 block_dim: (JOIN_THREADS, 1, 1),
@@ -132,7 +132,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     out.buckets = b;
     sum.spare = Some(std::mem::replace(&mut sum.columns, out));
     scratch.extent = records as usize;
-    sum.record_step(Growth::Join, Some(&scratch.totals))?;
+    sum.record_step(Growth::Join, Some(&scratch.join_totals))?;
     sum.debug_check();
     Ok(())
 }

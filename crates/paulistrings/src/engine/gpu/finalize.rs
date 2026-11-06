@@ -33,7 +33,10 @@ fn enqueue_octave_histogram<const W: usize, C: Coefficient>(
 ) -> Result<(), GpuError> {
     let stream = &sum.stream;
     let buckets = sum.hash.num_buckets();
-    stream.memset_zeros(&mut scratch.histogram)?;
+    if !scratch.histogram_clean {
+        stream.memset_zeros(&mut scratch.histogram)?;
+    }
+    scratch.histogram_clean = false;
     let buckets_u32 = buckets as u32;
     timed!(let started = scratch.event(sum)?);
     // SAFETY: arguments match `k_octave_histogram` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries.
@@ -101,6 +104,9 @@ fn cut_device<const W: usize, C: Coefficient>(
     let ordered = local_quota != 0 && local_quota < at;
     let decision = [0, bin as u64, local_quota as u64, u64::from(ordered)];
     sum.stream.memcpy_htod(&decision, &mut scratch.cut_decision)?;
+    grow_cut(sum, scratch)?;
+    sum.stream.memset_zeros(&mut scratch.cut_counters)?;
+    sum.stream.memset_zeros(&mut scratch.cut_prefix.slice_mut(0..sum.hash.num_buckets()))?;
     enqueue_cut(sum, scratch)?;
     let kept = if histogram[APPROX_BINS] == 0 {
         histogram[2 + bin..].iter().sum::<u64>() as usize + local_quota.min(at)
@@ -114,17 +120,23 @@ fn cut_device<const W: usize, C: Coefficient>(
     Ok(())
 }
 
-/// Enqueue `k_cut` under the decision in `scratch.cut_decision`.
+/// Room in `k_cut`'s row flags and look-back prefix for `sum`.
+fn grow_cut<const W: usize, C: Coefficient>(
+    sum: &GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+) -> Result<(), GpuError> {
+    let (stream, ordinal) = (&sum.stream, sum.device());
+    grow(stream, &mut scratch.cut_flag, sum.columns.term_capacity(), ordinal)?;
+    grow(stream, &mut scratch.cut_prefix, sum.hash.num_buckets(), ordinal)
+}
+
+/// Enqueue `k_cut` under the decision in `scratch.cut_decision`, over counters and a look-back prefix already zeroed and grown.
 fn enqueue_cut<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     scratch: &mut LayerScratch<W, C>,
 ) -> Result<(), GpuError> {
     let stream = sum.stream.clone();
     let buckets = sum.hash.num_buckets();
-    grow(&stream, &mut scratch.cut_flag, sum.columns.term_capacity(), sum.device())?;
-    grow(&stream, &mut scratch.cut_prefix, buckets, sum.device())?;
-    stream.memset_zeros(&mut scratch.cut_counters)?;
-    stream.memset_zeros(&mut scratch.cut_prefix.slice_mut(0..buckets))?;
     let (buckets_u32, shift) = (buckets as u32, 52u32);
     timed!(let started = scratch.event(sum)?);
     let columns = &mut sum.columns;
@@ -156,19 +168,24 @@ fn cut_on_device<const W: usize, C: Coefficient>(
     scratch: &mut LayerScratch<W, C>,
     n: usize,
 ) -> Result<(), GpuError> {
+    grow_cut(sum, scratch)?;
     enqueue_octave_histogram(sum, scratch)?;
-    let n64 = n as u64;
+    let (n64, buckets) = (n as u64, sum.hash.num_buckets() as u32);
     timed!(let started = scratch.event(sum)?);
-    // SAFETY: arguments match `k_octave_edge` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries and `cut_decision` four.
+    // SAFETY: arguments match `k_octave_edge` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries, `cut_decision` four, `cut_counters` two and `cut_prefix` one per bucket.
     unsafe {
         sum.stream
             .launch_builder(&sum.kernels.octave_edge)
-            .arg(&scratch.histogram)
+            .arg(&mut scratch.histogram)
             .arg(&n64)
             .arg(&mut scratch.cut_decision)
+            .arg(&mut scratch.cut_counters)
+            .arg(&mut scratch.cut_prefix)
+            .arg(&buckets)
             .launch(LaunchConfig { grid_dim: (1, 1, 1), block_dim: (256, 1, 1), shared_mem_bytes: 0 })?;
     }
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
+    scratch.histogram_clean = true;
     enqueue_cut(sum, scratch)?;
     sum.record_step(Growth::Shrink { cap: n }, None)?;
     sum.debug_check();

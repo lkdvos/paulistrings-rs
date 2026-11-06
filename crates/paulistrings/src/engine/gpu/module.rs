@@ -119,9 +119,10 @@ pub(crate) fn layer_shared_bytes(capacity: usize, w: usize, coefficient: Coeffic
     (11 * capacity + 144 + 256 * c + 256 * w + 128 + 320 + 72 + 16 + 32 * c + 128) as u32
 }
 
-/// One warp per bucket over `b` buckets, eight warps a block.
+/// One warp per bucket over `b` buckets, up to eight warps a block but narrower while that leaves fewer than 1024 blocks, since a few hundred wide blocks land two on some SMs and one on the rest.
 pub(crate) fn warp_per_bucket(b: usize) -> LaunchConfig {
-    thread_per(b * 32, 256)
+    let warps = 1usize << (b / 1024).clamp(1, 8).ilog2();
+    thread_per(b * 32, 32 * warps as u32)
 }
 
 /// One thread per element over `n` elements, `threads` a block.

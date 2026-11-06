@@ -70,7 +70,7 @@ impl CollapseSample {
 }
 
 /// Panics unless `total`, the `‖O‖₁` of `len` terms, is positive and finite.
-fn assert_drawable(total: f64, len: usize) {
+pub(crate) fn assert_drawable(total: f64, len: usize) {
     assert!(
         total.is_finite() && total > 0.0,
         "CollapseSample: cannot draw by |c| from {len} terms with Σ|c| = {total}",
@@ -78,7 +78,7 @@ fn assert_drawable(total: f64, len: usize) {
 }
 
 /// `values` summed left to right from `0.0`, the order every stretch boundary of a collapse is accumulated in.
-fn running_sum(values: impl IntoIterator<Item = f64>) -> f64 {
+pub(crate) fn running_sum(values: impl IntoIterator<Item = f64>) -> f64 {
     values.into_iter().fold(0.0, |total, value| total + value)
 }
 

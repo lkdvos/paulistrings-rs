@@ -39,15 +39,15 @@ fn assert_same_cut(
     }
 }
 
-/// A device layer pass issues one reduction per reached `ApproxTopN`, as the host's collective form does above one partition, and keeps the host's terms up to the boundary octave's free choice.
+/// A lone device's layer pass decides every `ApproxTopN` on the device and issues no reduction, and keeps the host's terms up to the boundary octave's free choice.
 #[test]
 fn a_layer_pass_issues_the_hosts_collectives() {
     crate::require_cuda!();
     let input = rand_sum_real::<1>(4000, 32, 0xC011);
     let cases = [
-        (T::ApproxTopN(1000), 1),
-        (and(T::Coefficient(1e-3), T::ApproxTopN(1000)), 1),
-        (and(T::ApproxTopN(2000), T::ApproxTopN(500)), 2),
+        (T::ApproxTopN(1000), 0),
+        (and(T::Coefficient(1e-3), T::ApproxTopN(1000)), 0),
+        (and(T::ApproxTopN(2000), T::ApproxTopN(500)), 0),
         (or(T::Weight(10), T::Coefficient(1e-3)), 0),
     ];
     for (tree, want) in cases {
@@ -124,12 +124,12 @@ fn a_failed_partition_still_enters_the_reduction() {
     assert_eq!(part.len(), input.len(), "a failed partition keeps its terms");
 }
 
-/// A lone partition already within `n` keeps every term with no histogram and no reduction; one term more runs the pass.
+/// A lone partition already within `n` keeps every term, and one term more cuts to `n`, with no reduction either way.
 #[test]
 fn a_lone_partition_within_n_skips_the_approx_pass() {
     crate::require_cuda!();
     let input = rand_sum_real::<1>(500, 32, 0x1E55);
-    for (n, want) in [(500, 0), (499, 1)] {
+    for (n, want) in [(500, 0), (499, 0)] {
         let tree = T::ApproxTopN(n);
         let mut part = part(&input, &tree);
         let group = one_rank();

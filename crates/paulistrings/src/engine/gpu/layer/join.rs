@@ -15,6 +15,7 @@ use crate::engine::gpu::prepared::{DevicePrepared, JoinTable};
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 use crate::engine::timing::timed;
+use crate::truncation::builtin::APPROX_BINS;
 
 /// Slots of the join layer's table, as `log2`, for source buckets of up to `longest` rows: at most half full.
 pub(in crate::engine::gpu) fn join_table_bits(longest: u32) -> u32 {
@@ -86,6 +87,12 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     }
     out.reserve(need, b)?;
     let table_bits = join_table_bits(longest);
+    // The next pass's histogram comes out of the join itself (`LayerScratch::histogram_fresh`).
+    let histogram = scratch.join_histogram;
+    if histogram && !scratch.histogram_clean {
+        stream.memset_zeros(&mut scratch.histogram)?;
+    }
+    let histogram_bytes = if histogram { 4 * APPROX_BINS as u32 } else { 0 };
     timed!(let t0 = scratch.event(sum)?);
     // SAFETY: arguments match `k_join` in join.cu; `out` holds `records` terms and `b` buckets, `segment_start` holds `b + 1` offsets ending at `records`, and no source bucket exceeds `longest` rows, so the `1 << table_bits` slots stay at most half full.
     unsafe {
@@ -121,12 +128,16 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
             .arg(&mut out.start)
             .arg(&mut out.lengths)
             .arg(&mut scratch.join_totals)
+            .arg(&u32::from(histogram))
+            .arg(&mut scratch.histogram)
             .launch(LaunchConfig {
                 grid_dim: (b as u32, 1, 1),
                 block_dim: (JOIN_THREADS, 1, 1),
-                shared_mem_bytes: 4 << table_bits,
+                shared_mem_bytes: (4 << table_bits) + histogram_bytes,
             })?;
     }
+    scratch.histogram_clean &= !histogram;
+    scratch.histogram_fresh = histogram;
     timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
     out.len = records as usize;
     out.buckets = b;

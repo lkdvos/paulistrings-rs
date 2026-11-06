@@ -1,4 +1,5 @@
-// `total` gathers `[output terms, longest output bucket]`.
+// `total` gathers `[output terms, longest output bucket]`; with `histogram`, `hist` gathers `k_octave_histogram`'s `[len, bins…]` of the output from a shared histogram after the table.
+#define APPROX_BINS 2048
 // k_join: the fused layer of a two-entry table with one identity-mask entry (every rotation), one block per output position, writing its bucket straight into the output columns at the position's pre-dedup offset; contracts on `JoinTable` in prepared.rs.
 // The base entry's rows of bucket beta are unique keys, and so are the partner entry's rows from beta ^ delta, so the only merge is a partner landing on a base row: a shared open-addressing table over the hittable base rows joins them, and every other row is written as it is read.
 
@@ -25,6 +26,12 @@ __device__ __forceinline__ u32 join_claim(u32* counter, bool keep) {
     return base + __popc(bal & lanemask_lt());
 }
 
+// One kept row in the block's octave histogram, binned as `k_octave_histogram` bins it.
+__device__ __forceinline__ void join_count_octave(u32* s_hist, Coeff v) {
+    const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(v));
+    atomicAdd(&s_hist[min((u32)(bits >> 52), (u32)(APPROX_BINS - 1))], 1u);
+}
+
 __device__ __forceinline__ void join_write(u64* __restrict__ out_x, u64* __restrict__ out_z, real_t* __restrict__ out_c,
                                            u64* __restrict__ out_g, size_t slot, const Key& k, u64 f, Coeff v) {
     store_key(out_x, out_z, slot, k);
@@ -49,10 +56,10 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     const u32* __restrict__ seg_start, u32 mode, u32 support_size, u32 qubit_0, u32 qubit_1, double rotation_cos,
     double rotation_sin, const real_t* __restrict__ amplitude, const u64* __restrict__ mask,
     const u32* __restrict__ nonzero_patterns, const u32* __restrict__ bucket_delta,
-    const u64* __restrict__ fingerprint_delta, u32 base_entry, u32 hit_patterns, u32 table_bits,
+    const u64* __restrict__ fingerprint_delta, u32 base_entry, u32 hit_patterns, u32 launch_bits,
     const __grid_constant__ KeepProg prog, u64* __restrict__ out_x, u64* __restrict__ out_z,
     real_t* __restrict__ out_c, u64* __restrict__ out_g, u32* __restrict__ out_start, u32* __restrict__ out_len,
-    u32* __restrict__ total) {
+    u32* __restrict__ total, u32 histogram, u64* __restrict__ hist) {
     extern __shared__ __align__(16) u32 slots[];
     __shared__ real_t s_amplitude[2 * LOCAL_DIM * COEFF_PARTS];
     __shared__ u64 s_mask[4 * W];
@@ -72,10 +79,12 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     }
     const u32 partner_entry = base_entry ^ 1u;
     const u32 base_start = in_start[beta], base_len = in_len[beta];
-    // A block's table holds its own base bucket, at most half full, within the launch's `table_bits`.
-    table_bits = min(table_bits, 32u - __clz(2u * max(base_len, 16u) - 1u));
+    // A block's table holds its own base bucket, at most half full, within the launch's `launch_bits`.
+    const u32 table_bits = min(launch_bits, 32u - __clz(2u * max(base_len, 16u) - 1u));
     const u32 n_slots = 1u << table_bits;
+    u32* const s_hist = slots + (1u << launch_bits);
     for (u32 i = tid; i < n_slots; i += JOIN_THREADS) slots[i] = 0;
+    if (histogram) for (u32 i = tid; i < APPROX_BINS; i += JOIN_THREADS) s_hist[i] = 0;
     if (mode == MODE_LOCAL) for (u32 i = tid; i < 2 * LOCAL_DIM * COEFF_PARTS; i += JOIN_THREADS) s_amplitude[i] = amplitude[i];
     for (u32 i = tid; i < 4 * W; i += JOIN_THREADS) s_mask[i] = mask[i];
     if (tid < 2) s_nonzero[tid] = nonzero_patterns[tid];
@@ -124,6 +133,7 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
             while (atomicCAS(&slots[s], 0u, entry) != 0u) s = (s + 1u) & (n_slots - 1u);
         }
         const u32 o = join_claim(&s_out, keep);
+        if (keep && histogram) join_count_octave(s_hist, v);
         if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, k, f, v);
     }
     __syncthreads();
@@ -174,6 +184,7 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
             keep = !coeff_is_zero(v) && keep_eval(prog, [&]() -> Key { return q; }, v);
         }
         const u32 o = join_claim(&s_out, keep);
+        if (keep && histogram) join_count_octave(s_hist, v);
         if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, q, f, v);
     }
     __syncthreads();
@@ -197,9 +208,16 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
             keep = !coeff_is_zero(v) && keep_eval(prog, [&]() -> Key { return k; }, v);
         }
         const u32 o = join_claim(&s_out, keep);
+        if (keep && histogram) join_count_octave(s_hist, v);
         if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, k, f, v);
     }
     __syncthreads();
+    if (histogram) {
+        for (u32 i = tid; i < APPROX_BINS; i += JOIN_THREADS) {
+            if (s_hist[i] != 0) atomicAdd(&hist[1 + i], (u64)s_hist[i]);
+        }
+        if (tid == 0 && s_out != 0) atomicAdd(&hist[0], (u64)s_out);
+    }
     if (tid == 0) {
         out_start[beta] = seg0;
         out_len[beta] = s_out;

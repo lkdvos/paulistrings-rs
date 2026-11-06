@@ -169,7 +169,10 @@ fn cut_on_device<const W: usize, C: Coefficient>(
     n: usize,
 ) -> Result<(), GpuError> {
     grow_cut(sum, scratch)?;
-    enqueue_octave_histogram(sum, scratch)?;
+    if !scratch.histogram_fresh {
+        enqueue_octave_histogram(sum, scratch)?;
+    }
+    scratch.histogram_fresh = false;
     let (n64, buckets) = (n as u64, sum.hash.num_buckets() as u32);
     timed!(let started = scratch.event(sum)?);
     // SAFETY: arguments match `k_octave_edge` in truncate.cu; `histogram` holds `1 + APPROX_BINS` entries, `cut_decision` four, `cut_counters` two and `cut_prefix` one per bucket.

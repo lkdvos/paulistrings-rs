@@ -179,6 +179,10 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     /// The octave histogram's `[len, bins…]`, and whether it is all zero, as `k_octave_edge` leaves it.
     pub(super) histogram: CudaSlice<u64>,
     pub(super) histogram_clean: bool,
+    /// Whether `histogram` is the current sum's, as a join that counted its output leaves it; every mutating layer clears it.
+    pub(super) histogram_fresh: bool,
+    /// Whether a join counts its output's octave histogram, for the lone `ApproxTopN` pass after it.
+    pub(crate) join_histogram: bool,
     /// The radix-select's 256-bin digit histogram, reused across passes.
     pub(super) radix_histogram: CudaSlice<u64>,
     /// The radix-select's extracted singleton bits.
@@ -284,6 +288,8 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             destination_offsets: stream.alloc_zeros(2)?,
             histogram: stream.alloc_zeros(1 + APPROX_BINS)?,
             histogram_clean: true,
+            histogram_fresh: false,
+            join_histogram: false,
             radix_histogram: stream.alloc_zeros(256)?,
             radix_out: stream.alloc_zeros(2)?,
             cut_flag: stream.alloc_zeros(1)?,
@@ -548,6 +554,7 @@ pub(crate) fn apply_layer_device<const W: usize, C: Coefficient, X: Transport>(
     scratch: &mut LayerScratch<W, C>,
     transport: &X,
 ) -> Result<LayerExchangeCounts, GpuError> {
+    scratch.histogram_fresh = false;
     let r = apply_layer_body(sum, layer, scratch, transport);
     // A failed layer still completes its pending receive, so every peer's chunked receive completes too.
     let finished = finish_receive(sum, scratch);

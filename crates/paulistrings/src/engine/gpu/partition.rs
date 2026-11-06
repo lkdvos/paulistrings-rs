@@ -299,6 +299,8 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             scratch.refine_passes = 0;
             scratch.receive_chunks = 0;
             scratch.ceiling = input_ceiling::<W, C>(policy);
+            scratch.join_histogram =
+                self.group_size == 1 && matches!(policy, BuiltinTruncation::ApproxTopN(_));
         }
         #[cfg(any(test, feature = "test-utils"))]
         if self.fail_at_layer == Some(self.layers_applied - 1) {
@@ -364,6 +366,8 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             scratch.refine_passes = 0;
             scratch.receive_chunks = 0;
             scratch.ceiling = input_ceiling::<W, C>(policy);
+            scratch.join_histogram = false;
+            scratch.histogram_fresh = false;
         }
         // An injected failure names its own layer of the run, as the one-by-one path would.
         #[cfg(any(test, feature = "test-utils"))]

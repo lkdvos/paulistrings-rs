@@ -10,7 +10,7 @@ use paulistrings::{PauliRotation, PtmChannel};
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
 use paulistrings::test_support::{
-    partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
+    haar_su4_matrix, partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate_with, Circuit, Direction, LayerScratch, PauliString, PhaseStats, PropagateOptions,
@@ -288,7 +288,7 @@ fn the_unpartitioned_engine_reports_no_exchange() {
     assert_eq!(stats.recv_rows, 0, "{stats:?}");
 }
 
-/// A device run lands its kernel times on the fields `PhaseStats` documents: the fused path's on `gather_ns`, `merge_ns` and `compact_ns`, the truncation's on `truncate_ns` and, with a remote layer, the export kernels' on `export_kernel_ns`.
+/// A device run lands its kernel times on the fields `PhaseStats` documents: the fused path's on `gather_ns`, `merge_ns` and `compact_ns` (the join's on the first two), the truncation's on `truncate_ns` and, with a remote layer, the export kernels' on `export_kernel_ns`.
 #[cfg(feature = "cuda")]
 #[test]
 fn device_stats_land_on_their_fields() {
@@ -300,13 +300,14 @@ fn device_stats_land_on_their_fields() {
     for _ in 0..3 {
         circuit.push(PauliRotation::new(gen, 0.3));
     }
+    circuit.push(PtmChannel::unitary_2q(0, 1, haar_su4_matrix()));
     let sum = rand_sum_real::<1>(20_000, 16, 0x9A18);
 
     let mut one = GpuPartitionedSum::from_host(&sum, 0).expect("upload");
     one.propagate(&circuit, ApproxTopN(15_000), Direction::Forward).expect("propagate");
     let stats = one.take_stats();
     let p = &stats.per_partition[0];
-    assert_eq!(p.layers, 3, "{p:?}");
+    assert_eq!(p.layers, 4, "{p:?}");
     assert!(p.gather_ns > 0 && p.merge_ns > 0 && p.compact_ns > 0, "{p:?}");
     assert!(p.truncate_ns > 0 && p.finalize_ns > 0, "{p:?}");
     assert_eq!((p.export_ns, p.export_kernel_ns), (0, 0), "{p:?}");

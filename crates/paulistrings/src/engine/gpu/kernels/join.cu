@@ -1,4 +1,4 @@
-// k_join: the fused layer of a two-entry table with one identity-mask entry (every rotation), one block per output position; contracts on `JoinTable` in prepared.rs.
+// k_join: the fused layer of a two-entry table with one identity-mask entry (every rotation), one block per output position, writing its bucket straight into the output columns at the position's pre-dedup offset; contracts on `JoinTable` in prepared.rs.
 // The base entry's rows of bucket beta are unique keys, and so are the partner entry's rows from beta ^ delta, so the only merge is a partner landing on a base row: a shared open-addressing table over the hittable base rows joins them, and every other row is written as it is read.
 
 // A slot is 0 (empty), (tag:18 | base row + 1:13), or once a partner hits it (1:1 | partner row + 1:13 | base row + 1:13).
@@ -38,8 +38,9 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     double rotation_sin, const real_t* __restrict__ amplitude, const u64* __restrict__ mask,
     const u32* __restrict__ nonzero_patterns, const u32* __restrict__ bucket_delta,
     const u64* __restrict__ fingerprint_delta, u32 base_entry, u32 hit_patterns, u32 table_bits,
-    const __grid_constant__ KeepProg prog, u32 p0, u64* __restrict__ out_x, u64* __restrict__ out_z,
-    real_t* __restrict__ out_c, u64* __restrict__ out_g, u32* __restrict__ rows_per_position) {
+    const __grid_constant__ KeepProg prog, u64* __restrict__ out_x, u64* __restrict__ out_z,
+    real_t* __restrict__ out_c, u64* __restrict__ out_g, u32* __restrict__ out_start, u32* __restrict__ out_len,
+    u32* __restrict__ total) {
     extern __shared__ __align__(16) u32 slots[];
     __shared__ real_t s_amplitude[2 * LOCAL_DIM * COEFF_PARTS];
     __shared__ u64 s_mask[4 * W];
@@ -47,13 +48,16 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
     __shared__ u32 s_out;
     const u32 tid = threadIdx.x, lane = lane_id(), warp = warp_id();
     const u32 warps = JOIN_THREADS / WARP;
-    const u32 p = p0 + blockIdx.x;
-    if (seg_start[p + 1] == seg_start[p]) {
-        if (tid == 0) rows_per_position[p] = 0;
+    const u32 p = blockIdx.x;
+    const u32 beta = bucket_at[p];
+    const u32 seg0 = seg_start[p];
+    if (seg_start[p + 1] == seg0) {
+        if (tid == 0) {
+            out_start[beta] = seg0;
+            out_len[beta] = 0;
+        }
         return;
     }
-    const u32 seg0 = seg_start[p] - seg_start[p0];
-    const u32 beta = bucket_at[p];
     const u32 partner_entry = base_entry ^ 1u;
     const u32 n_slots = 1u << table_bits;
     for (u32 i = tid; i < n_slots; i += JOIN_THREADS) slots[i] = 0;
@@ -182,5 +186,9 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
         if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, k, f, v);
     }
     __syncthreads();
-    if (tid == 0) rows_per_position[p] = s_out;
+    if (tid == 0) {
+        out_start[beta] = seg0;
+        out_len[beta] = s_out;
+        if (s_out != 0) atomicAdd(total, s_out);
+    }
 }

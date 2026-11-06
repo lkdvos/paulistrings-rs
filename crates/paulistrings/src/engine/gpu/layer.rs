@@ -36,14 +36,16 @@ use crate::truncation::builtin::APPROX_BINS;
 
 mod fast_paths;
 mod fused;
+mod join;
 mod options;
 mod rotation_run;
 mod run;
 
 use fast_paths::{permute_device, rescale_device};
 pub(super) use fused::{
-    arena_batches, fused_variant, launch_fused, launch_join, FusedOut, FusedReceived, FusedTable,
+    arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
 };
+use join::join_layer;
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 pub(crate) use rotation_run::apply_shared_bytes as rotation_run_shared_bytes;
@@ -595,6 +597,11 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     scratch.record.max_block_records = records_max;
     let join = table.join.filter(|_| scratch.options.join);
     scratch.record.joined = join.is_some();
+    if let Some(join) = join {
+        scratch.record.batches = 1;
+        join_layer(sum, scratch, &table, join, keep, longest, records)?;
+        return Ok(counts);
+    }
 
     let kernels: Arc<KernelSet> = sum.kernels.clone();
     let (func, record_capacity, smem) =
@@ -633,11 +640,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     out.buckets = 0;
     out.reserve(out.term_capacity(), b)?;
     grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
-    // The join writes no fallback counters, so it neither clears nor reads them.
-    let counts_fallbacks = join.is_none();
-    if counts_fallbacks {
-        stream.memset_zeros(&mut scratch.fallback)?;
-    }
+    stream.memset_zeros(&mut scratch.fallback)?;
     // A lone batch whose pre-dedup rows already fit the output compacts at offset 0 without its total, which is read once after the compaction.
     let deferred_total = batches.len() == 1
         && (scratch.segment_start_host[b] - scratch.segment_start_host[0]) as usize
@@ -665,37 +668,22 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             coefficient: &scratch.export.received_coefficient,
             fingerprint: &scratch.export.received_fingerprint,
         };
-        if let Some(join) = join {
-            launch_join(
-                sum,
-                &table,
-                join,
-                &fused,
-                &scratch.bucket_at,
-                keep,
-                longest,
-                (p0u, num_blocks),
-                &mut arena,
-                &mut scratch.rows_per_position,
-            )?;
-        } else {
-            let written = FusedOut {
-                arena: &mut arena,
-                rows_per_position: &mut scratch.rows_per_position,
-                fallback: &mut scratch.fallback,
-            };
-            launch_fused(
-                sum,
-                &table,
-                &fused,
-                &received,
-                &scratch.bucket_at,
-                keep,
-                (func, smem),
-                (p0u, num_blocks),
-                written,
-            )?;
-        }
+        let written = FusedOut {
+            arena: &mut arena,
+            rows_per_position: &mut scratch.rows_per_position,
+            fallback: &mut scratch.fallback,
+        };
+        launch_fused(
+            sum,
+            &table,
+            &fused,
+            &received,
+            &scratch.bucket_at,
+            keep,
+            (func, smem),
+            (p0u, num_blocks),
+            written,
+        )?;
         timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
         let n = p1 - p0;
         timed!(let t1 = scratch.event(sum)?);
@@ -751,20 +739,16 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         running += batch_out;
     }
     debug_assert_eq!(next_chunk, chunk_starts.len());
-    if deferred_total || counts_fallbacks {
-        let (totals, fallback) = (&scratch.totals, &scratch.fallback);
-        let (total, fallbacks) =
-            timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-                let total = if deferred_total { stream.clone_dtoh(totals)?[0] } else { 0 };
-                let fallbacks =
-                    if counts_fallbacks { stream.clone_dtoh(fallback)? } else { vec![0, 0] };
-                stream.synchronize()?;
-                Ok((total, fallbacks))
-            })?;
-        running += total;
-        scratch.record.high_word_fallbacks += fallbacks[0];
-        scratch.record.full_key_fallbacks += fallbacks[1];
-    }
+    let (totals, fallback) = (&scratch.totals, &scratch.fallback);
+    let (total, fallbacks) = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+        let total = if deferred_total { stream.clone_dtoh(totals)?[0] } else { 0 };
+        let fallbacks = stream.clone_dtoh(fallback)?;
+        stream.synchronize()?;
+        Ok((total, fallbacks))
+    })?;
+    running += total;
+    scratch.record.high_word_fallbacks += fallbacks[0];
+    scratch.record.full_key_fallbacks += fallbacks[1];
     out.len = running as usize;
     out.buckets = b;
     scratch.arena = Some(arena);

@@ -28,6 +28,12 @@ lanczos="${CARGO_TARGET_DIR:-target}/release/examples/lanczos_probe"
 "$lanczos" --model chain:16 --steps 6 --unpinned --threads 2 --json-out "$out/lanczos-p1.jsonl"
 "$lanczos" --model chain:16 --steps 6 --partitions 2 --rows xblocks --unpinned --threads 2 --json-out "$out/lanczos-p2.jsonl"
 python3 scripts/lanczos-report.py "$out/lanczos-p1.jsonl" "$out/lanczos-p2.jsonl"
+step "sampling_bench: both models on the host"
+cargo build --offline --release -p paulistrings --example sampling_bench
+sampling="${CARGO_TARGET_DIR:-target}/release/examples/sampling_bench"
+"$sampling" --model kicked-ising --steps 4 --threads 2 --approx-topn 2000 --json-out "$out/sampling.jsonl"
+"$sampling" --model tfim --lattice 4x4 --steps 2 --threads 2 --threshold 1e-4 --readout-every-step
+"$sampling" --model kicked-ising --lattice 3x7 --steps 3 --threads 2 --collapse --cache 64 --samples 64 --seed 1
 step "ab-compare: a one-pair runtime-knob A/B"
 scripts/ab-compare.sh smoke-tooling --a . --b . --probe "${cell[*]}" --probe-b "${cell[*]} --partitions 2" --pairs 1
 step "bench-campaign: one item of each kind"
@@ -50,6 +56,9 @@ if nvidia-smi -L >/dev/null 2>&1; then
     build_probe phase-timing,cuda
     "$probe" "${cell[@]}" --device 0 --json-out "$out/device.jsonl"
     "$probe" "${cell[@]}" --device 0 --gpu-partitions 2 --json-out "$out/device.jsonl"
+    step "sampling_bench: one device"
+    cargo build --offline --release -p paulistrings --example sampling_bench --features cuda
+    "$sampling" --backend gpu --steps 4 --approx-topn 2000 --json-out "$out/sampling.jsonl"
 else skip "device cells: no CUDA device"; fi
 if command -v mpirun >/dev/null && [ -n "${LIBCLANG_PATH:-}" ]; then
     step "probe under mpirun -n 2, a paired MPI A/B, and the mpi_ranks net"

@@ -1,5 +1,6 @@
 //! [`DevicePartition`], one partition of the layer loop held on a CUDA device.
 
+use super::collapse::collapse_sample_device;
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
@@ -157,6 +158,12 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
         }
     }
 
+    /// The sum and its scratch, for a test driving a device pass directly.
+    #[cfg(test)]
+    pub(crate) fn parts_mut(&mut self) -> (&mut GpuSum<W, C>, &mut LayerScratch<W, C>) {
+        self.healthy_parts().expect("DevicePartition: failed or detached")
+    }
+
     /// The sum and its scratch, unless the partition has failed.
     fn healthy_parts(&mut self) -> Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)> {
         match (self.sum.as_mut(), self.scratch.as_mut()) {
@@ -165,7 +172,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
         }
     }
 
-    /// `tree`'s layer pass over `collectives`; a group above one partition reports exact `TopN` `Unsupported`, every group `CollapseSample`, and a `PerPartition` runs as a group of one.
+    /// `tree`'s layer pass over `collectives`; a group above one partition reports exact `TopN` `Unsupported`, and a `PerPartition` runs as a group of one.
     fn layer_pass(&mut self, tree: &BuiltinTruncation, collectives: &dyn Collectives) {
         layer_pass_leaves(tree, &mut |leaf| {
             let result = match leaf {
@@ -179,8 +186,8 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
                     self.layer_pass(inner, &SoloTransport);
                     Ok(())
                 }
-                BuiltinTruncation::CollapseSample(_) => {
-                    Err(GpuError::Unsupported("CollapseSample on device"))
+                BuiltinTruncation::CollapseSample(policy) => {
+                    collapse_sample_device(self.healthy_parts(), policy, collectives)
                 }
                 _ => Err(GpuError::Unsupported("exact TopN on device")),
             };

@@ -800,8 +800,8 @@ fn parse_device_mode(
                 crate::gpu::TOPN_DEVICE_MSG
             )));
         }
-        // A collapse is a layer pass no device backend runs, at any partition count.
-        if policy.contains_collapse_sample() {
+        // The device collapse is tested on one process only, so a comm= device group refuses it.
+        if comm.is_some() && policy.contains_collapse_sample() {
             return Err(PyNotImplementedError::new_err(format!(
                 "{shown}: {COLLAPSE_SAMPLE_DEVICE_MSG}"
             )));

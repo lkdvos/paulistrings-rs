@@ -393,6 +393,26 @@ pub fn weighted_four_term_sum<const W: usize>(num_qubits: usize) -> PauliSum<W> 
     acc.finalize()
 }
 
+/// `X`-strings with `x[0] = 1, 2, 3, …` carrying `coefficients` in that (iteration) order; a zero coefficient is kept as a term.
+pub fn ordered_sum<const W: usize, C: crate::Coefficient>(coefficients: &[C]) -> PauliSum<W, C> {
+    let key = |i: usize| {
+        let mut p = PauliString::<W>::identity();
+        p.x[0] = i as u64 + 1;
+        p
+    };
+    let mut acc = BuildAccumulator::<W, C>::new(8);
+    for i in 0..coefficients.len() {
+        acc.add_term(key(i), C::ONE);
+    }
+    let mut sum = acc.finalize();
+    sum.update_per_bucket(|_| {
+        |x: &[u64; W], _: &[u64; W], _: C| Some(coefficients[x[0] as usize - 1])
+    });
+    let order: Vec<u64> = sum.iter().map(|(x, _, _)| x[0]).collect();
+    assert_eq!(order, (1..=coefficients.len() as u64).collect::<Vec<_>>(), "iteration order");
+    sum
+}
+
 /// Each term's multiplicity under the systematic draw [`crate::CollapseSample`] documents over `magnitudes` laid end to end, by a search per point: the reference its bucketed walk is held to.
 pub fn systematic_multiplicities(magnitudes: &[f64], u: f64, samples: usize) -> Vec<usize> {
     let ends: Vec<f64> = magnitudes

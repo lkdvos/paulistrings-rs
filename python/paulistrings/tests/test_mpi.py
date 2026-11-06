@@ -686,7 +686,7 @@ def test_collapse_sample_collapses_the_whole_group_and_every_rank_counts_it(obse
 
 @needs_cuda_everywhere
 def test_collapse_sample_under_a_device_group_is_not_implemented(observable, circuit):
-    """A collapse is a layer pass no device backend runs; the check is argument-only, so every rank raises alike before adopting the communicator."""
+    """A comm= device group refuses a collapse; the check is argument-only, so every rank raises alike before adopting the communicator."""
     with pytest.raises(NotImplementedError, match="collapse_sample"):
         observable.propagate(circuit, truncation.collapse_sample(10, 4, 0), comm=COMM, device="auto")
 

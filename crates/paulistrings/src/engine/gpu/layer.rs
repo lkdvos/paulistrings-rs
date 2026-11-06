@@ -14,6 +14,7 @@ use cudarc::driver::sys::CUevent_flags;
 use cudarc::driver::CudaEvent;
 use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
+use super::collapse::CollapseScratch;
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
 use super::export::{
@@ -126,6 +127,8 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     /// The longest source bucket at the current bucket count, once a pass of the layer has read it.
     longest: Option<u32>,
     pub(super) scan: ScanScratch,
+    /// `CollapseSample`'s buffers.
+    pub(super) collapse: CollapseScratch,
     /// Scan totals, two slots so a count's pair of scans can be read together.
     pub(super) totals: CudaSlice<u32>,
     length_totals: CudaSlice<u32>,
@@ -210,6 +213,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             bucket_at_key: None,
             longest: None,
             scan: ScanScratch::new(stream)?,
+            collapse: CollapseScratch::new(stream)?,
             totals: stream.alloc_zeros(2)?,
             length_totals: stream.alloc_zeros(2)?,
             export: DeviceExport::new(sum)?,

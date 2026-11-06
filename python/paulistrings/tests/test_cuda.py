@@ -310,6 +310,19 @@ def test_zero_layer_circuit_on_device(device):
     assert stats.partition.devices == devices
 
 
+@needs_cuda
+@pytest.mark.parametrize("device", [0, [0, 0]], ids=["one", "list"])
+def test_collapse_sample_on_device(device):
+    s, c = _observable(8, terms=64), _circuit(8)
+    roomy, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 4, 0), device=device)
+    _assert_terms_close(roomy, propagated(s, c))
+    assert stats.collapses == 0
+    policy = truncation.coeff(1e-3) & truncation.collapse_sample(48, 16, 1)
+    got, stats = propagated_with_stats(s, c, policy, device=device)
+    assert stats.collapses >= 1
+    assert len(got) <= 48
+
+
 # --------------------------------------------------------------------------
 # Errors
 

@@ -32,6 +32,7 @@ const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
 const PERMUTE: &str = include_str!("kernels/permute.cu");
 const TRUNCATE: &str = include_str!("kernels/truncate.cu");
+const COLLAPSE: &str = include_str!("kernels/collapse.cu");
 
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
 const KERNEL_SOURCES: &[&str] = &[
@@ -49,6 +50,7 @@ const KERNEL_SOURCES: &[&str] = &[
     RESCALE,
     PERMUTE,
     TRUNCATE,
+    COLLAPSE,
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; `-DLAYER_CAP` to the kernels.
@@ -162,6 +164,12 @@ pub(crate) struct KernelSet {
     pub(crate) radix_extract: CudaFunction,
     pub(crate) boundary_counts: CudaFunction,
     pub(crate) retain: CudaFunction,
+    pub(crate) collapse_total: CudaFunction,
+    pub(crate) collapse_weights: CudaFunction,
+    pub(crate) collapse_scan_block: CudaFunction,
+    pub(crate) collapse_scan_single: CudaFunction,
+    pub(crate) collapse_scan_add: CudaFunction,
+    pub(crate) collapse_pick: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
     pub(crate) join: CudaFunction,
@@ -339,6 +347,12 @@ pub(crate) fn kernel_set_with_options(
         radix_extract: load("k_radix_extract")?,
         boundary_counts: load("k_boundary_counts")?,
         retain: load("k_retain")?,
+        collapse_total: load("k_collapse_total")?,
+        collapse_weights: load("k_collapse_weights")?,
+        collapse_scan_block: load("k_collapse_scan_block")?,
+        collapse_scan_single: load("k_collapse_scan_single")?,
+        collapse_scan_add: load("k_collapse_scan_add")?,
+        collapse_pick: load("k_collapse_pick")?,
         layer,
         join: load("k_join")?,
         coefficient,

@@ -17,7 +17,7 @@ use crate::truncation::builtin::{local_boundary_quota, octave_edge, EdgeDecision
 const HISTOGRAM_BLOCKS: usize = 1024;
 
 /// The launch shape the histogram and radix-select passes share: warps spread over buckets, capped at `HISTOGRAM_BLOCKS`.
-fn whole_sum_launch(buckets: usize) -> LaunchConfig {
+pub(super) fn whole_sum_launch(buckets: usize) -> LaunchConfig {
     LaunchConfig {
         grid_dim: (buckets.div_ceil(8).clamp(1, HISTOGRAM_BLOCKS) as u32, 1, 1),
         block_dim: (256, 1, 1),

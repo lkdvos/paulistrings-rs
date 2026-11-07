@@ -38,6 +38,9 @@ Options:
                           alternates the order so a monotone drift cannot pose
                           as a consistent effect.
   --features <list>       Cargo features for the builds (default phase-timing).
+  --profile <name>        Cargo profile for the builds (default release); `screen`
+                          rebuilds faster for screening, but quote only release
+                          numbers. A rev that predates the profile fails to build.
   --bin-a <path>          Run this prebuilt probe as side A instead of building
   --bin-b <path>          --a/--b; the rev then only labels the side.
   --launch '<prefix>'     Run every probe under this launcher, e.g.
@@ -82,6 +85,7 @@ probe_b_given=0
 pairs=3
 order="abab"
 features="phase-timing"
+profile="release"
 keep_worktrees=0
 bin_a_given=""
 bin_b_given=""
@@ -89,7 +93,7 @@ launch=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --a | --b | --probe | --probe-b | --pairs | --order | --features | --bin-a | --bin-b | --launch)
+    --a | --b | --probe | --probe-b | --pairs | --order | --features | --profile | --bin-a | --bin-b | --launch)
       [[ $# -ge 2 ]] || die "$1 requires a value"
       case "$1" in
         --a) a_rev=$2 ;;
@@ -102,6 +106,7 @@ while [[ $# -gt 0 ]]; do
         --pairs) pairs=$2 ;;
         --order) order=$2 ;;
         --features) features=$2 ;;
+        --profile) profile=$2 ;;
         --bin-a) bin_a_given=$2 ;;
         --bin-b) bin_b_given=$2 ;;
         --launch) launch=$2 ;;
@@ -126,6 +131,7 @@ done
 [[ "$pairs" =~ ^[1-9][0-9]*$ ]] || die "--pairs must be a positive integer, got '${pairs}'"
 [[ "$order" == "abab" || "$order" == "abba" ]] || die "--order must be abab or abba, got '${order}'"
 [[ -n "$features" ]] || die "--features must not be empty (the probe requires phase-timing)"
+[[ -n "$profile" && "$profile" != "dev" ]] || die "--profile must name an optimised profile, got '${profile}'"
 for b in "$bin_a_given" "$bin_b_given"; do
   [[ -z "$b" || -x "$b" ]] || die "'$b' is not an executable"
 done
@@ -205,7 +211,7 @@ log "side B: rev '${b_rev}' -> ${b_sha} (dirty: ${b_dirty})${bin_b_given:+, preb
 log "probe args: ${probe_args_a[*]}"
 log "probe args B: ${probe_args_b[*]}"
 [[ -z "$launch" ]] || log "launcher: ${launch_args[*]} (per-rank rows merged: *_ns and vmhwm_kb max over ranks, the rest rank 0's)"
-log "pairs: ${pairs}   order: ${order}   features: ${features}"
+log "pairs: ${pairs}   order: ${order}   features: ${features}   profile: ${profile}"
 log "$(rustc -V)"
 log "threads (nproc): $(nproc)"
 log "governor: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"
@@ -230,9 +236,9 @@ build_side() {
 
   if [[ "$rev" == "." ]]; then
     log "build[${side}]: working tree (${sha}, dirty=${dirty}) in ${target_dir}"
-    (cargo build --offline --release --features "$features" -p paulistrings --example phase_breakdown) 2>&1 \
+    (cargo build --offline --profile "$profile" --features "$features" -p paulistrings --example phase_breakdown) 2>&1 \
       | tee -a "$log_file" || { log "error: build of side ${side} (working tree) failed"; exit 1; }
-    src="${target_dir}/release/examples/phase_breakdown"
+    src="${target_dir}/${profile}/examples/phase_breakdown"
   else
     wt="${wt_root}/${name}-${side}-$$"
     mkdir -p "$wt_root"
@@ -245,9 +251,9 @@ build_side() {
       log "  seeded Cargo.lock from the working tree (the rev predates the committed lock)"
     fi
     # cd rather than --manifest-path, so the checked-out rev's rust-toolchain.toml picks the compiler.
-    (cd "$wt" && cargo build --offline --release --features "$features" -p paulistrings --example phase_breakdown) 2>&1 \
+    (cd "$wt" && cargo build --offline --profile "$profile" --features "$features" -p paulistrings --example phase_breakdown) 2>&1 \
       | tee -a "$log_file" || { log "error: build of side ${side} (${rev} @ ${sha}) failed"; exit 1; }
-    src="${CARGO_TARGET_DIR:-$wt/target}/release/examples/phase_breakdown"
+    src="${CARGO_TARGET_DIR:-$wt/target}/${profile}/examples/phase_breakdown"
   fi
   [[ -x "$src" ]] || { log "error: expected binary '${src}' after building side ${side}"; exit 1; }
   cp "$src" "$dest"

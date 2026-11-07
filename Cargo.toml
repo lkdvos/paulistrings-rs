@@ -25,6 +25,12 @@ codegen-units = 1
 # Line tables let `perf` attribute samples through fat-LTO inlining, without changing codegen.
 debug = "line-tables-only"
 
+# Quick A/B screening only; quoted numbers come from `release` (CLAUDE.md, Performance discipline).
+[profile.screen]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+
 # Release codegen plus line tables, for perf (benchmarks/PROFILING.md).
 [profile.profiling]
 inherits = "release"

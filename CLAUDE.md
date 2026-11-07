@@ -119,6 +119,7 @@ Output bits are not a property of the library, so never design, constrain or rej
 
 - Every cargo feature is off by default.
 - Benchmark `--release` only, keep input generation outside the timed region, and report single- and multi-thread numbers separately.
+- `--profile screen` (thin LTO, 16 codegen units) rebuilds about 4× faster and is for screening only; quoted numbers and FINDINGS entries come from `--release`, since fat-LTO layout alone moves untouched code (FINDINGS §SIMD kernels and `target-cpu=x86-64-v3`).
 - Effects below the noise floor need `scripts/ab-compare.sh`, whose criterion is direction consistency across every pair, with the median Δ% as the effect size; a direction-consistent phase delta is not an effect if the total is flat.
 - Run campaigns with `RUST_LOG` unset; every benchmarking script sources `scripts/jcc-rustflags.sh`.
 - Record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number.

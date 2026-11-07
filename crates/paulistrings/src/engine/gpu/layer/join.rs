@@ -7,7 +7,6 @@ use crate::engine::gpu::module::thread_per;
 use crate::engine::gpu::scan::exclusive_scan;
 
 use super::LayerScratch;
-use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::module::JOIN_THREADS;
@@ -69,12 +68,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
 ) -> Result<(), GpuError> {
     let stream = sum.stream.clone();
     let b = sum.hash.num_buckets();
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, sum.device(), records as usize, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
+    let mut out = sum.take_spare(0, b)?;
     let need = records as usize;
     if need > out.term_capacity() {
         // A growing sum would otherwise reallocate at nearly every join; growing by half again keeps that logarithmic, up to twice the policy's ceiling on a layer's input.
@@ -139,9 +133,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     scratch.histogram_clean &= !histogram;
     scratch.histogram_fresh = histogram;
     timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
-    out.len = records as usize;
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, records as usize);
     scratch.extent = records as usize;
     sum.record_step(Growth::Join, Some(&scratch.join_totals))?;
     sum.debug_check();

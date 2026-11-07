@@ -3,7 +3,7 @@
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
 use super::*;
-use crate::engine::gpu::columns::{grow, DeviceColumns};
+use crate::engine::gpu::columns::grow;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::module::{layer_threads, thread_per, warp_per_bucket};
@@ -25,13 +25,7 @@ pub(super) fn rescale_device<const W: usize, C: Coefficient>(
     let ordinal = sum.device();
     let b = sum.hash.num_buckets();
     let extent = scratch.extent.max(sum.len());
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, extent, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(extent, b)?;
+    let mut out = sum.take_spare(extent, b)?;
     grow(&stream, &mut scratch.destination_offsets, b + 1, ordinal)?;
     let amplitude = &mut scratch.table.amplitude;
     timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
@@ -74,9 +68,7 @@ pub(super) fn rescale_device<const W: usize, C: Coefficient>(
         &mut scratch.totals,
     )?;
     timed!(scratch.lap(sum, t0, |stats| &mut stats.rescale_ns)?);
-    out.len = sum.len();
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, sum.len());
     sum.record_step(Growth::Shrink { cap: usize::MAX }, Some(&scratch.totals))?;
     scratch.record.rescaled = true;
     sum.debug_check();
@@ -103,13 +95,7 @@ pub(super) fn permute_device<const W: usize, C: Coefficient>(
     let n_in = sum.len();
     let (b32, e32) = (b as u32, table.entries as u32);
     grow(&stream, &mut scratch.counts, b * table.entries, ordinal)?;
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, n_in, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(n_in, b)?;
+    let mut out = sum.take_spare(n_in, b)?;
     let (buffers, entry_of) = (&mut scratch.table, &mut scratch.entry_of);
     timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
         stream
@@ -207,9 +193,7 @@ pub(super) fn permute_device<const W: usize, C: Coefficient>(
             .launch(block_per_bucket)?;
     }
     timed!(scratch.lap(sum, t2, |stats| &mut stats.merge_ns)?);
-    out.len = n_in;
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, n_in);
     sum.record_step(Growth::Regroup, Some(&scratch.totals))?;
     scratch.extent = sum.len();
     scratch.record.records = n_in as u64;

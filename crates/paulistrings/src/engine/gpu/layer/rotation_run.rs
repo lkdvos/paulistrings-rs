@@ -5,8 +5,7 @@
 
 use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg};
 
-use super::run::refine_to_target;
-use super::{timed_transfer, LayerScratch, Transfer};
+use super::{read_back, timed_transfer, LayerScratch, Transfer};
 use crate::channel::prepared::{LocalPtm, Prepared, LOCAL_DIM};
 use crate::coefficient::Coefficient;
 use crate::engine::gpu::columns::{grow, DeviceColumns};
@@ -210,7 +209,9 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
     target_bits: u8,
     scratch: &mut LayerScratch<W, C>,
 ) -> Result<bool, GpuError> {
-    refine_to_target(sum, scratch, target_bits)?;
+    if target_bits > sum.hash.bits() {
+        scratch.refine(sum, target_bits)?;
+    }
     let Some((info, amplitude)) = run_info(layers, sum) else { return Ok(false) };
     let stream = sum.stream.clone();
     let kernels = sum.kernels.clone();
@@ -296,12 +297,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
             .arg(&mut buffers.gathered_bucket)
             .launch(per_bucket)?;
     }
-    let totals = &scratch.totals;
-    let touched = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-        let total = stream.clone_dtoh(totals)?;
-        stream.synchronize()?;
-        Ok(total[0] as usize)
-    })?;
+    let touched = read_back(&stream, &mut scratch.stats, &scratch.totals)?[0] as usize;
     let blocks = touched.div_ceil(BLOCK_ROWS);
     grow(&stream, &mut buffers.block_lo, blocks + 1, ordinal)?;
     for list in &mut buffers.overflow {
@@ -323,13 +319,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
     }
     timed!(scratch.lap(sum, t0, |stats| &mut stats.gather_ns)?);
 
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, n_in, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(out.term_capacity(), b)?;
+    let mut out = sum.take_spare(0, b)?;
     if buffers.arena.term_capacity() < n_in {
         buffers.arena.len = 0;
         buffers.arena.reserve(n_in, 1)?;
@@ -442,10 +432,8 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
         }
     }
     timed!(scratch.lap(sum, t2, |stats| &mut stats.compact_ns)?);
-    out.len = total as usize;
-    out.buckets = b;
     scratch.rotation_run = Some(buffers);
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, total as usize);
     sum.record_exact(total as usize, Some(longest));
     scratch.extent = sum.len();
     scratch.record.records = n_in as u64;
@@ -551,11 +539,7 @@ fn apply_wide<const W: usize, C: Coefficient>(
                     })?;
             }
         }
-        counters = timed_transfer(stream, &mut scratch.stats, Transfer::D2h, || {
-            let counters = stream.clone_dtoh(&buffers.counters)?;
-            stream.synchronize()?;
-            Ok(counters)
-        })?;
+        counters = read_back(stream, &mut scratch.stats, &buffers.counters)?;
         listed = next;
     }
 }

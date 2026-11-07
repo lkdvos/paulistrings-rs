@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 
-use super::columns::{grow, DeviceColumns};
+use super::columns::grow;
 use super::error::GpuError;
 use super::finalize::whole_sum_launch;
 use super::layer::LayerScratch;
@@ -141,13 +141,7 @@ fn pick<const W: usize, C: Coefficient>(
     let kernels = sum.kernels.clone();
     let buckets = sum.hash.num_buckets();
     let extent = scratch.extent.max(sum.len());
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, sum.device(), extent, buckets)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(extent, buckets)?;
+    let mut out = sum.take_spare(extent, buckets)?;
     let collapse = &mut scratch.collapse;
     stream.memset_zeros(&mut collapse.kept)?;
     let (buckets_u32, samples_u32) = (buckets as u32, samples as u32);
@@ -184,9 +178,7 @@ fn pick<const W: usize, C: Coefficient>(
         assert_drawable(total[0], len);
         unreachable!("assert_drawable panics on a total that is not positive and finite");
     }
-    out.len = kept[0] as usize;
-    out.buckets = buckets;
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, kept[0] as usize);
     sum.record_exact(kept[0] as usize, None);
     sum.debug_check();
     Ok(())

@@ -3,9 +3,9 @@
 use crate::coefficient::Coefficient;
 use cudarc::driver::{LaunchConfig, PushKernelArg};
 
-use super::columns::{grow, DeviceColumns};
+use super::columns::grow;
 use super::error::GpuError;
-use super::layer::LayerScratch;
+use super::layer::{read_back, LayerScratch};
 use super::length::Growth;
 use super::module::warp_per_bucket;
 use super::scan::exclusive_scan;
@@ -60,8 +60,7 @@ fn octave_histogram_device<const W: usize, C: Coefficient>(
     scratch: &mut LayerScratch<W, C>,
 ) -> Result<Vec<u64>, GpuError> {
     enqueue_octave_histogram(sum, scratch)?;
-    let packed = sum.stream.clone_dtoh(&scratch.histogram)?;
-    sum.stream.synchronize()?;
+    let packed = read_back(&sum.stream, &mut scratch.stats, &scratch.histogram)?;
     debug_assert!(packed[0] as usize <= sum.len(), "histogram term count");
     Ok(packed)
 }
@@ -111,9 +110,7 @@ fn cut_device<const W: usize, C: Coefficient>(
     let kept = if histogram[APPROX_BINS] == 0 {
         histogram[2 + bin..].iter().sum::<u64>() as usize + local_quota.min(at)
     } else {
-        let counters = sum.stream.clone_dtoh(&scratch.cut_counters)?;
-        sum.stream.synchronize()?;
-        counters[0] as usize
+        read_back(&sum.stream, &mut scratch.stats, &scratch.cut_counters)?[0] as usize
     };
     sum.record_exact(kept, sum.longest_bound());
     sum.debug_check();
@@ -273,8 +270,7 @@ fn radix_select_bits<const W: usize, C: Coefficient>(
                 .arg(&mut scratch.radix_histogram)
                 .launch(whole_sum_launch(buckets as usize))?;
         }
-        let histogram = stream.clone_dtoh(&scratch.radix_histogram)?;
-        stream.synchronize()?;
+        let histogram = read_back(&stream, &mut scratch.stats, &scratch.radix_histogram)?;
         let mut cumulative = 0u64;
         let mut chosen: Option<u32> = None;
         for digit in (0..256u32).rev() {
@@ -309,8 +305,7 @@ fn radix_select_bits<const W: usize, C: Coefficient>(
                     .arg(&mut scratch.radix_out)
                     .launch(whole_sum_launch(buckets as usize))?;
             }
-            let out = stream.clone_dtoh(&scratch.radix_out.slice(0..1))?;
-            stream.synchronize()?;
+            let out = read_back(&stream, &mut scratch.stats, &scratch.radix_out)?;
             return Ok((out[0], remaining));
         }
     }
@@ -331,13 +326,7 @@ fn retain_device<const W: usize, C: Coefficient>(
     let ordinal = sum.device();
     let buckets = sum.hash.num_buckets();
     let extent = scratch.extent.max(sum.len());
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, extent, buckets)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(extent, buckets)?;
+    let mut out = sum.take_spare(extent, buckets)?;
     grow(&stream, &mut scratch.counts, buckets, ordinal)?;
     grow(&stream, &mut scratch.destination_offsets, buckets + 1, ordinal)?;
     let buckets_u32 = buckets as u32;
@@ -398,11 +387,8 @@ fn retain_device<const W: usize, C: Coefficient>(
         &mut scratch.totals,
     )?;
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
-    let totals = stream.clone_dtoh(&scratch.totals)?;
-    stream.synchronize()?;
-    out.len = totals[0] as usize;
-    out.buckets = buckets;
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    let totals = read_back(&stream, &mut scratch.stats, &scratch.totals)?;
+    sum.swap_in(out, totals[0] as usize);
     sum.record_exact(totals[0] as usize, Some(totals[1]));
     sum.debug_check();
     Ok(())

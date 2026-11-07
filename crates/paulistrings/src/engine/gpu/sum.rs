@@ -289,6 +289,34 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         self.columns.len = len;
     }
 
+    /// The spare columns emptied, with room for `terms` terms and `buckets` buckets; fresh columns hold at least the sum's length.
+    pub(super) fn take_spare(
+        &mut self,
+        terms: usize,
+        buckets: usize,
+    ) -> Result<DeviceColumns<W, C>, GpuError> {
+        let mut out = match self.spare.take() {
+            Some(spare) => spare,
+            None => DeviceColumns::with_capacity(
+                &self.stream,
+                self.device(),
+                terms.max(self.columns.len),
+                buckets,
+            )?,
+        };
+        out.len = 0;
+        out.buckets = 0;
+        out.reserve(terms, buckets)?;
+        Ok(out)
+    }
+
+    /// `out`, holding `len` terms over the current buckets, becomes the columns, and the previous columns the spare.
+    pub(super) fn swap_in(&mut self, mut out: DeviceColumns<W, C>, len: usize) {
+        out.len = len;
+        out.buckets = self.hash.num_buckets();
+        self.spare = Some(std::mem::replace(&mut self.columns, out));
+    }
+
     /// Make [`Self::len`] and the longest bucket exact: consume every read-back and, if a step published none, scan the bucket lengths behind one synchronization.
     pub(crate) fn settle_lengths(&mut self) -> Result<(), GpuError> {
         self.length.consume(0)?;
@@ -366,13 +394,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         let b_old = self.hash.num_buckets();
         let b_new = b_old << delta;
         let n = self.columns.len;
-        let mut out = match self.spare.take() {
-            Some(spare) => spare,
-            None => DeviceColumns::with_capacity(&self.stream, self.device(), n, b_new)?,
-        };
-        out.len = 0;
-        out.buckets = 0;
-        out.reserve(n, b_new)?;
+        let mut out = self.take_spare(n, b_new)?;
         let (b_old32, bits32, delta32) = (b_old as u32, u32::from(bits_old), u32::from(delta));
         let (kernels, stream, columns) = (&self.kernels, &self.stream, &self.columns);
         // SAFETY: arguments match `k_refine_count` in refine.cu; `out.lengths` holds `b_new` entries.
@@ -421,12 +443,10 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
                 .arg(&mut out.fingerprint)
                 .launch(warp_per_bucket(b_old))?;
         }
-        out.len = n;
-        out.buckets = b_new;
-        self.spare = Some(std::mem::replace(&mut self.columns, out));
         for _ in 0..delta {
             self.hash.refine();
         }
+        self.swap_in(out, n);
         self.length.step(Growth::Shrink { cap: usize::MAX }, Some((&self.stream, &self.scan.1)))?;
         self.columns.len = self.length.bound().len;
         self.debug_check();

@@ -13,12 +13,12 @@ use super::{apply_layer_device, timed_transfer, DeviceLayer, LayerScratch, Trans
 use crate::channel::prepared::{LocalPtm, Prepared, LOCAL_DIM};
 use crate::coefficient::Coefficient;
 use crate::engine::bucketed::PermutationStep;
-use crate::engine::gpu::columns::{grow, DeviceColumns};
+use crate::engine::gpu::columns::grow;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::fingerprint::FingerprintRows;
 use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::scan::exclusive_scan;
-use crate::engine::gpu::sum::{GpuSum, REFINE_MAX_DELTA};
+use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 use crate::engine::plan::PartitionPlan;
 use crate::engine::timing::timed;
@@ -85,22 +85,6 @@ fn step_tables<const W: usize, C: Coefficient>(
     (info, fingerprint, amplitude)
 }
 
-/// Refine the device up to the driver's `target_bits`, which a run, unlike a layer, never raises.
-pub(super) fn refine_to_target<const W: usize, C: Coefficient>(
-    sum: &mut GpuSum<W, C>,
-    scratch: &mut LayerScratch<W, C>,
-    target_bits: u8,
-) -> Result<(), GpuError> {
-    let before = sum.hash.bits();
-    if target_bits > before {
-        sum.refine_to(target_bits)?;
-        scratch.extent = sum.len();
-        scratch.refine_passes +=
-            u32::from(target_bits - before).div_ceil(u32::from(REFINE_MAX_DELTA));
-    }
-    Ok(())
-}
-
 /// Apply the permutation run `steps` to `sum` in one walk, into the spare columns as a tight CSR in bucket order.
 pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
@@ -109,7 +93,10 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     target_bits: u8,
     scratch: &mut LayerScratch<W, C>,
 ) -> Result<(), GpuError> {
-    refine_to_target(sum, scratch, target_bits)?;
+    // A run, unlike a layer, never raises the driver's `target_bits`.
+    if target_bits > sum.hash.bits() {
+        scratch.refine(sum, target_bits)?;
+    }
     let stream = sum.stream.clone();
     let kernels = sum.kernels.clone();
     let ordinal = sum.device();
@@ -125,13 +112,7 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     grow(&stream, &mut buffers.fingerprint, fingerprint.len(), ordinal)?;
     grow(&stream, &mut buffers.amplitude, amplitude.len(), ordinal)?;
     grow(&stream, &mut buffers.cursor, b, ordinal)?;
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, n_in, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(n_in, b)?;
+    let mut out = sum.take_spare(n_in, b)?;
     timed_transfer(&stream, &mut scratch.stats, Transfer::H2d, || {
         stream.memcpy_htod(&info, &mut buffers.info.slice_mut(0..info.len()))?;
         stream
@@ -200,9 +181,7 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     }
     timed!(scratch.lap(sum, t1, |stats| &mut stats.merge_ns)?);
     scratch.run = Some(buffers);
-    out.len = n_in;
-    out.buckets = b;
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, n_in);
     sum.record_step(Growth::Regroup, Some(&scratch.totals))?;
     scratch.extent = sum.len();
     scratch.record.records = n_in as u64;

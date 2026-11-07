@@ -12,7 +12,7 @@ use std::sync::Arc;
 use cudarc::driver::sys::CUevent_flags;
 #[cfg(feature = "phase-timing")]
 use cudarc::driver::CudaEvent;
-use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
+use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DeviceRepr, PushKernelArg};
 
 use super::collapse::CollapseScratch;
 use super::columns::{grow, DeviceColumns};
@@ -276,6 +276,19 @@ pub(super) fn timed_transfer<T>(
     }
 }
 
+/// `source` read back behind one synchronization, timed as a device-to-host copy.
+pub(super) fn read_back<T: DeviceRepr, S: DevicePtr<T>>(
+    stream: &Arc<CudaStream>,
+    stats: &mut DeviceStats,
+    source: &S,
+) -> Result<Vec<T>, GpuError> {
+    timed_transfer(stream, stats, Transfer::D2h, || {
+        let read = stream.clone_dtoh(source)?;
+        stream.synchronize()?;
+        Ok(read)
+    })
+}
+
 impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
     pub(crate) fn new(sum: &GpuSum<W, C>, options: GpuLayerOptions) -> Result<Self, GpuError> {
         let stream = &sum.stream;
@@ -407,6 +420,18 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
         Ok(())
     }
 
+    /// Refine `sum` to `bits`, counting the passes into the layer's record.
+    pub(super) fn refine(&mut self, sum: &mut GpuSum<W, C>, bits: u8) -> Result<(), GpuError> {
+        timed!(let t = self.event(sum)?);
+        let before = sum.hash.bits();
+        sum.refine_to(bits)?;
+        timed!(self.lap(sum, t, |stats| &mut stats.rebucket_ns)?);
+        self.extent = sum.len();
+        self.longest = None;
+        self.refine_passes += u32::from(bits - before).div_ceil(u32::from(REFINE_MAX_DELTA));
+        Ok(())
+    }
+
     /// `k_count` over the local buckets.
     pub(super) fn count_local(
         &mut self,
@@ -455,12 +480,7 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             return Ok(l);
         }
         self.scan_lens(sum)?;
-        let (stream, length_totals) = (&sum.stream, &self.length_totals);
-        let l = timed_transfer(stream, &mut self.stats, Transfer::D2h, || {
-            let v = stream.clone_dtoh(length_totals)?;
-            stream.synchronize()?;
-            Ok(v[1])
-        })?;
+        let l = read_back(&sum.stream, &mut self.stats, &self.length_totals)?[1];
         self.longest = Some(l);
         Ok(l)
     }
@@ -580,23 +600,10 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     scratch.export.received_max_segment = 0;
     scratch.longest = None;
     debug_assert!(scratch.export.pending.is_none());
-    let refine = |sum: &mut GpuSum<W, C>,
-                  scratch: &mut LayerScratch<W, C>,
-                  bits: u8|
-     -> Result<(), GpuError> {
-        timed!(let t = scratch.event(sum)?);
-        let before = sum.hash.bits();
-        sum.refine_to(bits)?;
-        timed!(scratch.lap(sum, t, |stats| &mut stats.rebucket_ns)?);
-        scratch.extent = sum.len();
-        scratch.longest = None;
-        scratch.refine_passes += u32::from(bits - before).div_ceil(u32::from(REFINE_MAX_DELTA));
-        Ok(())
-    };
     if table.key_preserving {
         debug_assert!(!has_remote);
         if target_bits > sum.hash.bits() {
-            refine(sum, scratch, target_bits)?;
+            scratch.refine(sum, target_bits)?;
         }
         rescale_device(sum, &table, keep, scratch)?;
         return Ok(LayerExchangeCounts::none(size));
@@ -604,7 +611,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     if table.permutation && scratch.options.clifford {
         debug_assert!(!has_remote);
         if target_bits > sum.hash.bits() {
-            refine(sum, scratch, target_bits)?;
+            scratch.refine(sum, target_bits)?;
             table.rehash(&sum.hash);
         }
         permute_device(sum, &table, keep, scratch)?;
@@ -643,7 +650,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         target_bits
     };
     if want > sum.hash.bits() {
-        if let Err(e) = refine(sum, scratch, want) {
+        if let Err(e) = scratch.refine(sum, want) {
             pair(scratch, sum.hash.bits());
             return Err(e);
         }
@@ -673,7 +680,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
                     "a source bucket exceeds the join's row index at the bucket-bit limit",
                 ));
             }
-            refine(sum, scratch, sum.hash.bits() + 1)?;
+            scratch.refine(sum, sum.hash.bits() + 1)?;
             table.rehash(&sum.hash);
         };
         // `k_join_rows` totals exactly twice the input, so twice its bound bounds the output.
@@ -711,7 +718,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
                 "a fused-layer block exceeds the record cap at the bucket-bit limit",
             ));
         }
-        refine(sum, scratch, sum.hash.bits() + 1)?;
+        scratch.refine(sum, sum.hash.bits() + 1)?;
         table.rehash(&sum.hash);
     };
     let b = sum.hash.num_buckets();
@@ -747,13 +754,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     arena.len = 0;
     arena.buckets = 0;
     arena.reserve(max_batch_rows, 1)?;
-    let mut out = match sum.spare.take() {
-        Some(spare) => spare,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, n_in, b)?,
-    };
-    out.len = 0;
-    out.buckets = 0;
-    out.reserve(out.term_capacity(), b)?;
+    let mut out = sum.take_spare(0, b)?;
     grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
     stream.memset_zeros(&mut scratch.fallback)?;
     // A lone batch whose pre-dedup rows already fit the output compacts at offset 0 without its total, which is read once after the compaction.
@@ -814,12 +815,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         let batch_out = if deferred_total {
             0
         } else {
-            let totals = &scratch.totals;
-            let batch_out = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-                let v = stream.clone_dtoh(totals)?;
-                stream.synchronize()?;
-                Ok(v[0])
-            })?;
+            let batch_out = read_back(&stream, &mut scratch.stats, &scratch.totals)?[0];
             out.len = running as usize;
             let need = (running + batch_out) as usize;
             if need > out.term_capacity() {
@@ -864,10 +860,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     running += total;
     scratch.record.high_word_fallbacks += fallbacks[0];
     scratch.record.full_key_fallbacks += fallbacks[1];
-    out.len = running as usize;
-    out.buckets = b;
     scratch.arena = Some(arena);
-    sum.spare = Some(std::mem::replace(&mut sum.columns, out));
+    sum.swap_in(out, running as usize);
     sum.record_exact(running as usize, None);
     scratch.extent = sum.len();
     sum.debug_check();

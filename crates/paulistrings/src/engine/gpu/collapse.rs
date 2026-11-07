@@ -124,7 +124,7 @@ fn enqueue_offsets<const W: usize, C: Coefficient>(
 }
 
 /// Enqueue the picks of the `samples` points at offset `u` against `frame` into the spare columns, then read back `(total, kept)` behind one synchronization and swap the picks in, keeping each bucket's start offset.
-/// The swap waits for the read, so a sum whose `Σ|c|` is not drawable panics untouched, as the host's collapse does.
+/// The swap waits for the read, so a sum whose `Σ|c|` is not drawable panics untouched, as the host's collapse does; more than `u32::MAX` points is [`GpuError::Unsupported`], the sum untouched.
 fn pick<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     scratch: &mut LayerScratch<W, C>,
@@ -132,6 +132,8 @@ fn pick<const W: usize, C: Coefficient>(
     samples: usize,
     len: usize,
 ) -> Result<(), GpuError> {
+    let samples = u32::try_from(samples)
+        .map_err(|_| GpuError::Unsupported("a collapse of more than u32::MAX draws"))?;
     let stream = sum.stream.clone();
     let kernels = sum.kernels.clone();
     let buckets = sum.hash.num_buckets();
@@ -139,7 +141,7 @@ fn pick<const W: usize, C: Coefficient>(
     let mut out = sum.take_spare(extent, buckets)?;
     let collapse = &mut scratch.collapse;
     stream.memset_zeros(&mut collapse.kept)?;
-    let (buckets_u32, samples_u32) = (buckets as u32, samples as u32);
+    let buckets_u32 = buckets as u32;
     // SAFETY: arguments match `k_collapse_pick` in collapse.cu; `out` has room for the input's extent, a bucket's picks never outnumber its terms, and `offsets` holds `buckets + 1` entries.
     unsafe {
         stream
@@ -155,7 +157,7 @@ fn pick<const W: usize, C: Coefficient>(
             .arg(&collapse.total)
             .arg(&collapse.frame)
             .arg(&u)
-            .arg(&samples_u32)
+            .arg(&samples)
             .arg(&mut out.x)
             .arg(&mut out.z)
             .arg(&mut out.coeff)

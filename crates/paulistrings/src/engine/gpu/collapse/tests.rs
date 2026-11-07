@@ -143,6 +143,18 @@ fn check_after_layers<const W: usize>() {
     assert_systematic_resample(&got, &terms, 0.6, 300, 1e-12, &format!("W={W} after layers"));
 }
 
+/// The device counts draws in 32 bits, so more than `u32::MAX` is `Unsupported` and leaves the sum as it was.
+#[test]
+fn more_draws_than_u32_is_unsupported_on_the_device() {
+    crate::require_cuda!();
+    let input = rand_sum::<1>(200, 8, 0xD4A);
+    let mut part = partition(&input);
+    let (sum, scratch) = part.parts_mut();
+    let too_many = u32::MAX as usize + 1;
+    assert!(matches!(resample_device(sum, scratch, 0.5, too_many), Err(GpuError::Unsupported(_))));
+    assert_terms_close(&sum.to_host().expect("download"), &input, 1e-300, "untouched");
+}
+
 #[test]
 fn a_collapse_after_device_layers_draws_in_storage_order() {
     crate::require_cuda!();

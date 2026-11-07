@@ -64,12 +64,26 @@ fn emit(tree: &BuiltinTruncation, out: &mut Vec<(u32, u64)>) {
     }
 }
 
+/// Whether every `CollapseSample` in `tree` draws at most `u32::MAX` points, the device's draw count.
+fn draws_fit(tree: &BuiltinTruncation) -> bool {
+    use BuiltinTruncation as T;
+    match tree {
+        T::CollapseSample(policy) => u32::try_from(policy.samples).is_ok(),
+        T::PerPartition(inner) => draws_fit(inner),
+        T::And(a, b) | T::Or(a, b) => draws_fit(a) && draws_fit(b),
+        T::Keep | T::TopN(_) | T::ApproxTopN(_) | T::Coefficient(_) | T::Weight(_) => true,
+    }
+}
+
 impl KeepProgram {
     /// The program that keeps every nonzero term.
     pub(crate) const KEEP: Self = Self { len: 1, op: [OP_KEEP; KEEP_NODES], arg: [0; KEEP_NODES] };
 
-    /// Lower the per-term half of `tree`; [`GpuError::Unsupported`] past [`KEEP_NODES`] nodes.
+    /// Lower the per-term half of `tree`; [`GpuError::Unsupported`] past [`KEEP_NODES`] nodes or for a `CollapseSample` of more than `u32::MAX` draws.
     pub(crate) fn lower(tree: &BuiltinTruncation) -> Result<Self, GpuError> {
+        if !draws_fit(tree) {
+            return Err(GpuError::Unsupported("a collapse of more than u32::MAX draws"));
+        }
         let mut nodes = Vec::new();
         emit(&per_term(tree), &mut nodes);
         if nodes.len() > KEEP_NODES {

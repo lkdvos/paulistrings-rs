@@ -263,7 +263,7 @@ def test_coeff_factory_is_a_truncation_object():
 
 
 def _splitting_circuit(layers):
-    """``rx`` rotations on qubit 0: from ``Z`` or ``Y`` every layer makes two terms, so ``collapse_sample(1, 1, ...)`` collapses on every layer."""
+    """``rx`` rotations on qubit 0: from ``Z`` or ``Y`` every layer makes two terms, so ``collapse_sample(1, 1, ...)`` collapses after every one-layer call; within a longer call a run of layers checks the cache once."""
     c = Circuit(1)
     for _ in range(layers):
         c.rx(0.7, 0)
@@ -291,10 +291,12 @@ def test_collapse_sample_above_the_final_size_is_a_no_op():
 
 def test_collapse_sample_collapses_on_every_oversized_layer():
     """One draw per layer keeps one string worth the layer's ``sum |c|``, which every ``rx(0.7)`` layer multiplies by ``cos 0.7 + sin 0.7``."""
-    s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
-    out, stats = propagated_with_stats(s, _splitting_circuit(6), truncation.collapse_sample(1, 1, 3))
-    assert stats.collapses == 6
-    assert stats.terms_out == [1] * 6
+    out = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
+    policy = truncation.collapse_sample(1, 1, 3)
+    for _ in range(6):
+        stats = out.propagate_with_stats(_splitting_circuit(1), policy)
+        assert stats.collapses == 1
+        assert stats.terms_out == [1]
     (coeff,) = out.coefficients()
     assert abs(coeff) == pytest.approx((math.cos(0.7) + math.sin(0.7)) ** 6, rel=1e-12)
 
@@ -319,18 +321,21 @@ def test_collapse_sample_is_reproducible_per_seed():
 
 
 def test_collapse_sample_counts_per_call_and_continues_its_sequence():
-    """One object is one trajectory: a second call continues the draws, and `collapses` counts that call only."""
+    """One object is one trajectory: a second call continues the draws rather than restarting them, and `collapses` counts that call only."""
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
-    circuit = _splitting_circuit(4)
-    policy = truncation.collapse_sample(1, 1, 11)
-    first = s.copy().propagate_with_stats(circuit, policy)
-    second = s.copy().propagate_with_stats(circuit, policy)
-    assert first.collapses == second.collapses == 4
-    # Two four-layer calls on one object draw what one eight-layer call draws.
-    policy = truncation.collapse_sample(1, 1, 11)
-    chained = propagated(s, circuit, policy)
-    chained.propagate(circuit, policy)
-    _assert_close(chained, propagated(s, _splitting_circuit(8), truncation.collapse_sample(1, 1, 11)))
+    layer = _splitting_circuit(1)
+
+    def eight_calls(fresh_policy_per_call):
+        out, policy = s.copy(), truncation.collapse_sample(1, 1, 11)
+        for _ in range(8):
+            if fresh_policy_per_call:
+                policy = truncation.collapse_sample(1, 1, 11)
+            assert out.propagate_with_stats(layer, policy).collapses == 1
+        return out
+
+    continued = eight_calls(False)
+    _assert_close(eight_calls(False), continued)
+    assert _as_dict(eight_calls(True)) != _as_dict(continued), "a restarted sequence redraws its first offset"
 
 
 def test_collapse_sample_draws_by_magnitude_without_bias():
@@ -359,8 +364,8 @@ def test_collapse_sample_composes_and_reports_none_without_a_sampler():
     s = PauliSum.from_strings({"Z": 1.0}, num_qubits=1)
     policy = truncation.collapse_sample(1, 1, 0) & truncation.coeff(1e-12)
     assert "CollapseSample" in repr(policy)
-    stats = s.copy().propagate_with_stats(_splitting_circuit(3), policy)
-    assert stats.collapses == 3
+    stats = s.copy().propagate_with_stats(_splitting_circuit(1), policy)
+    assert stats.collapses == 1
     stats = s.copy().propagate_with_stats(_splitting_circuit(3), truncation.coeff(1e-12))
     assert stats.collapses is None
     stats = s.copy().propagate_with_stats(_splitting_circuit(3))

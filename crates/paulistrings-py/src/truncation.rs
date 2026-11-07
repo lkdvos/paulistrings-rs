@@ -54,6 +54,7 @@ fn partition_approx_topn(n: usize) -> PyTruncation {
 /// Every term is drawn ``floor(samples * |c| / norm)`` or ``ceil(...)`` times, so the collapsed sum holds at most ``samples`` terms and its expectation is the sum before it; a collapse resamples even when ``samples`` is at least the length.
 /// The final sum is therefore an unbiased estimate of the exact one, and so is any readout linear in it, such as ``expectation_product``: average such readouts over seeds.
 /// One ``seed`` is one Monte Carlo trajectory: the draw at the ``k``-th layer pass is a pure function of ``(seed, k)``, independent of the thread count, so ``collapse_sample(cache, samples, seed)`` repeats a trajectory exactly.
+/// Within one call a run of local layers whose worst-case growth stays within ``8 * cache`` may check the cache once, at its end, so a seed names a trajectory of that schedule.
 /// The returned object *is* that trajectory: propagating with it again, or with a policy composed from it via ``&``/``|``, continues its random sequence rather than restarting it. Call the factory again to start over.
 /// Runs under ``partitions=``, ``comm=`` and ``device=`` too, ``comm=`` with ``device=`` included, where the partitions draw ``samples`` points between them over their terms in rank order; at one partition the trajectory is the unpartitioned one, across partition counts only its distribution agrees. ``PropagationStats.collapses`` counts the collapses of one call.
 /// Raises ``ValueError`` if ``samples`` is zero.

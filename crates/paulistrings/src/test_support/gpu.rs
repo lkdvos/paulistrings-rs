@@ -4,10 +4,11 @@ use num_complex::Complex64;
 
 use crate::coefficient::Coefficient;
 use crate::engine::gpu::partition::DevicePartition;
-use crate::engine::gpu::{GpuError, GpuPartitionedSum, GpuSum};
+use crate::engine::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuSum};
 use crate::engine::partitioned::{DistributedSum, PartitionedSum};
 use crate::engine::transport::Transport;
 use crate::pauli_sum::PauliSum;
+use crate::{BuiltinTruncation, Circuit, Direction, PartitionTrace};
 
 pub use crate::engine::gpu::{FaultPlan, WireFault};
 
@@ -69,4 +70,24 @@ pub fn from_host_with_nvrtc_options<const W: usize, C: Coefficient>(
     extra_options: &[String],
 ) -> Result<GpuPartitionedSum<W, C>, GpuError> {
     GpuPartitionedSum::one_device(sum, device, extra_options)
+}
+
+/// `circuit` on `sum` narrowed to `C` on device 0 under `policy` and `options`, widened back to `Complex64`, with the run's trace when `trace` asks for it.
+pub fn device_run_as<const W: usize, C: Coefficient>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy: &BuiltinTruncation,
+    direction: Direction,
+    options: GpuLayerOptions,
+    trace: bool,
+) -> (PauliSum<W>, Option<PartitionTrace>) {
+    let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
+    let mut device = GpuPartitionedSum::<W, C>::from_host(&narrowed, 0).expect("upload");
+    device.set_layer_options(options);
+    if trace {
+        device.enable_trace();
+    }
+    device.propagate(circuit, policy.clone(), direction).expect("device propagate");
+    let got = device.gather().expect("download").cast::<Complex64>(0.0).expect("widening");
+    (got, device.take_trace())
 }

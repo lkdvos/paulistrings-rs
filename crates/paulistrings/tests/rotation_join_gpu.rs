@@ -2,10 +2,10 @@
 //! Every case returns early without a device.
 
 use num_complex::Complex64;
-use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum};
+use paulistrings::gpu::GpuLayerOptions;
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_runs_agree, coefficient_tolerance, propagate_discarding, rand_sum_real,
+    assert_runs_agree, coefficient_tolerance, device_run_as, propagate_discarding, rand_sum_real,
     with_rotation_partners, zz_rotation, KeepAll,
 };
 use paulistrings::{
@@ -22,13 +22,10 @@ fn device<const W: usize, C: Coefficient>(
 ) -> (PauliSum<W>, bool) {
     let mut circuit = Circuit::<W>::new(sum.num_qubits());
     circuit.push(rotation.clone());
-    let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
-    let mut dev = GpuPartitionedSum::<W, C>::from_host(&narrowed, 0).expect("upload");
-    dev.set_layer_options(GpuLayerOptions { join, ..GpuLayerOptions::default() });
-    dev.enable_trace();
-    dev.propagate(&circuit, policy.clone(), Direction::Heisenberg).expect("device propagate");
-    let got = dev.gather().expect("download").cast::<Complex64>(0.0).expect("widening");
-    let layer = dev.take_trace().expect("tracing").layers.pop().expect("one layer");
+    let options = GpuLayerOptions { join, ..GpuLayerOptions::default() };
+    let (got, trace) =
+        device_run_as::<W, C>(&circuit, sum, policy, Direction::Heisenberg, options, true);
+    let layer = trace.expect("tracing").layers.pop().expect("one layer");
     (got, layer.device[0].expect("a device partition").joined)
 }
 

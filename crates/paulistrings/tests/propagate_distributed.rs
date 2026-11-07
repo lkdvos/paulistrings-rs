@@ -556,7 +556,9 @@ fn collapse_sample_trajectories_over_ranks() {
 /// Over `InProcessTransport` ranks one collapse draws exactly `samples` points across the group: every term holds `⌊samples·|c|/Σ|c|⌋` or `⌈…⌉` of them, each worth `Σ|c|/samples`.
 #[test]
 fn collapse_sample_distributed_draws_every_point_once() {
-    use paulistrings::test_support::{four_term_keys, weighted_four_term_sum};
+    use paulistrings::test_support::{
+        assert_draws_tile_l1, four_term_keys, weighted_four_term_sum,
+    };
     use paulistrings::PartitionRuntime;
     let keys = four_term_keys::<1>();
     let input = weighted_four_term_sum::<1>(8);
@@ -587,16 +589,12 @@ fn collapse_sample_distributed_draws_every_point_once() {
                 split.gather()
             });
             let got = gathered.into_iter().next().unwrap().unwrap();
-            let mut drawn = 0usize;
+            assert_draws_tile_l1(&got, l1, samples, &format!("seed {seed}"));
             for (x, z, c) in input.iter() {
-                let found = got.get(x, z).map_or(0.0, |found| found.norm());
-                let points = found / step;
+                let points = got.get(x, z).map_or(0.0, |found| found.norm()) / step;
                 let share = c.norm() / step;
-                assert!((points - points.round()).abs() < 1e-9, "seed {seed}: {points} points");
                 assert!(share.floor() <= points.round() && points.round() <= share.ceil());
-                drawn += points.round() as usize;
             }
-            assert_eq!(drawn, samples, "seed {seed}");
             assert_eq!(policy.collapses(), 1);
         }
     }

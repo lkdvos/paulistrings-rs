@@ -1058,6 +1058,7 @@ mod device {
 
         // Clifford layers keep every |c|, so the group's collapse must tile the whole sum's L1 norm into exactly `SAMPLES` draws of `norm / SAMPLES`: a point lost or drawn twice at a rank boundary breaks the count.
         r.case("device collapse sample tiles the group's L1 norm", |r| {
+            use paulistrings::test_support::assert_draws_tile_l1;
             use paulistrings::CollapseSample;
             const SAMPLES: usize = 64;
             let circuit = cnot_ring::<1>(12);
@@ -1090,13 +1091,7 @@ mod device {
                     1,
                     "seed {seed}: one collapse, then under the cache"
                 );
-                let draws: Vec<f64> =
-                    got.iter().map(|(_, _, c)| c.norm() * SAMPLES as f64 / norm).collect();
-                for d in &draws {
-                    assert!((d - d.round()).abs() < 1e-9 && d.round() >= 1.0, "seed {seed}: {d}");
-                }
-                let total: f64 = draws.iter().map(|d| d.round()).sum();
-                assert_eq!(total as usize, SAMPLES, "seed {seed}: draws over the group");
+                assert_draws_tile_l1(&got, norm, SAMPLES, &format!("seed {seed}"));
             }
         });
     }

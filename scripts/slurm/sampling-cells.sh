@@ -38,3 +38,14 @@ run_sweep() {
     cell "reference kicked-ising approx-topn" launch_one --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
     cell "split kicked-ising approx-topn" launch_all --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
 }
+
+# phase_timing_cell <features> <sidecar>: with PT=1 (the default), the largest kicked-Ising cell again under `phase-timing`, for the export and exchange split.
+phase_timing_cell() {
+    [ "${PT:-1}" = "1" ] || return 0
+    local largest
+    largest=$(tr ' ' '\n' <<< "$CACHES" | sort -g | tail -1)
+    cargo build --offline --release -p paulistrings --features "$1" --example sampling_bench
+    sidecar=$2
+    cell "phase-timing split kicked-ising cache $largest" launch_all --model kicked-ising --steps 20 \
+        --collapse --cache "$largest" --samples "$(samples_of "$largest")" --seed "$SEED"
+}

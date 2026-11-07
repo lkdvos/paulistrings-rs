@@ -73,12 +73,6 @@ launch_all=(srun --mpi=pmix --cpu-bind=cores "$bin" --backend mpi-gpu --device a
 echo "== sweep on $ranks ranks, caches $CACHES, reference $REF_CACHE -> $sidecar"
 run_sweep
 
-if [ "${PT:-1}" = "1" ]; then
-    largest=$(tr ' ' '\n' <<< "$CACHES" | sort -g | tail -1)
-    cargo build --offline --release -p paulistrings --features cuda,mpi,phase-timing --example sampling_bench
-    sidecar="$out/sampling-mpi-gpu-$tag-r$ranks-pt.jsonl"
-    cell "phase-timing split kicked-ising cache $largest" launch_all --model kicked-ising --steps 20 \
-        --collapse --cache "$largest" --samples "$(samples_of "$largest")" --seed "$SEED"
-fi
+phase_timing_cell cuda,mpi,phase-timing "$out/sampling-mpi-gpu-$tag-r$ranks-pt.jsonl"
 echo "results: $out/sampling-mpi-gpu-$tag-r$ranks*.jsonl"
 exit "$failed"

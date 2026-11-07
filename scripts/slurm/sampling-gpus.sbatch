@@ -54,13 +54,7 @@ failed=0
 echo "== sweep on devices $DEVICES, caches $CACHES, reference $REF_CACHE -> $sidecar"
 run_sweep
 
-if [ "${PT:-1}" = "1" ]; then
-    largest=$(tr ' ' '\n' <<< "$CACHES" | sort -g | tail -1)
-    cargo build --offline --release -p paulistrings --features cuda,phase-timing --example sampling_bench
-    sidecar="$out/sampling-gpus-$tag-pt.jsonl"
-    cell "phase-timing split kicked-ising cache $largest" launch_all --model kicked-ising --steps 20 \
-        --collapse --cache "$largest" --samples "$(samples_of "$largest")" --seed "$SEED"
-fi
+phase_timing_cell cuda,phase-timing "$out/sampling-gpus-$tag-pt.jsonl"
 
 nvidia-smi -q -d CLOCK,POWER,TEMPERATURE,PERFORMANCE > "$out/sampling-gpus-$tag-clocks-end.txt"
 echo "results: $out/sampling-gpus-$tag*.jsonl"

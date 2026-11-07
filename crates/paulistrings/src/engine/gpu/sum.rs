@@ -330,6 +330,21 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
             self.columns.len = self.length.bound().len;
             return Ok(());
         }
+        let (len, longest) = self.scan_lengths()?;
+        self.record_exact(len, Some(longest));
+        Ok(())
+    }
+
+    /// The exact number of terms, scanned behind one synchronization unless the bound is exact; the length tracker is left as it was, so a trace that reads it changes no decision.
+    pub(crate) fn read_len(&mut self) -> Result<usize, GpuError> {
+        if self.length.is_exact() {
+            return Ok(self.columns.len);
+        }
+        Ok(self.scan_lengths()?.0)
+    }
+
+    /// The bucket lengths' total and maximum, scanned and read behind one synchronization.
+    fn scan_lengths(&mut self) -> Result<(usize, u32), GpuError> {
         let b = self.hash.num_buckets();
         let ordinal = self.device();
         super::columns::grow(&self.stream, &mut self.lengths_scan, b + 1, ordinal)?;
@@ -345,8 +360,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         )?;
         let read = self.stream.clone_dtoh(totals)?;
         self.stream.synchronize()?;
-        self.record_exact(read[0] as usize, Some(read[1]));
-        Ok(())
+        Ok((read[0] as usize, read[1]))
     }
 
     /// The partitioning hash, identical to the host sum's.

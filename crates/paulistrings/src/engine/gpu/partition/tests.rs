@@ -155,6 +155,41 @@ fn a_failed_lone_call_settles_its_length() {
     assert_eq!(resident.len(), exact);
 }
 
+/// Tracing reads exact counts without moving the length tracker, so a traced device run takes the untraced run's schedule: the same bucket bits and record sizing at every layer and run.
+#[test]
+fn a_traced_run_takes_the_untraced_schedule() {
+    crate::require_cuda!();
+    use crate::channel::PtmChannel;
+    use crate::engine::gpu::driver::GpuPartitionedSum;
+    use crate::engine::Direction;
+    use crate::test_support::zz_rotation;
+    use crate::{PauliRotation, PauliString};
+    let mut circuit = crate::Circuit::<1>::new(10);
+    for step in 0..3 {
+        for q in 0..10 {
+            circuit.push(zz_rotation::<1>(q, (q + 1) % 10, 0.6));
+        }
+        for q in 0..10 {
+            circuit.push(PauliRotation::new(PauliString::<1>::x(q), 0.6));
+        }
+        circuit.push(PtmChannel::depolarizing(step, 0.05));
+    }
+    let input = rand_sum_real::<1>(300, 10, 0x7AC3);
+    for policy in [T::Keep, T::ApproxTopN(2_000)] {
+        let schedule = |traced: bool| {
+            let mut resident = GpuPartitionedSum::<1>::from_host(&input, 0).expect("upload");
+            if traced {
+                resident.enable_trace();
+            }
+            resident.propagate(&circuit, policy.clone(), Direction::Heisenberg).expect("run");
+            std::mem::take(&mut resident.backends_mut()[0].schedule)
+        };
+        let untraced = schedule(false);
+        assert!(untraced.len() > 3, "{policy:?}: {untraced:?}");
+        assert_eq!(schedule(true), untraced, "{policy:?}");
+    }
+}
+
 /// A lone partition already within `n` keeps every term, and one term more cuts to `n`, with no reduction either way.
 #[test]
 fn a_lone_partition_within_n_skips_the_approx_pass() {

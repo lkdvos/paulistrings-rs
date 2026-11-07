@@ -66,6 +66,9 @@ pub struct DevicePartition<const W: usize, C: Coefficient = Complex64> {
     /// Test hook: fail before the exchange on this layer index.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_at_layer: Option<usize>,
+    /// Test record of the schedule: the bucket bits and the records sized after every layer and run.
+    #[cfg(test)]
+    pub(crate) schedule: Vec<(u8, u64)>,
 }
 
 impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
@@ -83,6 +86,8 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
             failed_layer: None,
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: None,
+            #[cfg(test)]
+            schedule: Vec::new(),
         })
     }
 
@@ -202,12 +207,17 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         self.sum.as_ref().map_or(0, GpuSum::len)
     }
 
+    /// [`GpuSum::read_len`], which leaves the length tracker as it was, so a traced run decides as an untraced one.
     fn exact_len(&mut self) -> usize {
-        if let Some((sum, _)) = self.healthy_parts() {
-            let result = sum.settle_lengths();
-            self.record(result);
+        let read = self.healthy_parts().map(|(sum, _)| sum.read_len());
+        match read {
+            Some(Ok(len)) => len,
+            Some(Err(e)) => {
+                self.record(Err(e));
+                self.len()
+            }
+            None => self.len(),
         }
-        self.len()
     }
 
     fn hash(&self) -> &Gf2Hash<W> {
@@ -285,6 +295,8 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
             failed_layer: self.failed_layer.take(),
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: self.fail_at_layer.take(),
+            #[cfg(test)]
+            schedule: std::mem::take(&mut self.schedule),
         }
     }
 
@@ -342,6 +354,8 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             started.elapsed().as_nanos() as u64,
             sum.hash().bits(),
         ));
+        #[cfg(test)]
+        self.schedule.push((sum.hash().bits(), scratch.record.records));
         match result {
             Ok(counts) => {
                 self.hash = sum.hash().clone();
@@ -401,6 +415,10 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             started.elapsed().as_nanos() as u64,
             sum.hash().bits(),
         ));
+        #[cfg(test)]
+        let step = (sum.hash().bits(), scratch.record.records);
+        #[cfg(test)]
+        self.schedule.push(step);
         match result {
             Ok(()) => self.resync_hash(),
             Err(e) => self.record(Err(e)),

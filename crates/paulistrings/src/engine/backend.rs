@@ -27,7 +27,7 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
     Send + Sized
 {
     fn len(&self) -> usize;
-    /// [`len`](Self::len) made exact for a trace row, where a backend whose mid-call length is a bound settles it.
+    /// [`len`](Self::len) made exact for a trace row, where a backend whose mid-call length is a bound reads it exactly; the read must not change any later decision.
     fn exact_len(&mut self) -> usize {
         self.len()
     }

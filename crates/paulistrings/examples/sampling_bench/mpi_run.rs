@@ -24,7 +24,7 @@ fn allgather_u64(collectives: &dyn Collectives, local: &[u64]) -> Vec<u64> {
 }
 
 /// Per-layer `u64` fields of one rank's row, in [`pack_row`] order, before the two per-destination vectors.
-const SCALAR_FIELDS: usize = 13;
+const SCALAR_FIELDS: usize = 14;
 
 fn pack_row(layer: &PartitionLayerRecord, out: &mut Vec<u64>) {
     let p = &layer.phases[0];
@@ -42,12 +42,13 @@ fn pack_row(layer: &PartitionLayerRecord, out: &mut Vec<u64>) {
         p.exchange_ns,
         p.coset_loop_ns,
         p.finalize_ns,
+        u64::from(layer.refine_passes[0]),
     ]);
     out.extend(&layer.rows_sent[0]);
     out.extend(&layer.bytes_sent[0]);
 }
 
-/// This rank's trace, one partition per row, widened to every rank's partition: the shape an in-process split traces. **Collective.**
+/// This rank's trace, one partition per row, widened to every rank's partition: the shape an in-process split traces, but with only this rank's `device` record, which is all the output reads on rank 0. **Collective.**
 fn gather_trace(collectives: &dyn Collectives, local: PartitionTrace) -> PartitionTrace {
     let (rank, size) = (collectives.rank() as usize, collectives.size() as usize);
     let per_layer = SCALAR_FIELDS + 2 * size;
@@ -66,7 +67,7 @@ fn gather_trace(collectives: &dyn Collectives, local: PartitionTrace) -> Partiti
         };
         let (mut bits, mut terms_in, mut terms_out, mut received) =
             (vec![], vec![], vec![], vec![]);
-        let (mut nanos, mut chunks, mut phases) = (vec![], vec![], vec![]);
+        let (mut nanos, mut chunks, mut phases, mut refines) = (vec![], vec![], vec![], vec![]);
         let (mut rows_sent, mut bytes_sent) = (vec![], vec![]);
         for r in 0..size {
             let f = &all[r * per_rank + i * per_layer..][..per_layer];
@@ -86,6 +87,7 @@ fn gather_trace(collectives: &dyn Collectives, local: PartitionTrace) -> Partiti
                 finalize_ns: f[12],
                 fine: None,
             });
+            refines.push(f[13] as u32);
             rows_sent.push(f[SCALAR_FIELDS..][..size].to_vec());
             bytes_sent.push(f[SCALAR_FIELDS + size..][..size].to_vec());
         }
@@ -98,7 +100,7 @@ fn gather_trace(collectives: &dyn Collectives, local: PartitionTrace) -> Partiti
         layer.phases = phases;
         layer.rows_sent = rows_sent;
         layer.bytes_sent = bytes_sent;
-        layer.refine_passes = vec![0; size];
+        layer.refine_passes = refines;
     }
     PartitionTrace { layers }
 }

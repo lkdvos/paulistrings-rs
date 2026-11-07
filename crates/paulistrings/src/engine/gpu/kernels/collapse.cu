@@ -69,44 +69,6 @@ extern "C" __global__ void k_collapse_weights(const real_t* __restrict__ c, cons
     if (lane == 0) weights[beta] = sum;
 }
 
-// `items` replaced by their exclusive prefix across a 1024-thread block, `COLLAPSE_SCAN_ITEMS` consecutive values a thread; returns the block total.
-__device__ __forceinline__ u64 collapse_block_scan(u64 (&items)[COLLAPSE_SCAN_ITEMS], u64* swarp) {
-    const u32 lane = lane_id(), warp = warp_id();
-    u64 sum = 0;
-#pragma unroll
-    for (int i = 0; i < COLLAPSE_SCAN_ITEMS; ++i) sum += items[i];
-    u64 inc = sum;
-#pragma unroll
-    for (u32 o = 1; o < 32; o <<= 1) {
-        const u64 t = __shfl_up_sync(~0u, inc, o);
-        if (lane >= o) inc += t;
-    }
-    if (lane == 31) swarp[warp] = inc;
-    __syncthreads();
-    if (warp == 0) {
-        const u64 v = lane < (blockDim.x >> 5) ? swarp[lane] : 0ull;
-        u64 inc2 = v;
-#pragma unroll
-        for (u32 o = 1; o < 32; o <<= 1) {
-            const u64 t = __shfl_up_sync(~0u, inc2, o);
-            if (lane >= o) inc2 += t;
-        }
-        swarp[lane] = inc2 - v;
-        if (lane == 31) swarp[32] = inc2;
-    }
-    __syncthreads();
-    u64 run = swarp[warp] + inc - sum;
-#pragma unroll
-    for (int i = 0; i < COLLAPSE_SCAN_ITEMS; ++i) {
-        const u64 v = items[i];
-        items[i] = run;
-        run += v;
-    }
-    const u64 total = swarp[32];
-    __syncthreads();
-    return total;
-}
-
 extern "C" __global__ void k_collapse_scan_block(const u64* __restrict__ in, u64* __restrict__ out,
                                                  u64* __restrict__ block_sum, u32 n) {
     __shared__ u64 swarp[33];
@@ -114,7 +76,7 @@ extern "C" __global__ void k_collapse_scan_block(const u64* __restrict__ in, u64
     u64 items[COLLAPSE_SCAN_ITEMS];
 #pragma unroll
     for (int i = 0; i < COLLAPSE_SCAN_ITEMS; ++i) items[i] = base + i < n ? in[base + i] : 0ull;
-    const u64 total = collapse_block_scan(items, swarp);
+    const u64 total = block_exclusive_scan_items<COLLAPSE_SCAN_ITEMS, u64>(items, swarp);
 #pragma unroll
     for (int i = 0; i < COLLAPSE_SCAN_ITEMS; ++i) {
         if (base + i < n) out[base + i] = items[i];
@@ -130,7 +92,7 @@ extern "C" __global__ void k_collapse_scan_single(u64* __restrict__ block_sum, u
     u64 items[COLLAPSE_SCAN_ITEMS];
 #pragma unroll
     for (int i = 0; i < COLLAPSE_SCAN_ITEMS; ++i) items[i] = base + i < nblocks ? block_sum[base + i] : 0ull;
-    const u64 total = collapse_block_scan(items, swarp);
+    const u64 total = block_exclusive_scan_items<COLLAPSE_SCAN_ITEMS, u64>(items, swarp);
 #pragma unroll
     for (int i = 0; i < COLLAPSE_SCAN_ITEMS; ++i) {
         if (base + i < nblocks) block_sum[base + i] = items[i];
@@ -180,12 +142,7 @@ extern "C" __global__ void k_collapse_pick(const u64* __restrict__ x, const u64*
                 magnitude = coeff_magnitude(v);
                 stretch = collapse_stretch(magnitude, shift);
             }
-            u64 inc = stretch;
-#pragma unroll
-            for (u32 o = 1; o < 32; o <<= 1) {
-                const u64 t = __shfl_up_sync(~0u, inc, o);
-                if (lane >= o) inc += t;
-            }
+            const u64 inc = warp_inclusive_scan(stretch);
             const u64 hi = running + inc;
             const u32 m = stretch == 0 ? 0u
                                        : collapse_below(hi, whole, per_unit, u, samples) -

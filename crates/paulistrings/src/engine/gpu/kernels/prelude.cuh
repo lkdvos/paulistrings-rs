@@ -385,46 +385,58 @@ __device__ __forceinline__ u32 octave_bin(Coeff c) {
     return min((u32)(bits >> 52), (u32)(APPROX_BINS - 1));
 }
 
+// The inclusive prefix of `v` across the warp.
+template <typename S>
+__device__ __forceinline__ S warp_inclusive_scan(S v) {
+#pragma unroll
+    for (u32 o = 1; o < 32; o <<= 1) {
+        const S t = __shfl_up_sync(~0u, v, o);
+        if (lane_id() >= o) v += t;
+    }
+    return v;
+}
+
+// `items`, ITEMS consecutive values a thread, replaced by their exclusive prefix across the block; returns the total to every thread.
+// swarp holds 33 words of scratch, free again only after the caller's next barrier.
+template <int ITEMS, typename S>
+__device__ __forceinline__ S block_exclusive_scan_items(S (&items)[ITEMS], S* swarp) {
+    const u32 lane = lane_id(), warp = warp_id();
+    S sum = 0;
+#pragma unroll
+    for (int c = 0; c < ITEMS; ++c) sum += items[c];
+    const S inc = warp_inclusive_scan(sum);
+    if (lane == 31) swarp[warp] = inc;
+    __syncthreads();
+    if (warp == 0) {
+        const S v = lane < (blockDim.x >> 5) ? swarp[lane] : (S)0;
+        const S inc2 = warp_inclusive_scan(v);
+        swarp[lane] = inc2 - v;
+        if (lane == 31) swarp[32] = inc2;
+    }
+    __syncthreads();
+    S run = swarp[warp] + inc - sum;
+#pragma unroll
+    for (int c = 0; c < ITEMS; ++c) {
+        const S v = items[c];
+        items[c] = run;
+        run += v;
+    }
+    return swarp[32];
+}
+
 // Exclusive scan of v[0..n) in shared memory, ITEMS contiguous entries per thread; returns the total to every thread.
 // swarp holds 33 words of scratch and is free again on return.
 template <int ITEMS, typename T>
 __device__ __forceinline__ u32 block_exclusive_scan(T* v, u32 n, u32* swarp) {
-    const u32 tid = threadIdx.x, lane = lane_id(), warp = warp_id();
-    const u32 base = tid * ITEMS;
-    u32 loc[ITEMS];
-    u32 sum = 0;
+    const u32 base = threadIdx.x * ITEMS;
+    u32 items[ITEMS];
+#pragma unroll
+    for (int c = 0; c < ITEMS; ++c) items[c] = (base + c < n) ? (u32)v[base + c] : 0u;
+    const u32 total = block_exclusive_scan_items<ITEMS, u32>(items, swarp);
 #pragma unroll
     for (int c = 0; c < ITEMS; ++c) {
-        loc[c] = (base + c < n) ? (u32)v[base + c] : 0u;
-        sum += loc[c];
+        if (base + c < n) v[base + c] = (T)items[c];
     }
-    u32 inc = sum;
-#pragma unroll
-    for (u32 o = 1; o < 32; o <<= 1) {
-        u32 t = __shfl_up_sync(~0u, inc, o);
-        if (lane >= o) inc += t;
-    }
-    if (lane == 31) swarp[warp] = inc;
-    __syncthreads();
-    if (warp == 0) {
-        u32 v2 = (lane < (blockDim.x >> 5)) ? swarp[lane] : 0u;
-        u32 inc2 = v2;
-#pragma unroll
-        for (u32 o = 1; o < 32; o <<= 1) {
-            u32 t = __shfl_up_sync(~0u, inc2, o);
-            if (lane >= o) inc2 += t;
-        }
-        swarp[lane] = inc2 - v2;
-        if (lane == 31) swarp[32] = inc2;
-    }
-    __syncthreads();
-    u32 run = swarp[warp] + inc - sum;
-#pragma unroll
-    for (int c = 0; c < ITEMS; ++c) {
-        if (base + c < n) v[base + c] = (T)run;
-        run += loc[c];
-    }
-    u32 total = swarp[32];
     __syncthreads();
     return total;
 }

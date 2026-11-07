@@ -1,4 +1,4 @@
-//! One layer on the device: bucket policy, count, export and exchange, fused layer, compaction, and the key-preserving rescale.
+//! One layer on the device: bucket policy, count, export and exchange, and the dispatch to the rescale, permutation, join and fused paths.
 //!
 //! Within a bucket the device keeps unique keys in no particular order; the fused layer sorts records by fingerprint and falls back to the full key on a collision, so equal keys always end adjacent.
 //! A block's records and a source bucket's rows are checked against `LAYER_CAP` and `MAX_BUCKET_LEN` before the launch: a lone partition or a local layer refines past a violation up to `GpuLayerOptions::max_bits`, while a remote layer reports `Unsupported`, since its count is agreed.
@@ -17,9 +17,7 @@ use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DeviceRepr, PushKernelArg
 use super::collapse::CollapseScratch;
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
-use super::export::{
-    exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECEIVED_SEGMENT,
-};
+use super::export::{exchange_rows, finish_receive, DeviceExport, MAX_RECEIVED_SEGMENT};
 use super::module::{thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan, ScanScratch};
@@ -43,6 +41,7 @@ mod rotation_run;
 mod run;
 
 use fast_paths::{permute_device, rescale_device};
+use fused::fused_layer;
 pub(super) use fused::{
     arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
 };
@@ -183,7 +182,7 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     /// Whether `histogram` is the current sum's, as a join that counted its output leaves it; every mutating layer clears it.
     pub(super) histogram_fresh: bool,
     /// Whether a join counts its output's octave histogram, for the lone `ApproxTopN` pass after it.
-    pub(crate) join_histogram: bool,
+    join_histogram: bool,
     /// The radix-select's 256-bin digit histogram, reused across passes.
     pub(super) radix_histogram: CudaSlice<u64>,
     /// The radix-select's extracted singleton bits.
@@ -224,7 +223,7 @@ pub(crate) struct LayerScratch<const W: usize, C: Coefficient = Complex64> {
     pub(crate) extent: usize,
     pub(crate) options: GpuLayerOptions,
     /// The run policy's ceiling on a layer's input (`TruncationPolicy::run_length_limit`), which caps how far an output over-reserves; `None` without one.
-    pub(crate) ceiling: Option<usize>,
+    ceiling: Option<usize>,
     /// The current layer's device counters, read into its trace row.
     pub(crate) record: DeviceLayerRecord,
     /// The current layer's refine passes.
@@ -733,150 +732,10 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         scratch.refine(sum, sum.hash.bits() + 1)?;
         table.rehash(&sum.hash);
     };
-    let b = sum.hash.num_buckets();
     scratch.record.records = u64::from(records);
     scratch.record.max_block_records = records_max;
-
-    let kernels: Arc<KernelSet> = sum.kernels.clone();
-    let (func, record_capacity, smem) =
-        fused_variant(&kernels, W, records_max as usize, table.dense);
-    scratch.record.record_capacity = record_capacity as u32;
-
-    // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
-    let chunk_starts: Vec<usize> =
-        scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
-            (0..p.map.chunks()).map(|c| p.map.bound(c) as usize).collect()
-        });
-    let (batches, max_batch_rows) = arena_batches::<W, C>(
-        &scratch.segment_start_host,
-        scratch.options.arena_bytes,
-        record_cap,
-        &chunk_starts,
-    );
-    scratch.record.batches = batches.len() as u32;
-    scratch.receive_chunks = chunk_starts.len() as u32;
+    fused_layer(sum, scratch, &table, keep, records, records_max)?;
     counts.receive_chunks = scratch.receive_chunks;
-
-    let stream = sum.stream.clone();
-    let ordinal = sum.device();
-    let mut arena = match scratch.arena.take() {
-        Some(a) => a,
-        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, max_batch_rows, 1)?,
-    };
-    arena.len = 0;
-    arena.buckets = 0;
-    arena.reserve(max_batch_rows, 1)?;
-    let mut out = sum.take_spare(0, b)?;
-    grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
-    stream.memset_zeros(&mut scratch.fallback)?;
-    // A lone batch whose pre-dedup rows already fit the output compacts at offset 0 without its total, which is read once after the compaction.
-    let deferred_total = batches.len() == 1
-        && (scratch.segment_start_host[b] - scratch.segment_start_host[0]) as usize
-            <= out.term_capacity();
-    let mut running = 0u32;
-    let mut next_chunk = 0usize;
-    for &(p0, p1) in &batches {
-        if chunk_starts.get(next_chunk) == Some(&p0) {
-            receive_chunk(sum, scratch, next_chunk)?;
-            next_chunk += 1;
-        }
-        let num_blocks = (p1 - p0) as u32;
-        let p0u = p0 as u32;
-        timed!(let t0 = scratch.event(sum)?);
-        let fused = FusedTable {
-            counts: &scratch.counts,
-            segment_start: &scratch.segment_start,
-            table: &scratch.table,
-        };
-        let received = FusedReceived {
-            offsets: &scratch.export.received_offsets,
-            base: &scratch.export.received_base,
-            x: &scratch.export.received_x,
-            z: &scratch.export.received_z,
-            coefficient: &scratch.export.received_coefficient,
-            fingerprint: &scratch.export.received_fingerprint,
-        };
-        let written = FusedOut {
-            arena: &mut arena,
-            rows_per_position: &mut scratch.rows_per_position,
-            fallback: &mut scratch.fallback,
-        };
-        launch_fused(
-            sum,
-            &table,
-            &fused,
-            &received,
-            &scratch.bucket_at,
-            keep,
-            (func, smem),
-            (p0u, num_blocks),
-            written,
-        )?;
-        timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
-        let n = p1 - p0;
-        timed!(let t1 = scratch.event(sum)?);
-        exclusive_scan(
-            &stream,
-            &kernels,
-            &scratch.rows_per_position.slice(p0..p1),
-            &mut scratch.destination_offsets.slice_mut(0..n + 1),
-            n,
-            &mut scratch.scan,
-            &mut scratch.totals,
-        )?;
-        let batch_out = if deferred_total {
-            0
-        } else {
-            let batch_out = read_back(&stream, &mut scratch.stats, &scratch.totals)?[0];
-            out.len = running as usize;
-            let need = (running + batch_out) as usize;
-            if need > out.term_capacity() {
-                let grown = (2 * out.term_capacity()).max(need).min((records as usize).max(need));
-                out.reserve(grown, b)?;
-            }
-            batch_out
-        };
-        // SAFETY: arguments match `k_compact` in compact.cu; `out` holds `running + batch_out` terms.
-        unsafe {
-            stream
-                .launch_builder(&kernels.compact)
-                .arg(&arena.x)
-                .arg(&arena.z)
-                .arg(&arena.coeff)
-                .arg(&arena.fingerprint)
-                .arg(&scratch.segment_start)
-                .arg(&scratch.destination_offsets)
-                .arg(&scratch.rows_per_position)
-                .arg(&scratch.bucket_at)
-                .arg(&p0u)
-                .arg(&running)
-                .arg(&mut out.x)
-                .arg(&mut out.z)
-                .arg(&mut out.coeff)
-                .arg(&mut out.fingerprint)
-                .arg(&mut out.start)
-                .arg(&mut out.lengths)
-                .launch(thread_per(num_blocks as usize * 256, 256))?;
-        }
-        timed!(scratch.lap(sum, t1, |stats| &mut stats.compact_ns)?);
-        running += batch_out;
-    }
-    debug_assert_eq!(next_chunk, chunk_starts.len());
-    let (totals, fallback) = (&scratch.totals, &scratch.fallback);
-    let (total, fallbacks) = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
-        let total = if deferred_total { stream.clone_dtoh(totals)?[0] } else { 0 };
-        let fallbacks = stream.clone_dtoh(fallback)?;
-        stream.synchronize()?;
-        Ok((total, fallbacks))
-    })?;
-    running += total;
-    scratch.record.high_word_fallbacks += fallbacks[0];
-    scratch.record.full_key_fallbacks += fallbacks[1];
-    scratch.arena = Some(arena);
-    sum.swap_in(out, running as usize);
-    sum.record_exact(running as usize, None);
-    scratch.extent = sum.len();
-    sum.debug_check();
     Ok(counts)
 }
 

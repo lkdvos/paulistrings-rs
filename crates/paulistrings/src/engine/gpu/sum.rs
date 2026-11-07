@@ -289,6 +289,12 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         self.columns.len = len;
     }
 
+    /// The sum holds exactly `len` terms, read synchronously, after a step that only shortened buckets; the longest bucket stays a bound, which [`Self::settle_lengths`] still scans.
+    pub(super) fn record_exact_len(&mut self, len: usize) {
+        self.length.set_exact_len(len);
+        self.columns.len = len;
+    }
+
     /// The spare columns emptied, with room for `terms` terms and `buckets` buckets; fresh columns hold at least the sum's length.
     pub(super) fn take_spare(
         &mut self,
@@ -320,7 +326,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
     /// Make [`Self::len`] and the longest bucket exact: consume every read-back and, if a step published none, scan the bucket lengths behind one synchronization.
     pub(crate) fn settle_lengths(&mut self) -> Result<(), GpuError> {
         self.length.consume(0)?;
-        if self.length.is_exact() && self.length.bound().longest.is_some() {
+        if self.length.is_settled() {
             self.columns.len = self.length.bound().len;
             return Ok(());
         }

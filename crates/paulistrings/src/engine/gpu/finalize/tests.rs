@@ -320,3 +320,49 @@ fn the_device_decided_cut_keeps_the_hosts_terms() {
     device_decided_cut_matches::<1>();
     device_decided_cut_matches::<2>();
 }
+
+/// A group member's cut keeps the pre-cut longest bucket as a bound, so a join at the bucket-bit limit whose bound is past `MAX_BUCKET_LEN` rescans the lengths instead of refusing.
+fn a_join_after_a_cut_rescans_the_longest_bucket<const W: usize>() {
+    use crate::channel::Prepare;
+    use crate::engine::gpu::layer::{apply_layer_device, DeviceLayer};
+    use crate::engine::gpu::module::MAX_BUCKET_LEN;
+    use crate::engine::gpu::truncation::KeepProgram;
+    use crate::engine::plan::PartitionPlan;
+    use crate::pauli_sum::hash::PartitionRows;
+    use crate::test_support::{assert_terms_close, naive_apply_layer, zz_rotation, KeepAll};
+    let sum = one_long_bucket::<W>(5_000);
+    let n = 3_000;
+    assert!(sum.len() > MAX_BUCKET_LEN && n <= MAX_BUCKET_LEN);
+    let mut dev = GpuSum::from_host(&sum, 0).expect("upload");
+    let capped = GpuLayerOptions { max_bits: dev.bits(), ..GpuLayerOptions::default() };
+    let mut scratch = LayerScratch::new(&dev, capped).expect("scratch");
+    let histogram = octave_histogram_device(&dev, &mut scratch).expect("histogram");
+    let edge = octave_edge(&histogram[1..], dev.len(), n);
+    retain_at_edge_device(&mut dev, &mut scratch, edge, quota_of(edge), &histogram).expect("cut");
+    let cut = dev.to_host().expect("download");
+    let rotation = zz_rotation::<W>(0, 1, 0.4);
+    let prepared = rotation.prepare(dev.hash(), false).expect("prepared");
+    let plan = PartitionPlan::new(&prepared, &PartitionRows::<W>::none(64 * W), 0);
+    let layer = DeviceLayer {
+        prepared: &prepared,
+        plan: &plan,
+        keep: &KeepProgram::KEEP,
+        target_bits: dev.bits(),
+    };
+    apply_layer_device(&mut dev, &layer, &mut scratch, &SoloTransport).expect("join");
+    assert!(scratch.record.joined);
+    let want = naive_apply_layer(&cut, &rotation, &KeepAll, false);
+    assert_terms_close(&dev.to_host().expect("download"), &want, 1e-12, "join after a cut");
+}
+
+#[test]
+fn a_join_after_a_cut_rescans_the_longest_bucket_w1() {
+    crate::require_cuda!();
+    a_join_after_a_cut_rescans_the_longest_bucket::<1>();
+}
+
+#[test]
+fn a_join_after_a_cut_rescans_the_longest_bucket_w2() {
+    crate::require_cuda!();
+    a_join_after_a_cut_rescans_the_longest_bucket::<2>();
+}

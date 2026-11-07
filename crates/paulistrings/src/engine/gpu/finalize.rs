@@ -108,7 +108,7 @@ fn cut_device<const W: usize, C: Coefficient>(
     } else {
         read_back(&sum.stream, &mut scratch.stats, &scratch.cut_counters)?[0] as usize
     };
-    sum.record_exact(kept, sum.longest_bound());
+    sum.record_exact_len(kept);
     sum.debug_check();
     Ok(())
 }

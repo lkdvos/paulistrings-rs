@@ -62,6 +62,8 @@ struct Readback {
 /// The host's view of a device sum's length: an exact anchor, the steps applied since, and the read-backs of the states after some of them.
 pub(crate) struct LengthTracker {
     anchor: Lengths,
+    /// Whether the anchor's longest bucket was read, rather than carried over from an earlier bound.
+    longest_read: bool,
     /// Steps since the anchor's state, oldest first, each with the read-back of the state after it, if it published one.
     steps: VecDeque<(Growth, Option<Readback>)>,
     /// Read-backs no step holds, for reuse.
@@ -73,7 +75,14 @@ pub(crate) struct LengthTracker {
 
 impl LengthTracker {
     pub(crate) fn new(context: Arc<CudaContext>, exact: Lengths, lag: usize) -> Self {
-        Self { anchor: exact, steps: VecDeque::new(), pool: Vec::new(), lag, context }
+        Self {
+            anchor: exact,
+            longest_read: true,
+            steps: VecDeque::new(),
+            pool: Vec::new(),
+            lag,
+            context,
+        }
     }
 
     /// The upper bound on the current state.
@@ -91,12 +100,25 @@ impl LengthTracker {
         self.steps.is_empty()
     }
 
+    /// Whether the bound is the exact state and its longest bucket was read, so nothing is left to scan.
+    pub(crate) fn is_settled(&self) -> bool {
+        self.is_exact() && self.longest_read && self.anchor.longest.is_some()
+    }
+
     /// The current state is exactly `lengths`, read synchronously by the step that made it.
     pub(crate) fn set_exact(&mut self, lengths: Lengths) {
         self.anchor = lengths;
+        self.longest_read = true;
         while let Some((_, readback)) = self.steps.pop_front() {
             self.pool.extend(readback);
         }
+    }
+
+    /// The current state holds exactly `len` terms, read synchronously, after a step that only shortened buckets: the longest stays the bound it was.
+    pub(crate) fn set_exact_len(&mut self, len: usize) {
+        let longest = self.bound().longest;
+        self.set_exact(Lengths { len, longest });
+        self.longest_read = false;
     }
 
     /// A step the host bounds by `growth`; with `published`, the device's `[len, longest]` after it is copied back asynchronously on `stream`, and every read-back but the latest `lag` is consumed.
@@ -155,6 +177,7 @@ impl LengthTracker {
                 self.pool.extend(readback);
             }
             self.anchor = exact;
+            self.longest_read = true;
         }
         Ok(())
     }

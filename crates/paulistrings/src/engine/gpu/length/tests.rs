@@ -54,3 +54,18 @@ fn lag_zero_is_exact_after_every_published_step() {
     length.set_exact(SEVEN);
     assert_eq!(length.bound(), SEVEN);
 }
+
+/// An exact length after a shortening step keeps the longest bucket as a bound, which leaves the tracker exact but unsettled until a read anchors it.
+#[test]
+fn an_exact_length_alone_leaves_the_longest_unsettled() {
+    crate::require_cuda!();
+    let (stream, mut length) = tracker(0);
+    assert!(length.is_settled());
+    length.set_exact_len(4);
+    assert_eq!(length.bound(), Lengths { len: 4, longest: Some(3) });
+    assert!(length.is_exact() && !length.is_settled());
+    let device = stream.clone_htod(&[4u32, 2]).unwrap();
+    length.step(Growth::Shrink { cap: 4 }, Some((&stream, &device))).unwrap();
+    assert!(length.is_settled());
+    assert_eq!(length.bound(), Lengths { len: 4, longest: Some(2) });
+}

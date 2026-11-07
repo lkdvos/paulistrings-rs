@@ -35,6 +35,8 @@ pub struct FaultPlan {
     pub at_layer: Option<usize>,
     /// The next remote layer's receive growth fails as out of memory, after the skeletons and before the vote.
     pub receive_growth: bool,
+    /// The next remote layer's refine to the agreed bucket count fails as out of memory, partway when it needs more than one bit, before the skeletons.
+    pub remote_refine: bool,
     /// The next chunked receive fails as out of memory once this chunk has moved, after the vote and mid-layer.
     pub after_chunk: Option<usize>,
     /// The partition's device wire fails in its next post or wait.
@@ -57,7 +59,7 @@ pub struct DevicePartition<const W: usize, C: Coefficient = Complex64> {
     error: Option<GpuError>,
     /// `(rank, layer)` of the group's first failure; set on every partition at once, and refuses every later call.
     poison: Option<(usize, usize)>,
-    /// Partitions in the group this partition runs in; above one, the layer never refines off-schedule and the proposal carries growth headroom.
+    /// Partitions in the group this partition runs in; above one, a remote layer runs at the agreed bucket count and the proposal carries growth headroom.
     pub(crate) group_size: u32,
     /// Layers `apply_layer` was asked for since construction.
     layers_applied: usize,
@@ -105,6 +107,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
         self.fail_at_layer = plan.at_layer;
         let export = &mut self.scratch_mut().export;
         export.fail_receive_growth = plan.receive_growth;
+        export.fail_remote_refine = plan.remote_refine;
         export.fail_after_chunk = plan.after_chunk;
         if let Some(fault) = plan.wire {
             export
@@ -233,7 +236,7 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         unreachable!("a device partition proposes at least its own {} bucket bits, so its group never agrees {bits}", self.hash.bits());
     }
 
-    /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
+    /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits; a local layer refines on its own (`apply_layer_body`).
     /// Both read [`GpuSum::len_estimate`] rather than the bound, so a bucket count lags its sum by a layer instead of overshooting it.
     fn proposed_bits(
         &self,
@@ -246,7 +249,7 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         let Some(scratch) = self.scratch.as_ref() else {
             return host;
         };
-        // Between agreements a group member cannot refine, so its proposal plans for twice the load a lone device would.
+        // A remote layer cannot refine past an oversize block or received segment, so a group member's proposal plans for twice the load a lone device would.
         let records_per_block = match scratch.options.records_per_block {
             records if self.group_size == 1 => records,
             records => (records / 2).max(1),
@@ -362,7 +365,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
                 counts
             }
             Err(e) => {
-                // The mirror keeps the agreed bucket count, so the group's trace rows still agree; `take_error` re-syncs it.
+                // The mirror keeps the count this layer was asked to run at, the one a failed partition pairs its later exchanges at, though the device may have refined past it; `take_error` re-syncs it.
                 self.record(Err(e));
                 failed_counts(plan, size)
             }

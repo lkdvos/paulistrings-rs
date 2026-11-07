@@ -568,6 +568,24 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
     }
 }
 
+/// Refine `sum` to the layer's `want`, or fail as the remote-refine fault a test armed.
+fn refine_for_layer<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+    want: u8,
+    has_remote: bool,
+) -> Result<(), GpuError> {
+    #[cfg(any(test, feature = "test-utils"))]
+    if has_remote && std::mem::take(&mut scratch.export.fail_remote_refine) {
+        if want > sum.hash.bits() + 1 {
+            scratch.refine(sum, sum.hash.bits() + 1)?;
+        }
+        return Err(GpuError::OutOfMemory { device: Some(sum.device()), bytes: None });
+    }
+    let _ = has_remote;
+    scratch.refine(sum, want)
+}
+
 /// One layer's inputs besides the sum, its scratch and the transport.
 pub(crate) struct DeviceLayer<'a, const W: usize, C: Coefficient> {
     pub(crate) prepared: &'a Prepared<W, C>,
@@ -629,13 +647,13 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         return Ok(LayerExchangeCounts::none(size));
     }
     let solo = size == 1;
-    // Every failure before the exchange still owes the partners their call.
-    let pair = |scratch: &mut LayerScratch<W, C>, bits: u8| {
+    // Every failure before the exchange still owes the partners their call, at the agreed count they index its blocks by, whatever count the device reached.
+    let pair = |scratch: &mut LayerScratch<W, C>| {
         if has_remote {
             super::export::pair_empty_exchange::<W, C, X>(
                 transport,
                 plan,
-                bits,
+                target_bits,
                 &mut scratch.export,
             );
         }
@@ -645,11 +663,11 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     let fits = |len: usize| len.saturating_mul(records_per_term) < u32::MAX as usize;
     if !fits(sum.len()) {
         if let Err(e) = sum.settle_lengths() {
-            pair(scratch, sum.hash.bits());
+            pair(scratch);
             return Err(e);
         }
         if !fits(sum.len()) {
-            pair(scratch, sum.hash.bits());
+            pair(scratch);
             return Err(GpuError::Unsupported("more than 2^32 pre-dedup records in one layer"));
         }
     }
@@ -669,8 +687,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         target_bits
     };
     if want > sum.hash.bits() {
-        if let Err(e) = scratch.refine(sum, want) {
-            pair(scratch, sum.hash.bits());
+        if let Err(e) = refine_for_layer(sum, scratch, want, has_remote) {
+            pair(scratch);
             return Err(e);
         }
         table.rehash(&sum.hash);
@@ -711,7 +729,7 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         let counted =
             scratch.upload_table(sum, &table).and_then(|()| scratch.count_local(sum, &table));
         if let Err(e) = counted {
-            pair(scratch, sum.hash.bits());
+            pair(scratch);
             return Err(e);
         }
         if has_remote {

@@ -187,7 +187,7 @@ Under `comm=`, a failure on one rank's device fails the call on every rank, its 
 - **Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits**, since a layer holds its input, its output and a staging arena at once.
 - **Widths `W ≥ 8` (more than 256 qubits) are correct but untuned.**
 - **A multi-device or MPI group holds its exchange in device memory.** One export volume and one receive volume stay resident on a partition's device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count a single device still fits.
-- **A device partition in a group cannot refine mid-run.** It runs every remote layer at the group's agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel's cap.
+- **A device partition in a group cannot refine on a remote layer.** It runs every remote layer at the group's agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel's cap; a local layer refines as a lone device does.
 - **The sender-side merge (`premerge`) does not pay on a same-device exchange at low merge ratios.** Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.
 - **Multi-node runs are unmeasured.** Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.
 - **One chunk's transfer does not overlap the fused layer of the chunk before it**, and the chunked receive has not run over a real NCCL communicator.

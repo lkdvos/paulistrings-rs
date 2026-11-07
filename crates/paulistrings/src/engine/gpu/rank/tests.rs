@@ -354,6 +354,33 @@ mod protocol {
         }
     }
 
+    /// A rank whose refine to the agreed count fails on a remote layer, partway or before its first pass, still pairs its partners at the agreed count: every rank fails, the culprit with its own error and every peer naming it, and none hangs.
+    #[test]
+    fn a_failed_remote_refine_pairs_at_the_agreed_count() {
+        crate::require_cuda!(exclusive);
+        let circuit = su4_chain::<1>(10);
+        let input = rand_sum::<1>(1_500, 10, 0xEF1);
+        for size in [2u32, 4] {
+            let culprit = size - 1;
+            let fail = move |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+                split.set_layer_options(GpuLayerOptions {
+                    records_per_block: 8,
+                    ..GpuLayerOptions::default()
+                });
+                if split.rank() == culprit {
+                    let plan = FaultPlan { remote_refine: true, ..FaultPlan::default() };
+                    set_fault_plan(split, culprit as usize, plan);
+                }
+            };
+            let start = Instant::now();
+            let out = Run::new(&input, seeded_rows(10, size), &circuit).on(wired(size).0, &fail);
+            assert!(start.elapsed() < Duration::from_secs(60), "ranks={size}");
+            agreed(&errors(out), culprit, |e| {
+                matches!(e, GpuError::OutOfMemory { device: Some(0), bytes: None })
+            });
+        }
+    }
+
     /// A rank whose receive growth fails votes no: nobody moves a row, it returns the out-of-memory error, and every peer names it.
     #[test]
     fn a_receive_oom_votes_no_and_is_agreed_over_the_group() {
@@ -447,6 +474,31 @@ mod protocol {
         assert_eq!(tally.groups(), 0, "every row stays on rank 0");
         assert!(got.len() > input.len(), "terms anticommuting with Z0 Z1 split");
         assert_terms_close(&got, &run.want(), 1e-12, "a refined local layer");
+    }
+
+    /// A group member that refined past the cap on a local layer meets a remote layer pairing it with a rank that did not: the agreement carries both to its count and the exchange matches the host.
+    #[test]
+    fn a_remote_layer_after_a_local_refine_agrees_with_the_host() {
+        crate::require_cuda!(exclusive);
+        let mut c = Circuit::<1>::new(64);
+        c.push(zz_rotation::<1>(0, 1, 0.3));
+        c.push(zz_rotation::<1>(0, 63, 0.4));
+        let input = x0_terms_identity_on_q63(2 * MAX_BUCKET_LEN, 0x10CB)
+            .with_hash(crate::pauli_sum::hash::Gf2Hash::new(64, 0, 0xF0));
+        let run = Run {
+            options: PropagateOptions { target_bucket_len: 1 << 20, min_buckets: 1 << 20 },
+            ..Run::new(&input, rows_reading_z63(), &c)
+        };
+        let wide = |split: &mut GpuDistributedSum<1, InProcessTransport>| {
+            split.set_layer_options(GpuLayerOptions {
+                records_per_block: 1 << 30,
+                ..GpuLayerOptions::default()
+            });
+        };
+        let (group, tally) = wired(2);
+        let got = rank0(run.on(group, &wide));
+        assert!(tally.groups() > 0, "the second layer moves rows from rank 0 to rank 1");
+        assert_terms_close(&got, &run.want(), 1e-12, "a remote layer after a local refine");
     }
 
     /// A wire failing on one rank after a unanimous yes, in its post or its wait: every rank fails within the wire's bound, the culprit with the wire's error and its peers with their timed-out waits, and no later layer posts again.

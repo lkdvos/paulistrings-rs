@@ -262,7 +262,7 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C, DevicePartition<W, C>>
     ///
     /// [`GpuError::Unsupported`] before any layer if a real `C` meets a circuit failing [`Circuit::preserves_hermiticity`].
     /// [`GpuError::Unsupported`] before any layer if the policy's per-term part lowers to more than 15 nodes, if a channel's preparation declines (its support exceeds `MAX_LOCAL_SUPPORT`, two qubits, which only [`PauliRotation`](crate::PauliRotation) may, or it writes outside its declared support), or if the policy holds an exact `TopN` and the split has more than one partition.
-    /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry.
+    /// A group member runs every remote layer at the agreed bucket count, so a fused-layer block or a received segment over the kernel's cap there is [`GpuError::Unsupported`] rather than a retry; a local layer refines past it as a lone partition does.
     /// A device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
     /// Above one partition the split is then **poisoned**: its partitions no longer hold one consistent sum, and every later `propagate` or [`Self::gather`] returns [`GpuError::Poisoned`] until the caller scatters again.
     ///

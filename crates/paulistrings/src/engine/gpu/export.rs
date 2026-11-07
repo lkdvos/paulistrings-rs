@@ -62,6 +62,9 @@ pub(crate) struct DeviceExport<const W: usize, C: Coefficient> {
     /// Test hook: the next remote layer's receive growth fails as out of memory.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_receive_growth: bool,
+    /// Test hook: the next remote layer's refine to the agreed count fails as out of memory, after a first pass when it needs more than one bit.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fail_remote_refine: bool,
     /// The current layer's received rows still to move into `received_*`.
     pub(crate) pending: Option<PendingReceive<W, C>>,
     /// Test hook: the next chunked receive fails as out of memory after moving this chunk.
@@ -105,6 +108,8 @@ impl<const W: usize, C: Coefficient> DeviceExport<W, C> {
             skeletons: Vec::new(),
             #[cfg(any(test, feature = "test-utils"))]
             fail_receive_growth: false,
+            #[cfg(any(test, feature = "test-utils"))]
+            fail_remote_refine: false,
             pending: None,
             #[cfg(any(test, feature = "test-utils"))]
             fail_after_chunk: None,

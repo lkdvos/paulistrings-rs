@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
 use super::columns::grow;
 use super::error::GpuError;
 use super::finalize::whole_sum_launch;
 use super::layer::{read_back, LayerScratch};
-use super::module::{thread_per, warp_per_bucket};
+use super::module::{launch_grid, thread_per, warp_per_bucket};
 use super::sum::GpuSum;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
@@ -87,11 +87,6 @@ fn enqueue_offsets<const W: usize, C: Coefficient>(
     grow(stream, &mut scratch.offsets, buckets + 1, ordinal)?;
     grow(stream, &mut scratch.block_sums, blocks, ordinal)?;
     let (buckets_u32, blocks_u32) = (buckets as u32, blocks as u32);
-    let scan_threads = |grid: u32| LaunchConfig {
-        grid_dim: (grid, 1, 1),
-        block_dim: (1024, 1, 1),
-        shared_mem_bytes: 0,
-    };
     // SAFETY: arguments match the `k_collapse_*` signatures in collapse.cu; `weights` holds `buckets`, `offsets` `buckets + 1`, `block_sums` `blocks` and `frame` two entries.
     unsafe {
         stream
@@ -109,7 +104,7 @@ fn enqueue_offsets<const W: usize, C: Coefficient>(
             .arg(&mut scratch.offsets)
             .arg(&mut scratch.block_sums)
             .arg(&buckets_u32)
-            .launch(scan_threads(blocks_u32))?;
+            .launch(launch_grid(blocks_u32, 1024, 0))?;
         stream
             .launch_builder(&kernels.collapse_scan_single)
             .arg(&mut scratch.block_sums)
@@ -117,7 +112,7 @@ fn enqueue_offsets<const W: usize, C: Coefficient>(
             .arg(&mut scratch.offsets)
             .arg(&buckets_u32)
             .arg(&mut scratch.frame)
-            .launch(scan_threads(1))?;
+            .launch(launch_grid(1, 1024, 0))?;
         stream
             .launch_builder(&kernels.collapse_scan_add)
             .arg(&mut scratch.offsets)

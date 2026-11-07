@@ -1,12 +1,12 @@
 //! Launching the fused layer kernel: position batches that fit the arena, the kernel variant, and the launch itself.
 
 use crate::coefficient::Coefficient;
-use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaFunction, CudaSlice, PushKernelArg};
 
 use super::TableBuffers;
 use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
-use crate::engine::gpu::module::{layer_shared_bytes, layer_threads, KernelSet};
+use crate::engine::gpu::module::{launch_grid, layer_shared_bytes, layer_threads, KernelSet};
 use crate::engine::gpu::prepared::DevicePrepared;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
@@ -138,11 +138,7 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize, C: Coefficient>(
             .arg(&mut arena.fingerprint)
             .arg(rows_per_position)
             .arg(fallback)
-            .launch(LaunchConfig {
-                grid_dim: (num_blocks, 1, 1),
-                block_dim: (layer_threads(W), 1, 1),
-                shared_mem_bytes: smem,
-            })?;
+            .launch(launch_grid(num_blocks, layer_threads(W), smem))?;
     }
     Ok(())
 }

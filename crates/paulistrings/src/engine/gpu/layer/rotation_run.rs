@@ -3,14 +3,14 @@
 //! Contracts: the result agrees with the run's layers applied one by one to floating-point tolerance, `keep` asked after every layer about every string that layer changed and after the first about every string, as `apply_rotation_run` does (engine/bucketed/rotation_layer.rs); the Clifford arm drops its identity residues as the host's rotation layer does.
 //! A layer moves a string only within its class, its key off the run's qubits, so a block holding whole classes needs no other block; apply blocks pack consecutive class buckets, one that outgrows shared memory reruns over tables in global memory, and only one that outgrows [`WIDE_MAX_ROWS`] leaves the sum untouched for the caller to run the layers one by one.
 
-use cudarc::driver::{CudaSlice, DeviceRepr, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaSlice, DeviceRepr, PushKernelArg};
 
 use super::{read_back, timed_transfer, LayerScratch, Transfer};
 use crate::channel::prepared::{LocalPtm, Prepared, LOCAL_DIM};
 use crate::coefficient::Coefficient;
 use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
-use crate::engine::gpu::module::{thread_per, RR_ROWS, RR_THREADS, RR_WIDE_THREADS};
+use crate::engine::gpu::module::{launch_grid, thread_per, RR_ROWS, RR_THREADS, RR_WIDE_THREADS};
 use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
@@ -234,11 +234,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
         Ok(())
     })?;
     let (class_bits32, b32) = (class_bits, b as u32);
-    let per_bucket = LaunchConfig {
-        grid_dim: (b32, 1, 1),
-        block_dim: (BUCKET_THREADS, 1, 1),
-        shared_mem_bytes: 0,
-    };
+    let per_bucket = launch_grid(b32, BUCKET_THREADS, 0);
     timed!(let t0 = scratch.event(sum)?);
     stream.memset_zeros(&mut buffers.class_count.slice_mut(0..classes))?;
     // SAFETY: arguments match `k_rotation_run_classify` in rotation_run.cu; `class_count` holds `2^class_bits` zeroed counters and `inert` one per bucket.
@@ -351,11 +347,7 @@ pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
                     .arg(&mut buffers.counters)
                     .arg(&mut buffers.total)
                     .arg(&mut buffers.overflow[0])
-                    .launch(LaunchConfig {
-                        grid_dim: (blocks as u32, 1, 1),
-                        block_dim: (RR_THREADS, 1, 1),
-                        shared_mem_bytes: shared,
-                    })?;
+                    .launch(launch_grid(blocks as u32, RR_THREADS, shared))?;
             }
         }
         let (mut counters, mut total, mut longest) = scan_totals(sum, &buffers, &mut out, scratch)?;
@@ -528,11 +520,7 @@ fn apply_wide<const W: usize, C: Coefficient>(
                     .arg(&min_rows32)
                     .arg(&next32)
                     .arg(&mut *overflow_out)
-                    .launch(LaunchConfig {
-                        grid_dim: (grid, 1, 1),
-                        block_dim: (RR_WIDE_THREADS, 1, 1),
-                        shared_mem_bytes: 0,
-                    })?;
+                    .launch(launch_grid(grid, RR_WIDE_THREADS, 0))?;
             }
         }
         counters = read_back(stream, &mut scratch.stats, &buffers.counters)?;

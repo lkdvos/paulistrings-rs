@@ -1,7 +1,7 @@
 //! The join layer (`k_join` in `kernels/join.cu`): its table size, its launch, and its host flow straight into the output columns.
 
 use crate::coefficient::Coefficient;
-use cudarc::driver::{LaunchConfig, PushKernelArg};
+use cudarc::driver::PushKernelArg;
 
 use crate::engine::gpu::module::thread_per;
 use crate::engine::gpu::scan::exclusive_scan;
@@ -9,7 +9,7 @@ use crate::engine::gpu::scan::exclusive_scan;
 use super::LayerScratch;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::length::Growth;
-use crate::engine::gpu::module::JOIN_THREADS;
+use crate::engine::gpu::module::{launch_grid, JOIN_THREADS};
 use crate::engine::gpu::prepared::{DevicePrepared, JoinTable};
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
@@ -120,11 +120,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
             .arg(&mut scratch.join_totals)
             .arg(&u32::from(histogram))
             .arg(&mut scratch.histogram)
-            .launch(LaunchConfig {
-                grid_dim: (b as u32, 1, 1),
-                block_dim: (JOIN_THREADS, 1, 1),
-                shared_mem_bytes: (4 << table_bits) + histogram_bytes,
-            })?;
+            .launch(launch_grid(b as u32, JOIN_THREADS, (4 << table_bits) + histogram_bytes))?;
     }
     scratch.histogram_clean &= !histogram;
     scratch.histogram_fresh = histogram;

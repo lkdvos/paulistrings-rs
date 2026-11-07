@@ -5,7 +5,9 @@
 
 use std::borrow::Cow;
 
-use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
+
+use crate::engine::gpu::module::launch_grid;
 
 use super::fast_paths::permute_threads;
 use super::rotation_run::rotation_run_fused;
@@ -121,11 +123,7 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
         Ok(())
     })?;
     let (b32, steps32) = (b as u32, steps.len() as u32);
-    let block_per_bucket = LaunchConfig {
-        grid_dim: (b32, 1, 1),
-        block_dim: (permute_threads(n_in, b, W), 1, 1),
-        shared_mem_bytes: 0,
-    };
+    let block_per_bucket = launch_grid(b32, permute_threads(n_in, b, W), 0);
     timed!(let t0 = scratch.event(sum)?);
     stream.memset_zeros(&mut out.lengths.slice_mut(0..b))?;
     // SAFETY: arguments match `k_permute_run_count` in permute_run.cu; the step buffers hold `steps32` steps and `out.lengths` holds `b` zeroed counters.

@@ -1,12 +1,12 @@
 //! The two layer paths that bypass the fused kernel: the key-preserving rescale and the permutation scatter.
 
-use cudarc::driver::{LaunchConfig, PushKernelArg};
+use cudarc::driver::PushKernelArg;
 
 use super::*;
 use crate::engine::gpu::columns::grow;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::length::Growth;
-use crate::engine::gpu::module::{layer_threads, thread_per, warp_per_bucket};
+use crate::engine::gpu::module::{launch_grid, layer_threads, thread_per, warp_per_bucket};
 use crate::engine::gpu::prepared::DevicePrepared;
 use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
@@ -106,11 +106,7 @@ pub(super) fn permute_device<const W: usize, C: Coefficient>(
         stream.memcpy_htod(&table.entry_of, entry_of)?;
         Ok(())
     })?;
-    let block_per_bucket = LaunchConfig {
-        grid_dim: (b32, 1, 1),
-        block_dim: (permute_threads(n_in, b, W), 1, 1),
-        shared_mem_bytes: 0,
-    };
+    let block_per_bucket = launch_grid(b32, permute_threads(n_in, b, W), 0);
     timed!(let t0 = scratch.event(sum)?);
     // SAFETY: arguments match `k_permute_count` in permute.cu; `counts` holds `b * e` entries.
     unsafe {

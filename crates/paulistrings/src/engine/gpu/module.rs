@@ -138,11 +138,12 @@ pub(crate) fn warp_per_bucket(b: usize) -> LaunchConfig {
 
 /// One thread per element over `n` elements, `threads` a block.
 pub(crate) fn thread_per(n: usize, threads: u32) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: ((n as u32).div_ceil(threads).max(1), 1, 1),
-        block_dim: (threads, 1, 1),
-        shared_mem_bytes: 0,
-    }
+    launch_grid((n as u32).div_ceil(threads).max(1), threads, 0)
+}
+
+/// `grid` blocks of `threads`, with `shared` bytes of dynamic shared memory each.
+pub(crate) fn launch_grid(grid: u32, threads: u32, shared: u32) -> LaunchConfig {
+    LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: shared }
 }
 
 /// One compiled fused-layer variant: `items` records per thread, so `items * layer_threads(W)` records per block.

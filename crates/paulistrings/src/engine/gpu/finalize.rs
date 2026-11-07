@@ -7,7 +7,7 @@ use super::columns::grow;
 use super::error::GpuError;
 use super::layer::{read_back, LayerScratch};
 use super::length::Growth;
-use super::module::warp_per_bucket;
+use super::module::{launch_grid, warp_per_bucket};
 use super::scan::exclusive_scan;
 use super::sum::GpuSum;
 use crate::collectives::Collectives;
@@ -19,11 +19,7 @@ const HISTOGRAM_BLOCKS: usize = 1024;
 
 /// The launch shape the histogram and radix-select passes share: warps spread over buckets, capped at `HISTOGRAM_BLOCKS`.
 pub(super) fn whole_sum_launch(buckets: usize) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: (buckets.div_ceil(8).clamp(1, HISTOGRAM_BLOCKS) as u32, 1, 1),
-        block_dim: (256, 1, 1),
-        shared_mem_bytes: 0,
-    }
+    launch_grid(buckets.div_ceil(8).clamp(1, HISTOGRAM_BLOCKS) as u32, 256, 0)
 }
 
 /// Enqueue `[len, bin 0, …, bin 2047]` of `sum` into `scratch.histogram`, the packed layout of the host's collective `ApproxTopN` pass.
@@ -182,11 +178,7 @@ fn cut_on_device<const W: usize, C: Coefficient>(
             .arg(&mut scratch.cut_counters)
             .arg(&mut scratch.cut_prefix)
             .arg(&buckets)
-            .launch(LaunchConfig {
-                grid_dim: (1, 1, 1),
-                block_dim: (256, 1, 1),
-                shared_mem_bytes: 0,
-            })?;
+            .launch(launch_grid(1, 256, 0))?;
     }
     timed!(scratch.lap(sum, started, |stats| &mut stats.truncate_ns)?);
     scratch.histogram_clean = true;

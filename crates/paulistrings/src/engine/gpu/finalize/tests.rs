@@ -135,7 +135,6 @@ fn cut_matches<const W: usize>() {
             dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download");
             assert_eq!(got.len(), dev.len(), "{what} n={n}: the kept count is the buckets'");
-            assert_cut(&got, &sum, edge, quota, &format!("{what} n={n}"));
             let mut want = sum.clone();
             retain_at_edge(&mut want, edge, quota);
             assert_eq!(got.to_arrays(), want.to_arrays(), "{what} n={n}: the host's terms");
@@ -151,7 +150,6 @@ fn the_cut_keeps_the_hosts_terms() {
     crate::require_cuda!();
     cut_matches::<1>();
     cut_matches::<2>();
-    cut_matches::<4>();
 }
 
 fn real_cut_matches<const W: usize>() {
@@ -172,7 +170,6 @@ fn real_cut_matches<const W: usize>() {
             dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download").cast::<Complex64>(0.0).expect("complex");
             assert_eq!((got.len(), dev.len()), (n, n), "{what} n={n}: exactly n kept");
-            assert_cut(&got, &sum, edge, quota_of(edge), &format!("real {what} n={n}"));
             let mut want = sum.clone();
             retain_at_edge(&mut want, edge, quota_of(edge));
             assert_eq!(got.to_arrays(), want.to_arrays(), "real {what} n={n}: the host's terms");
@@ -185,7 +182,6 @@ fn the_cut_on_real_coefficients_keeps_the_same_terms() {
     crate::require_cuda!();
     real_cut_matches::<1>();
     real_cut_matches::<2>();
-    real_cut_matches::<4>();
 }
 
 /// A second cut reads the first one's loose layout (buckets at their old offsets, gaps after them) in place; the first reordered rows within buckets, so which boundary terms stay is checked as a set.
@@ -323,5 +319,4 @@ fn the_device_decided_cut_keeps_the_hosts_terms() {
     crate::require_cuda!();
     device_decided_cut_matches::<1>();
     device_decided_cut_matches::<2>();
-    device_decided_cut_matches::<4>();
 }

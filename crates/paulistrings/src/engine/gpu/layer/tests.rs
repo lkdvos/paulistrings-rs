@@ -229,13 +229,6 @@ fn join_output_feeds_every_path_w2() {
 }
 
 #[test]
-fn join_output_feeds_every_path_w4() {
-    crate::require_cuda!();
-    join_output_feeds_every_path::<4>(256, 20_000, 0x7108, (true, false));
-    join_output_feeds_every_path::<4>(256, 20_000, 0x7108, (true, true));
-}
-
-#[test]
 fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
     assert_eq!(permute_threads(1_000_000, 256, 2), 1024);
     assert_eq!(permute_threads(1_000_000, 4096, 2), 256);

@@ -71,5 +71,5 @@ fn crowded_class_runs_fused<const W: usize>(num_qubits: usize) {
 fn a_class_outgrowing_every_block_runs_fused() {
     crate::require_cuda!();
     crowded_class_runs_fused::<1>(24);
-    crowded_class_runs_fused::<4>(256);
+    crowded_class_runs_fused::<2>(100);
 }

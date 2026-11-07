@@ -34,7 +34,10 @@ Options:
   --threshold EPS            drop |c| <= EPS
   --approx-topn N            keep N terms per layer (octave cut)
   --collapse                 CollapseSample, with --cache N --samples M --seed S
-  --layers-out FILE          write one TSV row per applied layer
+  --trace                    after the timed run, repeat it with the layer trace on and report the per-kind,
+                             phase, per-partition and pass figures from that run (it settles exact device term
+                             counts, so its wall time is reported apart and is slower)
+  --layers-out FILE          write one TSV row per applied layer of the traced run (needs --trace)
   --json-out FILE            append one JSON line with the run summary (rank 0 only under mpi-gpu)
   -h, --help                 print this message
 
@@ -116,6 +119,7 @@ pub(crate) struct Config {
     pub(crate) rows: Rows,
     pub(crate) dtype: &'static str,
     pub(crate) truncation: Truncation,
+    pub(crate) trace: bool,
     pub(crate) layers_out: Option<String>,
     pub(crate) json_out: Option<String>,
 }
@@ -169,6 +173,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         rows: Rows::Cut,
         dtype: "f64",
         truncation: Truncation::Threshold(0.0),
+        trace: false,
         layers_out: None,
         json_out: None,
     };
@@ -258,6 +263,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
                 samples = Some(n as usize);
             }
             "--seed" => seed = number(value(args, &mut i, flag)?, flag)?,
+            "--trace" => cfg.trace = true,
             "--layers-out" => cfg.layers_out = Some(value(args, &mut i, flag)?.to_string()),
             "--json-out" => cfg.json_out = Some(value(args, &mut i, flag)?.to_string()),
             other => return Err(format!("unknown option '{other}'")),
@@ -272,6 +278,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         cfg.truncation = Truncation::Collapse { cache, samples: samples.unwrap_or(cache), seed };
     } else if cache.is_some() || samples.is_some() {
         return Err("--cache and --samples apply to --collapse only".into());
+    }
+    if cfg.layers_out.is_some() && !cfg.trace {
+        return Err("--layers-out needs --trace".into());
     }
     if cfg.steps == 0 || cfg.threads == 0 {
         return Err("--steps and --threads must be positive".into());

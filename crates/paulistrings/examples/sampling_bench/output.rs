@@ -2,7 +2,7 @@
 
 use std::io::Write;
 
-use paulistrings::PartitionLayerRecord;
+use paulistrings::{PartitionLayerRecord, PartitionTrace};
 
 use crate::cli::{Backend, Config};
 use crate::models::{GateKind, IsingQuench};
@@ -16,8 +16,16 @@ struct KindTotals {
     terms_in: u64,
 }
 
-/// What every output form shares, computed once from the trace; a layer's terms are summed over partitions and its time is the slowest partition's.
+/// What every output form shares: the untraced run's figures, and the traced run's when `--trace` ran one.
 struct Summary {
+    total_ns: u64,
+    /// The largest `terms_after`, exact after each `propagate` call.
+    peak_step_terms: usize,
+    traced: Option<TraceSummary>,
+}
+
+/// Computed once from the trace; a layer's terms are summed over partitions and its time is the slowest partition's.
+struct TraceSummary {
     total_ns: u64,
     layers: usize,
     /// Rows that carry a time: a run of fused layers is one pass.
@@ -58,8 +66,7 @@ fn layer_nanos(row: &PartitionLayerRecord) -> u64 {
     row.nanos.iter().copied().max().unwrap_or(0)
 }
 
-fn summarize_partitions(report: &Report) -> PartitionSummary {
-    let rows = &report.trace.layers;
+fn summarize_partitions(rows: &[PartitionLayerRecord]) -> PartitionSummary {
     let size = rows.first().map_or(1, |row| row.terms_out.len());
     let mut out = PartitionSummary {
         terms_final: rows.last().map_or(vec![0; size], |row| row.terms_out.clone()),
@@ -89,25 +96,38 @@ fn summarize_partitions(report: &Report) -> PartitionSummary {
 }
 
 fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
-    let rows = &report.trace.layers;
+    Summary {
+        total_ns: report.step_ns.iter().sum(),
+        peak_step_terms: report.step_terms.iter().copied().max().unwrap_or(0),
+        traced: report.trace.as_ref().map(|trace| summarize_trace(report, trace, kinds, steps)),
+    }
+}
+
+fn summarize_trace(
+    report: &Report,
+    trace: &PartitionTrace,
+    kinds: &[GateKind],
+    steps: usize,
+) -> TraceSummary {
+    let rows = &trace.layers;
     let per_step = kinds.len();
     let mut by_kind: Vec<(GateKind, KindTotals)> =
         vec![(GateKind::Rx, KindTotals::default()), (GateKind::Rzz, KindTotals::default())];
-    let mut summary = Summary {
-        total_ns: report.step_ns.iter().sum(),
+    let mut summary = TraceSummary {
+        total_ns: report.traced_ns.unwrap_or(0),
         layers: rows.len(),
         passes: rows.iter().filter(|row| layer_nanos(row) > 0).count(),
         max_terms: rows.iter().map(layer_terms).max().unwrap_or(0),
         mean_terms: rows.iter().map(|row| layer_terms(row) as f64).sum::<f64>()
             / rows.len().max(1) as f64,
-        peak_terms: report.trace.peak_terms().unwrap_or(0),
+        peak_terms: trace.peak_terms().unwrap_or(0),
         kinds: Vec::new(),
         rebucket_ns: 0,
         prepare_ns: 0,
         coset_loop_ns: 0,
         finalize_ns: 0,
         step_max_terms: vec![0; steps],
-        partitions: summarize_partitions(report),
+        partitions: summarize_partitions(rows),
     };
     for (i, row) in rows.iter().enumerate() {
         let kind = kinds[row.circuit_index as usize % per_step];
@@ -165,27 +185,57 @@ pub(crate) fn print_report(
         backend_label(cfg, report),
         cfg.truncation.label(),
     );
-    println!("{:>5} {:>11} {:>13} {:>13}", "step", "wall_ms", "terms_after", "max_layer");
+    println!("{:>5} {:>11} {:>13}", "step", "wall_ms", "terms_after");
     for step in 0..cfg.steps {
         println!(
-            "{:>5} {:>11.3} {:>13} {:>13}",
+            "{:>5} {:>11.3} {:>13}",
             step + 1,
             ms(report.step_ns[step]),
-            report.step_terms[step],
-            summary.step_max_terms[step],
+            report.step_terms[step]
         );
     }
     println!(
-        "total_s={:.4} mean_step_ms={:.3} layers={} passes={} terms/layer max={} mean={:.0} peak={}",
+        "total_s={:.4} mean_step_ms={:.3} layers={} peak_terms_after={}",
         summary.total_ns as f64 * 1e-9,
         ms(summary.total_ns) / cfg.steps as f64,
-        summary.layers,
-        summary.passes,
-        summary.max_terms,
-        summary.mean_terms,
-        summary.peak_terms,
+        cfg.steps * kinds.len(),
+        summary.peak_step_terms,
     );
-    for (kind, totals) in &summary.kinds {
+    if cfg.backend != Backend::Cpu {
+        println!(
+            "  upload_ms={:.1} download_ms={:.1} clocks(sm,mem)={}",
+            ms(report.upload_ns),
+            ms(report.download_ns),
+            report.clocks.as_deref().unwrap_or("unknown"),
+        );
+    }
+    if let Some(traced) = &summary.traced {
+        print_trace(report, traced);
+    }
+    #[cfg(feature = "phase-timing")]
+    print_phase_stats(&report.stats);
+    println!("readout <0|O|0> = {:+.12}", report.final_readout);
+    if let Some(path) = &cfg.layers_out {
+        write_layers(path, report, kinds);
+    }
+    if let Some(path) = &cfg.json_out {
+        append_json(path, cfg, quench, words, report, &summary, cfg.steps * kinds.len());
+    }
+}
+
+/// The figures of the traced run, which settles exact device term counts and so runs slower than the reported one.
+fn print_trace(report: &Report, traced: &TraceSummary) {
+    println!(
+        "traced run: total_s={:.4} layers={} passes={} terms/layer max={} mean={:.0} peak={}",
+        traced.total_ns as f64 * 1e-9,
+        traced.layers,
+        traced.passes,
+        traced.max_terms,
+        traced.mean_terms,
+        traced.peak_terms,
+    );
+    println!("  max_layer per step: {:?}", traced.step_max_terms);
+    for (kind, totals) in &traced.kinds {
         println!(
             "  {:<4} layers={} total_ms={:.1} mean_us={:.1} mean_terms_in={:.0}",
             kind.name(),
@@ -197,30 +247,13 @@ pub(crate) fn print_report(
     }
     println!(
         "  layer phases ms (partition 0): rebucket={:.1} prepare={:.1} coset_loop={:.1} finalize={:.1}",
-        ms(summary.rebucket_ns),
-        ms(summary.prepare_ns),
-        ms(summary.coset_loop_ns),
-        ms(summary.finalize_ns),
+        ms(traced.rebucket_ns),
+        ms(traced.prepare_ns),
+        ms(traced.coset_loop_ns),
+        ms(traced.finalize_ns),
     );
-    if cfg.backend != Backend::Cpu {
-        println!(
-            "  upload_ms={:.1} download_ms={:.1} clocks(sm,mem)={}",
-            ms(report.upload_ns),
-            ms(report.download_ns),
-            report.clocks.as_deref().unwrap_or("unknown"),
-        );
-    }
     if report.devices.len() > 1 {
-        print_partitions(report, &summary.partitions, summary.layers);
-    }
-    #[cfg(feature = "phase-timing")]
-    print_phase_stats(&report.stats);
-    println!("readout <0|O|0> = {:+.12}", report.final_readout);
-    if let Some(path) = &cfg.layers_out {
-        write_layers(path, report, kinds);
-    }
-    if let Some(path) = &cfg.json_out {
-        append_json(path, cfg, quench, words, report, &summary);
+        print_partitions(report, &traced.partitions, traced.layers);
     }
 }
 
@@ -303,7 +336,7 @@ fn write_layers(path: &str, report: &Report, kinds: &[GateKind]) {
     let mut text = String::from(
         "application\tcircuit_index\tkind\tbits\tterms_in\tterms_out\tnanos\trebucket_ns\tprepare_ns\tcoset_loop_ns\tfinalize_ns\trecords\tbatches\tpermuted\trescaled\tremote_deltas\trows_exchanged\tterms_out_per_partition\n",
     );
-    for row in &report.trace.layers {
+    for row in &report.trace.as_ref().expect("--layers-out needs --trace").layers {
         let phases = &row.phases[0];
         let device = row.device[0].unwrap_or_default();
         let rows_exchanged: u64 = row.rows_sent.iter().flatten().sum();
@@ -341,39 +374,42 @@ fn append_json(
     words: usize,
     report: &Report,
     summary: &Summary,
+    layers: usize,
 ) {
-    let kinds: serde_json::Map<String, serde_json::Value> = summary
-        .kinds
-        .iter()
-        .map(|(kind, totals)| {
-            let value = serde_json::json!({
-                "layers": totals.layers,
-                "nanos": totals.nanos,
-                "mean_terms_in": totals.terms_in as f64 / totals.layers as f64,
-            });
-            (kind.name().to_string(), value)
-        })
-        .collect();
-    let parts = &summary.partitions;
+    let traced = summary.traced.as_ref();
+    let kinds = traced.map(|t| {
+        t.kinds
+            .iter()
+            .map(|(kind, totals)| {
+                let value = serde_json::json!({
+                    "layers": totals.layers,
+                    "nanos": totals.nanos,
+                    "mean_terms_in": totals.terms_in as f64 / totals.layers as f64,
+                });
+                (kind.name().to_string(), value)
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>()
+    });
+    let parts = traced.map(|t| &t.partitions);
     #[cfg(feature = "phase-timing")]
     let (export_ns, exchange_ns): (Vec<u64>, Vec<u64>) =
         report.stats.iter().map(|s| (s.export_ns, s.exchange_ns)).unzip();
     #[cfg(not(feature = "phase-timing"))]
     let (export_ns, exchange_ns): (Option<Vec<u64>>, Option<Vec<u64>>) = (None, None);
     let partitions = serde_json::json!({
-        "count": parts.terms_final.len(),
+        "count": report.devices.len().max(1),
         "devices": report.devices,
         "rows": cfg.rows.name(),
         "crossed_bonds": report.crossed_bonds,
-        "remote_layers": parts.remote_layers,
-        "terms_final": parts.terms_final,
-        "terms_max": parts.terms_max,
-        "layer_ns": parts.layer_ns,
-        "remote_layer_ns": parts.remote_layer_ns,
-        "collective_ns": parts.collective_ns,
-        "finalize_ns": parts.finalize_ns,
-        "rows_sent": parts.rows_sent,
-        "bytes_sent": parts.bytes_sent,
+        "remote_layers": parts.map(|p| &p.remote_layers),
+        "terms_final": parts.map(|p| &p.terms_final),
+        "terms_max": parts.map(|p| &p.terms_max),
+        "layer_ns": parts.map(|p| &p.layer_ns),
+        "remote_layer_ns": parts.map(|p| &p.remote_layer_ns),
+        "collective_ns": parts.map(|p| &p.collective_ns),
+        "finalize_ns": parts.map(|p| &p.finalize_ns),
+        "rows_sent": parts.map(|p| &p.rows_sent),
+        "bytes_sent": parts.map(|p| &p.bytes_sent),
         "export_ns": export_ns,
         "exchange_ns": exchange_ns,
     });
@@ -391,16 +427,18 @@ fn append_json(
         "total_ns": summary.total_ns,
         "step_ns": report.step_ns,
         "step_terms": report.step_terms,
-        "layers": summary.layers,
-        "passes": summary.passes,
-        "max_terms": summary.max_terms,
-        "mean_terms": summary.mean_terms,
-        "peak_terms": summary.peak_terms,
+        "layers": layers,
+        "peak_step_terms": summary.peak_step_terms,
+        "traced_ns": report.traced_ns,
+        "passes": traced.map(|t| t.passes),
+        "max_terms": traced.map(|t| t.max_terms),
+        "mean_terms": traced.map(|t| t.mean_terms),
+        "peak_terms": traced.map(|t| t.peak_terms),
         "kinds": kinds,
-        "rebucket_ns": summary.rebucket_ns,
-        "prepare_ns": summary.prepare_ns,
-        "coset_loop_ns": summary.coset_loop_ns,
-        "finalize_ns": summary.finalize_ns,
+        "rebucket_ns": traced.map(|t| t.rebucket_ns),
+        "prepare_ns": traced.map(|t| t.prepare_ns),
+        "coset_loop_ns": traced.map(|t| t.coset_loop_ns),
+        "finalize_ns": traced.map(|t| t.finalize_ns),
         "upload_ns": report.upload_ns,
         "download_ns": report.download_ns,
         "clocks": report.clocks,

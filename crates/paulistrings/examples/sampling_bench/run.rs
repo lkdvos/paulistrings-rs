@@ -15,8 +15,10 @@ pub(crate) struct Report {
     pub(crate) step_ns: Vec<u64>,
     pub(crate) step_terms: Vec<usize>,
     pub(crate) final_readout: f64,
-    /// Every partition's rows, an MPI run's ranks included.
-    pub(crate) trace: PartitionTrace,
+    /// Every partition's rows, an MPI run's ranks included; `Some` only for the traced run of `--trace`.
+    pub(crate) trace: Option<PartitionTrace>,
+    /// The traced run's total wall time, `Some` exactly when `trace` is.
+    pub(crate) traced_ns: Option<u64>,
     /// The device upload (the scatter, kernel loading included); zero on the host.
     pub(crate) upload_ns: u64,
     /// The device download before the final readout; zero on the host.
@@ -42,6 +44,7 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
     cfg: &Config,
     quench: &IsingQuench,
     policy: &P,
+    traced: bool,
 ) -> Report {
     let (circuit, _) = quench.circuit::<W>(1);
     let observable = quench.observable_sum::<W, C>();
@@ -51,7 +54,9 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
         .expect("failed to build a rayon thread pool");
     pool.install(|| {
         let mut scratch = LayerScratch::<W, C>::new();
-        scratch.enable_trace();
+        if traced {
+            scratch.enable_trace();
+        }
         let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
         let mut sum = observable;
         for _ in 0..cfg.steps {
@@ -71,7 +76,8 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
             step_ns,
             step_terms,
             final_readout: readout(&sum),
-            trace: scratch.take_trace().expect("tracing was enabled"),
+            trace: scratch.take_trace(),
+            traced_ns: None,
             upload_ns: 0,
             download_ns: 0,
             clocks: None,
@@ -108,6 +114,7 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
     cfg: &Config,
     quench: &IsingQuench,
     policy: &paulistrings::BuiltinTruncation,
+    traced: bool,
 ) -> Report {
     use paulistrings::gpu::{GpuError, GpuPartitionedSum, GpuScatterOptions};
 
@@ -131,7 +138,9 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
     .unwrap_or_else(|e| fail("scatter", e));
     let upload_ns = started.elapsed().as_nanos() as u64;
     drop(observable);
-    split.enable_trace();
+    if traced {
+        split.enable_trace();
+    }
     let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
     for _ in 0..cfg.steps {
         let started = Instant::now();
@@ -150,7 +159,8 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
         step_ns,
         step_terms,
         final_readout: readout(&host),
-        trace: split.take_trace().expect("tracing was enabled"),
+        trace: split.take_trace(),
+        traced_ns: None,
         upload_ns,
         download_ns,
         clocks,

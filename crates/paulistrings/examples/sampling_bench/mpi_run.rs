@@ -142,6 +142,7 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
     cfg: &Config,
     quench: &IsingQuench,
     policy: &BuiltinTruncation,
+    traced: bool,
 ) -> Report {
     let world = SimpleCommunicator::world();
     let (rank, size) = (world.rank() as u32, world.size() as u32);
@@ -167,7 +168,9 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
     split.transport().barrier();
     let upload_ns = started.elapsed().as_nanos() as u64;
     drop(observable);
-    split.enable_trace();
+    if traced {
+        split.enable_trace();
+    }
     let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
     for _ in 0..cfg.steps {
         let started = Instant::now();
@@ -186,8 +189,7 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
     let mut final_readout = [readout(&share)];
     split.transport().allreduce_sum_f64(&mut final_readout);
     let download_ns = started.elapsed().as_nanos() as u64;
-    let local = split.take_trace().expect("tracing was enabled");
-    let trace = gather_trace(split.transport(), local);
+    let trace = split.take_trace().map(|local| gather_trace(split.transport(), local));
     let devices = allgather_u64(split.transport(), &[u64::from(device)]);
     #[cfg(feature = "phase-timing")]
     let stats = {
@@ -199,6 +201,7 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
         step_terms,
         final_readout: final_readout[0],
         trace,
+        traced_ns: None,
         upload_ns,
         download_ns,
         clocks: Some(clocks),

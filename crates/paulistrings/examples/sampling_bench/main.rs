@@ -34,20 +34,24 @@ fn unavailable(what: &str) -> ! {
     std::process::exit(2);
 }
 
-fn run<const W: usize, C: Coefficient>(cfg: &Config, quench: &IsingQuench) {
-    let report = match (cfg.backend, cfg.truncation) {
+fn execute<const W: usize, C: Coefficient>(
+    cfg: &Config,
+    quench: &IsingQuench,
+    traced: bool,
+) -> run::Report {
+    match (cfg.backend, cfg.truncation) {
         (Backend::Cpu, Truncation::Threshold(eps)) => {
-            run::run_cpu::<W, C, _>(cfg, quench, &CoefficientThreshold(eps))
+            run::run_cpu::<W, C, _>(cfg, quench, &CoefficientThreshold(eps), traced)
         }
         (Backend::Cpu, Truncation::ApproxTopN(n)) => {
-            run::run_cpu::<W, C, _>(cfg, quench, &ApproxTopN(n))
+            run::run_cpu::<W, C, _>(cfg, quench, &ApproxTopN(n), traced)
         }
         (Backend::Cpu, Truncation::Collapse { cache, samples, seed }) => {
-            run::run_cpu::<W, C, _>(cfg, quench, &CollapseSample::new(cache, samples, seed))
+            run::run_cpu::<W, C, _>(cfg, quench, &CollapseSample::new(cache, samples, seed), traced)
         }
         #[cfg(feature = "cuda")]
         (Backend::Gpu | Backend::Gpus, truncation) => {
-            run::run_gpu::<W, C>(cfg, quench, &builtin_truncation(truncation))
+            run::run_gpu::<W, C>(cfg, quench, &builtin_truncation(truncation), traced)
         }
         #[cfg(not(feature = "cuda"))]
         (Backend::Gpu | Backend::Gpus, _) => {
@@ -55,13 +59,23 @@ fn run<const W: usize, C: Coefficient>(cfg: &Config, quench: &IsingQuench) {
         }
         #[cfg(all(feature = "cuda", feature = "mpi"))]
         (Backend::MpiGpu, truncation) => {
-            mpi_run::run_mpi_gpu::<W, C>(cfg, quench, &builtin_truncation(truncation))
+            mpi_run::run_mpi_gpu::<W, C>(cfg, quench, &builtin_truncation(truncation), traced)
         }
         #[cfg(not(all(feature = "cuda", feature = "mpi")))]
         (Backend::MpiGpu, _) => {
             unavailable("--backend mpi-gpu needs the `cuda` and `mpi` features")
         }
-    };
+    }
+}
+
+/// The reported run is untraced; `--trace` adds a second, traced run whose rows and wall time ride along.
+fn run<const W: usize, C: Coefficient>(cfg: &Config, quench: &IsingQuench) {
+    let mut report = execute::<W, C>(cfg, quench, false);
+    if cfg.trace {
+        let traced = execute::<W, C>(cfg, quench, true);
+        report.traced_ns = Some(traced.step_ns.iter().sum());
+        report.trace = traced.trace;
+    }
     if report.root {
         let (_, kinds) = quench.circuit::<W>(1);
         output::print_report(cfg, quench, W, &report, &kinds);

@@ -164,7 +164,10 @@ env -u SBATCH_RESERVATION sbatch scripts/slurm/sampling-mpi-gpu.sbatch          
 env -u SBATCH_RESERVATION sbatch --nodes=2 scripts/slurm/sampling-mpi-gpu.sbatch            # 2 nodes, 8 ranks
 ```
 
-Read the JSON lines for `total_ns`, `step_terms`, `readout`, `clocks`, and `partitions`: `terms_max` per partition (balance and the memory high-water), `remote_layers`, `remote_layer_ns` and `collective_ns` (exchange and collapse agreement), `bytes_sent`, and in the `-pt` file `export_ns` and `exchange_ns`.
+`sampling_bench` reports `total_ns` and `step_ns` from an untraced run, since a traced device layer settles exact term counts and runs slower; `--trace` repeats the run traced and adds the trace-derived fields from that second run, whose wall time is `traced_ns`.
+Only the `-pt` cell passes `--trace`.
+Read the JSON lines for `total_ns`, `step_terms`, `peak_step_terms`, `readout`, `clocks`, and `partitions.devices`; the trace fields are `null` in a line without `--trace`: `passes`, `max_terms`, `mean_terms`, `peak_terms`, `kinds` and the layer phases, and under `partitions` `terms_max` per partition (balance and the memory high-water), `remote_layers`, `remote_layer_ns` and `collective_ns` (exchange and collapse agreement), `bytes_sent`.
+`export_ns` and `exchange_ns` under `partitions` come from the `phase-timing` build, traced or not.
 
 ## Bounded steps
 

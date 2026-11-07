@@ -97,16 +97,26 @@ fn a_lone_partition_runs_exact_topn_with_no_collective() {
     assert_eq!(sanity.len(), 1000);
 }
 
-/// A group member (`group_size > 1`) reports `Unsupported` on an exact `TopN` rather than run a wrong local selection.
+/// A member of a two-rank group reports `Unsupported` on an exact `TopN` rather than run a wrong local selection, issuing no collective, while `PerPartition(TopN)` over the same group selects locally.
 #[test]
 fn a_group_member_rejects_exact_topn() {
     crate::require_cuda!();
     let input = rand_sum_real::<1>(500, 32, 0xC013);
+    let group = LoggingTransport::group(2);
     let tree = T::TopN(100);
-    let mut part = part(&input, &tree);
-    part.group_size = 2;
-    PartitionBackend::<1, Complex64, T>::finalize_layer(&mut part, &tree, &one_rank());
-    assert!(matches!(part.take_error(), Err(GpuError::Unsupported(_))));
+    let mut member = part(&input, &tree);
+    member.group_size = 2;
+    PartitionBackend::<1, Complex64, T>::finalize_layer(&mut member, &tree, &group[0]);
+    assert!(matches!(member.take_error(), Err(GpuError::Unsupported(_))));
+    assert!(group[0].log.take().is_empty(), "a rejection issues no collective");
+    assert_eq!(member.len(), input.len(), "a rejected pass keeps every term");
+
+    let local = T::PerPartition(Box::new(T::TopN(100)));
+    let mut member = part(&input, &local);
+    member.group_size = 2;
+    PartitionBackend::<1, Complex64, T>::finalize_layer(&mut member, &local, &group[0]);
+    member.take_error().expect("a per-partition TopN runs on its own device");
+    assert_eq!(member.len(), 100);
 }
 
 /// A partition that already failed still enters every reduction, so a group cannot fall out of step on one device's error.

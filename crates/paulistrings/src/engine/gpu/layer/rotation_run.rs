@@ -196,11 +196,6 @@ pub(crate) fn apply_shared_bytes(coefficient_bytes: usize) -> u32 {
     (RR_ROWS * row_bytes(coefficient_bytes)) as u32
 }
 
-/// Rows a wide pass may give an apply block: four times the largest input that overflowed and four times the previous pass's rows, a power of two; each block takes four times its own input, at least four times the previous pass's rows.
-fn wide_rows(largest_input: u32, previous: usize) -> usize {
-    (4 * largest_input as usize).max(4 * previous).next_power_of_two()
-}
-
 /// Apply the rotation run `layers` to `sum` in one pass, into the spare columns; `Ok(false)`, the sum untouched, when a layer is not a rotation table or a class bucket outgrows its block.
 pub(crate) fn rotation_run_fused<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
@@ -488,7 +483,8 @@ fn apply_wide<const W: usize, C: Coefficient>(
             return Ok(Some(counters));
         }
         let min_rows = 4 * rows;
-        rows = wide_rows(counters[3], rows);
+        // Room for four times the largest overflowed input; each block takes four times its own, at least `min_rows`.
+        rows = (4 * counters[3] as usize).max(min_rows).next_power_of_two();
         if rows > WIDE_MAX_ROWS {
             return Ok(None);
         }

@@ -19,7 +19,7 @@ use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;
-use crate::engine::trace::{DeviceLayerRecord, PartitionLayerRow};
+use crate::engine::trace::PartitionLayerRow;
 use crate::engine::transport::{SoloTransport, Transport};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::desired_bits;
@@ -295,12 +295,8 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         let size = transport.size();
         self.layers_applied += 1;
         if let Some(scratch) = self.scratch.as_mut() {
-            scratch.record = DeviceLayerRecord::default();
-            scratch.refine_passes = 0;
-            scratch.receive_chunks = 0;
-            scratch.ceiling = input_ceiling::<W, C>(policy);
-            scratch.join_histogram =
-                self.group_size == 1 && matches!(policy, BuiltinTruncation::ApproxTopN(_));
+            let lone_approx = matches!(policy, BuiltinTruncation::ApproxTopN(_));
+            scratch.begin(policy, self.group_size == 1 && lone_approx);
         }
         #[cfg(any(test, feature = "test-utils"))]
         if self.fail_at_layer == Some(self.layers_applied - 1) {
@@ -359,26 +355,20 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             Run::Rotations(layers) => layers.len(),
             Run::Permutations(steps) => steps.len(),
         };
-        let first = self.layers_applied;
         self.layers_applied += layers;
         if let Some(scratch) = self.scratch.as_mut() {
-            scratch.record = DeviceLayerRecord::default();
-            scratch.refine_passes = 0;
-            scratch.receive_chunks = 0;
-            scratch.ceiling = input_ceiling::<W, C>(policy);
-            scratch.join_histogram = false;
-            scratch.histogram_fresh = false;
+            scratch.begin(policy, false);
         }
         // An injected failure names its own layer of the run, as the one-by-one path would.
         #[cfg(any(test, feature = "test-utils"))]
-        if let Some(layer) =
-            self.fail_at_layer.filter(|layer| (first..first + layers).contains(layer))
+        if let Some(layer) = self
+            .fail_at_layer
+            .filter(|layer| (self.layers_applied - layers..self.layers_applied).contains(layer))
         {
-            self.layers_applied = layer + 1;
+            let end = std::mem::replace(&mut self.layers_applied, layer + 1);
             self.record(Err(GpuError::Unsupported("injected before the exchange")));
-            self.layers_applied = first + layers;
+            self.layers_applied = end;
         }
-        let _ = first;
         let (keep, target_bits) = (self.keep, self.hash.bits());
         let Some((sum, scratch)) = self.healthy_parts() else {
             return;
@@ -419,12 +409,6 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             self.record(result);
         }
     }
-}
-
-/// The policy's ceiling on a layer's input, its run length limit, which every layer of a run stays within; `None` when it sets none.
-fn input_ceiling<const W: usize, C: Coefficient>(policy: &BuiltinTruncation) -> Option<usize> {
-    let limit = <BuiltinTruncation as crate::TruncationPolicy<W, C>>::run_length_limit(policy);
-    (limit != 0 && limit != usize::MAX).then_some(limit)
 }
 
 /// A failed or skipped layer's counts: nothing moved, but the remote-delta count the group agrees on.

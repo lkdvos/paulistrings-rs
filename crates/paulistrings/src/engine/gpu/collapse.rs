@@ -10,7 +10,7 @@ use cudarc::driver::{CudaSlice, CudaStream, LaunchConfig, PushKernelArg};
 use super::columns::grow;
 use super::error::GpuError;
 use super::finalize::whole_sum_launch;
-use super::layer::LayerScratch;
+use super::layer::{read_back, LayerScratch};
 use super::module::{thread_per, warp_per_bucket};
 use super::sum::GpuSum;
 use crate::coefficient::Coefficient;
@@ -255,8 +255,10 @@ fn group_collapse<const W: usize, C: Coefficient>(
     let mut failure = Ok(());
     let mut estimates = vec![0.0f64; size];
     if let Some((sum, scratch)) = parts.as_mut() {
-        match local_estimate(sum, &mut scratch.collapse) {
-            Ok(total) => estimates[rank] = total,
+        let total = enqueue_total(sum, &mut scratch.collapse)
+            .and_then(|()| read_back(&sum.stream, &mut scratch.stats, &scratch.collapse.total));
+        match total {
+            Ok(total) => estimates[rank] = total[0],
             Err(e) => failure = Err(e),
         }
     }
@@ -266,8 +268,15 @@ fn group_collapse<const W: usize, C: Coefficient>(
 
     let mut wholes = vec![0u64; size];
     if let (Some((sum, scratch)), Ok(())) = (parts.as_mut(), &failure) {
-        match local_whole(sum, &mut scratch.collapse, estimate) {
-            Ok(whole) => wholes[rank] = whole,
+        // This partition's fixed-point total under the group's estimate; its bucket offsets stay for the pick.
+        let frame = sum
+            .stream
+            .memcpy_htod(&[estimate], &mut scratch.collapse.total)
+            .map_err(GpuError::from)
+            .and_then(|()| enqueue_offsets(sum, &mut scratch.collapse))
+            .and_then(|()| read_back(&sum.stream, &mut scratch.stats, &scratch.collapse.frame));
+        match frame {
+            Ok(frame) => wholes[rank] = frame[1],
             Err(e) => failure = Err(e),
         }
     }
@@ -290,30 +299,6 @@ fn group_collapse<const W: usize, C: Coefficient>(
         );
     }
     Ok(())
-}
-
-/// This partition's `Σ|c|` estimate, read back.
-fn local_estimate<const W: usize, C: Coefficient>(
-    sum: &GpuSum<W, C>,
-    scratch: &mut CollapseScratch,
-) -> Result<f64, GpuError> {
-    enqueue_total(sum, scratch)?;
-    let total = sum.stream.clone_dtoh(&scratch.total)?;
-    sum.stream.synchronize()?;
-    Ok(total[0])
-}
-
-/// This partition's fixed-point total under the group's `estimate`, read back, with its bucket offsets left in `scratch`.
-fn local_whole<const W: usize, C: Coefficient>(
-    sum: &GpuSum<W, C>,
-    scratch: &mut CollapseScratch,
-    estimate: f64,
-) -> Result<u64, GpuError> {
-    sum.stream.memcpy_htod(&[estimate], &mut scratch.total)?;
-    enqueue_offsets(sum, scratch)?;
-    let frame = sum.stream.clone_dtoh(&scratch.frame)?;
-    sum.stream.synchronize()?;
-    Ok(frame[1])
 }
 
 #[cfg(test)]

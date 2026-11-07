@@ -190,20 +190,6 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     scratch.resolve(sum)
 }
 
-/// The table `first` then `second` apply, when [`LocalPtm::tensor`] joins them.
-fn joined<const W: usize, C: Coefficient>(
-    first: &Prepared<W, C>,
-    second: &Prepared<W, C>,
-    hash: &Gf2Hash<W>,
-) -> Option<Prepared<W, C>> {
-    match (first, second) {
-        (Prepared::Local(a), Prepared::Local(b)) => {
-            LocalPtm::tensor(a, b, hash).map(Prepared::Local)
-        }
-        _ => None,
-    }
-}
-
 /// Apply the rotation run `layers` to `sum` as fused layers, a pair of one-qubit tables on different qubits joined into one when `keep` has no per-term filter; only a lone partition takes rotation runs, since a layer of a group never refines off-schedule.
 pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
@@ -219,8 +205,12 @@ pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     let plan = PartitionPlan::default();
     let mut rest = layers;
     while let Some((first, after)) = rest.split_first() {
-        let pair =
-            after.first().filter(|_| joins).and_then(|second| joined(first, second, &sum.hash));
+        let pair = match (first, after.first().filter(|_| joins)) {
+            (Prepared::Local(a), Some(Prepared::Local(b))) => {
+                LocalPtm::tensor(a, b, &sum.hash).map(Prepared::Local)
+            }
+            _ => None,
+        };
         let (prepared, taken) = match pair {
             Some(pair) => (Cow::Owned(pair), 2),
             None => (Cow::Borrowed(first), 1),

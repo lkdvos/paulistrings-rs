@@ -33,6 +33,7 @@ use crate::engine::timing::timed;
 use crate::engine::trace::DeviceLayerRecord;
 use crate::engine::transport::Transport;
 use crate::truncation::builtin::APPROX_BINS;
+use crate::{BuiltinTruncation, TruncationPolicy};
 
 mod fast_paths;
 mod fused;
@@ -418,6 +419,17 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
             self.bucket_at_key = Some(key);
         }
         Ok(())
+    }
+
+    /// Clear the per-layer counters before a layer or a run under `policy`, whose run length limit becomes the ceiling on a layer's input; `join_histogram` as the field.
+    pub(crate) fn begin(&mut self, policy: &BuiltinTruncation, join_histogram: bool) {
+        let limit = <BuiltinTruncation as TruncationPolicy<W, C>>::run_length_limit(policy);
+        self.ceiling = (limit != 0 && limit != usize::MAX).then_some(limit);
+        self.record = DeviceLayerRecord::default();
+        self.refine_passes = 0;
+        self.receive_chunks = 0;
+        self.join_histogram = join_histogram;
+        self.histogram_fresh = false;
     }
 
     /// Refine `sum` to `bits`, counting the passes into the layer's record.

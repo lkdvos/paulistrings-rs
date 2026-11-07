@@ -16,11 +16,6 @@ use crate::engine::gpu::truncation::KeepProgram;
 use crate::engine::timing::timed;
 use crate::truncation::builtin::APPROX_BINS;
 
-/// Slots of the join layer's table, as `log2`, for source buckets of up to `longest` rows: at most half full.
-pub(in crate::engine::gpu) fn join_table_bits(longest: u32) -> u32 {
-    (2 * longest.max(16)).next_power_of_two().trailing_zeros()
-}
-
 impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
     /// `k_join_rows` and its scan into `segment_start`: each position's bound, the lengths of the two source buckets it reads, `2 · len` rows in all; nothing is read back.
     /// It replaces `k_count` and `k_rows` for a join, at the cost of output room for the rows the partner entry does not emit.
@@ -80,7 +75,8 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
         }
     }
     out.reserve(need, b)?;
-    let table_bits = join_table_bits(longest);
+    // The largest block's table, at most half full.
+    let table_bits = (2 * longest.max(16)).next_power_of_two().trailing_zeros();
     // The next pass's histogram comes out of the join itself (`LayerScratch::histogram_fresh`).
     let histogram = scratch.join_histogram;
     if histogram && !scratch.histogram_clean {

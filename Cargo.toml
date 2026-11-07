@@ -15,6 +15,10 @@ repository = "https://github.com/lkdvos/paulistrings-rs"
 [workspace.dependencies]
 paulistrings = { path = "crates/paulistrings", version = "0.3.1" }
 
+# Host oracles in tests run several times faster; CLAUDE.md §Commands has the opt-level 0 check.
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

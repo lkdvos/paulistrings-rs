@@ -43,6 +43,7 @@ uv run pytest python/paulistrings/tests
 MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # debug build; every uv command on that venv must then set it
 ```
 
+The dev profile builds at `opt-level = 1`; an occasional `cargo test --workspace --config profile.dev.opt-level=0` catches debug-only stack growth.
 Benchmark `--release` only (`lto = "fat"`, `codegen-units = 1`).
 After changing a script, the probe or a Slurm template, `scripts/smoke-tooling.sh` runs every measurement tool once at smoke size and skips what the host lacks.
 The measurement probe, which also drives the partitioned engine (`--partition-cpus` takes one cpulist per partition, as `numactl -H` prints them):

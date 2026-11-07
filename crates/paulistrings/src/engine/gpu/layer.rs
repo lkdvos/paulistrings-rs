@@ -651,9 +651,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
     }
     let record_cap = sum.kernels.layer_cap();
     let mut counts = LayerExchangeCounts::none(size);
-    let join = table.join.filter(|_| scratch.options.join);
-    scratch.record.joined = join.is_some();
-    if let Some(join) = join {
+    scratch.record.joined = table.join.is_some();
+    if let Some(join) = table.join {
         debug_assert!(!has_remote, "a join table has no received entry");
         // A join writes straight into the output, so only its source buckets' length is capped: `k_join`'s 13-bit row index; a bound past the cap is settled before it refines.
         let longest = loop {

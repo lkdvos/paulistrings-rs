@@ -233,10 +233,7 @@ pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     target_bits: u8,
     scratch: &mut LayerScratch<W, C>,
 ) -> Result<(), GpuError> {
-    if *keep != KeepProgram::KEEP
-        && scratch.options.join
-        && rotation_run_fused(sum, layers, keep, target_bits, scratch)?
-    {
+    if *keep != KeepProgram::KEEP && rotation_run_fused(sum, layers, keep, target_bits, scratch)? {
         return Ok(());
     }
     let joins = *keep == KeepProgram::KEEP;

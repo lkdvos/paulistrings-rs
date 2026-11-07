@@ -497,7 +497,7 @@ Open: Clifford layers with received entries, and an emitter count replacing `k_p
 ### Rotation layers join instead of sorting
 
 A two-entry table with one identity-mask entry (every rotation, tabulated or wide) and no received entry runs `k_join`: per output bucket a shared open-addressing table over the base rows a partner can land on, probed by the partner rows; every other row is written as it is read, so there is no sort, no fallback and no segmented sum (`JoinTable` in `engine/gpu/prepared.rs`).
-A/B on ccqlin038's A6000 against the radix fused layer, same binary (`GpuLayerOptions::join`), `sampling_bench` release with the JCC flag, f64, SM 1800–1890 MHz, memory 7601 MHz:
+A/B on ccqlin038's A6000 against the radix fused layer, same binary (a since-removed switch), `sampling_bench` release with the JCC flag, f64, SM 1800–1890 MHz, memory 7601 MHz:
 
 | cell | radix wall | join wall | Δ wall | rotation layer mean, radix → join |
 |---|---|---|---|---|

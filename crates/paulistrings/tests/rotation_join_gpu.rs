@@ -1,8 +1,8 @@
-//! The device join layer for rotations against the host `propagate` and against the device sort path, in every coefficient type the device sums take.
+//! The device join layer for rotations against the host `propagate`, in every coefficient type the device sums take.
 //! Every case returns early without a device.
 
 use num_complex::Complex64;
-use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum};
+use paulistrings::gpu::GpuPartitionedSum;
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     assert_runs_agree, coefficient_tolerance, propagate_discarding, rand_sum_real,
@@ -18,13 +18,11 @@ fn device<const W: usize, C: Coefficient>(
     rotation: &PauliRotation<W>,
     sum: &PauliSum<W>,
     policy: &BuiltinTruncation,
-    join: bool,
 ) -> (PauliSum<W>, bool) {
     let mut circuit = Circuit::<W>::new(sum.num_qubits());
     circuit.push(rotation.clone());
     let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
     let mut dev = GpuPartitionedSum::<W, C>::from_host(&narrowed, 0).expect("upload");
-    dev.set_layer_options(GpuLayerOptions { join, ..GpuLayerOptions::default() });
     dev.enable_trace();
     dev.propagate(&circuit, policy.clone(), Direction::Heisenberg).expect("device propagate");
     let got = dev.gather().expect("download").cast::<Complex64>(0.0).expect("widening");
@@ -32,7 +30,7 @@ fn device<const W: usize, C: Coefficient>(
     (got, layer.device[0].expect("a device partition").joined)
 }
 
-/// The join layer in `C` against the host and the sort path, for `rotation` on `sum` under every policy.
+/// The join layer in `C` against the host, for `rotation` on `sum` under every policy.
 fn agrees_as<const W: usize, C: Coefficient>(
     rotation: &PauliRotation<W>,
     sum: &PauliSum<W>,
@@ -52,19 +50,9 @@ fn agrees_as<const W: usize, C: Coefficient>(
         let what = format!("{what} {} {policy:?}", C::NAME);
         let (want, discarded) =
             propagate_discarding(&circuit, sum.clone(), &policy, Direction::Heisenberg);
-        let (joined, took) = device::<W, C>(rotation, sum, &policy, true);
+        let (joined, took) = device::<W, C>(rotation, sum, &policy);
         assert!(took, "{what}: the layer must join");
-        assert_runs_agree(policy.clone(), discarded, &joined, &want, tol, &what);
-        let (sorted, took) = device::<W, C>(rotation, sum, &policy, false);
-        assert!(!took, "{what}: the sort path must not join");
-        assert_runs_agree(
-            policy,
-            discarded,
-            &joined,
-            &sorted,
-            tol,
-            &format!("{what} join against sort"),
-        );
+        assert_runs_agree(policy, discarded, &joined, &want, tol, &what);
     }
 }
 

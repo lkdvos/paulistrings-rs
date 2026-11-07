@@ -126,7 +126,7 @@ pub struct DeviceLayerRecord {
     pub rescaled: bool,
     /// The layer took the permutation path.
     pub permuted: bool,
-    /// The layer took the hash join (`GpuLayerOptions::join`) instead of the fused layer's sort.
+    /// The layer took the hash join (`k_join`) or a fused rotation run instead of the fused layer's sort.
     pub joined: bool,
     /// The fused layer reduced by the segmented scan rather than the head-serial walk.
     pub dense: bool,

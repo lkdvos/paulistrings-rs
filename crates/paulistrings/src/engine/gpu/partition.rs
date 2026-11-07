@@ -202,6 +202,14 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         self.sum.as_ref().map_or(0, GpuSum::len)
     }
 
+    fn exact_len(&mut self) -> usize {
+        if let Some((sum, _)) = self.healthy_parts() {
+            let result = sum.settle_lengths();
+            self.record(result);
+        }
+        self.len()
+    }
+
     fn hash(&self) -> &Gf2Hash<W> {
         &self.hash
     }

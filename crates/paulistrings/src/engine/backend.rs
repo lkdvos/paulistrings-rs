@@ -27,6 +27,10 @@ pub trait PartitionStorage<const W: usize, C: Coefficient = num_complex::Complex
     Send + Sized
 {
     fn len(&self) -> usize;
+    /// [`len`](Self::len) made exact for a trace row, where a backend whose mid-call length is a bound settles it.
+    fn exact_len(&mut self) -> usize {
+        self.len()
+    }
     fn hash(&self) -> &Gf2Hash<W>;
     fn refine(&mut self);
     /// Halve the bucket count until `bits` remain; called only when the count this partition settles on for a layer is below the one it holds.

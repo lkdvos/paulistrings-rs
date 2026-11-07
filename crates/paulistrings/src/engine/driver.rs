@@ -377,7 +377,8 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         let debug_enabled = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
         let timed_layer = tracing || debug_enabled;
         let layer_start = timed_layer.then(Instant::now);
-        let terms_before = local.len();
+        // A traced layer reads exact counts, which on a device costs a synchronization; untraced, the length is the backend's bound.
+        let terms_before = if tracing { local.exact_len() } else { local.len() };
         let bits_before = local.hash().bits();
         let mut phases = LayerPhases::default();
         let mut clock = LayerClock::new(if tracing { layer_start } else { None });
@@ -450,6 +451,9 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 local.finalize_layer(policy, &counting);
                 lap!(stamp, local.stats().finalize_ns);
                 clock.lap(&mut phases.finalize_ns);
+            }
+            if tracing {
+                local.exact_len();
             }
             // Per layer of the run, as the one-by-one path counts them.
             tally!(local.stats().layers, end - application_index - 1);
@@ -528,7 +532,8 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 crate::engine::trace::FineLayerPhases::between(&before, &local.phase_snapshot())
             });
         }
-        tally!(local.stats().terms_out, local.len());
+        let terms_out = if tracing { local.exact_len() } else { local.len() };
+        tally!(local.stats().terms_out, terms_out);
 
         // The trace sits behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion.
         let remote_deltas = counts.remote_deltas;
@@ -543,7 +548,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 application_index: application_index as u32,
                 gate_name: channel.debug_name(),
                 terms_in: terms_before,
-                terms_out: local.len(),
+                terms_out,
                 rows_sent: counts.rows_sent,
                 bytes_sent: counts.bytes_sent,
                 rows_received: counts.rows_received,

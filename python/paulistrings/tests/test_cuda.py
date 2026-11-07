@@ -284,8 +284,20 @@ def test_stats_name_the_device():
     got, stats = propagated_with_stats(s, c, direction="heisenberg", device=0)
     _assert_terms_close(got, want)
     assert stats.layers == len(c)
-    assert stats.terms_in == host_stats.terms_in
-    assert stats.terms_out == host_stats.terms_out
+    # A run is one pass, so its rows after the first carry no time and the run's output, and the device takes longer
+    # rotation runs than the host: every layer both run alone, and every run boundary both share, must agree exactly.
+    def starts(run_stats):
+        return {i for i, ns in enumerate(run_stats.nanos) if ns > 0}
+
+    def ends(run_stats):
+        return {i - 1 for i in starts(run_stats) if i > 0} | {len(c) - 1}
+
+    shared_starts, shared_ends = starts(stats) & starts(host_stats), ends(stats) & ends(host_stats)
+    assert 0 in shared_starts and len(shared_starts) > len(c) // 2
+    for i in shared_starts:
+        assert stats.terms_in[i] == host_stats.terms_in[i], i
+    for i in shared_ends:
+        assert stats.terms_out[i] == host_stats.terms_out[i], i
     assert stats.final_terms == len(got)
     part = stats.partition
     assert part.partitions == 1

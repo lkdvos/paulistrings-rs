@@ -197,7 +197,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
 }
 
 impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<W, C> {
-    /// An upper bound on the terms mid-call, as [`GpuSum::len`], so the driver's run admission stays safe; exact once the call settles.
+    /// An upper bound on the terms mid-call, as [`GpuSum::len`], so the driver's run admission stays safe; exact once the call settles, a failed lone call included.
     fn len(&self) -> usize {
         self.sum.as_ref().map_or(0, GpuSum::len)
     }
@@ -253,7 +253,14 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
     }
 
     /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so, and make the length exact.
+    /// A failed lone partition only settles its length, which holds the last completed layer's output; a failed group member is poisoned, and a device that cannot scan keeps the bound and the recorded error.
     fn settle(&mut self) {
+        if self.error.is_some() {
+            if let (Some(sum), 1) = (self.sum.as_mut(), self.group_size) {
+                let _ = sum.settle_lengths();
+            }
+            return;
+        }
         let bits = self.hash.bits();
         if let Some((sum, _)) = self.healthy_parts() {
             let result = match sum.hash.bits() < bits {

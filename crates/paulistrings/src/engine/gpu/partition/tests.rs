@@ -134,6 +134,27 @@ fn a_failed_partition_still_enters_the_reduction() {
     assert_eq!(part.len(), input.len(), "a failed partition keeps its terms");
 }
 
+/// A lone partition that fails mid-call still settles its length, so the split's `len` after the error is the last completed layer's exact count rather than the bound a join leaves.
+#[test]
+fn a_failed_lone_call_settles_its_length() {
+    crate::require_cuda!();
+    use crate::channel::PtmChannel;
+    use crate::engine::gpu::driver::GpuPartitionedSum;
+    use crate::engine::Direction;
+    let mut circuit = crate::test_support::trotter_circuit::<1>(8, 0.4);
+    let failing = circuit.channels.len();
+    circuit.push(PtmChannel::depolarizing(0, 0.1));
+    let input = rand_sum_real::<1>(200, 8, 0xFA15);
+    let mut resident = GpuPartitionedSum::<1>::from_host(&input, 0).expect("upload");
+    let plan = FaultPlan { at_layer: Some(failing), ..FaultPlan::default() };
+    resident.backends_mut()[0].set_fault_plan(plan);
+    let ran = resident.propagate(&circuit, T::ApproxTopN(1 << 20), Direction::Heisenberg);
+    assert!(matches!(ran, Err(GpuError::Unsupported(_))), "{ran:?}");
+    let exact = resident.gather().expect("a lone split gathers after a failure").len();
+    assert!(exact > input.len(), "the rotations grow the sum");
+    assert_eq!(resident.len(), exact);
+}
+
 /// A lone partition already within `n` keeps every term, and one term more cuts to `n`, with no reduction either way.
 #[test]
 fn a_lone_partition_within_n_skips_the_approx_pass() {

@@ -25,8 +25,8 @@ Options:
   --threads N                host threads (default: all available)
   --device N|auto            the ordinal under gpu (default 0), or this rank's under mpi-gpu
                              (default auto: a device near the rank's CPUs)
-  --devices LIST             gpus: comma-separated ordinals, one partition each (default: 0)
-  --per-device K             gpus: K partitions on every listed device, a testing shape (default: 1)
+  --devices LIST             gpus: comma-separated ordinals, one partition each, repeats allowed
+                             (default: 0)
   --rows seeded|cut          gpus and mpi-gpu: partition rows drawn from the sum's hash seed, or a
                              cut of the qubits into equal contiguous blocks, under which every
                              R_X is local and only the bonds crossing blocks exchange (default: cut)
@@ -34,8 +34,6 @@ Options:
   --threshold EPS            drop |c| <= EPS
   --approx-topn N            keep N terms per layer (octave cut)
   --collapse                 CollapseSample, with --cache N --samples M --seed S
-  --readout-every-step       read <O> after every step, outside the timed region
-  --one-call                 propagate all steps in one call; step times come from the trace
   --layers-out FILE          write one TSV row per applied layer
   --json-out FILE            append one JSON line with the run summary (rank 0 only under mpi-gpu)
   -h, --help                 print this message
@@ -53,7 +51,7 @@ pub(crate) enum Model {
 pub(crate) enum Backend {
     Cpu,
     Gpu,
-    /// One sum over `devices.len() * per_device` partitions of this process.
+    /// One sum over `devices.len()` partitions of this process.
     Gpus,
     /// One partition per MPI rank, each on its own device.
     MpiGpu,
@@ -115,12 +113,9 @@ pub(crate) struct Config {
     /// `--device`; `None` is ordinal 0 under `gpu` and the rank's nearest device under `mpi-gpu`.
     pub(crate) device: Option<u32>,
     pub(crate) devices: Vec<u32>,
-    pub(crate) per_device: usize,
     pub(crate) rows: Rows,
     pub(crate) dtype: &'static str,
     pub(crate) truncation: Truncation,
-    pub(crate) readout_every_step: bool,
-    pub(crate) one_call: bool,
     pub(crate) layers_out: Option<String>,
     pub(crate) json_out: Option<String>,
 }
@@ -171,12 +166,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
         device: None,
         devices: vec![0],
-        per_device: 1,
         rows: Rows::Cut,
         dtype: "f64",
         truncation: Truncation::Threshold(0.0),
-        readout_every_step: false,
-        one_call: false,
         layers_out: None,
         json_out: None,
     };
@@ -230,7 +222,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
                     .map(|d| number(d.trim(), flag))
                     .collect::<Result<_, _>>()?;
             }
-            "--per-device" => cfg.per_device = number(value(args, &mut i, flag)?, flag)?,
             "--rows" => {
                 cfg.rows = match value(args, &mut i, flag)? {
                     "seeded" => Rows::Seeded,
@@ -267,8 +258,6 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
                 samples = Some(n as usize);
             }
             "--seed" => seed = number(value(args, &mut i, flag)?, flag)?,
-            "--readout-every-step" => cfg.readout_every_step = true,
-            "--one-call" => cfg.one_call = true,
             "--layers-out" => cfg.layers_out = Some(value(args, &mut i, flag)?.to_string()),
             "--json-out" => cfg.json_out = Some(value(args, &mut i, flag)?.to_string()),
             other => return Err(format!("unknown option '{other}'")),
@@ -284,17 +273,14 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     } else if cache.is_some() || samples.is_some() {
         return Err("--cache and --samples apply to --collapse only".into());
     }
-    if cfg.steps == 0 || cfg.threads == 0 || cfg.per_device == 0 || cfg.devices.is_empty() {
-        return Err("--steps, --threads, --per-device and --devices must be positive".into());
+    if cfg.steps == 0 || cfg.threads == 0 {
+        return Err("--steps and --threads must be positive".into());
     }
-    let partitions = cfg.devices.len() * cfg.per_device;
-    if cfg.backend == Backend::Gpus && !partitions.is_power_of_two() {
+    if cfg.backend == Backend::Gpus && !cfg.devices.len().is_power_of_two() {
         return Err(format!(
-            "--devices x --per-device makes {partitions} partitions, not a power of two"
+            "--devices names {} partitions, not a power of two",
+            cfg.devices.len()
         ));
-    }
-    if cfg.one_call && cfg.readout_every_step {
-        return Err("--one-call has no step boundaries to read out at".into());
     }
     Ok(cfg)
 }

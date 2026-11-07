@@ -17,10 +17,6 @@ use cli::{parse_args, Backend, Config, Truncation, USAGE};
 use models::IsingQuench;
 use paulistrings::Coefficient;
 
-fn collapse_sample(cache: usize, samples: usize, seed: u64) -> CollapseSample {
-    CollapseSample::new(cache, samples, seed)
-}
-
 /// `--threshold`, `--approx-topn` or `--collapse` as the device drivers take it.
 #[cfg(feature = "cuda")]
 fn builtin_truncation(truncation: Truncation) -> paulistrings::BuiltinTruncation {
@@ -28,7 +24,7 @@ fn builtin_truncation(truncation: Truncation) -> paulistrings::BuiltinTruncation
         Truncation::Threshold(eps) => CoefficientThreshold(eps).into(),
         Truncation::ApproxTopN(n) => ApproxTopN(n).into(),
         Truncation::Collapse { cache, samples, seed } => {
-            collapse_sample(cache, samples, seed).into()
+            CollapseSample::new(cache, samples, seed).into()
         }
     }
 }
@@ -47,7 +43,7 @@ fn run<const W: usize, C: Coefficient>(cfg: &Config, quench: &IsingQuench) {
             run::run_cpu::<W, C, _>(cfg, quench, &ApproxTopN(n))
         }
         (Backend::Cpu, Truncation::Collapse { cache, samples, seed }) => {
-            run::run_cpu::<W, C, _>(cfg, quench, &collapse_sample(cache, samples, seed))
+            run::run_cpu::<W, C, _>(cfg, quench, &CollapseSample::new(cache, samples, seed))
         }
         #[cfg(feature = "cuda")]
         (Backend::Gpu | Backend::Gpus, truncation) => {

@@ -228,6 +228,53 @@ fn join_output_feeds_every_path_w2() {
     join_output_feeds_every_path::<2>(100, 20_000, 0x7107, (true, true));
 }
 
+/// A join and a fused layer whose input length is a lagged bound past the 32-bit record range settle it rather than refuse.
+fn an_inflated_length_bound_is_settled_before_the_record_range_check<const W: usize>() {
+    use crate::engine::gpu::length::Growth;
+    let num_qubits = 64 * W;
+    let input = rand_sum::<W>(1_000, num_qubits, 0xB0D + W as u64);
+    let channels: [Box<dyn Channel<W>>; 2] = [
+        Box::new(zz_rotation::<W>(0, 1, 0.3)),
+        Box::new(PtmChannel::unitary_2q(0, 1, haar_su4_matrix())),
+    ];
+    let rows = crate::pauli_sum::hash::PartitionRows::<W>::none(num_qubits);
+    let solo = InProcessTransport::group(1);
+    for (joins, channel) in [true, false].into_iter().zip(&channels) {
+        let mut sum = GpuSum::from_host(&input, 0).expect("upload");
+        let mut scratch = LayerScratch::new(&sum, GpuLayerOptions::default()).expect("scratch");
+        // Unpublished joins leave a bound of `2^22` times the length, past `u32::MAX` records.
+        for _ in 0..22 {
+            sum.record_step(Growth::Join, None).expect("step");
+        }
+        assert!(2 * sum.len() >= u32::MAX as usize);
+        let prepared = channel.prepare(sum.hash(), false).expect("prepared");
+        let plan = PartitionPlan::new(&prepared, &rows, 0);
+        let layer = DeviceLayer {
+            prepared: &prepared,
+            plan: &plan,
+            keep: &KeepProgram::KEEP,
+            target_bits: sum.bits(),
+        };
+        apply_layer_device(&mut sum, &layer, &mut scratch, &solo[0])
+            .unwrap_or_else(|e| panic!("W={W} joins={joins}: {e}"));
+        assert_eq!(scratch.record.joined, joins);
+        let want = naive_apply_layer(&input, channel.as_ref(), &KeepAll, false);
+        assert_terms_close(&sum.to_host().expect("download"), &want, 1e-11, "settled bound");
+    }
+}
+
+#[test]
+fn an_inflated_length_bound_is_settled_before_the_record_range_check_w1() {
+    crate::require_cuda!();
+    an_inflated_length_bound_is_settled_before_the_record_range_check::<1>();
+}
+
+#[test]
+fn an_inflated_length_bound_is_settled_before_the_record_range_check_w2() {
+    crate::require_cuda!();
+    an_inflated_length_bound_is_settled_before_the_record_range_check::<2>();
+}
+
 #[test]
 fn the_scatter_block_follows_the_average_bucket_within_the_fused_width() {
     assert_eq!(permute_threads(1_000_000, 256, 2), 1024);

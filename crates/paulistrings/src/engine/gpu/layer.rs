@@ -629,7 +629,6 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         return Ok(LayerExchangeCounts::none(size));
     }
     let solo = size == 1;
-    let n_in = sum.len();
     // Every failure before the exchange still owes the partners their call.
     let pair = |scratch: &mut LayerScratch<W, C>, bits: u8| {
         if has_remote {
@@ -641,9 +640,18 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             );
         }
     };
-    if n_in.saturating_mul(table.fanout.max(1)) >= u32::MAX as usize {
-        pair(scratch, sum.hash.bits());
-        return Err(GpuError::Unsupported("more than 2^32 pre-dedup records in one layer"));
+    // Records are counted in 32 bits, a join's exactly twice its input; a lagged bound past that range is settled before it refuses.
+    let records_per_term = if table.join.is_some() { 2 } else { table.fanout.max(1) };
+    let fits = |len: usize| len.saturating_mul(records_per_term) < u32::MAX as usize;
+    if !fits(sum.len()) {
+        if let Err(e) = sum.settle_lengths() {
+            pair(scratch, sum.hash.bits());
+            return Err(e);
+        }
+        if !fits(sum.len()) {
+            pair(scratch, sum.hash.bits());
+            return Err(GpuError::Unsupported("more than 2^32 pre-dedup records in one layer"));
+        }
     }
     // A remote layer runs at exactly the agreed `target_bits`, since partners index its blocks by the count; a local layer refines freely, as counts already differ mid-call (engine/driver.rs).
     let refines = solo || !has_remote;
@@ -694,11 +702,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
             scratch.refine(sum, sum.hash.bits() + 1)?;
             table.rehash(&sum.hash);
         };
-        // `k_join_rows` totals exactly twice the input, so twice its bound bounds the output.
-        let records = (2 * sum.len()) as u32;
-        scratch.record.records = u64::from(records);
         scratch.record.batches = 1;
-        join_layer(sum, scratch, &table, join, keep, longest, records)?;
+        join_layer(sum, scratch, &table, join, keep, longest)?;
         return Ok(counts);
     }
     // Oversize blocks and over-long source buckets are known from the count table; a layer that may refine takes one more bit, which halves both.

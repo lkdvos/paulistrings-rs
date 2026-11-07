@@ -7,6 +7,7 @@ use crate::engine::gpu::module::thread_per;
 use crate::engine::gpu::scan::exclusive_scan;
 
 use super::LayerScratch;
+use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::length::Growth;
 use crate::engine::gpu::module::{launch_grid, JOIN_THREADS};
@@ -50,21 +51,14 @@ impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
     }
 }
 
-/// Apply `table`'s join to `sum` over every position, each output bucket written at its position's offset in `scratch.segment_start` from [`LayerScratch::join_sizes`] (at most `records` rows in all), for source buckets of up to `longest` rows; the previous columns become `sum.spare`.
-/// The output keeps a gap after each bucket, so its extent is at most `records` and no compaction runs; its length and longest bucket stay on the device, published to the sum's length tracker.
-pub(super) fn join_layer<const W: usize, C: Coefficient>(
+/// The spare columns emptied with room for the join's output, and that room: twice the sum's length or its bound, since `k_join_rows` totals exactly twice the input.
+fn join_output<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
-    scratch: &mut LayerScratch<W, C>,
-    table: &DevicePrepared<W, C>,
-    join: JoinTable,
-    keep: &KeepProgram,
-    longest: u32,
-    records: u32,
-) -> Result<(), GpuError> {
-    let stream = sum.stream.clone();
-    let b = sum.hash.num_buckets();
+    scratch: &LayerScratch<W, C>,
+    b: usize,
+) -> Result<(DeviceColumns<W, C>, u32), GpuError> {
     let mut out = sum.take_spare(0, b)?;
-    let need = records as usize;
+    let need = 2 * sum.len();
     if need > out.term_capacity() {
         // A growing sum would otherwise reallocate at nearly every join; growing by half again keeps that logarithmic, up to twice the policy's ceiling on a layer's input.
         let roomy = (out.term_capacity() + out.term_capacity() / 2)
@@ -75,6 +69,30 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
         }
     }
     out.reserve(need, b)?;
+    Ok((out, need as u32))
+}
+
+/// Apply `table`'s join to `sum` over every position, each output bucket written at its position's offset in `scratch.segment_start` from [`LayerScratch::join_sizes`], for source buckets of up to `longest` rows; the previous columns become `sum.spare`.
+/// The output keeps a gap after each bucket, so its extent is at most twice the input and no compaction runs; its length and longest bucket stay on the device, published to the sum's length tracker.
+/// The output is sized by the length's bound, which a device short of room for it settles first.
+pub(super) fn join_layer<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+    table: &DevicePrepared<W, C>,
+    join: JoinTable,
+    keep: &KeepProgram,
+    longest: u32,
+) -> Result<(), GpuError> {
+    let stream = sum.stream.clone();
+    let b = sum.hash.num_buckets();
+    let (mut out, records) = match join_output(sum, scratch, b) {
+        Err(GpuError::OutOfMemory { .. }) if !sum.length.is_exact() => {
+            sum.settle_lengths()?;
+            join_output(sum, scratch, b)?
+        }
+        sized => sized?,
+    };
+    scratch.record.records = u64::from(records);
     // The largest block's table, at most half full.
     let table_bits = (2 * longest.max(16)).next_power_of_two().trailing_zeros();
     // The next pass's histogram comes out of the join itself (`LayerScratch::histogram_fresh`).
@@ -84,7 +102,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     }
     let histogram_bytes = if histogram { 4 * APPROX_BINS as u32 } else { 0 };
     timed!(let t0 = scratch.event(sum)?);
-    // SAFETY: arguments match `k_join` in join.cu; `out` holds `records` terms and `b` buckets, `segment_start` holds `b + 1` offsets ending at `records`, and no source bucket exceeds `longest` rows, so the `1 << table_bits` slots stay at most half full.
+    // SAFETY: arguments match `k_join` in join.cu; `out` holds `records` terms and `b` buckets, `segment_start` holds `b + 1` offsets ending at most at `records`, and no source bucket exceeds `longest` rows, so the `1 << table_bits` slots stay at most half full.
     unsafe {
         stream
             .launch_builder(&sum.kernels.join)

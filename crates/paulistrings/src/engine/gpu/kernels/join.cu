@@ -1,5 +1,4 @@
 // `total` gathers `[output terms, longest output bucket]`; with `histogram`, `hist` gathers `k_octave_histogram`'s `[len, bins…]` of the output from a shared histogram after the table.
-#define APPROX_BINS 2048
 // k_join: the fused layer of a two-entry table with one identity-mask entry (every rotation), one block per output position, writing its bucket straight into the output columns at the position's pre-dedup offset; contracts on `JoinTable` in prepared.rs.
 // The base entry's rows of bucket beta are unique keys, and so are the partner entry's rows from beta ^ delta, so the only merge is a partner landing on a base row: a shared open-addressing table over the hittable base rows joins them, and every other row is written as it is read.
 
@@ -17,23 +16,13 @@ __device__ __forceinline__ u32 join_home(u64 f, u32 table_bits) {
 
 __device__ __forceinline__ u32 join_tag(u64 f) { return (u32)(f >> 46) & JOIN_TAG_MASK; }
 
-// Hands each surviving lane of the warp the next output slot of the block.
-__device__ __forceinline__ u32 join_claim(u32* counter, bool keep) {
-    const u32 bal = __ballot_sync(~0u, keep);
-    u32 base = 0;
-    if (lane_id() == 0 && bal != 0) base = atomicAdd(counter, (u32)__popc(bal));
-    base = __shfl_sync(~0u, base, 0);
-    return base + __popc(bal & lanemask_lt());
-}
-
-// One kept row in the block's octave histogram, binned as `k_octave_histogram` bins it.
-__device__ __forceinline__ void join_count_octave(u32* s_hist, Coeff v) {
-    const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(v));
-    atomicAdd(&s_hist[min((u32)(bits >> 52), (u32)(APPROX_BINS - 1))], 1u);
-}
-
-__device__ __forceinline__ void join_write(u64* __restrict__ out_x, u64* __restrict__ out_z, real_t* __restrict__ out_c,
-                                           u64* __restrict__ out_g, size_t slot, const Key& k, u64 f, Coeff v) {
+// One output row of the block, claimed in warp order, and its octave in the block's histogram.
+__device__ __forceinline__ void join_emit(u32* s_out, bool keep, u32* s_hist, u32 histogram, u64* __restrict__ out_x,
+                                          u64* __restrict__ out_z, real_t* __restrict__ out_c, u64* __restrict__ out_g,
+                                          size_t out0, const Key& k, u64 f, Coeff v) {
+    const size_t slot = out0 + warp_claim(s_out, keep);
+    if (!keep) return;
+    if (histogram) atomicAdd(&s_hist[octave_bin(v)], 1u);
     store_key(out_x, out_z, slot, k);
     out_g[slot] = f;
     coeff_store(out_c, slot, v);
@@ -124,7 +113,7 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
         if (emit && !insert) {
             v = entry_product(T, k, base_entry, coeff_load(c, base_start + r));
             f = g[base_start + r];
-            keep = !coeff_is_zero(v) && keep_eval(prog, [&]() -> Key { return k; }, v);
+            keep = survives(prog, k, v);
         }
         if (insert) {
             const u64 fi = g[base_start + r];
@@ -132,9 +121,7 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
             u32 s = join_home(fi, table_bits);
             while (atomicCAS(&slots[s], 0u, entry) != 0u) s = (s + 1u) & (n_slots - 1u);
         }
-        const u32 o = join_claim(&s_out, keep);
-        if (keep && histogram) join_count_octave(s_hist, v);
-        if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, k, f, v);
+        join_emit(&s_out, keep, s_hist, histogram, out_x, out_z, out_c, out_g, out0, k, f, v);
     }
     __syncthreads();
 
@@ -181,11 +168,9 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
         Coeff v = coeff_zero();
         if (miss) {
             v = entry_product(T, k, partner_entry, coeff_load(c, partner_start + r));
-            keep = !coeff_is_zero(v) && keep_eval(prog, [&]() -> Key { return q; }, v);
+            keep = survives(prog, q, v);
         }
-        const u32 o = join_claim(&s_out, keep);
-        if (keep && histogram) join_count_octave(s_hist, v);
-        if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, q, f, v);
+        join_emit(&s_out, keep, s_hist, histogram, out_x, out_z, out_c, out_g, out0, q, f, v);
     }
     __syncthreads();
 
@@ -205,11 +190,9 @@ extern "C" __global__ void __launch_bounds__(JOIN_THREADS) k_join(
                 const u32 r = partner_start + ((e >> JOIN_INDEX_BITS) & JOIN_INDEX_MASK) - 1u;
                 v = coeff_add(v, entry_product(T, load_key(x, z, r), partner_entry, coeff_load(c, r)));
             }
-            keep = !coeff_is_zero(v) && keep_eval(prog, [&]() -> Key { return k; }, v);
+            keep = survives(prog, k, v);
         }
-        const u32 o = join_claim(&s_out, keep);
-        if (keep && histogram) join_count_octave(s_hist, v);
-        if (keep) join_write(out_x, out_z, out_c, out_g, out0 + o, k, f, v);
+        join_emit(&s_out, keep, s_hist, histogram, out_x, out_z, out_c, out_g, out0, k, f, v);
     }
     __syncthreads();
     if (histogram) {

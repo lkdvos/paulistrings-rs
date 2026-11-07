@@ -98,10 +98,6 @@ __device__ __forceinline__ bool rr_same_class(const RunInfo& R, const Key& a, co
     return key_eq(rr_with_pattern(R, a, 0), rr_with_pattern(R, b, 0));
 }
 
-__device__ __forceinline__ bool rr_survives(const KeepProg& prog, const Key& k, Coeff c) {
-    return !coeff_is_zero(c) && keep_eval(prog, [&]() -> Key { return k; }, c);
-}
-
 // k_rotation_run_classify: per bucket blockIdx.x, class_count[class bucket] += its touched strings and inert[beta] = its untouched strings that `keep` passes.
 extern "C" __global__ void k_rotation_run_classify(
     const u64* __restrict__ x, const u64* __restrict__ z, const real_t* __restrict__ c, const u64* __restrict__ g,
@@ -122,11 +118,10 @@ extern "C" __global__ void k_rotation_run_classify(
             if (rr_touched(info, p)) {
                 cb = rr_class_bucket((g[(size_t)start + r] ^ rr_fingerprint(info, p)) & fingerprint_mask(), class_bits);
             } else {
-                kept += rr_survives(prog, k, coeff_load(c, (size_t)start + r)) ? 1u : 0u;
+                kept += survives(prog, k, coeff_load(c, (size_t)start + r)) ? 1u : 0u;
             }
         }
-        const u32 peers = __match_any_sync(~0u, cb);
-        if (cb != NO_ENTRY && (peers & lanemask_lt()) == 0) atomicAdd(&class_count[cb], (u32)__popc(peers));
+        count_by_destination(class_count, cb);
     }
     if (kept) atomicAdd(&s_inert, kept);
     __syncthreads();
@@ -154,18 +149,9 @@ extern "C" __global__ void k_rotation_run_gather(
                 cb = rr_class_bucket((f ^ rr_fingerprint(info, p)) & fingerprint_mask(), class_bits);
             }
         }
-        const u32 peers = __match_any_sync(~0u, cb);
-        const u32 leader = __ffs(peers) - 1;
-        u32 base = 0;
-        if (cb != NO_ENTRY && lane_id() == leader) base = atomicAdd(&cursor[cb], (u32)__popc(peers));
-        base = __shfl_sync(~0u, base, leader);
+        const size_t slot = claim_by_destination(cursor, cb);
         if (cb != NO_ENTRY) {
-            const size_t slot = (size_t)base + __popc(peers & lanemask_lt());
-#pragma unroll
-            for (int w = 0; w < W; ++w) {
-                ox[slot * W + w] = k.x[w];
-                oz[slot * W + w] = k.z[w];
-            }
+            store_key(ox, oz, slot, k);
             coeff_store(oc, slot, coeff_load(c, (size_t)start + r));
             og[slot] = f;
             obucket[slot] = beta;
@@ -392,10 +378,7 @@ __device__ __forceinline__ void rr_apply_block(
         const u32 r = r0 + threadIdx.x;
         const Coeff v = r < n ? coeff_load(coef, r) : coeff_zero();
         const bool live = r < n && !coeff_is_zero(v);
-        const u32 bal = __ballot_sync(~0u, live);
-        u32 o = 0;
-        if (lane_id() == 0 && bal != 0) o = atomicAdd(&s_out, (u32)__popc(bal));
-        o = __shfl_sync(~0u, o, 0) + __popc(bal & lanemask_lt());
+        const u32 o = warp_claim(&s_out, live);
         if (!live) continue;
         const u32 rep = cls_of[r];
         const u32 p = pat[r];
@@ -404,12 +387,7 @@ __device__ __forceinline__ void rr_apply_block(
         atomicAdd(&total[beta], 1u);
         const size_t slot = (size_t)base + o;
         if (slot >= arena_cap) continue;
-        const Key k = rr_with_pattern(info, load_key(x, z, (size_t)seg0 + rep), p);
-#pragma unroll
-        for (int w = 0; w < W; ++w) {
-            ax[slot * W + w] = k.x[w];
-            az[slot * W + w] = k.z[w];
-        }
+        store_key(ax, az, slot, rr_with_pattern(info, load_key(x, z, (size_t)seg0 + rep), p));
         coeff_store(ac, slot, v);
         ag[slot] = (g[(size_t)seg0 + rep] ^ rr_fingerprint(info, d)) & fingerprint_mask();
         abucket[slot] = beta;
@@ -475,17 +453,12 @@ extern "C" __global__ void k_rotation_run_place(
             k = load_key(x, z, (size_t)start + r);
             if (!rr_touched(info, rr_pattern(info, k))) {
                 v = coeff_load(c, (size_t)start + r);
-                keep = rr_survives(prog, k, v);
+                keep = survives(prog, k, v);
             }
         }
-        const u32 o = join_claim(&s_next, keep);
+        const size_t slot = (size_t)dst0 + warp_claim(&s_next, keep);
         if (keep) {
-            const size_t slot = (size_t)dst0 + o;
-#pragma unroll
-            for (int w = 0; w < W; ++w) {
-                ox[slot * W + w] = k.x[w];
-                oz[slot * W + w] = k.z[w];
-            }
+            store_key(ox, oz, slot, k);
             coeff_store(oc, slot, v);
             og[slot] = g[(size_t)start + r];
         }
@@ -500,11 +473,7 @@ extern "C" __global__ void k_rotation_run_scatter(
     const u32 i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) return;
     const u32 slot = atomicAdd(&cursor[abucket[i]], 1u);
-#pragma unroll
-    for (int w = 0; w < W; ++w) {
-        ox[(size_t)slot * W + w] = ax[(size_t)i * W + w];
-        oz[(size_t)slot * W + w] = az[(size_t)i * W + w];
-    }
+    store_key(ox, oz, slot, load_key(ax, az, i));
     coeff_store(oc, slot, coeff_load(ac, i));
     og[slot] = ag[i];
 }

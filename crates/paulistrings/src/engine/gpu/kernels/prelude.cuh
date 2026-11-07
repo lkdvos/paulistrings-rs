@@ -207,7 +207,6 @@ __device__ __forceinline__ void store_key(u64* __restrict__ x, u64* __restrict__
 #endif
 }
 
-
 __device__ __forceinline__ bool key_eq(const Key& a, const Key& b) {
     bool eq = true;
 #pragma unroll
@@ -347,6 +346,43 @@ __device__ __forceinline__ bool keep_eval(const KeepProg& P, KeyFn key, Coeff c)
         }
     }
     return (st & 1u) != 0;
+}
+
+// `walk_bucket`'s `survives`: a nonzero coefficient the keep program passes.
+__device__ __forceinline__ bool survives(const KeepProg& prog, const Key& k, Coeff c) {
+    return !coeff_is_zero(c) && keep_eval(prog, [&]() -> Key { return k; }, c);
+}
+
+// The next slot of the block's `counter` for each lane of the warp that `takes` one.
+__device__ __forceinline__ u32 warp_claim(u32* counter, bool takes) {
+    const u32 bal = __ballot_sync(~0u, takes);
+    u32 base = 0;
+    if (lane_id() == 0 && bal != 0) base = atomicAdd(counter, (u32)__popc(bal));
+    base = __shfl_sync(~0u, base, 0);
+    return base + __popc(bal & lanemask_lt());
+}
+
+// `count[destination] +=` the lanes of the warp bound there, one atomic per destination; `NO_ENTRY` counts nothing.
+__device__ __forceinline__ void count_by_destination(u32* count, u32 destination) {
+    const u32 peers = __match_any_sync(~0u, destination);
+    if (destination != NO_ENTRY && (peers & lanemask_lt()) == 0) atomicAdd(&count[destination], (u32)__popc(peers));
+}
+
+// Each lane's slot claimed from `cursor[destination]`, one atomic per destination; `NO_ENTRY` claims nothing.
+__device__ __forceinline__ size_t claim_by_destination(u32* cursor, u32 destination) {
+    const u32 peers = __match_any_sync(~0u, destination);
+    const u32 leader = __ffs(peers) - 1;
+    u32 base = 0;
+    if (destination != NO_ENTRY && lane_id() == leader) base = atomicAdd(&cursor[destination], (u32)__popc(peers));
+    base = __shfl_sync(~0u, base, leader);
+    return (size_t)base + __popc(peers & lanemask_lt());
+}
+
+// `ApproxTopN`'s octave of |c|^2, its f64 exponent field; a NaN with its sign bit set would index past the top bin, so it shares it.
+#define APPROX_BINS 2048
+__device__ __forceinline__ u32 octave_bin(Coeff c) {
+    const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(c));
+    return min((u32)(bits >> 52), (u32)(APPROX_BINS - 1));
 }
 
 // Exclusive scan of v[0..n) in shared memory, ITEMS contiguous entries per thread; returns the total to every thread.

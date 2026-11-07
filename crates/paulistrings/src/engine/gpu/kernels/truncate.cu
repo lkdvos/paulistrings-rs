@@ -2,7 +2,6 @@
 // k_radix_histogram and k_radix_extract: exact `TopN`'s radix-select over the u64 bit pattern of |c|^2, which orders a non-negative f64 as its value.
 // Exact `TopN` retains through `k_boundary_counts` and `k_retain`: the key `bits >> shift` (shift 0, the exact value) above `boundary`, plus a quota of terms at it in bucket order; `ApproxTopN` cuts in place through `k_cut` at the octave (shift 52).
 
-#define APPROX_BINS 2048
 
 // out[0] += terms, out[1 + k] += population of octave k (`norm_sqr` bits >> 52); one warp per bucket, a shared histogram per block, integer atomics only.
 extern "C" __global__ void k_octave_histogram(const real_t* __restrict__ c, const u32* __restrict__ start,
@@ -17,10 +16,7 @@ extern "C" __global__ void k_octave_histogram(const real_t* __restrict__ c, cons
     for (u32 beta = blockIdx.x * (blockDim.x / WARP) + warp_id(); beta < B; beta += stride) {
         const u32 s = start[beta], len = lens[beta];
         for (u32 r = lane; r < len; r += WARP) {
-            const size_t i = (size_t)s + r;
-            const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(coeff_load(c, i)));
-            // A NaN with its sign bit set would index past the top bin; it shares it instead.
-            atomicAdd(&h[min((u32)(bits >> 52), (u32)(APPROX_BINS - 1))], 1u);
+            atomicAdd(&h[octave_bin(coeff_load(c, (size_t)s + r))], 1u);
         }
         if (lane == 0) atomicAdd(&terms, len);
     }

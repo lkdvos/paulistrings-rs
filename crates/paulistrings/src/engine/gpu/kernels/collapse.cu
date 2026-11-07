@@ -196,11 +196,7 @@ extern "C" __global__ void k_collapse_pick(const u64* __restrict__ x, const u64*
             if (drawn) {
                 const size_t src = (size_t)start + r;
                 const size_t dst = (size_t)start + run + __popc(ballot & lanemask_lt());
-#pragma unroll
-                for (int w = 0; w < W; ++w) {
-                    ox[dst * W + w] = x[src * W + w];
-                    oz[dst * W + w] = z[src * W + w];
-                }
+                store_key(ox, oz, dst, load_key(x, z, src));
                 const double scale = (double)m * step;
                 Coeff out;
                 FOR_PARTS(j) out.part[j] = (real_t)((double)v.part[j] / magnitude * scale);

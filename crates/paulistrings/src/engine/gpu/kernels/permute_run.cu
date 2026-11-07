@@ -16,11 +16,6 @@ __device__ __forceinline__ void run_flip(u64 (&v)[W], u32 q, u32 bit) {
     for (int w = 0; w < W; ++w) v[w] ^= ((u32)w == (q >> 6)) ? ((u64)bit << (q & 63)) : 0ull;
 }
 
-// `walk_bucket`'s `survives`: a nonzero coefficient the keep program passes.
-__device__ __forceinline__ bool run_survives(const KeepProg& prog, const Key& k, Coeff c) {
-    return !coeff_is_zero(c) && keep_eval(prog, [&]() -> Key { return k; }, c);
-}
-
 // Walk (k, c) of bucket beta with fingerprint g through every step as `walk_bucket` does, asking `survives` after each step that changes the string and once more about a string none changes; false when it drops.
 __device__ __forceinline__ bool run_walk(const RunSteps& R, const KeepProg& prog, Key& k, Coeff& c, u32& beta, u64& g) {
     bool tested = false;
@@ -29,7 +24,7 @@ __device__ __forceinline__ bool run_walk(const RunSteps& R, const KeepProg& prog
         const u32 q0 = step[0], q1 = step[1];
         const u32 s = key_bit(k.x, q0) | key_bit(k.z, q0) << 1 | ((key_bit(k.x, q1) | key_bit(k.z, q1) << 1) & step[2]) << 2;
         if ((step[3] >> s) & 1u) continue;
-        if (!tested && i > 0 && !run_survives(prog, k, c)) return false;
+        if (!tested && i > 0 && !survives(prog, k, c)) return false;
         const u32 d = (step[4 + (s >> 2)] >> (8 * (s & 3))) & 0xFFu;
         run_flip(k.x, q0, d & 1u);
         run_flip(k.z, q0, (d >> 1) & 1u);
@@ -38,10 +33,10 @@ __device__ __forceinline__ bool run_walk(const RunSteps& R, const KeepProg& prog
         beta ^= step[8 + s];
         g ^= R.fingerprint[(size_t)i * LOCAL_DIM + s];
         c = coeff_mul(c, coeff_load(R.amplitude, (size_t)i * LOCAL_DIM + s));
-        if (!run_survives(prog, k, c)) return false;
+        if (!survives(prog, k, c)) return false;
         tested = true;
     }
-    return tested || R.n == 0 || run_survives(prog, k, c);
+    return tested || R.n == 0 || survives(prog, k, c);
 }
 
 #define RUN_STEP_ARGS const u32* __restrict__ info, const u64* __restrict__ fingerprint, const real_t* __restrict__ amplitude, u32 n_steps
@@ -65,8 +60,7 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_permute_run_count(
             u64 g = 0;
             if (run_walk(R, prog, k, v, b, g)) destination = b;
         }
-        const u32 peers = __match_any_sync(~0u, destination);
-        if (destination != NO_ENTRY && (peers & lanemask_lt()) == 0) atomicAdd(&out_len[destination], (u32)__popc(peers));
+        count_by_destination(out_len, destination);
     }
 }
 
@@ -91,13 +85,8 @@ extern "C" __global__ void __launch_bounds__(THREADS) k_permute_run_scatter(
             u32 b = beta;
             if (run_walk(R, prog, k, v, b, g)) destination = b;
         }
-        const u32 peers = __match_any_sync(~0u, destination);
-        const u32 leader = __ffs(peers) - 1;
-        u32 base = 0;
-        if (destination != NO_ENTRY && lane_id() == leader) base = atomicAdd(&cursor[destination], (u32)__popc(peers));
-        base = __shfl_sync(~0u, base, leader);
+        const size_t slot = claim_by_destination(cursor, destination);
         if (destination != NO_ENTRY) {
-            const size_t slot = (size_t)base + __popc(peers & lanemask_lt());
             store_key(ox, oz, slot, k);
             coeff_store(oc, slot, v);
             og[slot] = g_in[(size_t)start + r] ^ (g & fingerprint_mask());

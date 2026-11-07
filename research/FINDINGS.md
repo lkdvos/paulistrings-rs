@@ -486,7 +486,7 @@ The send side stays whole, the default is unbounded, and the NCCL form is unmeas
 Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
 At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
 Shipped from this profile: the Clifford permutation path, the rotation join (§Rotation layers join instead of sorting) and the on-disk NVRTC cache.
-Open levers, by estimated gain: fewer host round trips (taken for joins and `ApproxTopN`, §Device layers read their lengths back a layer late), then a captured graph (~2× at 1e4); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
+Open levers, by estimated gain: fewer host round trips (taken for joins and `ApproxTopN`, §Device layers read their lengths back a layer late), then a captured graph (~2× at 1e4, not attempted, §Fewer stream operations per device layer); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
 
 ### GPU Clifford permutation path
 
@@ -510,7 +510,8 @@ A/B on ccqlin038's A6000 against the radix fused layer, same binary (a since-rem
 Under the threshold both paths give the same counts and ⟨Z₆₂⟩ = 0.171746373755 to 12 digits; under `ApproxTopN` the readouts differ in the fourth digit, as the boundary octave keeps terms in bucket order, which the join's atomic slot claims do not fix.
 Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16338 → 10822 ms; a saturated rotation layer's coset loop 9273 → 6332 µs, of which `gather` and `compact` (≈2.5 ms together) are unchanged.
 TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
-Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile; and fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset and so need insert-or-accumulate slots rather than a base-only table.
+Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile.
+Fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset, run per class bucket in shared memory instead of through a base-only table (§Rotation runs under a per-term filter in one pass).
 The join's compaction is gone (§Join layers write the output columns directly).
 
 ### Join layers write the output columns directly (revisits §Compaction stays; the loose CSR is rejected)

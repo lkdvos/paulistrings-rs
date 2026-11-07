@@ -12,18 +12,7 @@ use paulistrings::{
 
 use crate::cli::Config;
 use crate::models::IsingQuench;
-use crate::run::{calls, query_clocks, readout, scatter_rows, Report};
-
-/// `<O>` over the group: each rank reads its own share. **Collective.**
-fn group_readout<const W: usize, C: Coefficient>(split: &MpiGpuSum<W, C>, rank: u32) -> f64 {
-    let share = split.local_to_host().unwrap_or_else(|e| {
-        eprintln!("sampling_bench: rank {rank}: download: {e}");
-        std::process::exit(2);
-    });
-    let mut value = [readout(&share)];
-    split.transport().allreduce_sum_f64(&mut value);
-    value[0]
-}
+use crate::run::{query_clocks, readout, scatter_rows, Report};
 
 /// Every rank's slot of `local` filled in, summed over the group so each rank holds all of them. **Collective.**
 fn allgather_u64(collectives: &dyn Collectives, local: &[u64]) -> Vec<u64> {
@@ -164,8 +153,7 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
         Some(device) => device,
         None => local_device_for_comm(&world).unwrap_or_else(|e| fail("device pick", e)),
     };
-    let (calls, steps_per_call) = calls(cfg);
-    let (circuit, _) = quench.circuit::<W>(steps_per_call);
+    let (circuit, _) = quench.circuit::<W>(1);
     let observable = quench.observable_sum::<W, C>();
     let (rows, crossed_bonds) = scatter_rows::<W>(cfg, quench, size as usize);
     let options = GpuScatterOptions {
@@ -180,8 +168,8 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
     let upload_ns = started.elapsed().as_nanos() as u64;
     drop(observable);
     split.enable_trace();
-    let (mut step_ns, mut step_terms, mut readouts) = (Vec::new(), Vec::new(), Vec::new());
-    for _ in 0..calls {
+    let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
+    for _ in 0..cfg.steps {
         let started = Instant::now();
         split
             .propagate_with(&circuit, policy, Direction::Heisenberg, PropagateOptions::default())
@@ -190,13 +178,13 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
         split.transport().barrier();
         step_ns.push(started.elapsed().as_nanos() as u64);
         step_terms.push(split.len());
-        if cfg.readout_every_step {
-            readouts.push(group_readout(&split, rank));
-        }
     }
     let clocks = gather_clocks(split.transport(), query_clocks(&[device]));
     let started = Instant::now();
-    let final_readout = group_readout(&split, rank);
+    // Each rank reads its own share.
+    let share = split.local_to_host().unwrap_or_else(|e| fail("download", e));
+    let mut final_readout = [readout(&share)];
+    split.transport().allreduce_sum_f64(&mut final_readout);
     let download_ns = started.elapsed().as_nanos() as u64;
     let local = split.take_trace().expect("tracing was enabled");
     let trace = gather_trace(split.transport(), local);
@@ -209,8 +197,7 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
     Report {
         step_ns,
         step_terms,
-        readouts,
-        final_readout,
+        final_readout: final_readout[0],
         trace,
         upload_ns,
         download_ns,

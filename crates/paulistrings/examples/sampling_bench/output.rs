@@ -30,9 +30,8 @@ struct Summary {
     prepare_ns: u64,
     coset_loop_ns: u64,
     finalize_ns: u64,
-    /// Per step, the largest layer output and the summed layer times.
+    /// Per step, the largest layer output.
     step_max_terms: Vec<usize>,
-    step_layer_ns: Vec<u64>,
     partitions: PartitionSummary,
 }
 
@@ -108,7 +107,6 @@ fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
         coset_loop_ns: 0,
         finalize_ns: 0,
         step_max_terms: vec![0; steps],
-        step_layer_ns: vec![0; steps],
         partitions: summarize_partitions(report),
     };
     for (i, row) in rows.iter().enumerate() {
@@ -125,7 +123,6 @@ fn summarize(report: &Report, kinds: &[GateKind], steps: usize) -> Summary {
         summary.finalize_ns += phases.finalize_ns;
         let step = (i / per_step).min(steps - 1);
         summary.step_max_terms[step] = summary.step_max_terms[step].max(layer_terms(row));
-        summary.step_layer_ns[step] += layer_nanos(row);
     }
     summary.kinds = by_kind.into_iter().filter(|(_, totals)| totals.layers > 0).collect();
     summary
@@ -158,7 +155,7 @@ pub(crate) fn print_report(
 ) {
     let summary = summarize(report, kinds, cfg.steps);
     println!(
-        "model={} qubits={} W={words} observable={} steps={} channels/step={} dtype={} {} truncation={}{}",
+        "model={} qubits={} W={words} observable={} steps={} channels/step={} dtype={} {} truncation={}",
         quench.name,
         quench.num_qubits,
         quench.observable_label(),
@@ -167,27 +164,15 @@ pub(crate) fn print_report(
         cfg.dtype,
         backend_label(cfg, report),
         cfg.truncation.label(),
-        if cfg.one_call { " one-call" } else { "" },
     );
-    println!(
-        "{:>5} {:>11} {:>13} {:>13} {:>14}",
-        "step", "wall_ms", "terms_after", "max_layer", "readout"
-    );
+    println!("{:>5} {:>11} {:>13} {:>13}", "step", "wall_ms", "terms_after", "max_layer");
     for step in 0..cfg.steps {
-        let wall = if cfg.one_call { summary.step_layer_ns[step] } else { report.step_ns[step] };
-        let terms = if cfg.one_call {
-            layer_terms(&report.trace.layers[(step + 1) * kinds.len() - 1])
-        } else {
-            report.step_terms[step]
-        };
-        let readout = report.readouts.get(step).map_or(String::new(), |r| format!("{r:+.9}"));
         println!(
-            "{:>5} {:>11.3} {:>13} {:>13} {:>14}",
+            "{:>5} {:>11.3} {:>13} {:>13}",
             step + 1,
-            ms(wall),
-            terms,
+            ms(report.step_ns[step]),
+            report.step_terms[step],
             summary.step_max_terms[step],
-            readout
         );
     }
     println!(
@@ -378,7 +363,6 @@ fn append_json(
     let partitions = serde_json::json!({
         "count": parts.terms_final.len(),
         "devices": report.devices,
-        "per_device": cfg.per_device,
         "rows": cfg.rows.name(),
         "crossed_bonds": report.crossed_bonds,
         "remote_layers": parts.remote_layers,
@@ -404,7 +388,6 @@ fn append_json(
         "threads": cfg.threads,
         "device": report.devices.first(),
         "truncation": cfg.truncation.label(),
-        "one_call": cfg.one_call,
         "total_ns": summary.total_ns,
         "step_ns": report.step_ns,
         "step_terms": report.step_terms,
@@ -422,7 +405,6 @@ fn append_json(
         "download_ns": report.download_ns,
         "clocks": report.clocks,
         "partitions": partitions,
-        "readouts": report.readouts,
         "readout": report.final_readout,
     });
     let mut file =

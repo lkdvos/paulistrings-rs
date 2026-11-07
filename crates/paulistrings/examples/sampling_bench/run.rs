@@ -10,11 +10,10 @@ use paulistrings::{
 use crate::cli::Config;
 use crate::models::IsingQuench;
 
-/// One run's measurements; the step vectors have one entry per propagate call.
+/// One run's measurements; the step vectors have one entry per step.
 pub(crate) struct Report {
     pub(crate) step_ns: Vec<u64>,
     pub(crate) step_terms: Vec<usize>,
-    pub(crate) readouts: Vec<f64>,
     pub(crate) final_readout: f64,
     /// Every partition's rows, an MPI run's ranks included.
     pub(crate) trace: PartitionTrace,
@@ -39,22 +38,12 @@ pub(crate) fn readout<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> f
     sum.expectation_product(&ProductBasis::uniform(PauliAxis::Z)).to_complex64().re
 }
 
-/// Propagate calls a run makes, and the steps each one covers.
-pub(crate) fn calls(cfg: &Config) -> (usize, usize) {
-    if cfg.one_call {
-        (1, cfg.steps)
-    } else {
-        (cfg.steps, 1)
-    }
-}
-
 pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>(
     cfg: &Config,
     quench: &IsingQuench,
     policy: &P,
 ) -> Report {
-    let (calls, steps_per_call) = calls(cfg);
-    let (circuit, _) = quench.circuit::<W>(steps_per_call);
+    let (circuit, _) = quench.circuit::<W>(1);
     let observable = quench.observable_sum::<W, C>();
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(cfg.threads)
@@ -63,9 +52,9 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
     pool.install(|| {
         let mut scratch = LayerScratch::<W, C>::new();
         scratch.enable_trace();
-        let (mut step_ns, mut step_terms, mut readouts) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
         let mut sum = observable;
-        for _ in 0..calls {
+        for _ in 0..cfg.steps {
             let started = Instant::now();
             sum = propagate_with(
                 &circuit,
@@ -77,14 +66,10 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
             );
             step_ns.push(started.elapsed().as_nanos() as u64);
             step_terms.push(sum.len());
-            if cfg.readout_every_step {
-                readouts.push(readout(&sum));
-            }
         }
         Report {
             step_ns,
             step_terms,
-            readouts,
             final_readout: readout(&sum),
             trace: scratch.take_trace().expect("tracing was enabled"),
             upload_ns: 0,
@@ -124,55 +109,37 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
     quench: &IsingQuench,
     policy: &paulistrings::BuiltinTruncation,
 ) -> Report {
-    use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
-    use paulistrings::{PartitionConfig, PartitionRuntime, Placement};
+    use paulistrings::gpu::{GpuError, GpuPartitionedSum, GpuScatterOptions};
 
     let fail = |what: &str, e: GpuError| -> ! {
         eprintln!("sampling_bench: {what}: {e}");
         std::process::exit(2);
     };
-    let (calls, steps_per_call) = calls(cfg);
-    let (circuit, _) = quench.circuit::<W>(steps_per_call);
-    let observable = quench.observable_sum::<W, C>();
-    let mut crossed_bonds = None;
-    let started = Instant::now();
-    let mut split = if cfg.backend == crate::cli::Backend::Gpu {
-        GpuPartitionedSum::<W, C>::from_host(&observable, cfg.device.unwrap_or(0))
-            .unwrap_or_else(|e| fail("upload", e))
-    } else {
-        let config = PartitionConfig {
-            placement: Placement::Devices {
-                devices: cfg.devices.clone(),
-                per_device: cfg.per_device,
-            },
-            bind_memory: false,
-            threads_per_partition: None,
-        };
-        let runtime = PartitionRuntime::new(&config).unwrap_or_else(|e| {
-            eprintln!("sampling_bench: devices {:?}: {e}", cfg.devices);
-            std::process::exit(2);
-        });
-        let (rows, crossed) = scatter_rows::<W>(cfg, quench, runtime.num_partitions());
-        crossed_bonds = crossed;
-        let options =
-            GpuScatterOptions { devices: runtime, rows, layer: GpuLayerOptions::default() };
-        GpuPartitionedSum::<W, C>::scatter_to_devices_with(&observable, options)
-            .unwrap_or_else(|e| fail("scatter", e))
+    let devices = match cfg.backend {
+        crate::cli::Backend::Gpu => vec![cfg.device.unwrap_or(0)],
+        _ => cfg.devices.clone(),
     };
+    let (circuit, _) = quench.circuit::<W>(1);
+    let observable = quench.observable_sum::<W, C>();
+    let started = Instant::now();
+    let options = GpuScatterOptions::new(&devices).unwrap_or_else(|e| fail("placement", e));
+    let (rows, crossed_bonds) = scatter_rows::<W>(cfg, quench, devices.len());
+    let mut split = GpuPartitionedSum::<W, C>::scatter_to_devices_with(
+        &observable,
+        GpuScatterOptions { rows, ..options },
+    )
+    .unwrap_or_else(|e| fail("scatter", e));
     let upload_ns = started.elapsed().as_nanos() as u64;
     drop(observable);
     split.enable_trace();
-    let (mut step_ns, mut step_terms, mut readouts) = (Vec::new(), Vec::new(), Vec::new());
-    for _ in 0..calls {
+    let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
+    for _ in 0..cfg.steps {
         let started = Instant::now();
         split
             .propagate_with(&circuit, policy, Direction::Heisenberg, PropagateOptions::default())
             .unwrap_or_else(|e| fail("propagate", e));
         step_ns.push(started.elapsed().as_nanos() as u64);
         step_terms.push(split.len());
-        if cfg.readout_every_step {
-            readouts.push(readout(&split.gather().unwrap_or_else(|e| fail("gather", e))));
-        }
     }
     let devices = split.devices();
     let clocks = query_clocks(&devices);
@@ -182,7 +149,6 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
     Report {
         step_ns,
         step_terms,
-        readouts,
         final_readout: readout(&host),
         trace: split.take_trace().expect("tracing was enabled"),
         upload_ns,

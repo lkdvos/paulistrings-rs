@@ -2,10 +2,11 @@
 //! Every case returns early without a device.
 
 use num_complex::Complex64;
-use paulistrings::gpu::GpuPartitionedSum;
+use paulistrings::gpu::GpuLayerOptions;
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_terms_close_up_to_residues, coefficient_tolerance, low_weight_sum, zz_rotation, KeepAll,
+    assert_terms_close_up_to_residues, coefficient_tolerance, device_run_as, low_weight_sum,
+    zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate, BuildAccumulator, BuiltinTruncation, Circuit, Coefficient, CoefficientThreshold,
@@ -56,13 +57,9 @@ fn device_as<const W: usize, C: Coefficient>(
     policy: &BuiltinTruncation,
     direction: Direction,
 ) -> (PauliSum<W>, usize) {
-    let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
-    let mut dev = GpuPartitionedSum::<W, C>::from_host(&narrowed, 0).expect("upload");
-    dev.enable_trace();
-    dev.propagate(circuit, policy.clone(), direction).expect("device propagate");
-    let joined =
-        dev.take_trace().expect("tracing").layers.iter().filter(|l| l.nanos[0] == 0).count();
-    let got = dev.gather().expect("download").cast::<Complex64>(0.0).expect("widening");
+    let options = GpuLayerOptions::default();
+    let (got, trace) = device_run_as::<W, C>(circuit, sum, policy, direction, options, true);
+    let joined = trace.expect("tracing").layers.iter().filter(|l| l.nanos[0] == 0).count();
     (got, joined)
 }
 

@@ -132,30 +132,15 @@ pub fn assert_terms_close_up_to_residues<const W: usize>(
     tol: f64,
     what: &str,
 ) {
-    let (got, want) = (canonical_triples(got), canonical_triples(want));
-    let (mut i, mut j) = (0, 0);
-    while i < got.len() || j < want.len() {
-        let order = match (got.get(i), want.get(j)) {
-            (Some(g), Some(w)) => (g.0, g.1).cmp(&(w.0, w.1)),
-            (Some(_), None) => core::cmp::Ordering::Less,
-            _ => core::cmp::Ordering::Greater,
-        };
-        let (key, delta) = match order {
-            core::cmp::Ordering::Equal => {
-                i += 1;
-                j += 1;
-                ((got[i - 1].0, got[i - 1].1), (got[i - 1].2 - want[j - 1].2).norm())
-            }
-            core::cmp::Ordering::Less => {
-                i += 1;
-                ((got[i - 1].0, got[i - 1].1), got[i - 1].2.norm())
-            }
-            core::cmp::Ordering::Greater => {
-                j += 1;
-                ((want[j - 1].0, want[j - 1].1), want[j - 1].2.norm())
-            }
-        };
-        assert!(delta < tol, "{what}: key {key:?} differs by {delta:e}");
+    let mut deltas = std::collections::BTreeMap::new();
+    for (x, z, c) in got.iter() {
+        *deltas.entry((*x, *z)).or_insert(ZERO) += c;
+    }
+    for (x, z, c) in want.iter() {
+        *deltas.entry((*x, *z)).or_insert(ZERO) -= c;
+    }
+    for (key, delta) in deltas {
+        assert!(delta.norm() < tol, "{what}: key {key:?} differs by {:e}", delta.norm());
     }
 }
 
@@ -504,6 +489,22 @@ pub fn assert_systematic_resample<const W: usize, C: crate::Coefficient>(
         );
     }
     assert_eq!(got.len(), kept, "{what}: kept count");
+}
+
+/// Assert `got` is `samples` draws of `l1 / samples` each: every `|c|` a positive whole number of draws, the draws summing to `samples`.
+pub fn assert_draws_tile_l1<const W: usize>(
+    got: &PauliSum<W>,
+    l1: f64,
+    samples: usize,
+    what: &str,
+) {
+    let mut drawn = 0.0;
+    for (_, _, c) in got.iter() {
+        let draws = c.norm() * samples as f64 / l1;
+        assert!((draws - draws.round()).abs() < 1e-9 && draws.round() >= 1.0, "{what}: {draws}");
+        drawn += draws.round();
+    }
+    assert_eq!(drawn as usize, samples, "{what}: draws over the group");
 }
 
 /// The buckets whose export read the counts ahead under a pending cut, summed over `sum`'s partitions and every layer they drove.

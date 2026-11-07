@@ -17,8 +17,8 @@ pub use coefficient::*;
 pub use compare::*;
 #[cfg(feature = "cuda")]
 pub use gpu::{
-    assert_invariants_device, from_host_with_nvrtc_options, refine_to, set_fault_plan, DeviceSplit,
-    FaultPlan, WireFault,
+    assert_invariants_device, device_run_as, from_host_with_nvrtc_options, refine_to,
+    set_fault_plan, DeviceSplit, FaultPlan, WireFault,
 };
 pub use oracle::*;
 pub use random::*;

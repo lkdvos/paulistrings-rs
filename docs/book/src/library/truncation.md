@@ -34,6 +34,7 @@ With `norm = Σ|c|` and the terms laid end to end in storage order, one uniform 
 Each term is drawn `⌊samples·|c|/norm⌋` or `⌈…⌉` times, so a collapse leaves at most `samples` terms and its expectation is the sum it replaced; the final sum, and any read-out linear in it, is an unbiased estimate, and a quantity quadratic in it is not.
 `samples` is required and at least 1; a collapse resamples even when `samples` is at least the length.
 One seed is one Monte Carlo trajectory: the draw at the `k`-th layer pass is a pure function of `(seed, k)`, independent of the thread count, so the same arguments repeat a trajectory.
+Within one call a run of local layers whose worst-case growth stays within `8 × cache` may check the cache once, at its end, so a seed names a trajectory of that schedule.
 The returned object carries the trajectory's position, so propagating with it again (or with a policy composed from it) continues the sequence; call the factory again to restart.
 Across partitions the points are laid over the terms in rank order, then bucket order, so the group draws exactly `samples` points; at one partition the trajectory is the unpartitioned one, and across partition counts only its distribution agrees.
 `PropagationStats.collapses` counts one call's collapses.

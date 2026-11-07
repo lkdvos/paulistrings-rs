@@ -204,12 +204,9 @@ mod cuda {
     }
 
     impl<C: PyCoefficient> GpuWidthSum<C> {
-        /// Upload `sum` with its trace enabled once; every call drains it.
         fn upload(sum: &WidthSum<C>, device: u32) -> Result<Self, GpuError> {
             Ok(for_each_width_convert!(WidthSum => GpuWidthSum, sum, |s| {
-                let mut resident = GpuPartitionedSum::from_host(s, device)?;
-                resident.enable_trace();
-                resident
+                GpuPartitionedSum::from_host(s, device)?
             }))
         }
 
@@ -244,10 +241,14 @@ mod cuda {
                 self,
                 circuit,
                 |s, c, _W, _wrap| {
+                    if traced {
+                        s.enable_trace();
+                    }
                     let result = s.propagate_with(c, policy, direction, options);
                     let trace = s.take_trace();
+                    s.disable_trace();
                     result.map_err(PropagateFailure::Gpu)?;
-                    Ok(trace.filter(|_| traced))
+                    Ok(trace)
                 },
                 else Err(PropagateFailure::WidthMismatch)
             )
@@ -291,7 +292,7 @@ mod cuda {
         }
 
         /// Step the resident sum through `circuit`, returning this call's trace when `traced`.
-        /// The trace, enabled at upload, is drained after every call, so a sum stepped many times never accumulates records.
+        /// Only a `traced` call records, since a traced device layer synchronizes for its exact counts.
         pub(crate) fn propagate(
             &mut self,
             circuit: &CircuitImpl,

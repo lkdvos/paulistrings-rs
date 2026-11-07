@@ -109,6 +109,11 @@ impl<const W: usize, C: Coefficient, B> PartitionedSum<W, C, B> {
         self.trace.as_mut().map(std::mem::take)
     }
 
+    /// Stop recording, dropping any records not yet taken.
+    pub fn disable_trace(&mut self) {
+        self.trace = None;
+    }
+
     /// The host driver's `propagate_with` on any backend.
     pub(crate) fn propagate_on_backend<T>(
         &mut self,

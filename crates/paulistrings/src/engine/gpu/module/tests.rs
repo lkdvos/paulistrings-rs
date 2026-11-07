@@ -16,12 +16,16 @@ fn every_layout() -> [CoefficientLayout; 4] {
     ]
 }
 
-/// `f` at every width and coefficient layout, each on its own thread since a cold one is seconds of NVRTC and module load; results in width-major order.
+/// The widths a default run compiles every coefficient layout at; the exhaustive tier takes [`EVERY_WIDTH`], minutes on a cold kernel cache.
+const DEFAULT_WIDTHS: [usize; 2] = [1, 2];
+const EVERY_WIDTH: [usize; 5] = [1, 2, 4, 8, 16];
+
+/// `f` at each of `widths` and every coefficient layout, each on its own thread since a cold one is seconds of NVRTC and module load; results in width-major order.
 fn on_every_variant<T: Send>(
+    widths: &[usize],
     f: impl Fn(usize, CoefficientLayout) -> T + Sync,
 ) -> Vec<(usize, CoefficientLayout, T)> {
-    let variants: Vec<_> =
-        [1usize, 2, 4, 8, 16].into_iter().flat_map(|w| every_layout().map(|l| (w, l))).collect();
+    let variants: Vec<_> = widths.iter().flat_map(|&w| every_layout().map(|l| (w, l))).collect();
     let f = &f;
     std::thread::scope(|s| {
         let handles: Vec<_> = variants
@@ -64,19 +68,29 @@ fn warp_per_bucket_narrows_its_blocks_below_1024_buckets_a_warp() {
     assert_eq!(shape(1 << 20), (131072, 256));
 }
 
-#[test]
-fn kernels_compile_for_every_width() {
+fn kernels_compile_at(widths: &[usize]) {
     if !libnvrtc_present() {
         return;
     }
     let arch = test_arch();
-    for (w, layout, ptx) in
-        on_every_variant(|w, layout| compile_ptx(w, layout, &arch, &[], kernel_cache::directory()))
-    {
+    for (w, layout, ptx) in on_every_variant(widths, |w, layout| {
+        compile_ptx(w, layout, &arch, &[], kernel_cache::directory())
+    }) {
         ptx.unwrap_or_else(|e| panic!("W={w} {}: {e}", layout.name()));
     }
     compile_ptx(2, c128(), &arch, &["-DFINGERPRINT_BITS=8".to_string()], kernel_cache::directory())
         .unwrap_or_else(|e| panic!("FINGERPRINT_BITS=8: {e}"));
+}
+
+#[test]
+fn kernels_compile() {
+    kernels_compile_at(&DEFAULT_WIDTHS);
+}
+
+#[test]
+#[ignore = "exhaustive: NVRTC at every width and coefficient layout"]
+fn kernels_compile_at_every_width() {
+    kernels_compile_at(&EVERY_WIDTH);
 }
 
 /// Concurrent first requests for one key build it once and share it, so tests starting together on a cold cache do not each compile and load the same kernels.
@@ -99,10 +113,9 @@ fn concurrent_first_requests_share_one_kernel_set() {
     assert!(sets.iter().all(|set| Arc::ptr_eq(set, &sets[0])), "each requester built its own set");
 }
 
-#[test]
-fn layer_variants_cover_the_record_cap_at_every_width() {
+fn layer_variants_cover_the_record_cap_at(widths: &[usize]) {
     crate::require_cuda!();
-    for w in [1usize, 2, 4, 8, 16] {
+    for &w in widths {
         let set = kernel_set(0, w, c128()).expect("compile+load");
         let threads = layer_threads(w) as usize;
         let largest = set.layer.last().expect("at least one variant").items;
@@ -111,14 +124,24 @@ fn layer_variants_cover_the_record_cap_at_every_width() {
     }
 }
 
-/// Every fused-layer variant honours its `__launch_bounds__` register budget and spills at most a few words; `--nocapture` prints the footprint.
 #[test]
-fn layer_variants_fit_their_register_budget() {
+fn layer_variants_cover_the_record_cap() {
+    layer_variants_cover_the_record_cap_at(&DEFAULT_WIDTHS);
+}
+
+#[test]
+#[ignore = "exhaustive: a kernel set at every width"]
+fn layer_variants_cover_the_record_cap_at_every_width() {
+    layer_variants_cover_the_record_cap_at(&EVERY_WIDTH);
+}
+
+/// Every fused-layer variant honours its `__launch_bounds__` register budget and spills at most a few words; `--nocapture` prints the footprint.
+fn layer_variants_fit_their_register_budget_at(widths: &[usize]) {
     crate::require_cuda!();
     use cudarc::driver::sys::CUfunction_attribute::{
         CU_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, CU_FUNC_ATTRIBUTE_NUM_REGS,
     };
-    for (w, layout, set) in on_every_variant(|w, layout| kernel_set(0, w, layout)) {
+    for (w, layout, set) in on_every_variant(widths, |w, layout| kernel_set(0, w, layout)) {
         let set = set.expect("compile+load");
         let budget = 65_536 / layer_threads(w) as i32;
         let c = layout.name();
@@ -132,6 +155,17 @@ fn layer_variants_fit_their_register_budget() {
             }
         }
     }
+}
+
+#[test]
+fn layer_variants_fit_their_register_budget() {
+    layer_variants_fit_their_register_budget_at(&DEFAULT_WIDTHS);
+}
+
+#[test]
+#[ignore = "exhaustive: a kernel set at every width and coefficient layout"]
+fn layer_variants_fit_their_register_budget_at_every_width() {
+    layer_variants_fit_their_register_budget_at(&EVERY_WIDTH);
 }
 
 /// A device with less opt-in shared memory loads fewer variants, and the loader never fails on it.
@@ -151,15 +185,14 @@ fn a_small_shared_memory_limit_loads_fewer_variants() {
 }
 
 /// `layer_shared_bytes` is the byte count `carve` in `kernels/layer.cu` lays out, read back from the `-DTEST_CARVE_BYTES` hook.
-#[test]
-fn layer_shared_bytes_matches_the_carve_layout() {
+fn layer_shared_bytes_matches_the_carve_layout_at(widths: &[usize]) {
     crate::require_cuda!();
     let context = device::context(0).expect("context");
     let (major, minor) = context.compute_capability().expect("capability");
     let stream = context.default_stream();
     let arch = format!("compute_{major}{minor}");
     let options = ["-DTEST_CARVE_BYTES".to_string()];
-    let loaded = on_every_variant(|w, layout| {
+    let loaded = on_every_variant(widths, |w, layout| {
         let ptx =
             compile_ptx(w, layout, &arch, &options, kernel_cache::directory()).expect("compile");
         context.load_module(ptx).and_then(|module| module.load_function("k_carve_bytes"))
@@ -188,6 +221,28 @@ fn layer_shared_bytes_matches_the_carve_layout() {
             );
         }
     }
+}
+
+#[test]
+fn layer_shared_bytes_matches_the_carve_layout() {
+    layer_shared_bytes_matches_the_carve_layout_at(&DEFAULT_WIDTHS);
+}
+
+#[test]
+#[ignore = "exhaustive: an NVRTC compile and module load at every width and coefficient layout"]
+fn layer_shared_bytes_matches_the_carve_layout_at_every_width() {
+    layer_shared_bytes_matches_the_carve_layout_at(&EVERY_WIDTH);
+}
+
+/// The options key the kernel cache's entries, so whatever selects a different kernel must appear in them.
+#[test]
+fn compile_options_carry_the_coefficient_type_and_extra_options() {
+    let base = compile_options(2, c128(), "compute_80", &[]).options;
+    let f32_options = compile_options(2, CoefficientLayout::of::<f32>(), "compute_80", &[]).options;
+    let extra = ["-DFINGERPRINT_BITS=8".to_string()];
+    assert_ne!(f32_options, base, "coefficient type");
+    assert_ne!(compile_options(2, c128(), "compute_80", &extra).options, base, "extra option");
+    assert_ne!(compile_options(4, c128(), "compute_80", &[]).options, base, "width");
 }
 
 #[test]

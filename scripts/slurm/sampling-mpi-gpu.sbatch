@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=12G
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
 # One sampled run split over one GPU per MPI rank (`--backend mpi-gpu`, MpiGpuSum, NCCL), against a one-GPU reference (README.md §The sampled multi-GPU jobs).
@@ -20,7 +20,8 @@
 #
 # Environment knobs (all optional):
 #   CACHES       split-run caches, samples = cache / 4 (default "1e8 4e8", plus 8e8 at 8 ranks or more)
-#   REF_CACHE    the one-GPU reference cache and the approx-topn cap (default 1e8)
+#   REF_CACHE    the one-GPU reference cache and approx-topn cap (default 1e8); the approx-topn splits run at CACHES
+#   THRESHOLDS   kicked-Ising coefficient thresholds, each on one GPU and split (default "2.5e-5 1e-5")
 #   NET=0        skip the mpi_ranks differential net that gates the sweep
 #   PT=0         skip the phase-timing rerun of the largest kicked-Ising cell (export/exchange split)
 #   CELL_BOUND, NET_BOUND   seconds one cell / the net may take (default 2400 / 1200)

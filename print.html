@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "searchindex-850ce018.js";
+            window.path_to_searchindex_js = "searchindex-f2cb3e11.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-4f8281a0.js"></script>
@@ -1018,11 +1018,12 @@ A sum of more than <code>k</code> terms keeps exactly <code>k</code>: when a gro
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="#numa-partitions">NUMA partitions</a> and <a href="#mpi-ranks">MPI ranks</a>.
 <strong><code>partition_topn(n)</code></strong> and <strong><code>partition_approx_topn(n)</code></strong> are <code>topn(n)</code> and <code>approx_topn(n)</code> on each partition separately, without communicating, so no partition holds more than <code>n</code> terms between layers however unevenly the sum splits.
 It keeps the locally rather than the globally largest terms, up to <code>P·n</code> in all; <code>approx_topn(total) &amp; partition_topn(n)</code> adds a global budget.</p>
-<p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
-Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as the <a href="#echo">diagonal echo</a>; average many seeds and report the standard error.
-<code>PropagationStats.collapses</code> counts the draws.</p>
-<pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
+<p><strong><code>collapse_sample(cache, samples, seed)</code> samples instead of filtering.</strong>
+Whenever a gate leaves more than <code>cache</code> strings it replaces the sum by <code>samples</code> systematic draws in proportion to <code>|c|</code>, each worth <code>Σ|c|/samples</code> in the direction of its coefficient, with repeated draws of one string merged; a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
+Every collapse is unbiased, so any read-out linear in the final sum, such as <code>expectation_product</code>, is an unbiased estimate; average many seeds and report the standard error.
+A quantity quadratic in the sum, such as an <a href="#echo">echo</a>, needs two independent trajectories, one on each side.
+<code>PropagationStats.collapses</code> counts the collapses.</p>
+<pre><code class="language-python">sampler = truncation.collapse_sample(100_000, 10_000, 7)
 </code></pre>
 <p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code>, their <code>partition_</code> forms or <code>collapse_sample</code>:</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)
@@ -1794,7 +1795,7 @@ Under <code>comm=</code>, a failure on one rank’s device fails the call on eve
 <li><strong>Memory caps the sum at about 5e7 terms per 48 GB card at 128 qubits</strong>, since a layer holds its input, its output and a staging arena at once.</li>
 <li><strong>Widths <code>W ≥ 8</code> (more than 256 qubits) are correct but untuned.</strong></li>
 <li><strong>A multi-device or MPI group holds its exchange in device memory.</strong> One export volume and one receive volume stay resident on a partition’s device during a remote layer, on top of its sum, so two virtual partitions on one card can run out of memory at a term count a single device still fits.</li>
-<li><strong>A device partition in a group cannot refine mid-run.</strong> It runs every remote layer at the group’s agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap.</li>
+<li><strong>A device partition in a group cannot refine on a remote layer.</strong> It runs every remote layer at the group’s agreed bucket count and raises rather than growing the count when a block or a received segment exceeds the fused kernel’s cap; a local layer refines as a lone device does.</li>
 <li><strong>The sender-side merge (<code>premerge</code>) does not pay on a same-device exchange at low merge ratios.</strong> Two virtual partitions sharing one card are a testing configuration for that reason; give each partition its own GPU.</li>
 <li><strong>Multi-node runs are unmeasured.</strong> Peer copies between the GPUs of one node run at about 94 GB/s over NVLink, and the NCCL exchange has run within one node only.</li>
 <li><strong>One chunk’s transfer does not overlap the fused layer of the chunk before it</strong>, and the chunked receive has not run over a real NCCL communicator.</li>
@@ -2029,7 +2030,7 @@ A flat answer over a <em>changing</em> sum is not evidence of convergence, and o
 <tr><td><a href="#b5--hybrid-depth-reduction">B5 Operator backpropagation</a></td><td>hybrid depth reduction: back-propagate the tail classically, hand a QPU the shorter front circuit and an evolved observable</td><td>qiskit-Aer statevector, gap 1.7·10⁻¹⁶; task file round-trip gap exactly <code>0.0</code></td><td>~3 s</td></tr>
 <tr><td><a href="#b6--resource-probes">B6 Resource probes</a></td><td>difficulty of the evolved operator: Pauli-spectrum entropy (the cost model for <em>this</em> engine) against operator entanglement (the cost model for MPO methods)</td><td>brute force over all <code>4ⁿ</code> traces and a dense SVD; every gap ≤ 8.9·10⁻¹⁶</td><td>under a minute</td></tr>
 <tr><td><a href="#b7--stabilizer-state-preparation">B7 Stabilizer-prep</a></td><td>stim prepares a 36-qubit 2D cluster state, a non-Clifford tail is propagated, and the expectation is contracted against the stabilizer state in <code>O(m·n²/64)</code>, avoiding a 1.0 TiB state vector</td><td>dense statevector and a projector from the generators alone at <code>n ≤ 12</code>, plus qiskit Aer; worst gap 2.2·10⁻¹⁵</td><td>116 s, 10.2 GiB peak RSS (<code>--quick</code>: 40 s, 1.5 GiB)</td></tr>
-<tr><td><a href="#b8--operator-loschmidt-echo">B8 Operator Loschmidt echo</a></td><td>the 56-qubit ibm_boston echo of arXiv:2607.25998 by collapse-to-one PP-MC, single-node and over MPI ranks</td><td>the tracker QASM reproduced gate for gate, and a dense 9-qubit patch, agreeing to 1e-10</td><td>one L = 6 trajectory at cache 5e7: 131 s on 8 threads, 3.9 GB</td></tr>
+<tr><td><a href="#b8--operator-loschmidt-echo">B8 Operator Loschmidt echo</a></td><td>the 56-qubit ibm_boston echo of arXiv:2607.25998 by PP-MC over pairs of independent sampled trajectories, single-node and over MPI ranks</td><td>the tracker QASM reproduced gate for gate, and a dense 9-qubit patch, agreeing to 1e-10</td><td>one L = 6 trajectory at cache 5e7: 131 s on 8 threads, 3.9 GB</td></tr>
 </tbody>
 </table>
 </div>
@@ -2794,7 +2795,7 @@ and its committed artifacts — <code>theta_sweep.csv</code>, <code>scaling.csv<
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b8--operator-loschmidt-echo"><a class="header" href="#b8--operator-loschmidt-echo">B8 — Operator Loschmidt echo</a></h1>
 <p><em>Source: <code>examples/b8_ole/</code></em></p>
-<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by the paper's hybrid Pauli-propagation Monte Carlo (PP-MC), with caches that extend past one node through the MPI engine.</p>
+<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by a hybrid Pauli-propagation Monte Carlo (PP-MC) over pairs of independent sampled trajectories, with caches that extend past one node through the MPI engine.</p>
 
 <h2 id="the-circuit"><a class="header" href="#the-circuit">The circuit</a></h2>
 <p>The circuit is the Quantum Advantage Tracker’s <code>operator_loschmidt_echo_56x1488</code>: a CZ kicked-Ising Floquet echo <code>U V_δ U†</code> on a heavy-hex patch.
@@ -2805,21 +2806,25 @@ The echo is <code>S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)</code>, where <code>A = C�
 <!-- doctest: skip -->
 <pre><code class="language-python">import ole
 from paulistrings import propagated, truncation
-policy = truncation.collapse_sample(cache=500_000_000, seed=s)
-A = propagated(O, C, policy, direction="heisenberg")
-S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
+def trajectory(seed):
+    policy = truncation.collapse_sample(cache=500_000_000, samples=100_000_000, seed=seed)
+    return propagated(O, C, policy, direction="heisenberg")
+
+A, A2 = trajectory(2 * s), trajectory(2 * s + 1)
+S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x", B=A2), 0.3, normalize=False)
 </code></pre>
 <ul>
 <li><code>collapse_sample</code> propagates exactly until a gate leaves more than <code>cache</code> strings.</li>
-<li>It then draws one string with probability <code>b_P²/Σb²</code> and restarts from it.</li>
-<li>The last block is kept whole.</li>
-<li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
-<li><code>ole.rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
+<li>It then replaces the sum by <code>samples</code> systematic draws by <code>|b_P|</code>, each worth <code>Σ|b|/samples</code>, so every collapse and the final <code>A</code> are unbiased.</li>
+<li>The echo is quadratic in <code>A</code>, so each estimate pairs two independent trajectories; its expectation is the exact echo.</li>
+<li>The diagonal estimator <code>Σ b_P b'_P cos(2δ)^{n_P}</code> is the resummed moment series of the paper’s Eq. (C34), unnormalized since <code>‖A‖₂ = 1</code>.</li>
+<li><code>ole.rotated_overlap(A, ..., B=A2)</code> gives the exact echo of the pair, off-diagonal terms included.</li>
+<li>The paper’s PP-MC instead restarts from one string drawn by <code>b_P²</code> at coefficient 1 and normalizes a single trajectory’s diagonal echo.</li>
 <li>Both estimators are numpy over <code>A.to_arrays()</code>; under MPI each rank reads its share of a <code>PauliSum.partition(comm=...)</code> split (<code>.local()</code>) and <code>comm.allreduce</code> sums the values.</li>
-<li><code>collapse_sample</code> draws the same string whatever the thread count.</li>
+<li><code>collapse_sample</code> draws the same strings whatever the thread count.</li>
 </ul>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
-<p>One L = 6 trajectory at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>
+<p>One L = 6 trajectory of the collapse-to-one rule this example used to run, at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>
 <div class="table-wrapper">
 <table>
 <thead>
@@ -4886,7 +4891,7 @@ waiting = [max(part.exchange_ns[k][r] + part.collective_ns[k][r] for r in range(
 <tr><td><code>truncation.approx_topn(k)</code></td><td>exactly <code>k</code> terms, ranked by octave of <code>|c|**2</code>; partition/comm-safe</td></tr>
 <tr><td><code>truncation.partition_topn(k)</code></td><td><code>topn(k)</code> on each partition separately; partition/comm-safe</td></tr>
 <tr><td><code>truncation.partition_approx_topn(k)</code></td><td><code>approx_topn(k)</code> on each partition separately; partition/comm-safe</td></tr>
-<tr><td><code>truncation.collapse_sample(cache, seed)</code></td><td>everything up to <code>cache</code> terms; above it, one string drawn by <code>|c|**2</code> with coefficient <code>1</code>; partition/comm-safe</td></tr>
+<tr><td><code>truncation.collapse_sample(cache, samples, seed)</code></td><td>everything up to <code>cache</code> terms; above it, <code>samples</code> systematic draws by <code>|c|</code>, an unbiased estimate of the sum; partition/comm-safe</td></tr>
 </tbody>
 </table>
 </div>
@@ -4903,14 +4908,19 @@ waiting = [max(part.exchange_ns[k][r] + part.collective_ns[k][r] for r in range(
 </table>
 </div>
 <h2 id="topn-vs-approx_topn"><a class="header" href="#topn-vs-approx_topn"><code>topn</code> vs. <code>approx_topn</code></a></h2>
-<p>Both keep every term above a boundary and fill up to <code>k</code> from the boundary itself: for <code>topn</code> the terms tied at the <code>k</code>-th largest magnitude, for <code>approx_topn</code> the octave of <code>\|c\|**2</code> where the count from the top first exceeds <code>k</code>.
+<p>Both keep every term above a boundary and fill up to <code>k</code> from the boundary itself: for <code>topn</code> the terms tied at the <code>k</code>-th largest magnitude, for <code>approx_topn</code> the octave of <code>|c|**2</code> where the count from the top first exceeds <code>k</code>.
 Boundary terms are taken in storage order (bucket order, rank order across partitions), so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 <code>topn</code> raises <code>NotImplementedError</code> under <code>partitions=</code>/<code>comm=</code>; <code>approx_topn</code> is the partitioned/distributed default in that case.</p>
 <p>See <a href="#choosing-a-policy">Truncation</a> for guidance and <a href="#truncation">Truncation</a> for the mechanism.</p>
 <h2 id="collapse_sample"><a class="header" href="#collapse_sample"><code>collapse_sample</code></a></h2>
-<p><code>collapse_sample(cache, seed)</code> is one Monte Carlo trajectory: the draw at the <code>k</code>-th layer pass is a pure function of <code>(seed, k)</code>, independent of the thread count, so the same arguments repeat a trajectory.
+<p><code>collapse_sample(cache, samples, seed)</code> replaces a sum of more than <code>cache</code> terms by <code>samples</code> systematic draws in proportion to <code>|c|</code>.
+With <code>norm = Σ|c|</code> and the terms laid end to end in storage order, one uniform <code>u</code> places the points <code>(u + k)·norm/samples</code>, <code>k &lt; samples</code>, and a term holding <code>m</code> of them survives with coefficient <code>m·norm/samples·c/|c|</code>.
+Each term is drawn <code>⌊samples·|c|/norm⌋</code> or <code>⌈…⌉</code> times, so a collapse leaves at most <code>samples</code> terms and its expectation is the sum it replaced; the final sum, and any read-out linear in it, is an unbiased estimate, and a quantity quadratic in it is not.
+<code>samples</code> is required and at least 1; a collapse resamples even when <code>samples</code> is at least the length.
+One seed is one Monte Carlo trajectory: the draw at the <code>k</code>-th layer pass is a pure function of <code>(seed, k)</code>, independent of the thread count, so the same arguments repeat a trajectory.
+Within one call a run of local layers whose worst-case growth stays within <code>8 × cache</code> may check the cache once, at its end, so a seed names a trajectory of that schedule.
 The returned object carries the trajectory’s position, so propagating with it again (or with a policy composed from it) continues the sequence; call the factory again to restart.
-At one partition the trajectory is the unpartitioned one; across partition counts only its distribution agrees.
+Across partitions the points are laid over the terms in rank order, then bucket order, so the group draws exactly <code>samples</code> points; at one partition the trajectory is the unpartitioned one, and across partition counts only its distribution agrees.
 <code>PropagationStats.collapses</code> counts one call’s collapses.</p>
 <div style="break-before: page; page-break-before: always;"></div><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="direction-semantics"><a class="header" href="#direction-semantics">Direction semantics</a></h1>

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-850ce018.js";
+            window.path_to_searchindex_js = "../../searchindex-f2cb3e11.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -184,7 +184,7 @@
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
 <h1 id="b8--operator-loschmidt-echo"><a class="header" href="#b8--operator-loschmidt-echo">B8 — Operator Loschmidt echo</a></h1>
 <p><em>Source: <code>examples/b8_ole/</code></em></p>
-<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by the paper's hybrid Pauli-propagation Monte Carlo (PP-MC), with caches that extend past one node through the MPI engine.</p>
+<p class="lead">The 56-qubit operator Loschmidt echo of arXiv:2607.25998 on ibm_boston, estimated by a hybrid Pauli-propagation Monte Carlo (PP-MC) over pairs of independent sampled trajectories, with caches that extend past one node through the MPI engine.</p>
 
 <h2 id="the-circuit"><a class="header" href="#the-circuit">The circuit</a></h2>
 <p>The circuit is the Quantum Advantage Tracker’s <code>operator_loschmidt_echo_56x1488</code>: a CZ kicked-Ising Floquet echo <code>U V_δ U†</code> on a heavy-hex patch.
@@ -195,21 +195,25 @@ The echo is <code>S_δ = 2⁻ⁿ Tr(A V_δ† A V_δ)</code>, where <code>A = C�
 <!-- doctest: skip -->
 <pre><code class="language-python">import ole
 from paulistrings import propagated, truncation
-policy = truncation.collapse_sample(cache=500_000_000, seed=s)
-A = propagated(O, C, policy, direction="heisenberg")
-S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x"), 0.3)
+def trajectory(seed):
+    policy = truncation.collapse_sample(cache=500_000_000, samples=100_000_000, seed=seed)
+    return propagated(O, C, policy, direction="heisenberg")
+
+A, A2 = trajectory(2 * s), trajectory(2 * s + 1)
+S = ole.diagonal_echo(ole.anticommute_histogram(A, sites, "x", B=A2), 0.3, normalize=False)
 </code></pre>
 <ul>
 <li><code>collapse_sample</code> propagates exactly until a gate leaves more than <code>cache</code> strings.</li>
-<li>It then draws one string with probability <code>b_P²/Σb²</code> and restarts from it.</li>
-<li>The last block is kept whole.</li>
-<li>The diagonal estimator <code>Σ b_P² cos(2δ)^{n_P} / Σ b²</code> is the resummed moment series of the paper’s Eq. (C34).</li>
-<li><code>ole.rotated_overlap</code> gives the exact echo of the same <code>A</code>, off-diagonal terms included.</li>
+<li>It then replaces the sum by <code>samples</code> systematic draws by <code>|b_P|</code>, each worth <code>Σ|b|/samples</code>, so every collapse and the final <code>A</code> are unbiased.</li>
+<li>The echo is quadratic in <code>A</code>, so each estimate pairs two independent trajectories; its expectation is the exact echo.</li>
+<li>The diagonal estimator <code>Σ b_P b'_P cos(2δ)^{n_P}</code> is the resummed moment series of the paper’s Eq. (C34), unnormalized since <code>‖A‖₂ = 1</code>.</li>
+<li><code>ole.rotated_overlap(A, ..., B=A2)</code> gives the exact echo of the pair, off-diagonal terms included.</li>
+<li>The paper’s PP-MC instead restarts from one string drawn by <code>b_P²</code> at coefficient 1 and normalizes a single trajectory’s diagonal echo.</li>
 <li>Both estimators are numpy over <code>A.to_arrays()</code>; under MPI each rank reads its share of a <code>PauliSum.partition(comm=...)</code> split (<code>.local()</code>) and <code>comm.allreduce</code> sums the values.</li>
-<li><code>collapse_sample</code> draws the same string whatever the thread count.</li>
+<li><code>collapse_sample</code> draws the same strings whatever the thread count.</li>
 </ul>
 <h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
-<p>One L = 6 trajectory at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>
+<p>One L = 6 trajectory of the collapse-to-one rule this example used to run, at η = 9π/40 on 8 threads of ccqlin038 (Xeon Gold 6244):</p>
 <div class="table-wrapper">
 <table>
 <thead>

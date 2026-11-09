@@ -507,50 +507,50 @@
 <a href=#507 id=507 data-nosnippet>507</a><span class="doccomment">/// Most layers a rotation run joins.
 <a href=#508 id=508 data-nosnippet>508</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_ROTATION_RUN_LAYERS: usize = <span class="number">8</span>;
 <a href=#509 id=509 data-nosnippet>509</a>
-<a href=#510 id=510 data-nosnippet>510</a><span class="doccomment">/// Largest span dimension of a rotation run's bucket deltas, so a coset of `2^r` buckets at the bucket target stays within a core's L2 (research/FINDINGS.md §Consecutive rotation tables run as one coset loop).
-<a href=#511 id=511 data-nosnippet>511</a></span><span class="kw">const </span>MAX_ROTATION_RUN_DIMENSION: usize = <span class="number">3</span>;
+<a href=#510 id=510 data-nosnippet>510</a><span class="doccomment">/// Largest span dimension of a host rotation run's bucket deltas, so a coset of `2^r` buckets at the bucket target stays within a core's L2 (research/FINDINGS.md §Consecutive rotation tables run as one coset loop).
+<a href=#511 id=511 data-nosnippet>511</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_ROTATION_RUN_DIMENSION: usize = <span class="number">3</span>;
 <a href=#512 id=512 data-nosnippet>512</a>
 <a href=#513 id=513 data-nosnippet>513</a><span class="doccomment">/// The bucket deltas of a rotation run being joined, at one bucket count.
 <a href=#514 id=514 data-nosnippet>514</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">struct </span>RotationRunSpan {
 <a href=#515 id=515 data-nosnippet>515</a>    deltas: Vec&lt;u32&gt;,
 <a href=#516 id=516 data-nosnippet>516</a>    bits: u8,
-<a href=#517 id=517 data-nosnippet>517</a>}
-<a href=#518 id=518 data-nosnippet>518</a>
-<a href=#519 id=519 data-nosnippet>519</a><span class="kw">impl </span>RotationRunSpan {
-<a href=#520 id=520 data-nosnippet>520</a>    <span class="doccomment">/// An empty run at `bits` bucket bits.
-<a href=#521 id=521 data-nosnippet>521</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(bits: u8) -&gt; <span class="self">Self </span>{
-<a href=#522 id=522 data-nosnippet>522</a>        <span class="self">Self </span>{ deltas: Vec::new(), bits }
-<a href=#523 id=523 data-nosnippet>523</a>    }
-<a href=#524 id=524 data-nosnippet>524</a>
-<a href=#525 id=525 data-nosnippet>525</a>    <span class="doccomment">/// Join `layer` if it is a rotation table that keeps the run's span within [`MAX_ROTATION_RUN_DIMENSION`]; returns whether it joined.
-<a href=#526 id=526 data-nosnippet>526</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>join&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt;(<span class="kw-2">&amp;mut </span><span class="self">self</span>, layer: <span class="kw-2">&amp;</span>Prepared&lt;W, C&gt;) -&gt; bool {
-<a href=#527 id=527 data-nosnippet>527</a>        <span class="kw">let </span>Prepared::Local(ptm) = layer <span class="kw">else </span>{ <span class="kw">return </span><span class="bool-val">false </span>};
-<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">if </span>RotationLayer::of(ptm).is_none() {
-<a href=#529 id=529 data-nosnippet>529</a>            <span class="kw">return </span><span class="bool-val">false</span>;
-<a href=#530 id=530 data-nosnippet>530</a>        }
-<a href=#531 id=531 data-nosnippet>531</a>        <span class="kw">let </span>joined = <span class="self">self</span>.deltas.len();
-<a href=#532 id=532 data-nosnippet>532</a>        <span class="self">self</span>.deltas.extend(ptm.bucket_deltas());
-<a href=#533 id=533 data-nosnippet>533</a>        <span class="kw">if </span>Gf2Span::new(<span class="kw-2">&amp;</span><span class="self">self</span>.deltas, <span class="self">self</span>.bits).dimension() &gt; MAX_ROTATION_RUN_DIMENSION {
-<a href=#534 id=534 data-nosnippet>534</a>            <span class="self">self</span>.deltas.truncate(joined);
-<a href=#535 id=535 data-nosnippet>535</a>            <span class="kw">return </span><span class="bool-val">false</span>;
-<a href=#536 id=536 data-nosnippet>536</a>        }
-<a href=#537 id=537 data-nosnippet>537</a>        <span class="bool-val">true
-<a href=#538 id=538 data-nosnippet>538</a>    </span>}
-<a href=#539 id=539 data-nosnippet>539</a>}
-<a href=#540 id=540 data-nosnippet>540</a>
-<a href=#541 id=541 data-nosnippet>541</a><span class="doccomment">/// Apply `run`, consecutive rotation tables a [`RotationRunSpan`] joined under the current hash, as one coset loop over their joint span, each coset taking every layer in order while its buckets are in cache.
-<a href=#542 id=542 data-nosnippet>542</a>///
-<a href=#543 id=543 data-nosnippet>543</a>/// Each layer moves a string only within its own coset of the joint span, so the cosets stay independent and every output of every layer passes `keep_term` as when the layers run one by one; no layer pass runs between them, so the policy must have none.
-<a href=#544 id=544 data-nosnippet>544</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>apply_rotation_run&lt;<span class="kw">const </span>W: usize, C: Coefficient, T&gt;(
-<a href=#545 id=545 data-nosnippet>545</a>    sum: <span class="kw-2">&amp;mut </span>PauliSum&lt;W, C&gt;,
-<a href=#546 id=546 data-nosnippet>546</a>    run: <span class="kw-2">&amp;</span>[Prepared&lt;W, C&gt;],
-<a href=#547 id=547 data-nosnippet>547</a>    policy: <span class="kw-2">&amp;</span>T,
-<a href=#548 id=548 data-nosnippet>548</a>    scratch: <span class="kw-2">&amp;mut </span>LayerScratch&lt;W, C&gt;,
-<a href=#549 id=549 data-nosnippet>549</a>) <span class="kw">where
-<a href=#550 id=550 data-nosnippet>550</a>    </span>T: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
-<a href=#551 id=551 data-nosnippet>551</a>{
-<a href=#552 id=552 data-nosnippet>552</a>    <span class="macro">stamp!</span>(stamp);
-<a href=#553 id=553 data-nosnippet>553</a>    <span class="macro">debug_assert!</span>(!policy.finalizes_layer(), <span class="string">"a layer pass would run between the run's layers"</span>);
+<a href=#517 id=517 data-nosnippet>517</a>    max_dimension: usize,
+<a href=#518 id=518 data-nosnippet>518</a>}
+<a href=#519 id=519 data-nosnippet>519</a>
+<a href=#520 id=520 data-nosnippet>520</a><span class="kw">impl </span>RotationRunSpan {
+<a href=#521 id=521 data-nosnippet>521</a>    <span class="doccomment">/// An empty run at `bits` bucket bits whose span may reach `max_dimension`.
+<a href=#522 id=522 data-nosnippet>522</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>new(bits: u8, max_dimension: usize) -&gt; <span class="self">Self </span>{
+<a href=#523 id=523 data-nosnippet>523</a>        <span class="self">Self </span>{ deltas: Vec::new(), bits, max_dimension }
+<a href=#524 id=524 data-nosnippet>524</a>    }
+<a href=#525 id=525 data-nosnippet>525</a>
+<a href=#526 id=526 data-nosnippet>526</a>    <span class="doccomment">/// Join `layer` if it is a rotation table that keeps the run's span within its maximum dimension; returns whether it joined.
+<a href=#527 id=527 data-nosnippet>527</a>    </span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>join&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt;(<span class="kw-2">&amp;mut </span><span class="self">self</span>, layer: <span class="kw-2">&amp;</span>Prepared&lt;W, C&gt;) -&gt; bool {
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="kw">let </span>Prepared::Local(ptm) = layer <span class="kw">else </span>{ <span class="kw">return </span><span class="bool-val">false </span>};
+<a href=#529 id=529 data-nosnippet>529</a>        <span class="kw">if </span>RotationLayer::of(ptm).is_none() {
+<a href=#530 id=530 data-nosnippet>530</a>            <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#531 id=531 data-nosnippet>531</a>        }
+<a href=#532 id=532 data-nosnippet>532</a>        <span class="kw">let </span>joined = <span class="self">self</span>.deltas.len();
+<a href=#533 id=533 data-nosnippet>533</a>        <span class="self">self</span>.deltas.extend(ptm.bucket_deltas());
+<a href=#534 id=534 data-nosnippet>534</a>        <span class="kw">if </span>Gf2Span::new(<span class="kw-2">&amp;</span><span class="self">self</span>.deltas, <span class="self">self</span>.bits).dimension() &gt; <span class="self">self</span>.max_dimension {
+<a href=#535 id=535 data-nosnippet>535</a>            <span class="self">self</span>.deltas.truncate(joined);
+<a href=#536 id=536 data-nosnippet>536</a>            <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#537 id=537 data-nosnippet>537</a>        }
+<a href=#538 id=538 data-nosnippet>538</a>        <span class="bool-val">true
+<a href=#539 id=539 data-nosnippet>539</a>    </span>}
+<a href=#540 id=540 data-nosnippet>540</a>}
+<a href=#541 id=541 data-nosnippet>541</a>
+<a href=#542 id=542 data-nosnippet>542</a><span class="doccomment">/// Apply `run`, consecutive rotation tables a [`RotationRunSpan`] joined under the current hash, as one coset loop over their joint span, each coset taking every layer in order while its buckets are in cache.
+<a href=#543 id=543 data-nosnippet>543</a>///
+<a href=#544 id=544 data-nosnippet>544</a>/// Each layer moves a string only within its own coset of the joint span, so the cosets stay independent and every output of every layer passes `keep_term` as when the layers run one by one; no layer pass runs between them (`TruncationPolicy::run_length_limit`).
+<a href=#545 id=545 data-nosnippet>545</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>apply_rotation_run&lt;<span class="kw">const </span>W: usize, C: Coefficient, T&gt;(
+<a href=#546 id=546 data-nosnippet>546</a>    sum: <span class="kw-2">&amp;mut </span>PauliSum&lt;W, C&gt;,
+<a href=#547 id=547 data-nosnippet>547</a>    run: <span class="kw-2">&amp;</span>[Prepared&lt;W, C&gt;],
+<a href=#548 id=548 data-nosnippet>548</a>    policy: <span class="kw-2">&amp;</span>T,
+<a href=#549 id=549 data-nosnippet>549</a>    scratch: <span class="kw-2">&amp;mut </span>LayerScratch&lt;W, C&gt;,
+<a href=#550 id=550 data-nosnippet>550</a>) <span class="kw">where
+<a href=#551 id=551 data-nosnippet>551</a>    </span>T: TruncationPolicy&lt;W, C&gt; + <span class="question-mark">?</span>Sized,
+<a href=#552 id=552 data-nosnippet>552</a>{
+<a href=#553 id=553 data-nosnippet>553</a>    <span class="macro">stamp!</span>(stamp);
 <a href=#554 id=554 data-nosnippet>554</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(cut) = scratch.octaves.pending.take() {
 <a href=#555 id=555 data-nosnippet>555</a>        cut.apply(sum);
 <a href=#556 id=556 data-nosnippet>556</a>    }

@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-850ce018.js";
+            window.path_to_searchindex_js = "../../searchindex-f2cb3e11.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -209,11 +209,12 @@ A sum of more than <code>k</code> terms keeps exactly <code>k</code>: when a gro
 Exact <code>topn</code> has no partitioned form, so <code>approx_topn</code> is the policy for <a href="partitions.html">NUMA partitions</a> and <a href="mpi.html">MPI ranks</a>.
 <strong><code>partition_topn(n)</code></strong> and <strong><code>partition_approx_topn(n)</code></strong> are <code>topn(n)</code> and <code>approx_topn(n)</code> on each partition separately, without communicating, so no partition holds more than <code>n</code> terms between layers however unevenly the sum splits.
 It keeps the locally rather than the globally largest terms, up to <code>P·n</code> in all; <code>approx_topn(total) &amp; partition_topn(n)</code> adds a global budget.</p>
-<p><strong><code>collapse_sample(cache, seed)</code> samples instead of filtering.</strong>
-Whenever a gate leaves more than <code>cache</code> strings it draws one string with probability <code>|c|² / Σ|c|²</code> and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as the <a href="../measurements.html#echo">diagonal echo</a>; average many seeds and report the standard error.
-<code>PropagationStats.collapses</code> counts the draws.</p>
-<pre><code class="language-python">sampler = truncation.collapse_sample(1_000, 7)
+<p><strong><code>collapse_sample(cache, samples, seed)</code> samples instead of filtering.</strong>
+Whenever a gate leaves more than <code>cache</code> strings it replaces the sum by <code>samples</code> systematic draws in proportion to <code>|c|</code>, each worth <code>Σ|c|/samples</code> in the direction of its coefficient, with repeated draws of one string merged; a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
+Every collapse is unbiased, so any read-out linear in the final sum, such as <code>expectation_product</code>, is an unbiased estimate; average many seeds and report the standard error.
+A quantity quadratic in the sum, such as an <a href="../measurements.html#echo">echo</a>, needs two independent trajectories, one on each side.
+<code>PropagationStats.collapses</code> counts the collapses.</p>
+<pre><code class="language-python">sampler = truncation.collapse_sample(100_000, 10_000, 7)
 </code></pre>
 <p>Policies compose with <code>&amp;</code> (keep when both agree, and run every layer pass) and <code>|</code> (keep when either does); <code>|</code> combines per-term filters only, and raises <code>ValueError</code> on a <code>topn</code>, <code>approx_topn</code>, their <code>partition_</code> forms or <code>collapse_sample</code>:</p>
 <pre><code class="language-python">policy = truncation.weight(6) &amp; truncation.coeff(1e-10)

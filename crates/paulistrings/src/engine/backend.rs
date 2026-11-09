@@ -101,6 +101,16 @@ pub(crate) trait PartitionBackend<const W: usize, C: Coefficient, T: ?Sized>:
         let _ = (run, policy);
         unreachable!("the backend takes no runs");
     }
+    /// Whether the backend tracks [`agreed_len`](Self::agreed_len), which lets a group take runs under a layer pass.
+    const TRACKS_AGREED_LEN: bool = false;
+    /// An upper bound on the whole group's terms that every partition holds alike, or `None`: adopted from [`agree_len`](Self::agree_len) or a collective layer pass, and carried through every layer and run by its fanouts, on a failed partition too.
+    fn agreed_len(&self) -> Option<usize> {
+        None
+    }
+    /// Adopt `total`, the group's summed lengths, which the driver agreed at the start of a call.
+    fn agree_len(&mut self, total: usize) {
+        let _ = total;
+    }
     /// Amend the layer's trace row with what the backend counted itself; called only when tracing.
     fn trace_layer(&self, row: &mut PartitionLayerRow) {
         let _ = row;

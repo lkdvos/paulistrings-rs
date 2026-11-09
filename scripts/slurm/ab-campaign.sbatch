@@ -46,7 +46,7 @@ if [ "${MPI:-0}" = 1 ]; then
     [ -n "${A_REV:-}${KNOB_B:-}" ] || { echo "MPI=1 needs A_REV (a code A/B) or KNOB_B (a knob A/B)" >&2; exit 2; }
     if command -v module >/dev/null 2>&1; then
         module purge
-        module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+        module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8
     fi
     export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"
     features=phase-timing,mpi

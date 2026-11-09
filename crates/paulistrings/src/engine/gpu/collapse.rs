@@ -199,10 +199,12 @@ pub(crate) fn resample_device<const W: usize, C: Coefficient>(
 
 /// One `CollapseSample` layer pass, the host's [`finalize_layer`](crate::TruncationPolicy::finalize_layer) on one device and its [`finalize_layer_partitioned`](crate::TruncationPolicy::finalize_layer_partitioned) over a group.
 /// `parts` is `None` on a partition that already failed; above one partition it still enters every reduction, with zeros, so the group stays in lock-step.
+/// Above one partition an `agreed` bound within the cache skips the pass, its pass index taken all the same, and otherwise becomes the group's length after it.
 pub(crate) fn collapse_sample_device<const W: usize, C: Coefficient>(
     parts: Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)>,
     policy: &CollapseSample,
     collectives: &dyn Collectives,
+    agreed: &mut Option<usize>,
 ) -> Result<(), GpuError> {
     if collectives.size() == 1 {
         let Some((sum, scratch)) = parts else {
@@ -226,7 +228,13 @@ pub(crate) fn collapse_sample_device<const W: usize, C: Coefficient>(
         );
         return Ok(());
     }
-    group_collapse(parts, policy, collectives)
+    if agreed.is_some_and(|bound| bound <= policy.cache) {
+        if collectives.rank() == 0 {
+            policy.next_call();
+        }
+        return Ok(());
+    }
+    group_collapse(parts, policy, collectives, agreed)
 }
 
 /// [`collapse_sample_device`] above one partition: `[len, pass]`, then the per-partition `Σ|c|` estimates that fix the group's shift, then the per-partition fixed-point totals that place this partition's stretch.
@@ -234,6 +242,7 @@ fn group_collapse<const W: usize, C: Coefficient>(
     mut parts: Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)>,
     policy: &CollapseSample,
     collectives: &dyn Collectives,
+    agreed: &mut Option<usize>,
 ) -> Result<(), GpuError> {
     let (rank, size) = (collectives.rank() as usize, collectives.size() as usize);
     let call = if rank == 0 { policy.next_call() } else { 0 };
@@ -246,8 +255,10 @@ fn group_collapse<const W: usize, C: Coefficient>(
     collectives.allreduce_sum_u64(&mut head);
     let [len, call] = head;
     if len as usize <= policy.cache {
+        *agreed = Some(len as usize);
         return Ok(());
     }
+    *agreed = Some(policy.samples);
 
     let mut failure = Ok(());
     let mut estimates = vec![0.0f64; size];

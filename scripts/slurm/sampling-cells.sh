@@ -2,10 +2,11 @@
 # The caller sets the arrays `launch_one` (one device, the reference) and `launch_all` (the whole allocation), each a command line that sampling_bench's arguments are appended to, and `$sidecar`.
 # Never invokes any Slurm command itself.
 
-# Kicked Ising (20 steps) and the 16x16 TFIM (10 steps) under CollapseSample at samples = cache / 4, seed 1.
+# Kicked Ising (20 steps) and the 16x16 TFIM (10 steps) under CollapseSample at samples = cache / 4, seed 1, under ApproxTopN at the same caps, and kicked Ising under coefficient thresholds.
 : "${CACHES:=1e8 4e8}"
 : "${REF_CACHE:=1e8}"
 : "${SEED:=1}"
+: "${THRESHOLDS:=2.5e-5 1e-5}"
 : "${CELL_BOUND:=2400}"
 
 samples_of() { python3 -c "import sys; print(int(float(sys.argv[1]) / 4))" "$1"; }
@@ -34,9 +35,19 @@ run_sweep() {
     # Seeded rows against the default cut, at the reference size.
     cell "split kicked-ising seeded rows" launch_all --rows seeded --model kicked-ising --steps 20 \
         --collapse --cache "$REF_CACHE" --samples "$(samples_of "$REF_CACHE")" --seed "$SEED"
-    # The deterministic scaling cell: the same ApproxTopN cap on one device and on all of them.
-    cell "reference kicked-ising approx-topn" launch_one --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
-    cell "split kicked-ising approx-topn" launch_all --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
+    # The deterministic scaling cells: the same ApproxTopN cap on one device and on all of them, then the larger caps split.
+    for spec in "kicked-ising 20" "tfim 10"; do
+        read -r model steps <<< "$spec"
+        cell "reference $model approx-topn $REF_CACHE" launch_one --model "$model" --steps "$steps" --approx-topn "$REF_CACHE"
+        for cache in $CACHES; do
+            cell "split $model approx-topn $cache" launch_all --model "$model" --steps "$steps" --approx-topn "$cache"
+        done
+    done
+    # Thresholds keep every term above eps, so reference and split read out alike to rounding.
+    for eps in $THRESHOLDS; do
+        cell "reference kicked-ising threshold $eps" launch_one --model kicked-ising --steps 20 --threshold "$eps"
+        cell "split kicked-ising threshold $eps" launch_all --model kicked-ising --steps 20 --threshold "$eps"
+    done
 }
 
 # phase_timing_cell <features> <sidecar>: with PT=1 (the default), the largest kicked-Ising cell again under `phase-timing` and `--trace`, for the export and exchange split and the per-partition totals; the other cells are untraced.

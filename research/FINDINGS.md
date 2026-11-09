@@ -492,7 +492,7 @@ Open levers, by estimated gain: fewer host round trips (taken for joins and `App
 
 A permutation table (one emitting entry per pattern, no colliding outputs, no received entries) scatters rows directly (`k_permute_*`), with no sort, arena or compaction.
 **−62.7% to −66.9%** wall on `cnot` from 1e5 to 1.6e7 (5/5); `heavyhex_step` (rotations only) is flat as the control.
-Open: Clifford layers with received entries, and an emitter count replacing `k_permute_count`'s survivor pass.
+Open: an emitter count replacing `k_permute_count`'s survivor pass; Clifford layers with received entries scatter them (§Device groups take runs, and a remote Clifford layer scatters its received rows).
 
 ### Rotation layers join instead of sorting
 
@@ -545,6 +545,12 @@ About 32% of input strings are touched by a run; 5 of 338 runs outgrew a block (
 A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
 Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
 Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
+
+### A device rotation run without a filter applies its layers one by one
+
+Without a per-term filter a device rotation run joined pairs of one-qubit tables on different qubits into one four-entry table, which runs the sorting fused layer instead of two joins (§Rotation layers join instead of sorting).
+Kicked Ising `--collapse --cache 1e7 --samples 2.5e6` (`sampling_bench` screen profile, JCC flag, f64, SM 1830–1905 MHz, memory 7601 MHz, 2 interleaved rounds): one device **7.42 / 7.50 → 4.21 / 4.22 s**, four partitions of one device 9.89 / 9.88 → 4.68 / 4.87 s; `--approx-topn 1e6` and `1e7`, where runs at the cap are rare, flat (0.680 / 0.683 → 0.672 / 0.681 s, 4.83 / 4.84 → 4.79 / 4.80 s).
+Rejected: the per-term filter's one-pass class-bucket run (§Rotation runs under a per-term filter in one pass) under no filter, one device 6.86 / 6.94 s on the collapse cell.
 
 ### A crowded class reruns over global tables
 
@@ -674,6 +680,24 @@ Grown by half again without a ceiling, both alternating output columns ratcheted
 A join's output now grows by half again only up to twice the policy's run length limit (`n` for `ApproxTopN`), and empty columns release their term columns before growing (`DeviceColumns::reserve`).
 Peak device memory (`nvidia-smi` every 200 ms, A6000 48 GB): kicked Ising `1e8` **25 352 → 21 864 MiB**, `2e8` out of memory → 42 760 MiB (17.3 s), TFIM 16×16 `1e8` **45 578 → 36 106 MiB** (211 s), about 4.5 × n × bytes per term; TFIM `1.5e8` still fails on a 20.1 GB request, as two `2n` output columns alone take 48 GB at 80 bytes a term.
 
+### Device groups take runs, and a remote Clifford layer scatters its received rows
+
+A group under `ApproxTopN` or `CollapseSample` agrees its total length once per call and admits runs against that bound, which every device carries through its layers by their fanouts and takes from each collective pass; a pass the bound proves a no-op issues no collective (`engine/driver.rs`, `DevicePartition::agreed_len`).
+A remote permutation layer whose rows arrive in one chunk appends them after each bucket's local rows instead of running the sorting fused layer: kicked Ising `--approx-topn 1e7` over four partitions, a crossing bond **13.3 → 5.2 ms**.
+Four partitions of ccqlin038's A6000 against `gpu@ee4e77aa` (`sampling_bench` screen profile, JCC flag, f64, interleaved, 3 rounds, SM 1845–1905 MHz, memory 7601 MHz), with layer passes of the traced run:
+
+| cell | base (s) | now (s) | Δ | passes |
+|---|---|---|---|---|
+| kicked Ising `--approx-topn 1e6` | 2.490 / 2.520 / 2.629 | 1.434 / 1.305 / 1.447 | **−42 / −48 / −45%** | 5420 → 2602 |
+| kicked Ising `--approx-topn 1e7` | 12.72 / 12.70 / 12.75 | 6.60 / 6.70 / 6.72 | **−48 / −47 / −47%** | 5420 → 2565 |
+| kicked Ising `--threshold 2.5e-5` | 12.59 / 12.55 / 12.68 | 7.31 / 7.35 / 7.35 | **−42 / −41 / −42%** | 3060 → 840 |
+| kicked Ising `--collapse --cache 1e7` | 7.15 / 7.46 / 7.26 | 4.69 / 4.87 / 4.79 | **−35 / −35 / −34%** | 5420 → 1036 |
+| TFIM 16×16 `--approx-topn 1e6` | 6.36 / 6.16 / 6.19 | 6.15 / 6.17 / 6.28 | −3 / +0 / +1% | 9920 → 9038 |
+
+One device: thresholds and the TFIM flat, kicked Ising `--approx-topn` −1 to −2%, the collapse cell −45% (§A device rotation run without a filter applies its layers one by one); threshold readouts identical to 12 digits.
+At the cap a rotation layer's pass cannot be deferred (§No exact run rule admits `ApproxTopN` rotation runs at the cap), so the TFIM keeps a pass per layer; on kicked Ising `1e7` the passes after single `R_X` layers are now 1.9 of 6.7 s, much of it the partitions waiting for the fullest one under cut rows.
+Rejected: lagging a group member's length read-backs as a lone device's are, an illegal device address on every split cell; the export sizes from exact lengths.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).
@@ -692,6 +716,12 @@ Any `.cu` edit makes every variant cold: the lib's device tests then outran a 60
 
 Non-rotation channels on more than two qubits panic in `propagate`.
 Sketch: a heap `DeltaEntry::amp` variant for `k > 2`, `O(16^k)` probe cost, practical ceiling `k ≈ 4–5`.
+
+### The rank-order boundary quota biases cut-row splits
+
+A partitioned `ApproxTopN` hands the boundary octave's quota to the ranks in rank order (`local_boundary_quota`); under cut rows a rank is a block of qubits, so the cut keeps the boundary strings of the low blocks first.
+TFIM 16×16 `--approx-topn 1e6`, step 10: one host process 0.2892, one device 0.2896; four partitions under cut rows 0.3083 on the host `PartitionedSum` and 0.3084 on device partitions; under seeded rows 0.2886 and 0.2887.
+The same signature as the atomic-ticket quota (§`ApproxTopN` cuts in place on device); a quota split in proportion to each rank's boundary count is the candidate, unmeasured.
 
 ### Partition rows without a known lattice
 

@@ -282,10 +282,29 @@ fn start_nccl<const W: usize, C: Coefficient>(
 ) -> Result<(), GpuError> {
     use super::nccl::{self, NcclComm};
     use super::wire::DeviceWire;
+    use crate::engine::cuda_context::{libcuda_present, libnccl_present, libnvrtc_present};
     let context = partition.sum().context.clone();
-    let device =
-        if super::device::nccl_available() { nccl::device_uuid(&context).ok() } else { None };
-    nccl::agree_start(collectives, device.is_some(), device.unwrap_or_default())?;
+    // The first missing prerequisite names this rank's own error; the agreed verdict alone says only that some rank lacks one.
+    let device = if !libcuda_present() {
+        Err("this rank cannot use libnccl: libcuda does not load")
+    } else if !libnvrtc_present() {
+        Err("this rank cannot use libnccl: libnvrtc does not load")
+    } else if super::device::device_count() == 0 {
+        Err("this rank cannot use libnccl: no CUDA device is visible")
+    } else if !libnccl_present() {
+        Err("this rank cannot use libnccl: libnccl does not load")
+    } else {
+        nccl::device_uuid(&context).map_err(|e| {
+            log::warn!(target: super::GPU_LOG_TARGET, "device UUID query failed: {e}");
+            "this rank cannot use libnccl: the device UUID query failed"
+        })
+    };
+    let agreed =
+        nccl::agree_start(collectives, device.is_ok(), *device.as_ref().unwrap_or(&[0; 2]));
+    if let (Err(_), Err(reason)) = (&agreed, device) {
+        return Err(GpuError::Unsupported(reason));
+    }
+    agreed?;
     let stream = partition.sum().stream.clone();
     let comm = bootstrap(
         collectives,

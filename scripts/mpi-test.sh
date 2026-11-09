@@ -74,7 +74,7 @@ if [ "$missing" -ne 0 ]; then
     cat >&2 <<'EOF'
 
 On a Flatiron host:
-    module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+    module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8
     export LIBCLANG_PATH=$(llvm-config --libdir)
 Elsewhere: install an MPI (libopenmpi-dev / openmpi-bin) and libclang-dev.
 EOF
@@ -90,7 +90,7 @@ case "$features" in
         fi
         if ! ldconfig -p 2>/dev/null | grep -q libnvrtc \
            && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnvrtc'; then
-            echo "warning: no libnvrtc on the loader path (module load cuda/12.8.0, or set CUDA_ROOT); the device cases will skip" >&2
+            echo "warning: no libnvrtc on the loader path (module load cuda/12.9.1, or set CUDA_ROOT); the device cases will skip" >&2
         fi
         nccl_lib="${NCCL_LIB:-}"
         if [ -n "$nccl_lib" ] && [ -d "$nccl_lib" ]; then
@@ -98,7 +98,7 @@ case "$features" in
         fi
         if ! ldconfig -p 2>/dev/null | grep -q libnccl \
            && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnccl'; then
-            echo "warning: no libnccl on the loader path (module load nccl/2.23.4-1, or set NCCL_LIB to its lib dir); a group above one rank cannot start NCCL" >&2
+            echo "warning: no libnccl on the loader path (module load nccl/2.29.7-1 gcc/14.3.0, or set NCCL_LIB to its lib dir); a group above one rank cannot start NCCL" >&2
         fi
         cuda_x="-x LD_LIBRARY_PATH"
         ;;

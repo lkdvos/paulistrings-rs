@@ -56,7 +56,7 @@ cargo run --release --features phase-timing --example phase_breakdown -- \
 MPI (`mpi` feature) needs the modules loaded and `libclang` for rsmpi's bindgen; it is never in a released wheel, so the bindings build into their own non-editable `./.venv-mpi`, and `uv run` must never target that venv.
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 python-mpi/3.12.13 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo test -p paulistrings --features mpi                        # tests/mpi_ranks.rs as a one-rank world
 scripts/mpi-test.sh --ranks 2,4 [--release] [--python]           # under mpirun; --python syncs .venv-mpi
@@ -68,7 +68,7 @@ Both crates' `build.rs` exist only for `mpi` (the cdylib needs its own link arg 
 CUDA (`cuda` feature) needs no toolkit to compile; `cudarc` loads `libcuda`/`libnvrtc` at runtime, and NVRTC output is cached in `$PAULISTRINGS_KERNEL_CACHE` (default `~/.cache/paulistrings/kernels`, `off` to disable).
 
 ```bash
-module load cuda/12.8.0
+module load cuda/12.9.1
 cargo test -p paulistrings --features cuda                       # passes without a device
 cargo clippy -p paulistrings-py --features cuda -- -D warnings
 MATURIN_PEP517_ARGS="--features cuda" uv run pytest python/paulistrings/tests/test_cuda.py
@@ -77,7 +77,7 @@ MATURIN_PEP517_ARGS="--features cuda" uv run pytest python/paulistrings/tests/te
 One GPU per MPI rank (`gpu::MpiGpuSum`) needs both features plus NCCL (`dlopen`ed), and a device per rank above one:
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 cuda/12.8.0 nccl/2.23.4-1 python-mpi/3.12.9 uv
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 cuda/12.9.1 nccl/2.29.7-1 gcc/14.3.0 python-mpi/3.12.13 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo test -p paulistrings --features cuda,mpi,test-utils --test mpi_ranks
 scripts/mpi-test.sh --ranks 2,4 --cuda [--python]

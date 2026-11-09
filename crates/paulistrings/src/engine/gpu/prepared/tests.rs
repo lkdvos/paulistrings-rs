@@ -132,7 +132,7 @@ fn the_permutation_gate_holds_for_cliffords_alone() {
 }
 
 #[test]
-fn a_received_entry_disables_the_permutation_path() {
+fn a_received_entry_keeps_the_permutation_path() {
     use crate::engine::plan::PartitionPlan;
     use crate::pauli_sum::hash::PartitionRows;
     let hash = Gf2Hash::<1>::new(8, 4, DEFAULT_HASH_SEED);
@@ -142,7 +142,8 @@ fn a_received_entry_disables_the_permutation_path() {
     let rows = PartitionRows::<1>::from_rows(8, vec![[0b10u64]], vec![[0u64]]);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     assert!(!plan.remote.is_empty());
-    assert!(!DevicePrepared::new(&prepared, &hash, &fingerprints, &plan.remote).permutation);
+    let received = DevicePrepared::new(&prepared, &hash, &fingerprints, &plan.remote);
+    assert!(received.permutation && received.received_entries > 0);
     assert!(DevicePrepared::new(&prepared, &hash, &fingerprints, &[]).permutation);
 }
 

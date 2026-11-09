@@ -1,9 +1,6 @@
-//! Runs on the device: a permutation run walked per string in one pass (`kernels/permute_run.cu`), and a rotation run as fused layers over pairs of its one-qubit tables.
+//! Runs on the device: a permutation run walked per string in one pass (`kernels/permute_run.cu`), and a rotation run, in one pass under a per-term filter or layer by layer.
 //!
-//! Contracts: a permutation run agrees with `apply_permutation_run` to floating-point tolerance and drops every intermediate string exactly where it does (engine/bucketed/permutation_run.rs).
-//! A rotation run joins two one-qubit tables on different qubits into one table ([`LocalPtm::tensor`]) only under a keep program with no per-term filter, since the joined table asks it once, about the pair's output; so it agrees with its layers one by one to floating-point tolerance.
-
-use std::borrow::Cow;
+//! Contract: a permutation run agrees with `apply_permutation_run` to floating-point tolerance and drops every intermediate string exactly where it does (engine/bucketed/permutation_run.rs).
 
 use cudarc::driver::{CudaSlice, CudaStream, PushKernelArg};
 
@@ -12,7 +9,7 @@ use crate::engine::gpu::module::launch_grid;
 use super::fast_paths::permute_threads;
 use super::rotation_run::rotation_run_fused;
 use super::{apply_layer_device, timed_transfer, DeviceLayer, LayerScratch, Transfer};
-use crate::channel::prepared::{LocalPtm, Prepared, LOCAL_DIM};
+use crate::channel::prepared::{Prepared, LOCAL_DIM};
 use crate::coefficient::Coefficient;
 use crate::engine::bucketed::PermutationStep;
 use crate::engine::gpu::columns::grow;
@@ -188,7 +185,7 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     scratch.resolve(sum)
 }
 
-/// Apply the rotation run `layers` to `sum` as fused layers, a pair of one-qubit tables on different qubits joined into one when `keep` has no per-term filter; only a lone partition takes rotation runs (`DevicePartition::rotation_run_dimension`).
+/// Apply the rotation run `layers` to `sum`: under a per-term filter in one pass where `rotation_run_fused` can, otherwise layer by layer, each through the join; its layers are local, so a group member runs them as a lone partition would.
 pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     layers: &[Prepared<W, C>],
@@ -199,26 +196,10 @@ pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     if *keep != KeepProgram::KEEP && rotation_run_fused(sum, layers, keep, target_bits, scratch)? {
         return Ok(());
     }
-    let joins = *keep == KeepProgram::KEEP;
     let plan = PartitionPlan::default();
-    let mut rest = layers;
-    while let Some((first, after)) = rest.split_first() {
-        let pair = match (first, after.first().filter(|_| joins)) {
-            (Prepared::Local(a), Some(Prepared::Local(b))) => {
-                LocalPtm::tensor(a, b, &sum.hash).map(Prepared::Local)
-            }
-            _ => None,
-        };
-        let (prepared, taken) = match pair {
-            Some(pair) => (Cow::Owned(pair), 2),
-            None => (Cow::Borrowed(first), 1),
-        };
-        let layer = DeviceLayer { prepared: &prepared, plan: &plan, keep, target_bits };
+    for prepared in layers {
+        let layer = DeviceLayer { prepared, plan: &plan, keep, target_bits };
         apply_layer_device(sum, &layer, scratch, &SoloTransport)?;
-        rest = &rest[taken..];
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

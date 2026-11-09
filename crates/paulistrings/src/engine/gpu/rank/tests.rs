@@ -64,7 +64,7 @@ mod protocol {
         trotter_circuit, unpinned_partitions, x0_terms_identity_on_q63, zz_rotation, CallLog,
         FaultPlan, LoggingTransport, WireFault,
     };
-    use crate::truncation::ApproxTopN;
+    use crate::truncation::CoefficientThreshold;
 
     type Outcome<const W: usize> = Result<Option<PauliSum<W>>, GpuError>;
 
@@ -620,7 +620,7 @@ mod protocol {
         }
     }
 
-    /// Every rank issues the host's calls with each remote layer's `exchange_layer` replaced by the skeleton `exchange` and one `allreduce_sum_u64` vote, and nothing extra on a local layer.
+    /// Every rank issues the host's calls with each remote layer's `exchange_layer` replaced by the skeleton `exchange` and one `allreduce_sum_u64` vote, and nothing extra on a local layer; under a policy without a layer pass, whose collectives the device schedules apart from the host's.
     #[test]
     fn every_remote_layer_adds_one_vote_and_a_local_layer_nothing() {
         crate::require_cuda!(exclusive);
@@ -643,7 +643,11 @@ mod protocol {
                             };
                             let mut split = DistributedSum::scatter_with(input.clone(), t, options);
                             split.transport().log.take();
-                            split.propagate(circuit, &ApproxTopN(900), Direction::Forward);
+                            split.propagate(
+                                circuit,
+                                &CoefficientThreshold(1e-4),
+                                Direction::Forward,
+                            );
                             split.transport().log.take()
                         })
                     })
@@ -651,7 +655,7 @@ mod protocol {
                 hs.into_iter().map(|h| h.join().unwrap()).collect()
             });
             let run = Run {
-                policy: BuiltinTruncation::ApproxTopN(900),
+                policy: BuiltinTruncation::Coefficient(1e-4),
                 ..Run::new(&input, rows.clone(), &circuit)
             };
             let group = LoggingTransport::group(size);

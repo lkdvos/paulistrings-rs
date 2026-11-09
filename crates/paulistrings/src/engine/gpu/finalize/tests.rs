@@ -299,7 +299,8 @@ fn device_decided_cut_matches<const W: usize>() {
         for n in [1usize, len / 3, len / 2, len.saturating_sub(1), len, len + 5] {
             let edge = octave_edge(&hist, len, n);
             let (mut dev, mut scratch) = device(&sum);
-            approx_top_n_device(Some((&mut dev, &mut scratch)), n, &SoloTransport).expect("cut");
+            approx_top_n_device(Some((&mut dev, &mut scratch)), n, &SoloTransport, &mut None)
+                .expect("cut");
             dev.assert_invariants_device().unwrap_or_else(|e| panic!("{what} n={n}: {e}"));
             let got = dev.to_host().expect("download");
             let mut want = sum.clone();

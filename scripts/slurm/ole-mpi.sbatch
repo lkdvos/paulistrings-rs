@@ -21,7 +21,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 
 module purge
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 python-mpi/3.12.13
 source "${VENV:-.venv-mpi}/bin/activate"
 unset RUST_LOG
 python -c 'import paulistrings, sys; sys.exit(0 if paulistrings.mpi_available() else 1)' || {

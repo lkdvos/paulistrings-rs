@@ -30,7 +30,7 @@ THRESHOLD=${THRESHOLD:-1e-12}
 
 if command -v module >/dev/null 2>&1; then
     module purge
-    module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+    module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8
 fi
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"   # bindgen (rsmpi) at build time
 use_shared_rust

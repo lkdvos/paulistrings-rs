@@ -92,8 +92,8 @@ env -u SBATCH_RESERVATION sbatch --nodes=4 scripts/slurm/mpi-ranks.sbatch       
 env -u SBATCH_RESERVATION sbatch --constraint='genoa&rocky9' scripts/slurm/mpi-ranks.sbatch
 ```
 
-The build needs `libclang` for rsmpi's bindgen, which is why the template loads `llvm/19.1.7`
-alongside `openmpi/5.0.6` and exports `LIBCLANG_PATH`.
+The build needs `libclang` for rsmpi's bindgen, which is why the template loads `llvm/20.1.8`
+alongside `openmpi/5.0.10` and exports `LIBCLANG_PATH`.
 The job builds `--offline` against the shared registry cache.
 On the workstation the same net runs without Slurm through `scripts/mpi-test.sh --ranks 2,4`.
 
@@ -119,9 +119,9 @@ The repo's `target` is likewise a symlink into the workstation's local `/home` (
 
 Both run on partition `gpu`, whose `scontrol show partition gpu` reads `Exclusive=NO OverSubscribe=NO` (exclusivity is the job's choice, not forced) under QoS `gpu` (at most 24 GPUs and 432 CPUs per user).
 The templates do not ask for `--exclusive`, so they schedule sooner; a job holding all four GPUs of a node already keeps other GPU jobs off it, and for a quiet-host timing campaign add `--exclusive` on the `sbatch` line.
-The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.4-20250724` is the rocky9 stack, ); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
+The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.5-20261027` is the rocky9 stack, ); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
 The device-to-device templates exclude workergpu062, the one A100 node with two GPUs, whose link a `--gres=gpu:2` request could otherwise land on.
-Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.6 llvm/19.1.7` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
+Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.10 llvm/20.1.8` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
 
 ```bash
 # one 4 x A100 node: device nets, then the probe on one GPU and on all four
@@ -154,7 +154,7 @@ One `CollapseSample` run of `examples/sampling_bench` split over several GPUs, t
 | `sampling-gpus.sbatch` | one 4-GPU node, one process: `--backend gpus` over every GPU (peer copies), the reference on GPU 0 |
 | `sampling-mpi-gpu.sbatch` | one GPU per MPI rank over NCCL (`--backend mpi-gpu`), gated by the `mpi_ranks` net; one node or several |
 
-Per model (kicked Ising 20 steps, 16×16 TFIM 10 steps): the reference at `REF_CACHE` (1e8) on one GPU, then the split run at every cache of `CACHES` (1e8 and 4e8, plus 8e8 at 8 ranks), samples = cache / 4, seed 1; then kicked Ising at `REF_CACHE` under seeded rows, `--approx-topn REF_CACHE` on one GPU and split (the deterministic scaling cell), and with `PT=1` the largest kicked-Ising cell again under `phase-timing` for the export and exchange split.
+Per model (kicked Ising 20 steps, 16×16 TFIM 10 steps): the reference at `REF_CACHE` (1e8) on one GPU, then the split run at every cache of `CACHES` (1e8 and 4e8, plus 8e8 at 8 ranks), samples = cache / 4, seed 1; then kicked Ising at `REF_CACHE` under seeded rows; per model `--approx-topn REF_CACHE` on one GPU and `--approx-topn` split at every cache of `CACHES` (the deterministic scaling cells); kicked Ising at every threshold of `THRESHOLDS` (2.5e-5 and 1e-5) on one GPU and split; and with `PT=1` the largest kicked-Ising cell again under `phase-timing` for the export and exchange split.
 Split runs use `--rows cut` (equal contiguous qubit blocks: every `R_X` is local, only crossing bonds exchange).
 Each cell is bounded by `CELL_BOUND` seconds and a failed cell does not stop the sweep.
 

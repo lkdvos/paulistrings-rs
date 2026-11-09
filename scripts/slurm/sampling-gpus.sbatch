@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=384G
-#SBATCH --time=02:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
 # One sampled run split over every GPU of one node in one process (`--backend gpus`, GpuPartitionedSum, peer copies), against a one-GPU reference (README.md §The sampled multi-GPU jobs).
@@ -15,7 +15,8 @@
 #
 # Environment knobs (all optional):
 #   CACHES       split-run caches, samples = cache / 4 (default "1e8 4e8")
-#   REF_CACHE    the one-GPU reference cache and the approx-topn cap (default 1e8)
+#   REF_CACHE    the one-GPU reference cache and approx-topn cap (default 1e8); the approx-topn splits run at CACHES
+#   THRESHOLDS   kicked-Ising coefficient thresholds, each on one GPU and split (default "2.5e-5 1e-5")
 #   DEVICES      the device list (default: every GPU the job sees)
 #   PT=0         skip the phase-timing rerun of the largest kicked-Ising cell (export/exchange split)
 #   CELL_BOUND   seconds one cell may take (default 2400)
@@ -26,7 +27,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/bounded.sh
 
 module purge
-module load modules/2.4-20250724 cuda/12.8.0
+module load modules/2.5-20261027 cuda/12.9.1
 use_shared_rust
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
 REMOVE_TARGET_DIR=1

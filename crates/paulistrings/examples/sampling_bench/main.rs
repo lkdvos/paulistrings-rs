@@ -9,9 +9,10 @@ mod models;
 #[cfg(all(feature = "cuda", feature = "mpi"))]
 mod mpi_run;
 mod output;
+mod rows;
 mod run;
 
-use paulistrings::{ApproxTopN, CoefficientThreshold, CollapseSample};
+use paulistrings::{ApproxTopN, CoefficientThreshold, CollapseSample, PerPartition};
 
 use cli::{parse_args, Backend, Config, Truncation, USAGE};
 use models::IsingQuench;
@@ -23,6 +24,7 @@ fn builtin_truncation(truncation: Truncation) -> paulistrings::BuiltinTruncation
     match truncation {
         Truncation::Threshold(eps) => CoefficientThreshold(eps).into(),
         Truncation::ApproxTopN(n) => ApproxTopN(n).into(),
+        Truncation::PartitionApproxTopN(n) => PerPartition(ApproxTopN(n)).into(),
         Truncation::Collapse { cache, samples, seed } => {
             CollapseSample::new(cache, samples, seed).into()
         }
@@ -49,6 +51,24 @@ fn execute<const W: usize, C: Coefficient>(
         (Backend::Cpu, Truncation::Collapse { cache, samples, seed }) => {
             run::run_cpu::<W, C, _>(cfg, quench, &CollapseSample::new(cache, samples, seed), traced)
         }
+        (Backend::Cpus, Truncation::Threshold(eps)) => {
+            run::run_cpus::<W, C, _>(cfg, quench, &CoefficientThreshold(eps), traced)
+        }
+        (Backend::Cpus, Truncation::ApproxTopN(n)) => {
+            run::run_cpus::<W, C, _>(cfg, quench, &ApproxTopN(n), traced)
+        }
+        (Backend::Cpu, Truncation::PartitionApproxTopN(n)) => {
+            run::run_cpu::<W, C, _>(cfg, quench, &PerPartition(ApproxTopN(n)), traced)
+        }
+        (Backend::Cpus, Truncation::PartitionApproxTopN(n)) => {
+            run::run_cpus::<W, C, _>(cfg, quench, &PerPartition(ApproxTopN(n)), traced)
+        }
+        (Backend::Cpus, Truncation::Collapse { cache, samples, seed }) => run::run_cpus::<W, C, _>(
+            cfg,
+            quench,
+            &CollapseSample::new(cache, samples, seed),
+            traced,
+        ),
         #[cfg(feature = "cuda")]
         (Backend::Gpu | Backend::Gpus, truncation) => {
             run::run_gpu::<W, C>(cfg, quench, &builtin_truncation(truncation), traced)

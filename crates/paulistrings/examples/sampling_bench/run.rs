@@ -9,6 +9,7 @@ use paulistrings::{
 
 use crate::cli::Config;
 use crate::models::IsingQuench;
+pub(crate) use crate::rows::scatter_rows;
 
 /// One run's measurements; the step vectors have one entry per step.
 pub(crate) struct Report {
@@ -27,8 +28,8 @@ pub(crate) struct Report {
     pub(crate) clocks: Option<String>,
     /// Each partition's device ordinal in rank order; empty on the host.
     pub(crate) devices: Vec<u32>,
-    /// Bonds crossing partitions under cut rows, `None` under seeded rows or at one partition.
-    pub(crate) crossed_bonds: Option<usize>,
+    /// Channels of one step that cross the partition rows, `None` under seeded rows or at one partition.
+    pub(crate) remote_channels: Option<usize>,
     /// Whether this process prints and writes the report: false only on a non-zero MPI rank.
     pub(crate) root: bool,
     /// One entry per partition; an MPI run carries rank 0's in full and the exchange fields of the others.
@@ -82,7 +83,7 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
             download_ns: 0,
             clocks: None,
             devices: Vec::new(),
-            crossed_bonds: None,
+            remote_channels: None,
             root: true,
             #[cfg(feature = "phase-timing")]
             stats: scratch.take_stats().per_partition,
@@ -90,22 +91,57 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
     })
 }
 
-/// The scatter rows of a split run over `partitions`, and the bonds they cross: equal contiguous qubit blocks under [`Rows::Cut`](crate::cli::Rows::Cut).
-#[cfg(feature = "cuda")]
-pub(crate) fn scatter_rows<const W: usize>(
+/// One sum split over `--partitions` host partitions of this process (`--backend cpus`), `--threads` shared evenly.
+pub(crate) fn run_cpus<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>(
     cfg: &Config,
     quench: &IsingQuench,
-    partitions: usize,
-) -> (paulistrings::ScatterRows<W>, Option<usize>) {
-    use paulistrings::{PartitionRowPolicy, ScatterRows};
-    if cfg.rows == crate::cli::Rows::Seeded || partitions == 1 {
-        return (ScatterRows::Policy(PartitionRowPolicy::Seeded(None)), None);
+    policy: &P,
+    traced: bool,
+) -> Report {
+    use paulistrings::{
+        PartitionConfig, PartitionRuntime, PartitionedSum, Placement, ScatterOptions,
+    };
+
+    let partitions = cfg.partitions;
+    let (circuit, _) = quench.circuit::<W>(1);
+    let observable = quench.observable_sum::<W, C>();
+    let config = PartitionConfig {
+        placement: Placement::Unpinned { partitions },
+        bind_memory: false,
+        threads_per_partition: Some((cfg.threads / partitions).max(1)),
+    };
+    let runtime = PartitionRuntime::new(&config).unwrap_or_else(|e| {
+        eprintln!("sampling_bench: partitions: {e}");
+        std::process::exit(2);
+    });
+    let (rows, remote_channels) = scatter_rows::<W>(cfg.rows, quench, partitions);
+    let mut split =
+        PartitionedSum::<W, C>::scatter_with(observable, ScatterOptions { runtime, rows });
+    if traced {
+        split.enable_trace();
     }
-    let n = quench.num_qubits;
-    let block_of = |q: usize| q * partitions / n;
-    let blocks = (0..partitions).map(|b| (0..n).filter(|&q| block_of(q) == b).collect()).collect();
-    let crossed = quench.bonds.iter().filter(|&&(a, b)| block_of(a) != block_of(b)).count();
-    (ScatterRows::Policy(PartitionRowPolicy::Cut(blocks)), Some(crossed))
+    let (mut step_ns, mut step_terms) = (Vec::new(), Vec::new());
+    for _ in 0..cfg.steps {
+        let started = Instant::now();
+        split.propagate_with(&circuit, policy, Direction::Heisenberg, PropagateOptions::default());
+        step_ns.push(started.elapsed().as_nanos() as u64);
+        step_terms.push(split.len());
+    }
+    Report {
+        step_ns,
+        step_terms,
+        final_readout: readout(&split.gather()),
+        trace: split.take_trace(),
+        traced_ns: None,
+        upload_ns: 0,
+        download_ns: 0,
+        clocks: None,
+        devices: Vec::new(),
+        remote_channels,
+        root: true,
+        #[cfg(feature = "phase-timing")]
+        stats: split.take_stats().per_partition,
+    }
 }
 
 /// One device (`--backend gpu`) or several partitions of this process (`--backend gpus`): a [`GpuPartitionedSum`](paulistrings::gpu::GpuPartitionedSum) either way.
@@ -130,7 +166,7 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
     let observable = quench.observable_sum::<W, C>();
     let started = Instant::now();
     let options = GpuScatterOptions::new(&devices).unwrap_or_else(|e| fail("placement", e));
-    let (rows, crossed_bonds) = scatter_rows::<W>(cfg, quench, devices.len());
+    let (rows, remote_channels) = scatter_rows::<W>(cfg.rows, quench, devices.len());
     let mut split = GpuPartitionedSum::<W, C>::scatter_to_devices_with(
         &observable,
         GpuScatterOptions { rows, ..options },
@@ -165,7 +201,7 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
         download_ns,
         clocks,
         devices,
-        crossed_bonds,
+        remote_channels,
         root: true,
         #[cfg(feature = "phase-timing")]
         stats: split.take_stats().per_partition,

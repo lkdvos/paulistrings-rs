@@ -22,7 +22,7 @@ The `mpi` feature needs an MPI installation (for `mpicc`, which rsmpi's build sc
 In a checkout, `scripts/sync-mpi-venv.sh` builds a venv `./.venv-mpi` with uv: the extension with `--features mpi`, and `mpi4py` compiled from source against the loaded MPI.
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9 uv
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 python-mpi/3.12.13 uv
 export LIBCLANG_PATH=$(llvm-config --libdir)
 
 scripts/sync-mpi-venv.sh          # re-run after any change; --cuda adds the cuda feature

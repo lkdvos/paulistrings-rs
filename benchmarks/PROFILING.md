@@ -230,7 +230,7 @@ A `P > 1` cell scatters the input across a `PartitionRuntime` of `P` pinned pool
 Leave `--partition-cpus` at `auto`: the launcher's affinity mask is the placement.
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8
 export LIBCLANG_PATH=$(llvm-config --libdir)
 cargo build --release --features phase-timing,mpi --example phase_breakdown
 

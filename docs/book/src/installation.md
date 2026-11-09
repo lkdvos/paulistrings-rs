@@ -21,7 +21,7 @@ With the package installed, the [Manual](manual/index.md) is where to go next; i
 ## GPUs
 
 The Linux and Windows wheels include the CUDA backend, and need no CUDA toolkit to install.
-At runtime a device needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path: `module load cuda/12.8.0` on a Flatiron host, `pip install nvidia-cuda-nvrtc-cu12` elsewhere ([CUDA devices](manual/propagation/gpu.md#runtime-libraries)).
+At runtime a device needs the NVIDIA driver's `libcuda` and a CUDA 12 `libnvrtc` on the library search path: `module load cuda/12.9.1` on a Flatiron host, `pip install nvidia-cuda-nvrtc-cu12` elsewhere ([CUDA devices](manual/propagation/gpu.md#runtime-libraries)).
 Without them `paulistrings.cuda_available()` is `False` and everything else works.
 
 ## MPI and multi-node runs
@@ -31,7 +31,7 @@ The commands below are for Rusty; on another cluster, substitute its MPI, LLVM a
 
 ### Where to build
 
-- **On a Rocky 9 workstation or login node.** The build fetches crates from crates.io, and the `modules/2.4-20250724` stack is Rocky 9 only.
+- **On a Rocky 9 workstation or login node.** The build fetches crates from crates.io, and the `modules/2.5-20261027` stack is Rocky 9 only.
 - **With a Rust toolchain from [rustup](https://rustup.rs).** It is needed at build time only; the nodes run the compiled extension.
 - **Into a venv on the shared filesystem** (`/mnt/home` or `/mnt/ceph`), which every node mounts. Local `/home` and `/tmp` are invisible to the nodes.
 
@@ -40,7 +40,7 @@ The commands below are for Rusty; on another cluster, substitute its MPI, LLVM a
 `mpi4py` must be built against the same MPI as the extension (its pip wheel bundles a different one), so both are built from source:
 
 ```bash
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7 python-mpi/3.12.9
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 python-mpi/3.12.13
 export LIBCLANG_PATH=$(llvm-config --libdir)    # rsmpi's bindgen needs libclang
 
 python3 -m venv ~/venvs/paulistrings-mpi
@@ -94,7 +94,7 @@ Rusty's CPU nodes have two sockets, each one NUMA domain unless the node reports
 #SBATCH --constraint=icelake&rocky9
 #SBATCH --time=01:00:00
 
-module load modules/2.4-20250724 openmpi/5.0.6 python-mpi/3.12.9
+module load modules/2.5-20261027 openmpi/5.0.10 python-mpi/3.12.13
 source ~/venvs/paulistrings-mpi/bin/activate
 srun --ntasks-per-node=2 --cpus-per-task=32 --cpu-bind=ldoms --mpi=pmix python check_mpi.py
 ```
@@ -118,7 +118,7 @@ The job loads the CUDA and NCCL libraries, which the extension opens at runtime,
 #SBATCH --constraint=a100-80gb&rocky9
 #SBATCH --time=01:00:00
 
-module load modules/2.4-20250724 openmpi/5.0.6 python-mpi/3.12.9 cuda/12.8.0 nccl/2.23.4-1
+module load modules/2.5-20261027 openmpi/5.0.10 python-mpi/3.12.13 cuda/12.9.1 nccl/2.29.7-1
 source ~/venvs/paulistrings-mpi/bin/activate
 srun --cpu-bind=cores --mpi=pmix python script.py    # propagate(..., comm=comm, device="auto")
 ```

@@ -92,8 +92,8 @@ env -u SBATCH_RESERVATION sbatch --nodes=4 scripts/slurm/mpi-ranks.sbatch       
 env -u SBATCH_RESERVATION sbatch --constraint='genoa&rocky9' scripts/slurm/mpi-ranks.sbatch
 ```
 
-The build needs `libclang` for rsmpi's bindgen, which is why the template loads `llvm/19.1.7`
-alongside `openmpi/5.0.6` and exports `LIBCLANG_PATH`.
+The build needs `libclang` for rsmpi's bindgen, which is why the template loads `llvm/20.1.8`
+alongside `openmpi/5.0.10` and exports `LIBCLANG_PATH`.
 The job builds `--offline` against the shared registry cache.
 On the workstation the same net runs without Slurm through `scripts/mpi-test.sh --ranks 2,4`.
 
@@ -119,9 +119,9 @@ The repo's `target` is likewise a symlink into the workstation's local `/home` (
 
 Both run on partition `gpu`, whose `scontrol show partition gpu` reads `Exclusive=NO OverSubscribe=NO` (exclusivity is the job's choice, not forced) under QoS `gpu` (at most 24 GPUs and 432 CPUs per user).
 The templates do not ask for `--exclusive`, so they schedule sooner; a job holding all four GPUs of a node already keeps other GPU jobs off it, and for a quiet-host timing campaign add `--exclusive` on the `sbatch` line.
-The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.4-20250724` is the rocky9 stack, ); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
+The 4 × A100-SXM4-80GB NVLink nodes are `--constraint='a100-80gb&rocky9'` (the default; `rocky9` because workergpu038–040 are still rocky8 and `modules/2.5-20261027` is the rocky9 stack, ); the 4 × H100-SXM5 genoa nodes are `--constraint=h100-sxm5`.
 The device-to-device templates exclude workergpu062, the one A100 node with two GPUs, whose link a `--gres=gpu:2` request could otherwise land on.
-Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.6 llvm/19.1.7` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
+Run `scripts/slurm/setup-shared-toolchain.sh` once after pulling, with `module load openmpi/5.0.10 llvm/20.1.8` and `LIBCLANG_PATH` set, so its offline checks cover `cuda` and `mpi,cuda` and the registry holds `cudarc`.
 
 ```bash
 # one 4 x A100 node: device nets, then the probe on one GPU and on all four

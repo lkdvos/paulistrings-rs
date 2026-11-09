@@ -27,7 +27,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/bounded.sh
 
 module purge
-module load modules/2.4-20250724 cuda/12.8.0
+module load modules/2.5-20261027 cuda/12.9.1
 use_shared_rust
 export CARGO_TARGET_DIR="${TMPDIR:-/tmp}/paulistrings-target-${SLURM_JOB_ID:-local}"
 REMOVE_TARGET_DIR=1

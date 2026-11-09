@@ -19,7 +19,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/common.sh
 
 module purge
-module load modules/2.4-20250724 openmpi/5.0.6 llvm/19.1.7
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"   # bindgen (rsmpi) at build time
 use_shared_rust
 # Every rank execs the binary from its cwd, so the build and its checkout live on the shared filesystem, not node-local /tmp.

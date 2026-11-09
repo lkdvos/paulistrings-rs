@@ -20,7 +20,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 
 module purge
-module load modules/2.4-20250724 openmpi/5.0.6 python-mpi/3.12.9 disBatch
+module load modules/2.5-20261027 openmpi/5.0.10 python-mpi/3.12.13 disBatch
 source "${VENV:-.venv-mpi}/bin/activate"
 unset RUST_LOG
 

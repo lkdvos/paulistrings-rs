@@ -42,8 +42,8 @@ fn main() {
         _ => println!(
             "cargo:warning=could not get MPI library directories from `{mpicc}`, so the extension \
              module will carry no rpath and `import paulistrings` may fail to find libmpi outside \
-             the build environment. On Flatiron hosts: module load modules/2.4-20250724 \
-             openmpi/5.0.6 llvm/19.1.7 && export LIBCLANG_PATH=$(llvm-config --libdir). Set \
+             the build environment. On Flatiron hosts: module load modules/2.5-20261027 \
+             openmpi/5.0.10 llvm/20.1.8 && export LIBCLANG_PATH=$(llvm-config --libdir). Set \
              PAULISTRINGS_MPI_RPATH=0 to silence this."
         ),
     }

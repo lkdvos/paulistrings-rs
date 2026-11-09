@@ -28,13 +28,13 @@ while [ $# -gt 0 ]; do
 done
 
 command -v uv >/dev/null 2>&1 || { echo "uv not found (module load uv)" >&2; exit 2; }
-command -v mpicc >/dev/null 2>&1 || { echo "mpicc not found (module load openmpi/5.0.6); rsmpi and mpi4py both build against it" >&2; exit 2; }
+command -v mpicc >/dev/null 2>&1 || { echo "mpicc not found (module load openmpi/5.0.10); rsmpi and mpi4py both build against it" >&2; exit 2; }
 if [ -z "${LIBCLANG_PATH:-}" ] && ! ldconfig -p 2>/dev/null | grep -q libclang; then
-    echo "LIBCLANG_PATH is unset and no libclang is on the loader path (module load llvm/19.1.7; export LIBCLANG_PATH=\$(llvm-config --libdir))" >&2
+    echo "LIBCLANG_PATH is unset and no libclang is on the loader path (module load llvm/20.1.8; export LIBCLANG_PATH=\$(llvm-config --libdir))" >&2
     exit 2
 fi
 python="${PYTHON:-$(command -v python3 || true)}"
-[ -n "$python" ] || { echo "no python3 on PATH (module load python-mpi/3.12.9, or set PYTHON)" >&2; exit 2; }
+[ -n "$python" ] || { echo "no python3 on PATH (module load python-mpi/3.12.13, or set PYTHON)" >&2; exit 2; }
 
 echo "== syncing $venv: --features $features ${profile:-(release)}, $python"
 export UV_PROJECT_ENVIRONMENT="$venv" MATURIN_PEP517_ARGS="--features $features${profile:+ $profile}"

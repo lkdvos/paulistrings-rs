@@ -546,6 +546,12 @@ A row table sized from the block's input rather than its capacity made 107 of 33
 Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
 Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
 
+### A device rotation run without a filter applies its layers one by one
+
+Without a per-term filter a device rotation run joined pairs of one-qubit tables on different qubits into one four-entry table, which runs the sorting fused layer instead of two joins (§Rotation layers join instead of sorting).
+Kicked Ising `--collapse --cache 1e7 --samples 2.5e6` (`sampling_bench` screen profile, JCC flag, f64, SM 1830–1905 MHz, memory 7601 MHz, 2 interleaved rounds): one device **7.42 / 7.50 → 4.21 / 4.22 s**, four partitions of one device 9.89 / 9.88 → 4.68 / 4.87 s; `--approx-topn 1e6` and `1e7`, where runs at the cap are rare, flat (0.680 / 0.683 → 0.672 / 0.681 s, 4.83 / 4.84 → 4.79 / 4.80 s).
+Rejected: the per-term filter's one-pass class-bucket run (§Rotation runs under a per-term filter in one pass) under no filter, one device 6.86 / 6.94 s on the collapse cell.
+
 ### A crowded class reruns over global tables
 
 A class bucket that outgrows its block lists itself, and only those rerun one block each over tables in global memory sized at four times the largest overflowed input, again at four times the rows on a second overflow; the run falls back to its layers one by one only past 2^22 rows a class bucket or 1 GiB a pass (`apply_wide` in `engine/gpu/layer/rotation_run.rs`).

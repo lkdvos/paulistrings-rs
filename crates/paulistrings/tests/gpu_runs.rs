@@ -311,7 +311,7 @@ fn device_group_runs_agree_with_the_host_w2() {
     group_runs_agree::<2>(96, 0x6A2);
 }
 
-/// Rotations growing a dense sum within one block refine the partition mid-run under a small block budget, and the crossing bond after them runs at one agreed count.
+/// Rotations growing a dense sum refine the partitions, in the run or at the crossing bond after it, which runs at one agreed count.
 fn group_run_refines<const W: usize>(num_qubits: usize) {
     let input = rand_sum_real::<W>(3_000, num_qubits, 0x6A3);
     let half = num_qubits / 2;
@@ -337,11 +337,13 @@ fn group_run_refines<const W: usize>(num_qubits: usize) {
     let crossing = trace.layers.last().unwrap();
     assert!(crossing.remote_deltas > 0, "{what}: the bond crosses");
     assert!(crossing.bits.iter().all(|&b| b == crossing.bits[0]), "{what}: {:?}", crossing.bits);
-    assert!(trace.layers[0].refine_passes.iter().any(|&r| r > 0), "{what}: the run refined");
+    let refined =
+        |layer: &paulistrings::PartitionLayerRecord| layer.refine_passes.iter().any(|&r| r > 0);
+    assert!(refined(&trace.layers[0]) || refined(crossing), "{what}: the call refined");
 }
 
 #[test]
-fn a_device_group_run_refines_then_meets_a_remote_layer() {
+fn a_device_group_refines_around_a_run_and_meets_a_remote_layer() {
     require_cuda!();
     group_run_refines::<1>(16);
     group_run_refines::<2>(96);

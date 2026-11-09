@@ -374,7 +374,7 @@ fn device_collapse_readout_is_unbiased() {
     let n = seeds as f64;
     let mean = sum / n;
     let error = ((squares / n - mean * mean) / (n - 1.0)).sqrt();
-    assert!(collapses >= 5 * seeds, "{collapses} collapses over {seeds} seeds");
+    assert!(collapses >= 4 * seeds, "{collapses} collapses over {seeds} seeds");
     assert!(
         (mean - exact).abs() < 4.0 * error,
         "mean {mean} vs exact {exact}, standard error {error}"

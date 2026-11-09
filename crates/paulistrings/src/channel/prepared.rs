@@ -180,36 +180,6 @@ impl<const W: usize, C: Coefficient> LocalPtm<W, C> {
         }
     }
 
-    /// The two one-qubit tables `self` and `other` on different qubits, which commute, as one table on both under `hash`: entry `(d, e)` takes pattern `(s, t)` to `(s ⊕ d, t ⊕ e)` with `a_d[s]·b_e[t]`; `None` unless both act on one qubit each and the qubits differ.
-    #[cfg(feature = "cuda")]
-    pub(crate) fn tensor(&self, other: &Self, hash: &Gf2Hash<W>) -> Option<Self> {
-        if self.k != 1 || other.k != 1 || self.qubits[0] == other.qubits[0] {
-            return None;
-        }
-        let (low, high) =
-            if self.qubits[0] < other.qubits[0] { (self, other) } else { (other, self) };
-        let mut deltas = Vec::with_capacity(low.deltas.len() * high.deltas.len());
-        // `high` outer keeps the entries ascending by `local_delta = d | e << 2`.
-        for b in &high.deltas {
-            for a in &low.deltas {
-                let mut amplitude = [C::ZERO; LOCAL_DIM];
-                for (s, slot) in amplitude.iter_mut().enumerate() {
-                    *slot = a.amplitude[s & 0b11] * b.amplitude[s >> 2];
-                }
-                let mask_x: [u64; W] = core::array::from_fn(|w| a.mask_x[w] | b.mask_x[w]);
-                let mask_z: [u64; W] = core::array::from_fn(|w| a.mask_z[w] | b.mask_z[w]);
-                deltas.push(DeltaEntry {
-                    bucket_delta: hash.bucket_of(&mask_x, &mask_z),
-                    local_delta: a.local_delta | b.local_delta << 2,
-                    mask_x,
-                    mask_z,
-                    amplitude,
-                });
-            }
-        }
-        Some(LocalPtm { qubits: [low.qubits[0], high.qubits[0]], k: 2, deltas })
-    }
-
     /// This table with every amplitude converted to `T`; `None` when a real `T` meets an imaginary amplitude.
     fn convert<T: Coefficient>(&self) -> Option<LocalPtm<W, T>> {
         let deltas = self

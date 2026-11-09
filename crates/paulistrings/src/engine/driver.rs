@@ -267,8 +267,8 @@ fn record_run<const W: usize, C: Coefficient, T: ?Sized, B: PartitionBackend<W, 
     layers: std::ops::Range<usize>,
     circuit_index_of: &dyn Fn(usize) -> usize,
     local: &B,
-    (terms_before, bits_before, nanos): (usize, u8, u64),
-    collectives: u32,
+    (terms_before, terms_out, bits_before): (usize, usize, u8),
+    (nanos, collectives): (u64, u32),
     mut phases: LayerPhases,
     (rank, size): (usize, usize),
     trace: Option<&mut Vec<PartitionLayerRow>>,
@@ -285,8 +285,8 @@ fn record_run<const W: usize, C: Coefficient, T: ?Sized, B: PartitionBackend<W, 
                 circuit_index: index as u32,
                 application_index: layer as u32,
                 gate_name: circuit.channels[index].debug_name(),
-                terms_in: if leads { terms_before } else { local.len() },
-                terms_out: local.len(),
+                terms_in: if leads { terms_before } else { terms_out },
+                terms_out,
                 rows_sent: vec![0; size],
                 bytes_sent: vec![0; size],
                 rows_received: 0,
@@ -309,11 +309,10 @@ fn record_run<const W: usize, C: Coefficient, T: ?Sized, B: PartitionBackend<W, 
     }
     log::debug!(
         target: LOG_TARGET,
-        "layers {}-{}/{} [run]: {terms_before} -> {} terms, {:.1} ms (partition {rank}/{size})",
+        "layers {}-{}/{} [run]: {terms_before} -> {terms_out} terms, {:.1} ms (partition {rank}/{size})",
         first + 1,
         layers.end,
         circuit.channels.len(),
-        local.len(),
         nanos as f64 * 1e-6,
     );
 }
@@ -472,13 +471,12 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 lap!(stamp, local.stats().finalize_ns);
                 clock.lap(&mut phases.finalize_ns);
             }
-            if tracing {
-                local.exact_len();
-            }
+            // A traced run reads exact counts, as a traced layer does; untraced, the length is the backend's bound.
+            let terms_out = if tracing { local.exact_len() } else { local.len() };
             // Per layer of the run, as the one-by-one path counts them.
             tally!(local.stats().layers, end - application_index - 1);
             tally!(local.stats().terms_in, terms_before * (end - application_index - 1));
-            tally!(local.stats().terms_out, local.len() * (end - application_index));
+            tally!(local.stats().terms_out, terms_out * (end - application_index));
             #[cfg(feature = "phase-timing")]
             {
                 phases.fine = stats_before.map(|before| {
@@ -486,7 +484,8 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 });
             }
             if let Some(start) = layer_start {
-                let before = (terms_before, bits_before, start.elapsed().as_nanos() as u64);
+                let counts = (terms_before, terms_out, bits_before);
+                let nanos = start.elapsed().as_nanos() as u64;
                 let trace = tracing.then_some(&mut work.rows);
                 let layers = application_index..end;
                 let order = &circuit_index_of;
@@ -495,8 +494,8 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                     layers,
                     order,
                     &*local,
-                    before,
-                    collectives,
+                    counts,
+                    (nanos, collectives),
                     phases,
                     (rank, size),
                     trace,

@@ -421,3 +421,20 @@ fn collapse_sample_in_a_device_group_takes_runs_and_stays_unbiased() {
         "mean {mean} vs exact {exact}, standard error {error}"
     );
 }
+
+/// A traced run reads exact counts at its end, so every layer's output is the next layer's input, a run's last row included.
+#[test]
+fn a_traced_device_run_ends_on_exact_counts() {
+    require_cuda!();
+    let input = sparse_input::<1>(16, 0x6A5);
+    let circuit = kicked_chain::<1>(16, 0.6);
+    let policy = BuiltinTruncation::from(KeepAll);
+    let options = GpuLayerOptions::default();
+    let (_, trace) =
+        device_run_as::<1, f64>(&circuit, &input, &policy, Direction::Heisenberg, options, true);
+    let layers = trace.expect("tracing").layers;
+    assert!(layers.iter().any(|layer| layer.nanos[0] == 0), "the device took no run");
+    for (layer, next) in layers.iter().zip(&layers[1..]) {
+        assert_eq!(layer.terms_out, next.terms_in, "layer {}", layer.application_index);
+    }
+}

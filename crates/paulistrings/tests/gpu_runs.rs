@@ -361,6 +361,17 @@ fn group_run_fails<const W: usize>(num_qubits: usize) {
             matches!(again, Err(GpuError::Poisoned { rank: 1, .. })),
             "W={W} {policy:?}: {again:?}"
         );
+        // The crossing quarter-turn bonds scatter their received rows; a receive failing there fails the same way.
+        let mut split = cut_split(&input, 2, GpuLayerOptions::default());
+        set_fault_plan(&mut split, 1, FaultPlan { after_chunk: Some(0), ..FaultPlan::default() });
+        let first = split.propagate(&circuit, policy, Direction::Forward);
+        assert!(matches!(first, Err(GpuError::OutOfMemory { .. })), "W={W} {policy:?}: {first:?}");
+        let trace = split.take_trace().unwrap();
+        let failing =
+            trace.layers.iter().find(|layer| layer.remote_deltas > 0).expect("a remote layer");
+        assert!(failing.device.iter().flatten().any(|d| d.permuted), "W={W}: {failing:?}");
+        let again = split.propagate(&circuit, policy, Direction::Forward);
+        assert!(matches!(again, Err(GpuError::Poisoned { rank: 1, .. })), "W={W}: {again:?}");
     }
 }
 

@@ -58,7 +58,7 @@ pub(crate) struct DevicePrepared<const W: usize, C = Complex64> {
     pub(crate) dense: bool,
     /// One identity entry and no received entry: the rescale path, which would drop every received row.
     pub(crate) key_preserving: bool,
-    /// At most one emitting entry per pattern, no two entries reaching one output pattern, no received entry: the scatter path (`kernels/permute.cu`), after the rescale.
+    /// At most one emitting entry per pattern and no two entries reaching one output pattern: the scatter path (`kernels/permute.cu`), after the rescale, received rows following the local ones.
     pub(crate) permutation: bool,
     /// Per support pattern, the one entry that emits for it or [`NO_ENTRY`]; meaningful only when `permutation`.
     pub(crate) entry_of: Vec<u32>,
@@ -180,10 +180,7 @@ impl<const W: usize, C: Coefficient> DevicePrepared<W, C> {
             masks,
         };
         let all: Vec<usize> = (0..entries).collect();
-        out.permutation = mode == 0
-            && one_entry_per_pattern
-            && remote.is_empty()
-            && !out.entries_can_collide(&all);
+        out.permutation = mode == 0 && one_entry_per_pattern && !out.entries_can_collide(&all);
         out.join = out.join_table();
         out.rehash(hash);
         out

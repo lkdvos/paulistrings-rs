@@ -837,9 +837,9 @@ fn a_mid_receive_failure_poisons_the_split_and_the_partners_finish() {
     }
 }
 
-/// A Clifford-only circuit across virtual partitions agrees with the host; a layer whose delta stays inside every partition takes the permutation path on every rank, one whose delta crosses keeps the fused layer.
+/// A Clifford-only circuit across virtual partitions agrees with the host, and every layer takes the permutation path on every rank, one whose delta crosses with its received rows scattered after the local ones.
 #[test]
-fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
+fn clifford_circuits_agree_across_partitions_and_every_layer_permutes() {
     require_cuda!();
     use paulistrings::test_support::random_clifford_circuit;
     let nq = 12;
@@ -875,7 +875,7 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
         for rank in 0..p {
             let device = layer.device[rank].unwrap();
             assert!(
-                !device.permuted && layer.rows_received[rank] > 0,
+                device.permuted && layer.rows_received[rank] > 0,
                 "P={p} rank {rank}: {layer:?}"
             );
         }

@@ -2,7 +2,7 @@
 //!
 //! Within a bucket the device keeps unique keys in no particular order; the fused layer sorts records by fingerprint and falls back to the full key on a collision, so equal keys always end adjacent.
 //! A block's records and a source bucket's rows are checked against `LAYER_CAP` and `MAX_BUCKET_LEN` before the launch: a lone partition or a local layer refines past a violation up to `GpuLayerOptions::max_bits`, while a remote layer reports `Unsupported`, since its count is agreed.
-//! A permutation table takes the scatter path instead of the fused layer only when the layer has no received rows.
+//! A permutation table takes the scatter path instead of the fused layer, its received rows after the local ones when they arrive in one chunk.
 
 use crate::coefficient::Coefficient;
 use num_complex::Complex64;
@@ -17,7 +17,9 @@ use cudarc::driver::{CudaSlice, CudaStream, DevicePtr, DeviceRepr, PushKernelArg
 use super::collapse::CollapseScratch;
 use super::columns::{grow, DeviceColumns};
 use super::error::GpuError;
-use super::export::{exchange_rows, finish_receive, DeviceExport, MAX_RECEIVED_SEGMENT};
+use super::export::{
+    exchange_rows, finish_receive, receive_chunk, DeviceExport, MAX_RECEIVED_SEGMENT,
+};
 use super::module::{thread_per, warp_per_bucket, KernelSet, MAX_BUCKET_LEN};
 use super::prepared::DevicePrepared;
 use super::scan::{exclusive_scan, ScanScratch};
@@ -637,8 +639,8 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         rescale_device(sum, &table, keep, scratch)?;
         return Ok(LayerExchangeCounts::none(size));
     }
-    if table.permutation && scratch.options.clifford {
-        debug_assert!(!has_remote);
+    let permutes = table.permutation && scratch.options.clifford;
+    if permutes && !has_remote {
         if target_bits > sum.hash.bits() {
             scratch.refine(sum, target_bits)?;
             table.rehash(&sum.hash);
@@ -734,6 +736,14 @@ fn apply_layer_body<const W: usize, C: Coefficient, X: Transport>(
         }
         if has_remote {
             counts = exchange_rows(sum, &table, plan, scratch, transport)?;
+            // A permutation's received rows meet no local key, so one received chunk scatters after the local rows with no sort.
+            if permutes && scratch.export.pending.as_ref().is_some_and(|p| p.map.chunks() == 1) {
+                receive_chunk(sum, scratch, 0)?;
+                scratch.receive_chunks = 1;
+                permute_device(sum, &table, keep, scratch)?;
+                counts.receive_chunks = 1;
+                return Ok(counts);
+            }
         }
         let (total, max_segment, max_len) = scratch.sizes(sum, &table)?;
         if max_segment as usize <= record_cap

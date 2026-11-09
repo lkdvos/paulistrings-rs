@@ -36,7 +36,7 @@
             const path_to_root = "../../";
             const default_light_theme = "rust";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../../searchindex-9dc8eb6c.js";
+            window.path_to_searchindex_js = "../../searchindex-0d7bef84.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="../../toc-4f8281a0.js"></script>
@@ -289,7 +289,7 @@ With features <code>mpi</code> and <code>cuda</code>, <code>gpu::MpiGpuSum</code
 <p>Every device group runs one protocol: the block headers and offsets cross the transport, the group agrees to go ahead, and the columns move straight into the receiver’s device memory, by device-to-device copies in process and over NCCL in an MPI group of more than one rank (<code>gpu::MpiGpuSum</code>).
 The NCCL communicator starts <strong>once, collectively, at scatter</strong>: a rank that cannot load NCCL, or two ranks sharing a device (which NCCL refuses), fail the scatter on every rank.
 <code>PAULISTRINGS_WIRE_TIMEOUT_S</code> (default 300) bounds every wait on the exchange, and every collective of an in-process device group (a host group waits 10 s); a timeout or a failed transfer poisons the split (and aborts the NCCL communicator), surfacing as <code>GpuError::Timeout</code>, <code>GpuError::Wire</code> or <code>GpuError::Nccl</code> (<code>RuntimeError</code> from Python).
-Running it needs the <code>nccl/2.29.7-1</code> module alongside <code>cuda,mpi</code> — see <a href="../../installation.html#gpu-and-mpi-features">Installation</a> and <a href="mpi.html#gpu-per-rank">MPI ranks</a>.</p>
+Running it needs the <code>nccl/2.29.7-1</code> and <code>gcc/14.3.0</code> modules alongside <code>cuda,mpi</code> — see <a href="../../installation.html#gpu-and-mpi-features">Installation</a> and <a href="mpi.html#gpu-per-rank">MPI ranks</a>.</p>
 <p><strong>A device sender merges one partner’s rows by key before the exchange</strong> (<code>GpuLayerOptions::premerge</code>), so two remote deltas that land on the same receiver key ship as one row.
 It runs for a dense two-qubit unitary, whose remote entries share an output support pattern, and never for a Pauli rotation, which has one remote entry, or a Clifford, whose remote entries never share an output pattern.
 It costs a second fused pass on the sender that a same-device exchange (two virtual partitions on one card) does not repay at low merge ratios; a real deployment, one partition per GPU, is where it pays.</p>

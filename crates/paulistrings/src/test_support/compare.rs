@@ -28,7 +28,7 @@ pub fn storage_triples<const W: usize>(s: &PauliSum<W>) -> Vec<([u64; W], [u64; 
     s.iter().map(|(x, z, c)| (*x, *z, c)).collect()
 }
 
-/// The terms `TopN`/`ApproxTopN` keep out of `terms` (storage order, partitions concatenated in rank order), transcribed with a stable sort independently of production: descending by `rank`, the first `n`, back in input order.
+/// The terms `TopN`/`ApproxTopN` keep out of `terms` (storage order), transcribed with a stable sort independently of production: descending by `rank`, the first `n`, back in input order.
 /// [`magnitude_rank`] gives `TopN(n)`, [`octave_rank`] gives `ApproxTopN(n)`.
 pub fn first_n_by_rank<const W: usize>(
     terms: &[([u64; W], [u64; W], Complex64)],
@@ -40,6 +40,55 @@ pub fn first_n_by_rank<const W: usize>(
     let mut kept: Vec<usize> = order.into_iter().take(n).collect();
     kept.sort_unstable();
     kept.into_iter().map(|i| terms[i]).collect()
+}
+
+/// Checks a partitioned `ApproxTopN(n)` cut, `inputs[r]` cut to `outputs[r]` on rank `r`: every term above the boundary octave survives, `min(n, len)` survive in all, and rank `r` keeps the first `k_r` of its boundary-octave terms in storage order, `k_r` within one of the quota times its fraction of the boundary terms.
+pub fn assert_proportional_boundary_cut<const W: usize>(
+    inputs: &[PauliSum<W>],
+    outputs: &[PauliSum<W>],
+    n: usize,
+    what: &str,
+) {
+    assert_eq!(inputs.len(), outputs.len(), "{what}: one output per rank");
+    let mut octaves: Vec<u64> =
+        inputs.iter().flat_map(storage_triples).map(|t| octave_rank(t.2)).collect();
+    let len = octaves.len();
+    let kept: usize = outputs.iter().map(PauliSum::len).sum();
+    assert_eq!(kept, n.min(len), "{what}: kept count");
+    if n == 0 || n >= len {
+        for (r, (input, output)) in inputs.iter().zip(outputs).enumerate() {
+            assert_eq!(output.len(), if n == 0 { 0 } else { input.len() }, "{what}: rank {r}");
+        }
+        return;
+    }
+    octaves.sort_unstable_by(|a, b| b.cmp(a));
+    let bin = octaves[n - 1];
+    let total = octaves.iter().filter(|&&o| o == bin).count();
+    let quota = n - octaves.iter().filter(|&&o| o > bin).count();
+    for (r, (input, output)) in inputs.iter().zip(outputs).enumerate() {
+        let terms = storage_triples(input);
+        let count = terms.iter().filter(|t| octave_rank(t.2) == bin).count();
+        let share = output.iter().filter(|&(_, _, c)| octave_rank(c) == bin).count();
+        let deviation = (share * total) as i128 - (count * quota) as i128;
+        assert!(
+            deviation.unsigned_abs() < total as u128,
+            "{what}: rank {r} keeps {share} of its {count} boundary terms, the quota is {quota} of {total}",
+        );
+        let mut taken = 0;
+        let mut want: Vec<_> = terms
+            .into_iter()
+            .filter(|t| match octave_rank(t.2).cmp(&bin) {
+                std::cmp::Ordering::Greater => true,
+                std::cmp::Ordering::Equal => {
+                    taken += 1;
+                    taken <= share
+                }
+                std::cmp::Ordering::Less => false,
+            })
+            .collect();
+        want.sort_unstable_by_key(|&(x, z, _)| (x, z));
+        assert_eq!(canonical_triples(output), want, "{what}: rank {r}'s kept set");
+    }
 }
 
 /// `|c|²` as its bits, which order a non-negative `f64` as its value.
@@ -232,6 +281,26 @@ pub fn skewed_by_partition<const W: usize>(
         }
     }
     accumulator.finalize()
+}
+
+/// `sum` split into four partitions on cut rows over qubit blocks of `num_qubits / 4`, partition `r` thinned to every `(r + 1)`-th term.
+pub fn skewed_cut_split<const W: usize>(sum: &PauliSum<W>) -> Vec<PauliSum<W>> {
+    let block = sum.num_qubits() / 4;
+    let blocks: Vec<Vec<usize>> = (0..4).map(|b| (b * block..(b + 1) * block).collect()).collect();
+    let rows = crate::PartitionRows::<W>::cut(sum.num_qubits(), &blocks);
+    (0..4u32)
+        .map(|r| {
+            let mut local = sum.filter_partition(&rows, r);
+            local.retain_per_bucket(|_| {
+                let mut index = 0;
+                move |_, _, _| {
+                    index += 1;
+                    (index - 1) % (r as usize + 1) == 0
+                }
+            });
+            local
+        })
+        .collect()
 }
 
 fn norm_sqr<const W: usize>(sum: &PauliSum<W>) -> f64 {

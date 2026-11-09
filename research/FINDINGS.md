@@ -688,6 +688,23 @@ Any `.cu` edit makes every variant cold: the lib's device tests then outran a 60
 
 ## Open
 
+### Cut-row `ApproxTopN` readouts keep an offset under a proportional boundary quota
+
+A partitioned `ApproxTopN` handed the boundary octave's quota to the ranks in rank order; under cut rows a rank is a Z-parity class over qubit blocks, so the low ranks' boundary strings were kept first.
+`local_boundary_quota` now splits the quota in proportion to each rank's boundary count by largest remainder, from the same one all-reduce of per-rank counts, and each rank keeps its first terms in bucket order as before.
+That removes the rank-order part but not the whole offset: host `PartitionedSum`, TFIM magnetization, `ApproxTopN`, four partitions, step 10:
+
+| lattice, `n` | one partition | cut rows, rank order | cut rows, proportional | seeded rows, proportional |
+|---|---|---|---|---|
+| 16×16, 1e6 | 0.2892 | 0.3083 | 0.2970 | 0.2877 |
+| 16×16, 1e5 | 0.2006 | 0.2243 | 0.2070 | 0.2019 |
+| 12×12, 1e5 | 0.3168 | 0.3402 | 0.3365 | 0.3166 |
+
+Device partitions follow the host: `sampling_bench` at 16×16, `1e6`, SM 1800–1890 MHz, memory 7601 MHz, one device 0.2899, four on device 0 under cut rows 0.3083 in rank order and 0.2976 proportional, under seeded rows 0.2888 and 0.2879, the cut wall 6.29 and 6.23 s.
+At 12×12, `1e5`, over four hash seeds one partition reads 0.3129–0.3195, seeded rows stay within 0.003 of it and cut rows sit 0.014–0.017 above it every time; at `1e6` the three read 0.3137, 0.3151 and 0.3164.
+Only the contiguous cut carries the offset: a cut over shuffled qubit blocks reads −0.0026 from one partition, random z-only rows +0.0003, random rows on both halves −0.0013, so it is neither the z-only rows nor the fused pass (`PlainApproxTopN` reads the same bits).
+On one partition's own trajectory, its bucket-order prefix keeps unequal fractions of the contiguous-cut ranks' boundary terms (all 1735 of rank 0, 1384 of 1520 of rank 3), so bucket order correlates with block Z-parity on this population, and a split that equalizes the fractions departs from it; which selection inside a rank would remove the offset is open.
+
 ### Channels above `MAX_LOCAL_SUPPORT = 2`
 
 Non-rotation channels on more than two qubits panic in `propagate`.

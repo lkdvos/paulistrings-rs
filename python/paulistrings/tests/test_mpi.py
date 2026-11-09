@@ -260,7 +260,8 @@ def test_gather_returns_the_whole_sum_on_rank_zero(observable, circuit, referenc
 def test_gather_agrees_under_a_truncating_approx_topn(light_observable, light_circuit):
     """`approx_topn` all-reduces its octave histogram and boundary counts, so
     the kept count is exactly the serial one even when it really does cut; the
-    boundary-octave terms are chosen in rank order (`assert_runs_agree`).
+    boundary-octave terms are split across ranks in proportion to their counts
+    (`assert_runs_agree`).
     Spelled with an explicit `result="gather"`, which must mean what the
     default means."""
     want = propagated(light_observable, light_circuit, TIGHT_POLICY)

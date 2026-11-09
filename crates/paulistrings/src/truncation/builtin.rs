@@ -243,7 +243,7 @@ pub(crate) const APPROX_BINS: usize = 2048;
 
 /// Retain `n` terms, cutting at an octave of `|c|²` instead of selecting exactly.
 ///
-/// Every octave of `|c|²` that fits whole is kept from the top down; the first that does not fit, the boundary octave, contributes as many terms as fit in `n`, the first in bucket order (rank order across partitions).
+/// Every octave of `|c|²` that fits whole is kept from the top down; the first that does not fit, the boundary octave, contributes as many terms as fit in `n`, the first in bucket order; across partitions each takes a share of them in proportion to its boundary-octave count.
 /// A sum of more than `n` terms keeps exactly `n` (fewer only if coefficients are NaN), and `n == 0` clears.
 /// Which boundary-octave terms survive is not a semantic promise.
 /// Partition-exact: a split sum's octave histogram is the sum of its partitions', so every partition cuts at the boundary one partition would.
@@ -368,8 +368,9 @@ pub(crate) fn retain_at_edge<const W: usize, C: Coefficient>(
     }
 }
 
-/// This partition's share of a boundary quota: what is left of `quota` after the lower ranks' boundary terms, at most `local_count`.
+/// This partition's share of a boundary quota, in proportion to its share of the boundary terms: [`proportional_share`] of the all-reduced counts.
 ///
+/// A rank-order split biases readouts wherever ranks hold systematically different strings, as cut rows do (research/FINDINGS.md §Cut-row `ApproxTopN` readouts keep an offset under a proportional boundary quota).
 /// Above one partition, one `allreduce_sum_u64` of a length-`P` vector holding each rank's `local_count` in its slot; every rank calls it with the same `quota`.
 pub(crate) fn local_boundary_quota(
     collectives: &dyn Collectives,
@@ -383,8 +384,30 @@ pub(crate) fn local_boundary_quota(
     let mut counts = vec![0u64; collectives.size() as usize];
     counts[rank] = local_count as u64;
     collectives.allreduce_sum_u64(&mut counts);
-    let below: u64 = counts[..rank].iter().sum();
-    (quota as u64).saturating_sub(below).min(local_count as u64) as usize
+    proportional_share(&counts, quota as u64, rank) as usize
+}
+
+/// Rank `rank`'s part of `quota` split over `counts` by largest remainder: the floor of `quota · count / total`, plus one for the ranks with the largest remainders, ties to the lower rank, until the parts add up to `min(quota, total)` exactly.
+///
+/// A pure function of its arguments, so every rank derives the same split from the same reduced counts; no part exceeds its count.
+pub(crate) fn proportional_share(counts: &[u64], quota: u64, rank: usize) -> u64 {
+    let total: u128 = counts.iter().map(|&c| u128::from(c)).sum();
+    let quota = u128::from(quota).min(total);
+    if quota == total {
+        return counts[rank];
+    }
+    let scaled = |r: usize| u128::from(counts[r]) * quota;
+    let floors: u128 = (0..counts.len()).map(|r| scaled(r) / total).sum();
+    let extras = quota - floors;
+    let remainder = scaled(rank) % total;
+    let ahead = (0..counts.len())
+        .filter(|&s| {
+            let other = scaled(s) % total;
+            other > remainder || (other == remainder && s < rank)
+        })
+        .count() as u128;
+    let extra = u128::from(remainder > 0 && ahead < extras);
+    (scaled(rank) / total + extra) as u64
 }
 
 /// [`ApproxTopN`]'s layer pass over a whole sum, returning the decision it applied and the length it decided on.

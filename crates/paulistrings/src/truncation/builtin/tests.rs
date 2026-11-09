@@ -585,3 +585,51 @@ fn a_quota_split_hands_out_the_quota_in_bucket_order() {
         }
     }
 }
+
+/// Each rank's [`local_boundary_quota`] on an in-process group, `counts[r]` boundary terms on rank `r`.
+fn boundary_quotas(counts: &[usize], quota: usize) -> Vec<usize> {
+    crate::engine::partitioned::in_process::on_every_rank(counts.len() as u32, |transport| {
+        local_boundary_quota(transport, counts[transport.rank() as usize], quota)
+    })
+}
+
+/// Hand-computed splits: floors of `quota · count / total`, the remainder to the largest fractions, ties to the lower rank.
+#[test]
+fn a_boundary_quota_splits_across_ranks_in_proportion_to_their_counts() {
+    let cases: [(&[usize], usize, &[usize]); 10] = [
+        (&[1, 3], 1, &[0, 1]),
+        (&[3, 1], 1, &[1, 0]),
+        (&[2, 3, 5], 7, &[1, 2, 4]),
+        (&[5, 3, 2], 7, &[4, 2, 1]),
+        (&[10, 30, 0, 60], 50, &[5, 15, 0, 30]),
+        (&[1, 1, 1, 1], 2, &[1, 1, 0, 0]),
+        (&[0, 0, 4, 0], 3, &[0, 0, 3, 0]),
+        (&[7, 9], 0, &[0, 0]),
+        (&[7, 9], 16, &[7, 9]),
+        (&[400, 100, 300, 200], 999, &[399, 100, 300, 200]),
+    ];
+    for (counts, quota, want) in cases {
+        assert_eq!(boundary_quotas(counts, quota), want, "counts {counts:?} quota {quota}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    /// Every rank's share is at most its count and within one of its proportional share, and the shares add up to the quota.
+    #[test]
+    fn a_boundary_quota_split_is_exact_and_proportional(
+        counts in prop::collection::vec(0usize..1_000, 1..=4),
+        fraction in 0.0f64..=1.0,
+    ) {
+        let total: usize = counts.iter().sum();
+        let quota = (fraction * total as f64) as usize;
+        let shares = boundary_quotas(&counts, quota);
+        prop_assert_eq!(shares.iter().sum::<usize>(), quota);
+        for (&share, &count) in shares.iter().zip(&counts) {
+            prop_assert!(share <= count);
+            let deviation = (share * total) as i64 - (count * quota) as i64;
+            prop_assert!(deviation.unsigned_abs() < total.max(1) as u64, "{shares:?} of {counts:?} at {quota}");
+        }
+    }
+}

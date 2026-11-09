@@ -16,8 +16,8 @@
 //!
 //! The oracle is always the unpartitioned single-process [`propagate`]: rank 0
 //! runs it on the same replicated input and compares the gathered result with
-//! [`assert_runs_agree`], since a cutting `ApproxTopN` keeps boundary terms in
-//! rank order.
+//! [`assert_runs_agree`], since a cutting `ApproxTopN` splits its boundary terms
+//! across ranks.
 //!
 //! Built with `--features cuda` as well, the matrix repeats its layer shapes with one CUDA device per rank (`MpiGpuSum`), ranks sharing a device when there are fewer devices than ranks; those cases are skipped on every rank unless every rank sees a device.
 //!

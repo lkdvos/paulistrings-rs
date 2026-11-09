@@ -366,3 +366,32 @@ fn a_join_after_a_cut_rescans_the_longest_bucket_w2() {
     crate::require_cuda!();
     a_join_after_a_cut_rescans_the_longest_bucket::<2>();
 }
+
+/// A device group's cut splits the boundary octave in proportion to each partition's share of it, on cut rows thinned unevenly.
+fn a_device_group_splits_the_boundary_in_proportion<const W: usize>() {
+    use crate::engine::partitioned::in_process::on_every_rank;
+    use crate::test_support::{assert_proportional_boundary_cut, skewed_cut_split};
+    let parts = skewed_cut_split(&tie_heavy_sum::<W>(8_000, 64 * W, 0xC07));
+    let len: usize = parts.iter().map(PauliSum::len).sum();
+    for n in [1usize, 300, len / 3, len / 2] {
+        let got = on_every_rank(parts.len() as u32, |transport| {
+            let (mut dev, mut scratch) = device(&parts[transport.rank() as usize]);
+            approx_top_n_device(Some((&mut dev, &mut scratch)), n, transport).expect("cut");
+            dev.assert_invariants_device().expect("invariants");
+            dev.to_host().expect("download")
+        });
+        assert_proportional_boundary_cut(&parts, &got, n, &format!("W={W} n={n}"));
+    }
+}
+
+#[test]
+fn a_device_group_splits_the_boundary_in_proportion_w1() {
+    crate::require_cuda!();
+    a_device_group_splits_the_boundary_in_proportion::<1>();
+}
+
+#[test]
+fn a_device_group_splits_the_boundary_in_proportion_w2() {
+    crate::require_cuda!();
+    a_device_group_splits_the_boundary_in_proportion::<2>();
+}

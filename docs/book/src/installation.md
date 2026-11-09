@@ -118,7 +118,7 @@ The job loads the CUDA and NCCL libraries, which the extension opens at runtime,
 #SBATCH --constraint=a100-80gb&rocky9
 #SBATCH --time=01:00:00
 
-module load modules/2.5-20261027 openmpi/5.0.10 python-mpi/3.12.13 cuda/12.9.1 nccl/2.29.7-1
+module load modules/2.5-20261027 openmpi/5.0.10 python-mpi/3.12.13 cuda/12.9.1 nccl/2.29.7-1 gcc/14.3.0
 source ~/venvs/paulistrings-mpi/bin/activate
 srun --cpu-bind=cores --mpi=pmix python script.py    # propagate(..., comm=comm, device="auto")
 ```

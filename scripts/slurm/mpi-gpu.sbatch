@@ -34,7 +34,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/../..}"
 . scripts/slurm/bounded.sh
 
 module purge
-module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 cuda/12.9.1 nccl/2.29.7-1
+module load modules/2.5-20261027 openmpi/5.0.10 llvm/20.1.8 cuda/12.9.1 nccl/2.29.7-1 gcc/14.3.0
 export LIBCLANG_PATH="${LIBCLANG_PATH:-$(llvm-config --libdir)}"
 use_shared_rust
 # Every rank execs the binary, so the build lives on the shared filesystem, not node-local /tmp.

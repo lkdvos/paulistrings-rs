@@ -98,7 +98,7 @@ case "$features" in
         fi
         if ! ldconfig -p 2>/dev/null | grep -q libnccl \
            && ! ls ${LD_LIBRARY_PATH//:/ } 2>/dev/null | grep -q '^libnccl'; then
-            echo "warning: no libnccl on the loader path (module load nccl/2.29.7-1, or set NCCL_LIB to its lib dir); a group above one rank cannot start NCCL" >&2
+            echo "warning: no libnccl on the loader path (module load nccl/2.29.7-1 gcc/14.3.0, or set NCCL_LIB to its lib dir); a group above one rank cannot start NCCL" >&2
         fi
         cuda_x="-x LD_LIBRARY_PATH"
         ;;

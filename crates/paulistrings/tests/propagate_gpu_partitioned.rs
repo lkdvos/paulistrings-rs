@@ -6,10 +6,10 @@ use num_complex::{Complex32, Complex64};
 use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, coefficient_tolerance,
-    heavy_cut, propagate_discarding, rand_sum, rand_sum_real, random_circuit, rows_reading_z63,
-    single_cuts, spread_magnitudes, su4_chain, trotter_circuit, with_hash,
-    x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    assert_runs_agree, assert_runs_agree_count_only, assert_terms_close,
+    assert_terms_close_up_to_residues, coefficient_tolerance, heavy_cut, propagate_discarding,
+    rand_sum, rand_sum_real, random_circuit, rows_reading_z63, single_cuts, spread_magnitudes,
+    su4_chain, trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, set_fault_plan, FaultPlan};
 use paulistrings::{
@@ -164,8 +164,16 @@ fn random_circuit_matches_propagate_w1() {
         "w1 dense and",
         &[2, 4],
     );
+    // Rotation runs reach the cancellations in another order, so a key may hold a rounding residue on one side only.
     let sparse = random_circuit::<1>(6, 40, 0x9AA3, false);
-    check(&sparse, &sum, &KeepAll, "w1 sparse keep", &[2, 4]);
+    for &direction in &[Direction::Forward, Direction::Heisenberg] {
+        let want = propagate(&sparse, sum.clone(), &KeepAll, direction);
+        for p in PS {
+            let got = run(&sparse, &sum, &KeepAll, direction, p).expect("device propagate");
+            let what = format!("w1 sparse keep P={p} {direction:?}");
+            assert_terms_close_up_to_residues(&got, &want, TOL, &what);
+        }
+    }
 }
 
 #[test]

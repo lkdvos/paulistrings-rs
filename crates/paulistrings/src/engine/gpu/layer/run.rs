@@ -188,7 +188,7 @@ pub(crate) fn permutation_run_device<const W: usize, C: Coefficient>(
     scratch.resolve(sum)
 }
 
-/// Apply the rotation run `layers` to `sum` as fused layers, a pair of one-qubit tables on different qubits joined into one when `keep` has no per-term filter; only a lone partition takes rotation runs (`DevicePartition::rotation_run_dimension`).
+/// Apply the rotation run `layers` to `sum` as fused layers, a pair of one-qubit tables on different qubits joined into one when `keep` has no per-term filter; its layers are local, so a group member runs them as a lone partition would.
 pub(crate) fn rotation_run_device<const W: usize, C: Coefficient>(
     sum: &mut GpuSum<W, C>,
     layers: &[Prepared<W, C>],

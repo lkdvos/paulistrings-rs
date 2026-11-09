@@ -190,21 +190,28 @@ fn cut_on_device<const W: usize, C: Coefficient>(
 
 /// One `ApproxTopN(n)` layer pass, exactly the host's collective one: histogram, one `allreduce_sum_u64` of `[len, histogram…]`, the edge, at a boundary one more of the per-rank boundary counts, the in-place cut.
 /// `sum` is `None` on a partition that already failed; it still enters both reductions, with zeros, so the group stays in lock-step.
+/// Above one partition `agreed` becomes the group's length after the cut, from the reduced counts alone, so every partition sets it alike.
 pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
     sum: Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)>,
     n: usize,
     collectives: &dyn Collectives,
+    agreed: &mut Option<usize>,
 ) -> Result<(), GpuError> {
+    let after = |edge: EdgeDecision, total: u64| match edge {
+        EdgeDecision::KeepAll => total as usize,
+        EdgeDecision::Clear => 0,
+        EdgeDecision::Boundary { .. } => n,
+    };
     let Some((sum, scratch)) = sum else {
         let mut packed = [0u64; 1 + APPROX_BINS];
         collectives.allreduce_sum_u64(&mut packed);
-        if let EdgeDecision::Boundary { quota, .. } =
-            octave_edge(&packed[1..], packed[0] as usize, n)
-        {
+        let edge = octave_edge(&packed[1..], packed[0] as usize, n);
+        if let EdgeDecision::Boundary { quota, .. } = edge {
             if collectives.size() > 1 {
                 local_boundary_quota(collectives, 0, quota);
             }
         }
+        *agreed = Some(after(edge, packed[0]));
         return Ok(());
     };
     // A lone partition's reduction is the identity, so the device decides its edge; within `n` it keeps everything.
@@ -222,6 +229,7 @@ pub(crate) fn approx_top_n_device<const W: usize, C: Coefficient>(
     };
     collectives.allreduce_sum_u64(&mut packed);
     let edge = octave_edge(&packed[1..], packed[0] as usize, n);
+    *agreed = Some(after(edge, packed[0]));
     let local_quota = match edge {
         EdgeDecision::Boundary { bin, quota, .. } if collectives.size() > 1 => {
             let local_count = local.as_ref().map_or(0, |histogram| histogram[1 + bin]);

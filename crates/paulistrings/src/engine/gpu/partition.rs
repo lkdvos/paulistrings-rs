@@ -13,7 +13,7 @@ use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
-use crate::engine::bucketed::{RowEmitter, Run, MAX_ROTATION_RUN_LAYERS};
+use crate::engine::bucketed::{max_fanout, RowEmitter, Run, MAX_ROTATION_RUN_LAYERS};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
@@ -63,6 +63,8 @@ pub struct DevicePartition<const W: usize, C: Coefficient = Complex64> {
     pub(crate) group_size: u32,
     /// Layers `apply_layer` was asked for since construction.
     layers_applied: usize,
+    /// [`PartitionBackend::agreed_len`], forgotten at the start of every call.
+    agreed: Option<usize>,
     /// The layer index (in `layers_applied` terms) at which the first error was recorded.
     failed_layer: Option<usize>,
     /// Test hook: fail before the exchange on this layer index.
@@ -85,6 +87,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
             poison: None,
             group_size: 1,
             layers_applied: 0,
+            agreed: None,
             failed_layer: None,
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: None,
@@ -181,11 +184,22 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
     }
 
     /// `tree`'s layer pass over `collectives`; a group above one partition reports exact `TopN` `Unsupported`, and a `PerPartition` runs as a group of one.
+    /// A group's pass that the agreed bound proves a no-op issues no collective, and a collective pass leaves the agreed bound it reduced.
     fn layer_pass(&mut self, tree: &BuiltinTruncation, collectives: &dyn Collectives) {
+        let group = collectives.size() > 1;
         layer_pass_leaves(tree, &mut |leaf| {
             let result = match leaf {
+                BuiltinTruncation::ApproxTopN(n)
+                    if group && self.agreed.is_some_and(|a| a <= *n) =>
+                {
+                    Ok(())
+                }
                 BuiltinTruncation::ApproxTopN(n) => {
-                    approx_top_n_device(self.healthy_parts(), *n, collectives)
+                    let mut agreed = self.agreed;
+                    let result =
+                        approx_top_n_device(self.healthy_parts(), *n, collectives, &mut agreed);
+                    self.agreed = agreed;
+                    result
                 }
                 BuiltinTruncation::TopN(n) if collectives.size() == 1 => self
                     .healthy_parts()
@@ -195,7 +209,15 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
                     Ok(())
                 }
                 BuiltinTruncation::CollapseSample(policy) => {
-                    collapse_sample_device(self.healthy_parts(), policy, collectives)
+                    let mut agreed = self.agreed;
+                    let result = collapse_sample_device(
+                        self.healthy_parts(),
+                        policy,
+                        collectives,
+                        &mut agreed,
+                    );
+                    self.agreed = agreed;
+                    result
                 }
                 _ => Err(GpuError::Unsupported("exact TopN on device")),
             };
@@ -265,6 +287,10 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         host.max(device)
     }
 
+    fn begin_call(&mut self) {
+        self.agreed = None;
+    }
+
     /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so, and make the length exact.
     /// A failed lone partition only settles its length, which holds the last completed layer's output; a failed group member is poisoned, and a device that cannot scan keeps the bound and the recorded error.
     fn settle(&mut self) {
@@ -295,6 +321,7 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
             poison: self.poison,
             group_size: self.group_size,
             layers_applied: self.layers_applied,
+            agreed: self.agreed.take(),
             failed_layer: self.failed_layer.take(),
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: self.fail_at_layer.take(),
@@ -324,6 +351,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
     ) -> LayerExchangeCounts {
         let size = transport.size();
         self.layers_applied += 1;
+        self.agreed = self.agreed.map(|agreed| agreed.saturating_mul(max_fanout(prepared)));
         if let Some(scratch) = self.scratch.as_mut() {
             let lone_approx = matches!(policy, BuiltinTruncation::ApproxTopN(_));
             scratch.begin(policy, self.group_size == 1 && lone_approx);
@@ -377,14 +405,28 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         self.scratch.as_ref().is_some_and(|scratch| scratch.options.clifford)
     }
 
-    /// A lone partition's rotation runs, of any span, since the device holds no coset in cache.
+    /// Rotation runs of any span, since the device holds no coset in cache.
     fn rotation_run_dimension(&self) -> Option<usize> {
-        (self.group_size == 1).then_some(MAX_ROTATION_RUN_LAYERS)
+        Some(MAX_ROTATION_RUN_LAYERS)
+    }
+
+    const TRACKS_AGREED_LEN: bool = true;
+
+    fn agreed_len(&self) -> Option<usize> {
+        self.agreed
+    }
+
+    fn agree_len(&mut self, total: usize) {
+        self.agreed = Some(total);
     }
 
     fn apply_run(&mut self, run: Run<'_, W, C>, policy: &BuiltinTruncation) {
         let layers = match run {
-            Run::Rotations(layers) => layers.len(),
+            Run::Rotations(layers) => {
+                let fanout = layers.iter().map(max_fanout).fold(1usize, usize::saturating_mul);
+                self.agreed = self.agreed.map(|agreed| agreed.saturating_mul(fanout));
+                layers.len()
+            }
             Run::Permutations(steps) => steps.len(),
         };
         self.layers_applied += layers;

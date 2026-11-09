@@ -1,16 +1,19 @@
-//! Device runs against the host: permutation runs walked in one pass and rotation runs over joined one-qubit tables agree with `propagate` to tolerance.
+//! Device runs against the host: permutation runs walked in one pass and rotation runs over joined one-qubit tables agree with `propagate` to tolerance, on one device and in a group of device partitions.
 //! Every case returns early without a device.
 
 use num_complex::Complex64;
-use paulistrings::gpu::GpuLayerOptions;
+use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    assert_terms_close_up_to_residues, coefficient_tolerance, device_run_as, low_weight_sum,
-    zz_rotation, KeepAll,
+    assert_runs_agree, assert_terms_close, assert_terms_close_up_to_residues,
+    coefficient_tolerance, collapsing_circuit, device_run_as, low_weight_sum, propagate_discarding,
+    rand_sum_real, set_fault_plan, z0_sum, zz_rotation, FaultPlan, KeepAll,
 };
 use paulistrings::{
-    propagate, BuildAccumulator, BuiltinTruncation, Circuit, Coefficient, CoefficientThreshold,
-    Direction, PauliRotation, PauliString, PauliSum, PtmChannel, WeightCutoff,
+    propagate, ApproxTopN, BuildAccumulator, BuiltinTruncation, Circuit, Coefficient,
+    CoefficientThreshold, CollapseSample, Direction, PartitionConfig, PartitionRowPolicy,
+    PartitionRuntime, PartitionTrace, PauliAxis, PauliRotation, PauliString, PauliSum, Placement,
+    ProductBasis, PtmChannel, ScatterRows, WeightCutoff,
 };
 
 /// A kicked-Ising step on a chain, `R_X(θ)` on every qubit and a quarter-turn `ZZ` on every bond, then `R_X(θ)` again on the first half: a rotation run, a Clifford run, a rotation run.
@@ -155,4 +158,253 @@ fn device_runs_agree_with_the_host_w1() {
 fn device_runs_agree_with_the_host_w2() {
     require_cuda!();
     runs_agree::<2>(90, 0x5EED2);
+}
+
+/// `sum` over `p` partitions of device 0, cut into equal contiguous qubit blocks, so every `R_X` is local and only a bond across blocks exchanges.
+fn cut_split<const W: usize>(
+    sum: &PauliSum<W>,
+    p: usize,
+    layer: GpuLayerOptions,
+) -> GpuPartitionedSum<W> {
+    let config = PartitionConfig {
+        placement: Placement::Devices { devices: vec![0], per_device: p },
+        bind_memory: false,
+        threads_per_partition: None,
+    };
+    let per = sum.num_qubits() / p;
+    let blocks = (0..p).map(|b| (b * per..(b + 1) * per).collect()).collect();
+    let options = GpuScatterOptions {
+        devices: PartitionRuntime::new(&config).expect("placement"),
+        rows: ScatterRows::Policy(PartitionRowPolicy::Cut(blocks)),
+        layer,
+    };
+    let mut split = GpuPartitionedSum::scatter_to_devices_with(sum, options).expect("scatter");
+    split.enable_trace();
+    split
+}
+
+/// The layers each rank applied inside a run past its first, which must be the same on every rank, and never a remote layer.
+fn joined_layers(trace: &PartitionTrace, what: &str) -> Vec<bool> {
+    trace
+        .layers
+        .iter()
+        .map(|layer| {
+            let joined = layer.nanos[0] == 0;
+            assert!(
+                layer.nanos.iter().all(|&nanos| (nanos == 0) == joined),
+                "{what}: ranks took different runs at layer {}",
+                layer.application_index,
+            );
+            assert!(!(joined && layer.remote_deltas > 0), "{what}: a run took a remote layer");
+            joined
+        })
+        .collect()
+}
+
+/// [`kicked_chain`] over a cut group of `p` partitions against the host, both directions; returns, per direction, the trace of the device run.
+fn group_agrees<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    policy_of: &dyn Fn(Direction) -> BuiltinTruncation,
+    p: usize,
+    what: &str,
+) -> Vec<PartitionTrace> {
+    let mut traces = Vec::new();
+    for direction in [Direction::Forward, Direction::Heisenberg] {
+        let policy = policy_of(direction);
+        let what = format!("{what} P={p} {direction:?}");
+        let (want, discarded) = propagate_discarding(circuit, sum.clone(), &policy, direction);
+        let mut split = cut_split(sum, p, GpuLayerOptions::default());
+        split.propagate(circuit, policy.clone(), direction).expect("device propagate");
+        let got = split.gather().expect("gather");
+        assert_runs_agree(
+            policy.clone(),
+            discarded,
+            &got,
+            &want,
+            1e3 * coefficient_tolerance::<f64>(),
+            &what,
+        );
+        let trace = split.take_trace().expect("tracing");
+        joined_layers(&trace, &what);
+        traces.push(trace);
+    }
+    traces
+}
+
+/// Rotation layers of [`kicked_chain`] are its first `num_qubits` and its last `num_qubits / 2`.
+fn is_rotation(num_qubits: usize, circuit_index: u32) -> bool {
+    let index = circuit_index as usize;
+    index < num_qubits || index >= 2 * num_qubits - 1
+}
+
+/// The largest `ApproxTopN` cap that still cuts a `direction` run, so the lightest cut, which the operator check can compare.
+fn light_cut<const W: usize>(
+    circuit: &Circuit<W>,
+    sum: &PauliSum<W>,
+    direction: Direction,
+) -> usize {
+    let cuts =
+        |n: usize| propagate_discarding(circuit, sum.clone(), &ApproxTopN(n), direction).1 > 0.0;
+    let (mut cutting, mut keeping) = (1usize, 1usize << 40);
+    while keeping - cutting > 1 {
+        let middle = cutting + (keeping - cutting) / 2;
+        if cuts(middle) {
+            cutting = middle;
+        } else {
+            keeping = middle;
+        }
+    }
+    cutting
+}
+
+fn group_runs_agree<const W: usize>(num_qubits: usize, seed: u64) {
+    let input = sparse_input::<W>(num_qubits, seed);
+    let circuit = kicked_chain::<W>(num_qubits, 0.6);
+    let caps = [Direction::Forward, Direction::Heisenberg].map(|d| light_cut(&circuit, &input, d));
+    let cutting = move |direction: Direction| {
+        BuiltinTruncation::from(ApproxTopN(caps[usize::from(direction == Direction::Heisenberg)]))
+    };
+    type PolicyOf<'a> = Box<dyn Fn(Direction) -> BuiltinTruncation + 'a>;
+    let policies: [(&str, PolicyOf); 4] = [
+        ("keep", Box::new(|_| KeepAll.into())),
+        ("threshold", Box::new(|_| CoefficientThreshold(2e-3).into())),
+        ("approx-topn above every bound", Box::new(|_| ApproxTopN(1 << 40).into())),
+        ("cutting approx-topn", Box::new(cutting)),
+    ];
+    for p in [2usize, 4] {
+        for (name, policy) in &policies {
+            let what = format!("{name} W={W}");
+            for trace in group_agrees(&circuit, &input, policy, p, &what) {
+                let joined = joined_layers(&trace, &what);
+                let of = |rotation: bool| {
+                    trace.layers.iter().zip(&joined).filter(move |(layer, &joined)| {
+                        joined && is_rotation(num_qubits, layer.circuit_index) == rotation
+                    })
+                };
+                if !name.starts_with("cutting") {
+                    assert!(of(true).count() > 0, "{what} P={p}: no rotation run");
+                    assert!(of(false).count() > 0, "{what} P={p}: no Clifford run");
+                }
+                if name.starts_with("approx-topn above") && num_qubits <= 16 {
+                    // The bound agreed at the call's start, times every fanout, stays below `n`, so only the bucket counts of the remote layers and that agreement are collective.
+                    assert_eq!(
+                        trace.total_collectives(),
+                        trace.remote_layers() as u64 + 1,
+                        "{what} P={p}: collectives",
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn device_group_runs_agree_with_the_host_w1() {
+    require_cuda!();
+    group_runs_agree::<1>(16, 0x6A1);
+}
+
+#[test]
+fn device_group_runs_agree_with_the_host_w2() {
+    require_cuda!();
+    group_runs_agree::<2>(96, 0x6A2);
+}
+
+/// Rotations growing a dense sum within one block refine the partition mid-run under a small block budget, and the crossing bond after them runs at one agreed count.
+fn group_run_refines<const W: usize>(num_qubits: usize) {
+    let input = rand_sum_real::<W>(3_000, num_qubits, 0x6A3);
+    let half = num_qubits / 2;
+    let mut circuit = Circuit::<W>::new(num_qubits);
+    for q in 0..8 {
+        circuit.push(PauliRotation::new(PauliString::<W>::x(q), 0.3 + 0.05 * q as f64));
+    }
+    circuit.push(zz_rotation::<W>(half - 1, half, 0.4));
+    let small = GpuLayerOptions { records_per_block: 256, ..GpuLayerOptions::default() };
+    let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Forward);
+    let mut split = cut_split(&input, 2, small);
+    split.propagate(&circuit, KeepAll, Direction::Forward).expect("device propagate");
+    let what = format!("refining run W={W}");
+    assert_terms_close(
+        &split.gather().unwrap(),
+        &want,
+        1e3 * coefficient_tolerance::<f64>(),
+        &what,
+    );
+    let trace = split.take_trace().unwrap();
+    let joined = joined_layers(&trace, &what);
+    assert!(joined[1..8].iter().all(|&j| j), "{what}: the rotations ran as one run");
+    let crossing = trace.layers.last().unwrap();
+    assert!(crossing.remote_deltas > 0, "{what}: the bond crosses");
+    assert!(crossing.bits.iter().all(|&b| b == crossing.bits[0]), "{what}: {:?}", crossing.bits);
+    assert!(trace.layers[0].refine_passes.iter().any(|&r| r > 0), "{what}: the run refined");
+}
+
+#[test]
+fn a_device_group_run_refines_then_meets_a_remote_layer() {
+    require_cuda!();
+    group_run_refines::<1>(16);
+    group_run_refines::<2>(96);
+}
+
+/// A failure injected inside a run on one rank, under a layer pass whose collectives follow the run, fails the call and poisons the split while the partners finish.
+fn group_run_fails<const W: usize>(num_qubits: usize) {
+    let input = sparse_input::<W>(num_qubits, 0x6A4);
+    let circuit = kicked_chain::<W>(num_qubits, 0.6);
+    for policy in [ApproxTopN(1 << 40), ApproxTopN(40)] {
+        let mut split = cut_split(&input, 2, GpuLayerOptions::default());
+        set_fault_plan(&mut split, 1, FaultPlan { at_layer: Some(3), ..FaultPlan::default() });
+        let first = split.propagate(&circuit, policy, Direction::Forward);
+        assert!(matches!(first, Err(GpuError::Unsupported(_))), "W={W} {policy:?}: {first:?}");
+        let again = split.propagate(&circuit, policy, Direction::Forward);
+        assert!(
+            matches!(again, Err(GpuError::Poisoned { rank: 1, .. })),
+            "W={W} {policy:?}: {again:?}"
+        );
+    }
+}
+
+#[test]
+fn a_failure_inside_a_device_group_run_poisons_the_split() {
+    require_cuda!();
+    group_run_fails::<1>(16);
+    group_run_fails::<2>(96);
+}
+
+/// Above its cache a group's `CollapseSample` follows its runs: a cache no run reaches is the untruncated run with no pass collective, and a small one averages to the exact readout within four standard errors.
+#[test]
+fn collapse_sample_in_a_device_group_takes_runs_and_stays_unbiased() {
+    require_cuda!();
+    let (circuit, input) = (collapsing_circuit(), z0_sum());
+    let want = propagate(&circuit, input.clone(), &KeepAll, Direction::Heisenberg);
+    let mut split = cut_split(&input, 2, GpuLayerOptions::default());
+    let roomy = CollapseSample::new(1 << 60, 1 << 20, 3);
+    split.propagate(&circuit, roomy, Direction::Heisenberg).expect("device propagate");
+    assert_terms_close(&split.gather().unwrap(), &want, 1e-10, "roomy collapse");
+    let trace = split.take_trace().unwrap();
+    assert!(joined_layers(&trace, "roomy collapse").contains(&true), "no run");
+    assert_eq!(trace.total_collectives(), trace.remote_layers() as u64 + 1, "roomy collectives");
+
+    let zero = ProductBasis::uniform(PauliAxis::Z);
+    let exact = want.expectation_product(&zero).re;
+    let seeds = 200u64;
+    let (mut sum, mut squares, mut runs) = (0.0f64, 0.0f64, 0usize);
+    for seed in 0..seeds {
+        let policy = std::sync::Arc::new(CollapseSample::new(6, 4, seed));
+        let mut split = cut_split(&input, 2, GpuLayerOptions::default());
+        split.propagate(&circuit, policy.clone(), Direction::Heisenberg).expect("propagate");
+        let trace = split.take_trace().unwrap();
+        runs += joined_layers(&trace, "collapse").iter().filter(|&&j| j).count();
+        let readout = split.gather().unwrap().expectation_product(&zero).re;
+        sum += readout;
+        squares += readout * readout;
+    }
+    let n = seeds as f64;
+    let mean = sum / n;
+    let error = ((squares / n - mean * mean) / (n - 1.0)).sqrt();
+    assert!(runs > 0, "no seed took a run");
+    assert!(
+        (mean - exact).abs() < 4.0 * error,
+        "mean {mean} vs exact {exact}, standard error {error}"
+    );
 }

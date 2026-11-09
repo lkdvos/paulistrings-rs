@@ -9,7 +9,8 @@
 //! A local layer issues no call for the count: on the schedule of `rebuckets` a partition moves to its own proposal, so counts differ mid-call.
 //! At `P = 1` there is no group: the loop refines every layer, as `propagate` does.
 //!
-//! Consecutive local layers may run as one pass ([`Runs`]); local layers issue no transport call, so a partition may take a run whatever its peers do, but a run defers the policy's layer pass to its end, so under a policy with one only a lone partition takes runs.
+//! Consecutive local layers may run as one pass ([`Runs`]); local layers issue no transport call, so a partition may take a run whatever its peers do.
+//! A run defers the policy's layer pass to its end, so under a policy with one a group takes runs only over a backend that tracks [`PartitionBackend::agreed_len`]: one `allreduce_sum_u64` at the start of the call agrees it, and every partition admits a run against that bound and a span no bucket count refuses, so all take the same runs and the same passes.
 
 use crate::channel::Prepare;
 use crate::coefficient::Coefficient;
@@ -196,13 +197,15 @@ struct Runs<const W: usize, C: Coefficient> {
 }
 
 impl<const W: usize, C: Coefficient> Runs<W, C> {
-    /// Apply the run that starts at application index `start` with `prepared`, and return its end, or `None` to apply layer `start` alone.
+    /// Apply the run that starts at application index `start` with `prepared`, admitted against `len` terms, and return its end, or `None` to apply layer `start` alone.
     // Never inlined: `run_layers` inlines the merge kernels, which are sensitive to code motion.
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn take<T, B>(
         &mut self,
         start: usize,
         prepared: &Prepared<W, C>,
+        len: usize,
         local: &mut B,
         policy: &T,
         lookahead: &Lookahead<'_, W>,
@@ -215,7 +218,6 @@ impl<const W: usize, C: Coefficient> Runs<W, C> {
         if lookahead.exchanges(prepared) {
             return None;
         }
-        let len = local.len();
         if self.permutations && len <= self.limit {
             if let Some(first) = PermutationStep::of(prepared) {
                 self.steps.clear();
@@ -266,6 +268,7 @@ fn record_run<const W: usize, C: Coefficient, T: ?Sized, B: PartitionBackend<W, 
     circuit_index_of: &dyn Fn(usize) -> usize,
     local: &B,
     (terms_before, bits_before, nanos): (usize, u8, u64),
+    collectives: u32,
     mut phases: LayerPhases,
     (rank, size): (usize, usize),
     trace: Option<&mut Vec<PartitionLayerRow>>,
@@ -278,7 +281,7 @@ fn record_run<const W: usize, C: Coefficient, T: ?Sized, B: PartitionBackend<W, 
             let mut row = PartitionLayerRow {
                 bits: local.hash().bits(),
                 remote_deltas: 0,
-                collectives: 0,
+                collectives: if leads { collectives } else { 0 },
                 circuit_index: index as u32,
                 application_index: layer as u32,
                 gate_name: circuit.channels[index].debug_name(),
@@ -358,17 +361,28 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         adjoint,
         rank,
     };
-    // A run's layer pass follows it alone, and where a group's runs end is each partition's own decision.
-    let limit = if finalizes && !solo { 0 } else { policy.run_length_limit() };
+    // A run's layer pass follows it alone, so a group under a layer pass admits runs only against the agreed bound, and only spans no partition's bucket count refuses.
+    let agrees = finalizes && !solo;
+    let limit = if agrees && !B::TRACKS_AGREED_LEN { 0 } else { policy.run_length_limit() };
     let mut runs = Runs::<W, C> {
         permutations: limit > 0 && local.takes_runs(),
-        rotations: local.rotation_run_dimension().filter(|_| limit > 0),
+        rotations: local
+            .rotation_run_dimension()
+            .filter(|&dimension| limit > 0 && (!agrees || dimension >= MAX_ROTATION_RUN_LAYERS)),
         limit,
         steps: Vec::new(),
         layers: Vec::new(),
     };
 
     local.begin_call();
+    // Collectives issued before the first layer, counted on its trace row.
+    let mut opening_collectives = 0u32;
+    if agrees && limit > 0 {
+        let mut total = [local.len() as u64];
+        transport.allreduce_sum_u64(&mut total);
+        local.agree_len(total[0] as usize);
+        opening_collectives = 1;
+    }
     let mut application_index = 0;
     while application_index < num_layers {
         let circuit_index = circuit_index_of(application_index);
@@ -403,7 +417,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         lap!(stamp, local.stats().prepare_ns);
         clock.lap(&mut phases.prepare_ns);
 
-        let mut collectives = 0u32;
+        let mut collectives = std::mem::take(&mut opening_collectives);
         if !refined_early && (solo || plan.has_remote() || rebuckets(application_index)) {
             let mut wanted_bits =
                 local.proposed_bits(&prepared, options.target_bucket_len, options.min_buckets);
@@ -440,15 +454,21 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
             );
         }
 
-        if let Some(end) =
-            runs.take(application_index, &prepared, local, policy, &lookahead, debug_enabled)
-        {
+        // A group under a layer pass decides from what every partition holds alike, debug logging excepted.
+        let admitted = if agrees { local.agreed_len() } else { Some(local.len()) };
+        let logging = debug_enabled && !agrees;
+        let taken = admitted.and_then(|len| {
+            runs.take(application_index, &prepared, len, local, policy, &lookahead, logging)
+        });
+        if let Some(end) = taken {
             timed!(stamp.rearm());
             clock.lap(&mut phases.coset_loop_ns);
             if finalizes {
+                policy_calls.store(0, Ordering::Relaxed);
                 let counting =
                     CountingCollectives { inner: transport, calls: &policy_calls, nanos: None };
                 local.finalize_layer(policy, &counting);
+                collectives += policy_calls.load(Ordering::Relaxed);
                 lap!(stamp, local.stats().finalize_ns);
                 clock.lap(&mut phases.finalize_ns);
             }
@@ -476,6 +496,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                     order,
                     &*local,
                     before,
+                    collectives,
                     phases,
                     (rank, size),
                     trace,

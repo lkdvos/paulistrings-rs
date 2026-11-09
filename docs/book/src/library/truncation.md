@@ -7,7 +7,7 @@ All seven live in the `paulistrings.truncation` module and run after every chann
 | `truncation.coeff(eps)` | `\|c\| > eps` — note **strictly** greater; `\|c\| == eps` is dropped |
 | `truncation.weight(k)` | Pauli weight `<= k` |
 | `truncation.topn(k)` | exactly `k` terms (all of a smaller sum), largest `\|c\|` first; no partitioned form |
-| `truncation.approx_topn(k)` | exactly `k` terms, ranked by octave of `\|c\|**2`; partition/comm-safe |
+| `truncation.approx_topn(k)` | exactly `k` terms, ranked by quarter-octave bins of `\|c\|**2`; partition/comm-safe |
 | `truncation.partition_topn(k)` | `topn(k)` on each partition separately; partition/comm-safe |
 | `truncation.partition_approx_topn(k)` | `approx_topn(k)` on each partition separately; partition/comm-safe |
 | `truncation.collapse_sample(cache, samples, seed)` | everything up to `cache` terms; above it, `samples` systematic draws by `\|c\|`, an unbiased estimate of the sum; partition/comm-safe |
@@ -21,7 +21,7 @@ All seven live in the `paulistrings.truncation` module and run after every chann
 
 ## `topn` vs. `approx_topn`
 
-Both keep every term above a boundary and fill up to `k` from the boundary itself: for `topn` the terms tied at the `k`-th largest magnitude, for `approx_topn` the octave of `|c|**2` where the count from the top first exceeds `k`.
+Both keep every term above a boundary and fill up to `k` from the boundary itself: for `topn` the terms tied at the `k`-th largest magnitude, for `approx_topn` the quarter-octave bin of `|c|**2` (a factor 1.25 at most) where the count from the top first exceeds `k`.
 Boundary terms are taken in bucket order, and across partitions each partition takes a share of the boundary in proportion to its boundary terms, so which of them survive depends on the bucketing and partitioning and is not part of the contract; runs that differ in either agree on the count and on every term above the boundary.
 `topn` raises `NotImplementedError` under `partitions=`/`comm=`; `approx_topn` is the partitioned/distributed default in that case.
 

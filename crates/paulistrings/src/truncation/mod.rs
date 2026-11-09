@@ -77,7 +77,7 @@ pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex
             "{} has a layer pass but no partitioned one: every partition sees only a disjoint \
              slice of the layer, so the pass has to be collective. Override \
              `finalize_layer_partitioned` and `supports_partitioned` (see `ApproxTopN`, which \
-             all-reduces its octave histogram), or use `ApproxTopN` itself.",
+             all-reduces its magnitude histogram), or use `ApproxTopN` itself.",
             std::any::type_name_of_val(self),
         );
     }

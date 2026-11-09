@@ -378,11 +378,12 @@ __device__ __forceinline__ size_t claim_by_destination(u32* cursor, u32 destinat
     return (size_t)base + __popc(peers & lanemask_lt());
 }
 
-// `ApproxTopN`'s octave of |c|^2, its f64 exponent field; a NaN with its sign bit set would index past the top bin, so it shares it.
-#define APPROX_BINS 2048
-__device__ __forceinline__ u32 octave_bin(Coeff c) {
+// `ApproxTopN`'s bin of |c|^2, the host's `approx_bin`: its exponent field and top APPROX_SUB_BITS mantissa bits; a NaN with its sign bit set would index past the top bin, so it shares it.
+#define APPROX_SHIFT (52 - APPROX_SUB_BITS)
+#define APPROX_BINS (2048 << APPROX_SUB_BITS)
+__device__ __forceinline__ u32 approx_bin(Coeff c) {
     const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(c));
-    return min((u32)(bits >> 52), (u32)(APPROX_BINS - 1));
+    return min((u32)(bits >> APPROX_SHIFT), (u32)(APPROX_BINS - 1));
 }
 
 // The inclusive prefix of `v` across the warp.

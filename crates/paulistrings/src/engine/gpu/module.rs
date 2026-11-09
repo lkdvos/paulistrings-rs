@@ -17,6 +17,7 @@ use super::truncation::{KEEP_NODES, OP_AND, OP_COEFF, OP_KEEP, OP_OR, OP_WEIGHT}
 use super::GPU_LOG_TARGET;
 use crate::coefficient::Coefficient;
 use crate::engine::cuda_context::libnvrtc_present;
+use crate::truncation::builtin::APPROX_SUB_BITS;
 
 const PRELUDE: &str = include_str!("kernels/prelude.cuh");
 const HASH: &str = include_str!("kernels/hash.cu");
@@ -270,6 +271,7 @@ fn compile_options(
         format!("-DRR_THREADS={RR_THREADS}"),
         format!("-DRR_WIDE_THREADS={RR_WIDE_THREADS}"),
         format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
+        format!("-DAPPROX_SUB_BITS={APPROX_SUB_BITS}"),
         format!("-DKEEP_NODES={KEEP_NODES}"),
         format!("-DOP_KEEP={OP_KEEP}"),
         format!("-DOP_COEFF={OP_COEFF}"),
@@ -365,6 +367,12 @@ fn build_kernel_set(
         layer.push(LayerVariant { items, serial, segscan });
         items *= 2;
     }
+    let join = load("k_join")?;
+    join.set_attribute(
+        CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+        super::layer::JOIN_MAX_SHARED_BYTES as i32,
+    )
+    .map_err(GpuError::from)?;
     let rotation_run_apply = load("k_rotation_run_apply")?;
     rotation_run_apply
         .set_attribute(
@@ -414,7 +422,7 @@ fn build_kernel_set(
         collapse_scan_add: load("k_collapse_scan_add")?,
         collapse_pick: load("k_collapse_pick")?,
         layer,
-        join: load("k_join")?,
+        join,
         join_rows: load("k_join_rows")?,
         rotation_run_classify: load("k_rotation_run_classify")?,
         rotation_run_gather: load("k_rotation_run_gather")?,

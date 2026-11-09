@@ -7,7 +7,7 @@ use crate::coefficient::Coefficient;
 use crate::engine::plan::RemoteDelta;
 use crate::pauli_string::PauliString;
 use crate::pauli_sum::storage::BucketColumns;
-use crate::truncation::builtin::octave;
+use crate::truncation::builtin::approx_bin;
 use crate::truncation::octave_window::{BucketOctaves, OctaveWindow, WINDOW_OCTAVES};
 
 use super::LayerOctaves;
@@ -115,7 +115,7 @@ impl OctaveWindow {
     #[inline(always)]
     fn slots_of<C: Coefficient>(&self, coeff: C) -> (usize, usize) {
         let norm_sqr = coeff.norm_sqr();
-        let slot = self.slot(octave(norm_sqr));
+        let slot = self.slot(approx_bin(norm_sqr));
         (slot, slot * usize::from(!norm_sqr.is_nan()))
     }
 
@@ -202,12 +202,9 @@ impl LayerOctaves {
         let Some(cut) = &self.pending else {
             return Some(emitting.iter().sum());
         };
-        // A pending cut was decided from the counts the same coset loop took, under the same window, so its octave is inside it.
+        // A pending cut was decided from the counts the same coset loop took, under the same window, so its bin is inside it.
         let slot = window.slot(cut.bin);
-        debug_assert!(
-            (1..=WINDOW_OCTAVES).contains(&slot),
-            "the cut's octave is outside the window"
-        );
+        debug_assert!((1..=WINDOW_OCTAVES).contains(&slot), "the cut's bin is outside the window");
         let above: u32 = emitting[slot + 1..].iter().sum();
         match cut.split.quota(b) {
             0 => Some(above),

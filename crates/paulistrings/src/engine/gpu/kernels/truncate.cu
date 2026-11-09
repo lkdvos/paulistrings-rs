@@ -1,9 +1,9 @@
-// k_octave_histogram: `ApproxTopN`'s octave histogram of |c|^2.
+// k_octave_histogram: `ApproxTopN`'s histogram of |c|^2 by `approx_bin`.
 // k_radix_histogram and k_radix_extract: exact `TopN`'s radix-select over the u64 bit pattern of |c|^2, which orders a non-negative f64 as its value.
-// Exact `TopN` retains through `k_boundary_counts` and `k_retain`: the key `bits >> shift` (shift 0, the exact value) above `boundary`, plus a quota of terms at it in bucket order; `ApproxTopN` cuts in place through `k_cut` at the octave (shift 52).
+// Exact `TopN` retains through `k_boundary_counts` and `k_retain`: the key `bits >> shift` (shift 0, the exact value) above `boundary`, plus a quota of terms at it in bucket order; `ApproxTopN` cuts in place through `k_cut` at the bin (shift APPROX_SHIFT).
 
 
-// out[0] += terms, out[1 + k] += population of octave k (`norm_sqr` bits >> 52); one warp per bucket, a shared histogram per block, integer atomics only.
+// out[0] += terms, out[1 + k] += population of bin k (`approx_bin`); one warp per bucket, a shared histogram per block, integer atomics only.
 extern "C" __global__ void k_octave_histogram(const real_t* __restrict__ c, const u32* __restrict__ start,
                                          const u32* __restrict__ lens, u32 B, u64* __restrict__ out) {
     __shared__ u32 h[APPROX_BINS];
@@ -16,7 +16,7 @@ extern "C" __global__ void k_octave_histogram(const real_t* __restrict__ c, cons
     for (u32 beta = blockIdx.x * (blockDim.x / WARP) + warp_id(); beta < B; beta += stride) {
         const u32 s = start[beta], len = lens[beta];
         for (u32 r = lane; r < len; r += WARP) {
-            atomicAdd(&h[octave_bin(coeff_load(c, (size_t)s + r))], 1u);
+            atomicAdd(&h[approx_bin(coeff_load(c, (size_t)s + r))], 1u);
         }
         if (lane == 0) atomicAdd(&terms, len);
     }
@@ -144,7 +144,7 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
 // One warp per bucket: a flag per row (0 dropped, 1 kept, 2 at the boundary), then the dropped rows below the bucket's kept count take the kept rows above it, so the bucket keeps its start and its kept terms fill its front, in no particular order.
 // The boundary terms ahead of a bucket come from a decoupled look-back over `prefix` (zeroed, one entry per bucket); a warp takes its bucket from `counters[1]` in launch order, so every lower bucket's warp is already running and the look-back never waits on an unscheduled one.
 #define CUT_QUEUE 64
-// `decision`'s words, `CutDecision` in finalize.rs: keep every term, else the boundary octave, its quota, and whether the quota splits the octave.
+// `decision`'s words, `CutDecision` in finalize.rs: keep every term, else the boundary bin, its quota, and whether the quota splits the bin.
 #define CUT_KEEP_ALL 0
 #define CUT_BOUNDARY 1
 #define CUT_QUOTA 2
@@ -273,7 +273,7 @@ extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
     }
 }
 
-// k_octave_edge: the host's `octave_edge` for `n >= 1` over `[len, bins…]`, into `decision` for `k_cut`; one block, each thread summing EDGE_PER octaves from the top down.
+// k_octave_edge: the host's `octave_edge` for `n >= 1` over `[len, bins…]`, into `decision` for `k_cut`; one block, each thread summing EDGE_PER bins from the top down.
 // It then zeroes the histogram, `k_cut`'s counters and its `B` look-back entries, so the next histogram and this cut need no fill.
 #define EDGE_THREADS 256
 #define EDGE_PER (APPROX_BINS / EDGE_THREADS)
@@ -304,7 +304,7 @@ extern "C" __global__ void __launch_bounds__(EDGE_THREADS) k_octave_edge(u64* __
             decision[CUT_ORDERED] = 0;
         }
     } else {
-        // The one thread whose octaves cross `n` walks them; the top octaves always hold more than `n` in all.
+        // The one thread whose bins cross `n` walks them; the top bins always hold more than `n` in all.
         u64 kept = t == 0 ? 0 : sums[t - 1];
         if (kept <= n && sums[t] > n) {
             for (u32 k = 0; k < EDGE_PER; ++k) {

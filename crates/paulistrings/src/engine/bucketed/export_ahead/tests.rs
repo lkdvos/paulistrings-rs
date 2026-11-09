@@ -24,7 +24,7 @@ fn a_nan_term_is_counted_only_without_a_cut() {
     let rows = PartitionRows::<1>::from_rows(4, vec![[1u64]], vec![[0u64]]);
     let plan = PartitionPlan::new(&prepared, &rows, 0);
     let [remote] = plan.remote.as_slice() else { panic!("the generator pass must be remote") };
-    let bin = octave(0.25);
+    let bin = approx_bin(0.25);
     let window = OctaveWindow::around(bin);
     let (x, z, coeff) = sum.bucket(0);
     let columns = BucketColumns { x: x.to_vec(), z: z.to_vec(), coeff: coeff.to_vec() };

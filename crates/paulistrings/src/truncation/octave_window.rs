@@ -1,37 +1,37 @@
-//! [`ApproxTopN`]'s layer pass decided from per-bucket octave counts the coset loop takes, and the [`BoundaryCut`] it decides, which the engine applies bucket by bucket.
+//! [`ApproxTopN`]'s layer pass decided from per-bucket bin counts the coset loop takes, and the [`BoundaryCut`] it decides, which the engine applies bucket by bucket.
 //!
-//! Contract: [`decide_from_window`] decides the cut [`approx_top_n_pass`] makes, or answers `None` when the boundary octave lies outside the window, and a [`BoundaryCut`] applied bucket by bucket keeps the same set as applied at once.
+//! Contract: [`decide_from_window`] decides the cut [`approx_top_n_pass`] makes, or answers `None` when the boundary bin lies outside the window, and a [`BoundaryCut`] applied bucket by bucket keeps the same set as applied at once.
 
-#[cfg(doc)]
-use super::builtin::{approx_top_n_pass, ApproxTopN};
 use super::builtin::{
-    boundary_filter, classify_octave, local_boundary_quota, octave, octave_edge_within,
+    approx_bin, boundary_filter, classify_octave, local_boundary_quota, octave_edge_within,
     EdgeDecision, QuotaSplit, APPROX_BINS,
 };
+#[cfg(doc)]
+use super::builtin::{approx_top_n_pass, ApproxTopN};
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::pauli_sum::storage::BucketColumns;
 use crate::pauli_sum::PauliSum;
 
-/// Octaves a window resolves.
+/// Bins a window resolves.
 pub(crate) const WINDOW_OCTAVES: usize = 64;
 
-/// A bucket's counts: below the window, one per window octave, above the window.
+/// A bucket's counts: below the window, one per window bin, above the window.
 pub(crate) type BucketOctaves = [u32; WINDOW_OCTAVES + 2];
 
-/// The [`WINDOW_OCTAVES`] octaves of `|c|²` counted per bucket, from `base` up.
+/// The [`WINDOW_OCTAVES`] bins of `|c|²` counted per bucket, from `base` up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OctaveWindow {
     base: usize,
 }
 
 impl OctaveWindow {
-    /// The window centred on `bin`, clamped into the octave range.
+    /// The window centred on `bin`, clamped into the bin range.
     pub(crate) fn around(bin: usize) -> Self {
         Self { base: bin.saturating_sub(WINDOW_OCTAVES / 2).min(APPROX_BINS - WINDOW_OCTAVES) }
     }
 
-    /// The slot of octave `bin` in [`BucketOctaves`].
+    /// The slot of bin `bin` in [`BucketOctaves`].
     #[inline(always)]
     pub(crate) fn slot(&self, bin: usize) -> usize {
         (bin + 1).saturating_sub(self.base).min(WINDOW_OCTAVES + 1)
@@ -41,7 +41,7 @@ impl OctaveWindow {
     pub(crate) fn count<C: Coefficient>(&self, coefficients: &[C], counts: &mut BucketOctaves) {
         *counts = [0; WINDOW_OCTAVES + 2];
         for c in coefficients {
-            counts[self.slot(octave(c.norm_sqr()))] += 1;
+            counts[self.slot(approx_bin(c.norm_sqr()))] += 1;
         }
     }
 }
@@ -79,7 +79,7 @@ impl WindowTotals {
     }
 }
 
-/// A boundary cut decided but not yet applied: bucket `b` keeps its terms above octave `bin` and the first [`split.quota(b)`](QuotaSplit::quota) at it.
+/// A boundary cut decided but not yet applied: bucket `b` keeps its terms above bin `bin` and the first [`split.quota(b)`](QuotaSplit::quota) at it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct BoundaryCut {
     pub(crate) bin: usize,
@@ -113,7 +113,7 @@ impl BoundaryCut {
     }
 }
 
-/// [`approx_top_n_pass`]'s decision, the whole sum's length and, at a boundary, this partition's cut, from the window counts alone; `None` when the boundary octave lies outside the window.
+/// [`approx_top_n_pass`]'s decision, the whole sum's length and, at a boundary, this partition's cut, from the window counts alone; `None` when the boundary bin lies outside the window.
 ///
 /// `totals` sums `per_bucket`, whose boundary slot only places the split.
 /// One `allreduce_sum_u64` of `[len, window counts…]`, and at an in-window boundary one more of the per-rank boundary counts; every partition answers `None` alike, from the reduced counts.

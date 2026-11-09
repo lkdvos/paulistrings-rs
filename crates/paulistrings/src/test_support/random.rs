@@ -163,6 +163,18 @@ pub fn tie_heavy_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> 
     acc.finalize()
 }
 
+/// [`rand_sum`]'s keys with real coefficients whose `|c|²` is uniform over the one octave `[1, 2)`, so every cut lands inside it, at one of its quarter bins.
+pub fn one_octave_sum<const W: usize>(n: usize, num_qubits: usize, seed: u64) -> PauliSum<W> {
+    let base = rand_sum::<W>(n, num_qubits, seed);
+    let mut rng = Xs64::new(seed ^ 0x000C_7A7E);
+    let mut acc = BuildAccumulator::<W>::with_capacity(num_qubits, n);
+    for (x, z, _) in base.iter() {
+        let norm_sqr = 1.0 + (rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64;
+        acc.add_term(PauliString::<W> { x: *x, z: *z }, Complex64::new(norm_sqr.sqrt(), 0.0));
+    }
+    acc.finalize()
+}
+
 /// [`tie_heavy_sum`] over [`rand_pauli`] keys instead of [`rand_sum`] ones — the benchmark variant, seeds pinned by the criterion baselines. Same tie structure, different key stream, no coefficient draws.
 pub fn tie_heavy_sum_unmasked<const W: usize>(
     n: usize,

@@ -10,12 +10,19 @@ use super::LayerScratch;
 use crate::engine::gpu::columns::DeviceColumns;
 use crate::engine::gpu::error::GpuError;
 use crate::engine::gpu::length::Growth;
-use crate::engine::gpu::module::{launch_grid, JOIN_THREADS};
+use crate::engine::gpu::module::{launch_grid, JOIN_THREADS, MAX_BUCKET_LEN};
 use crate::engine::gpu::prepared::{DevicePrepared, JoinTable};
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
 use crate::engine::timing::timed;
 use crate::truncation::builtin::APPROX_BINS;
+
+/// `k_join`'s dynamic shared memory at most: the table of a `MAX_BUCKET_LEN` bucket, at most half full, and the histogram of 16-bit bins.
+pub(crate) const JOIN_MAX_SHARED_BYTES: u32 =
+    4 * (2 * MAX_BUCKET_LEN as u32) + JOIN_HISTOGRAM_BYTES;
+
+/// `k_join`'s histogram, two 16-bit bins a word, since a block writes at most `2 · MAX_BUCKET_LEN` rows.
+const JOIN_HISTOGRAM_BYTES: u32 = 2 * APPROX_BINS as u32;
 
 impl<const W: usize, C: Coefficient> LayerScratch<W, C> {
     /// `k_join_rows` and its scan into `segment_start`: each position's bound, the lengths of the two source buckets it reads, `2 · len` rows in all; nothing is read back.
@@ -100,7 +107,7 @@ pub(super) fn join_layer<const W: usize, C: Coefficient>(
     if histogram && !scratch.histogram_clean {
         stream.memset_zeros(&mut scratch.histogram)?;
     }
-    let histogram_bytes = if histogram { 4 * APPROX_BINS as u32 } else { 0 };
+    let histogram_bytes = if histogram { JOIN_HISTOGRAM_BYTES } else { 0 };
     timed!(let t0 = scratch.event(sum)?);
     // SAFETY: arguments match `k_join` in join.cu; `out` holds `records` terms and `b` buckets, `segment_start` holds `b + 1` offsets ending at most at `records`, and no source bucket exceeds `longest` rows, so the `1 << table_bits` slots stay at most half full.
     unsafe {

@@ -159,6 +159,30 @@ fn approx_top_n_splits_the_boundary_octave_across_cut_rows_in_proportion() {
     }
 }
 
+/// Two ranks share the quarter-bin fixture: rank 0 holds `|c|²` 1.9, 1.3, 1.0, 1.1 and rank 1 the rest.
+/// At `n = 5` the boundary `[1.25, 1.5)` has one term on each rank and a quota of one, which the tie hands to rank 0; at `n = 8` the boundary `[1, 1.25)` has two terms on rank 0 and one on rank 1 for a quota of two, split ⌊4/3⌋ = 1 and ⌊2/3⌋ + 1 = 1 by the larger remainder.
+#[test]
+fn a_group_splits_a_quarter_bin_boundary_in_proportion() {
+    use crate::test_support::sum_of_norm_sqrs;
+    let parts = vec![
+        sum_of_norm_sqrs(&[1.9, 1.3, 1.0, 1.1], 0),
+        sum_of_norm_sqrs(&[1.8, 1.4, 1.2, 1.6, 0.9, 2.0], 16),
+    ];
+    let kept = |n: usize| -> Vec<Vec<f64>> {
+        run_on_ranks(parts.clone(), |local, collectives| {
+            ApproxTopN(n).finalize_layer_partitioned(local, collectives)
+        })
+        .iter()
+        .map(|part| part.iter().map(|(_, _, c)| (c.norm_sqr() * 1e9).round() / 1e9).collect())
+        .collect()
+    };
+    assert_eq!(kept(5), vec![vec![1.9, 1.3], vec![1.8, 1.6, 2.0]]);
+    assert_eq!(kept(8), vec![vec![1.9, 1.3, 1.0], vec![1.8, 1.4, 1.2, 1.6, 2.0]]);
+    for n in [1, 3, 7, 9] {
+        assert_approx_top_n_over(parts.clone(), n, &format!("n={n}"));
+    }
+}
+
 /// A sum confined to one octave of `|c|²` (magnitudes 1, 1⅛, 1¼, 1⅜) keeps `n` of it across partitions.
 #[test]
 fn approx_top_n_partitioned_splits_a_single_octave_sum() {

@@ -96,9 +96,9 @@ pub fn magnitude_rank(c: Complex64) -> u64 {
     c.norm_sqr().to_bits()
 }
 
-/// The octave of `|c|²`, `ApproxTopN`'s bin.
+/// `ApproxTopN`'s bin of `|c|²`.
 pub fn octave_rank(c: Complex64) -> u64 {
-    c.norm_sqr().to_bits() >> 52
+    crate::truncation::builtin::approx_bin(c.norm_sqr()) as u64
 }
 
 /// Same keys, same coefficients bitwise (`Complex64` `==`) — order-agnostic.

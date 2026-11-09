@@ -31,7 +31,7 @@ It keeps terms of Pauli weight at most `k`, which is useful when the causal cone
 **`topn(k)` bounds memory, but changes what "converged" means.**
 It keeps at most `k` terms, largest `|c|` first, so the error is set by the discarded tail rather than by a threshold; a `topn` run cannot carry a `coeff`-sweep convergence panel, and it has no equivalent in `PauliPropagation.jl` for cross-engine comparison.
 A sum of more than `k` terms keeps exactly `k`: when a group of exactly-equal magnitudes straddles the cut, as symmetric problems produce, part of the group survives, taken in storage order, so the kept part depends on bucketing and partitioning.
-**`approx_topn(n)`** is the cheap sibling: it bins terms by octave of `|c|²`, keeps whole octaves from the top down while they fit in `n`, and fills the rest from the next octave in storage order, so exactly `n` terms survive but not necessarily the `n` largest.
+**`approx_topn(n)`** is the cheap sibling: it bins terms by quarter-octave of `|c|²`, keeps whole bins from the top down while they fit in `n`, and fills the rest from the next bin in storage order, so exactly `n` terms survive but not necessarily the `n` largest.
 Exact `topn` has no partitioned form, so `approx_topn` is the policy for [NUMA partitions](partitions.md) and [MPI ranks](mpi.md).
 **`partition_topn(n)`** and **`partition_approx_topn(n)`** are `topn(n)` and `approx_topn(n)` on each partition separately, without communicating, so no partition holds more than `n` terms between layers however unevenly the sum splits.
 It keeps the locally rather than the globally largest terms, up to `P·n` in all; `approx_topn(total) & partition_topn(n)` adds a global budget.

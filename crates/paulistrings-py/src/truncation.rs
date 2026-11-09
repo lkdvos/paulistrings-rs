@@ -25,10 +25,10 @@ fn topn(n: usize) -> PyTruncation {
     PyTruncation::new(BuiltinTruncation::TopN(n))
 }
 
-/// Keep ``n`` terms after each layer, ranked by octave of ``|c|**2`` — the cheap sibling of ``topn``, and the one that runs partitioned.
+/// Keep ``n`` terms after each layer, ranked by quarter-octave bins of ``|c|**2`` — the cheap sibling of ``topn``, and the one that runs partitioned.
 ///
-/// Whole octaves are kept from the top down while they fit in ``n``, and the next octave fills the rest in bucket order, each partition taking a share in proportion to its terms in that octave, so exactly ``n`` survive whenever the sum holds more, though not necessarily the ``n`` largest.
-/// Which boundary-octave terms survive depends on bucketing and partitioning and is not part of the contract.
+/// Whole bins are kept from the top down while they fit in ``n``, and the next bin fills the rest in bucket order, each partition taking a share in proportion to its terms in that bin, so exactly ``n`` survive whenever the sum holds more, every kept term within a factor 1.25 in ``|c|**2`` of every dropped one, though not necessarily the ``n`` largest.
+/// Which boundary-bin terms survive depends on bucketing and partitioning and is not part of the contract.
 #[pyfunction]
 fn approx_topn(n: usize) -> PyTruncation {
     PyTruncation::new(BuiltinTruncation::ApproxTopN(n))

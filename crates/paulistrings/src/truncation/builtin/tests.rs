@@ -345,9 +345,34 @@ fn kept_mags<const W: usize>(sum: &PauliSum<W>) -> Vec<f64> {
     sum.iter().map(|(_, _, c)| c.norm()).collect()
 }
 
-/// Octave of `|c|²`, i.e. the bin `ApproxTopN` histograms into, derived here from the definition rather than from the implementation.
-fn octave(c: Complex64) -> usize {
-    (c.norm_sqr().to_bits() >> 52) as usize
+/// The bin `ApproxTopN` histograms `|c|²` into, its exponent and top two mantissa bits, derived here from the definition rather than from the implementation.
+fn quarter_octave(c: Complex64) -> usize {
+    (c.norm_sqr().to_bits() >> 50) as usize
+}
+
+/// Bins are quarter-octaves of `|c|²` numbered from the bottom: four per `f64` exponent, `1023 · 4` the bin of `[1, 1.25)`.
+#[test]
+fn approx_bin_is_the_exponent_and_two_mantissa_bits() {
+    assert_eq!(APPROX_BINS, 2048 * 4);
+    let cases = [
+        (0.0, 0),
+        (1.0, 4092),
+        (1.2499, 4092),
+        (1.25, 4093),
+        (1.5, 4094),
+        (1.99, 4095),
+        (2.0, 4096),
+        (0.75, 4090),
+        (f64::INFINITY, 8188),
+    ];
+    for (norm_sqr, bin) in cases {
+        assert_eq!(approx_bin(norm_sqr), bin, "|c|² = {norm_sqr}");
+    }
+    assert_eq!(
+        approx_bin(-f64::NAN),
+        APPROX_BINS - 1,
+        "a NaN with its sign bit shares the top bin"
+    );
 }
 
 /// When the cut lands exactly on an octave boundary (`n` = 1, 3, or 6, the fixture's cumulative populations), the approximation is no approximation: both policies return the same top `n`.
@@ -391,9 +416,9 @@ fn approx_top_n_is_monotone_in_n() {
 }
 
 /// The `≈n` contract, checked against a bound derived from the input:
-/// `kept <= n`, and `kept > n - p` where `p` is the population of the highest *excluded* octave. Equivalently `kept + p > n`: the next octave down would have overshot.
+/// `kept <= n`, and `kept > n - p` where `p` is the population of the highest *excluded* bin. Equivalently `kept + p > n`: the next bin down would have overshot.
 #[test]
-fn approx_top_n_shortfall_is_bounded_by_one_octave() {
+fn approx_top_n_shortfall_is_bounded_by_one_bin() {
     let input = crate::test_support::rand_sum::<1>(3000, 10, 0xB0117);
     let len = input.len();
     for n in [1usize, 17, 200, 900, 2000, len - 1] {
@@ -402,22 +427,22 @@ fn approx_top_n_shortfall_is_bounded_by_one_octave() {
         let kept = sum.len();
         assert!(kept <= n, "n={n}: kept {kept} exceeds the bound");
 
-        // The highest excluded octave's population in the input is the slack.
+        // The highest excluded bin's population in the input is the slack.
         let survivors: std::collections::HashSet<(u64, u64)> =
             sum.iter().map(|(x, z, _)| (x[0], z[0])).collect();
-        let dropped_octaves: Vec<usize> = input
+        let dropped_bins: Vec<usize> = input
             .iter()
             .filter(|(x, z, _)| !survivors.contains(&(x[0], z[0])))
-            .map(|(_, _, c)| octave(c))
+            .map(|(_, _, c)| quarter_octave(c))
             .collect();
-        let p = match dropped_octaves.iter().copied().max() {
+        let p = match dropped_bins.iter().copied().max() {
             None => 0,
-            Some(top) => input.iter().filter(|(_, _, c)| octave(*c) == top).count(),
+            Some(top) => input.iter().filter(|(_, _, c)| quarter_octave(*c) == top).count(),
         };
         assert!(
             kept + p > n,
-            "n={n}: kept {kept} + excluded octave {p} must overshoot n, \
-             else that octave should have been kept"
+            "n={n}: kept {kept} + excluded bin {p} must overshoot n, \
+             else that bin should have been kept"
         );
     }
 }
@@ -439,15 +464,66 @@ fn approx_top_n_matches_the_stable_sort_rule_across_bucket_counts() {
     }
 }
 
-/// A top octave holding more than `n` terms is the boundary octave and keeps its first `n` in bucket order, never empties the sum.
+/// A boundary inside one octave keeps the octave's upper quarter-bins whole and fills from the boundary bin in bucket order; an overfull top bin never empties the sum.
 #[test]
-fn approx_top_n_cuts_inside_an_overfull_top_octave() {
-    // |c|² ∈ {4, 4.84, 5.76, 6.76} all lie in octave [4, 8); 0.5 lies below it.
+fn approx_top_n_cuts_inside_an_octave_at_a_quarter_bin() {
+    // |c|² 4 and 4.84 share the bin [4, 5) of the octave [4, 8), 5.76 is in [5, 6), 6.76 in [6, 7), and 0.25 lies below.
     let magnitudes = [2.0f64, 2.2, 0.5, 2.4, 2.6];
     let mut sum = sum_of_mags(&magnitudes);
     ApproxTopN(3).finalize_layer(&mut sum);
     sum.assert_invariants();
-    assert_eq!(kept_mags(&sum), vec![2.0, 2.2, 2.4]);
+    assert_eq!(kept_mags(&sum), vec![2.0, 2.4, 2.6]);
+    // |c|² 4.0, 4.41 and 4.84 all lie in [4, 5).
+    let mut sum = sum_of_mags(&[2.0, 2.1, 2.2]);
+    ApproxTopN(2).finalize_layer(&mut sum);
+    assert_eq!(kept_mags(&sum), vec![2.0, 2.1]);
+}
+
+/// The boundary bin is a quarter of the octave: `n = 5` keeps 2.0, both terms of `[1.75, 2)`, 1.6 and one of `[1.25, 1.5)`, where an octave cut would have kept the first four of `[1, 2)` in bucket order.
+#[test]
+fn approx_top_n_keeps_every_bin_above_a_quarter_octave_boundary() {
+    use crate::test_support::{sum_of_norm_sqrs, QUARTER_BIN_NORM_SQRS};
+    let input = sum_of_norm_sqrs(&QUARTER_BIN_NORM_SQRS, 0);
+    let kept_norm_sqrs = |n: usize| -> Vec<f64> {
+        let mut sum = input.clone();
+        ApproxTopN(n).finalize_layer(&mut sum);
+        sum.assert_invariants();
+        sum.iter().map(|(_, _, c)| (c.norm_sqr() * 1e9).round() / 1e9).collect()
+    };
+    assert_eq!(kept_norm_sqrs(5), vec![1.3, 1.6, 1.9, 1.8, 2.0]);
+    assert_eq!(kept_norm_sqrs(8), vec![1.0, 1.1, 1.3, 1.4, 1.6, 1.9, 1.8, 2.0]);
+    assert_eq!(kept_norm_sqrs(9), vec![1.0, 1.1, 1.3, 1.2, 1.4, 1.6, 1.9, 1.8, 2.0]);
+}
+
+/// The kept part of the boundary bin is not taken from either edge: over a uniform `|c|²`, the kept boundary terms' mean equals the dropped ones' to a hundredth of the bin, and every dropped term is within one quarter-octave of every kept one.
+#[test]
+fn approx_top_n_keeps_a_centred_sample_of_the_boundary_bin() {
+    let input = crate::test_support::one_octave_sum::<1>(20_000, 64, 0xCE47);
+    let n = 7_500;
+    let mut sum = input.clone();
+    ApproxTopN(n).finalize_layer(&mut sum);
+    assert_eq!(sum.len(), n);
+    let kept: std::collections::HashSet<(u64, u64)> =
+        sum.iter().map(|(x, z, _)| (x[0], z[0])).collect();
+    let (mut at_kept, mut at_dropped) = (Vec::new(), Vec::new());
+    let (mut lowest_kept, mut highest_dropped) = (f64::INFINITY, 0.0f64);
+    for (x, z, c) in input.iter() {
+        let norm_sqr = c.norm_sqr();
+        let stays = kept.contains(&(x[0], z[0]));
+        if stays {
+            lowest_kept = lowest_kept.min(norm_sqr);
+        } else {
+            highest_dropped = highest_dropped.max(norm_sqr);
+        }
+        if (1.5..1.75).contains(&norm_sqr) {
+            if stays { &mut at_kept } else { &mut at_dropped }.push(norm_sqr);
+        }
+    }
+    assert!(lowest_kept >= 1.5 && highest_dropped < 1.75, "the cut is the bin [1.5, 1.75)");
+    assert!(at_kept.len() > 1_000 && at_dropped.len() > 1_000, "the quota splits the bin");
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+    let offset = (mean(&at_kept) - mean(&at_dropped)) / 0.25;
+    assert!(offset.abs() < 0.01, "kept minus dropped boundary mean is {offset} of the bin");
 }
 
 /// A complex coefficient is ranked by `re² + im²` like everywhere else.

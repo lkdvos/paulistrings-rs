@@ -150,10 +150,11 @@ fn the_window_pass_is_the_plain_pass() {
 #[test]
 fn a_bucket_filter_keeps_what_classify_octave_keeps() {
     use num_complex::Complex64;
-    let bin = octave(1.0);
+    let bin = approx_bin(1.0);
     let cut = BoundaryCut { bin, split: QuotaSplit { bucket: 0, remaining: 2 }, kept: 0 };
-    let norms = [f64::NAN, 1.0, 4.0, 1.5, 0.25, 1.0, f64::INFINITY, f64::NAN, 1.0];
-    let want = [false, true, true, true, false, false, true, false, false];
+    // The boundary bin is [1, 1.25): 1.3 is above it in the same octave, 0.9 below.
+    let norms = [f64::NAN, 1.0, 4.0, 1.2, 0.25, 1.3, 1.0, 0.9, f64::INFINITY, f64::NAN, 1.0];
+    let want = [false, true, true, true, false, true, false, false, true, false, false];
     let mut filter = cut.filter::<1, Complex64>(0);
     for (&norm_sqr, &keep) in norms.iter().zip(&want) {
         let c = Complex64::new(norm_sqr.sqrt(), 0.0);

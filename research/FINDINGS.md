@@ -699,6 +699,12 @@ Any `.cu` edit makes every variant cold: the lib's device tests then outran a 60
 Non-rotation channels on more than two qubits panic in `propagate`.
 Sketch: a heap `DeltaEntry::amp` variant for `k > 2`, `O(16^k)` probe cost, practical ceiling `k ≈ 4–5`.
 
+### The rank-order boundary quota biases cut-row splits
+
+A partitioned `ApproxTopN` hands the boundary octave's quota to the ranks in rank order (`local_boundary_quota`); under cut rows a rank is a block of qubits, so the cut keeps the boundary strings of the low blocks first.
+TFIM 16×16 `--approx-topn 1e6`, step 10: one host process 0.2892, one device 0.2896; four partitions under cut rows 0.3083 on the host `PartitionedSum` and 0.3084 on device partitions; under seeded rows 0.2886 and 0.2887.
+The same signature as the atomic-ticket quota (§`ApproxTopN` cuts in place on device); a quota split in proportion to each rank's boundary count is the candidate, unmeasured.
+
 ### Partition rows without a known lattice
 
 `cut` needs a hand-bisectable lattice and the greedy selector was removed for imbalance; a choice scoring balance and remote weight together is open.

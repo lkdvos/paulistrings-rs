@@ -252,7 +252,7 @@ impl<const W: usize, C: Coefficient> GpuSum<W, C> {
         Ok(PauliSum::from_buckets(buckets, self.hash.clone(), self.num_qubits))
     }
 
-    /// Total number of terms, or an upper bound on it after a layer whose count is still on the device; exact after [`Self::settle_lengths`].
+    /// Total number of terms, or an upper bound on it after a layer whose count is still on the device; exact once the call that ran the layer returns.
     pub fn len(&self) -> usize {
         self.columns.len
     }

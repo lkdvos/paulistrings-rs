@@ -10,7 +10,7 @@ use paulistrings::{PauliRotation, PtmChannel};
 // single `(1 << num_qubits) - 1` mask, and the draw order (`x`, `z`, `re`)
 // matches the other propagation test files' fixtures.
 use paulistrings::test_support::{
-    haar_su4_matrix, partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
+    partition_rows, rand_sum_real, unpinned_partitions, zz_rotation, KeepAll,
 };
 use paulistrings::{
     propagate_with, Circuit, Direction, LayerScratch, PauliString, PhaseStats, PropagateOptions,
@@ -293,6 +293,7 @@ fn the_unpartitioned_engine_reports_no_exchange() {
 #[test]
 fn device_stats_land_on_their_fields() {
     use paulistrings::gpu::{GpuLayerOptions, GpuPartitionedSum, GpuScatterOptions};
+    use paulistrings::test_support::haar_su4_matrix;
     use paulistrings::{ApproxTopN, PartitionConfig, Placement};
     paulistrings::require_cuda!();
     let gen = PauliString::<1> { x: [0b0101], z: [0b1010] };

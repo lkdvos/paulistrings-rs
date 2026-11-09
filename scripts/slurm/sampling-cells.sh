@@ -8,6 +8,9 @@
 : "${SEED:=1}"
 : "${THRESHOLDS:=2.5e-5 1e-5}"
 : "${CELL_BOUND:=2400}"
+# The row-choice sweep (SWEEP=rows): split rows to compare, the partition count of the split, and NCCL_P2P_LEVEL values to repeat its collapse and threshold cells under.
+: "${ROWS:=cut quadrant xparity:2}"
+: "${P2P_LEVELS:=}"
 
 samples_of() { python3 -c "import sys; print(int(float(sys.argv[1]) / 4))" "$1"; }
 
@@ -47,6 +50,41 @@ run_sweep() {
     for eps in $THRESHOLDS; do
         cell "reference kicked-ising threshold $eps" launch_one --model kicked-ising --steps 20 --threshold "$eps"
         cell "split kicked-ising threshold $eps" launch_all --model kicked-ising --steps 20 --threshold "$eps"
+    done
+}
+
+# run_rows_sweep <partitions>: one-device references, then each split cell under every row choice in ROWS (quadrant only at 4 partitions, x-parity rows only on kicked Ising, whose site-centred light cone they balance),
+# under the global ApproxTopN cap and its per-partition share (PerPartition(ApproxTopN(cap / P)), no layer collective), the thresholds and the collapse.
+run_rows_sweep() {
+    local partitions=$1 rows eps level share
+    share=$(python3 -c "import sys; print(int(float(sys.argv[1]) / int(sys.argv[2])))" "$REF_CACHE" "$partitions")
+    local collapse=(--collapse --cache "$REF_CACHE" --samples "$(samples_of "$REF_CACHE")" --seed "$SEED")
+    cell "reference kicked-ising approx-topn $REF_CACHE" launch_one --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
+    cell "reference kicked-ising collapse $REF_CACHE" launch_one --model kicked-ising --steps 20 "${collapse[@]}"
+    for eps in $THRESHOLDS; do
+        cell "reference kicked-ising threshold $eps" launch_one --model kicked-ising --steps 20 --threshold "$eps"
+    done
+    cell "reference tfim approx-topn $REF_CACHE" launch_one --model tfim --steps 10 --approx-topn "$REF_CACHE"
+    for rows in $ROWS; do
+        [ "$rows" = quadrant ] && [ "$partitions" -ne 4 ] && continue
+        cell "split kicked-ising approx-topn $REF_CACHE rows $rows" launch_all --rows "$rows" --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
+        cell "split kicked-ising partition-approx-topn $share rows $rows" launch_all --rows "$rows" --model kicked-ising --steps 20 --partition-approx-topn "$share"
+        cell "split kicked-ising collapse $REF_CACHE rows $rows" launch_all --rows "$rows" --model kicked-ising --steps 20 "${collapse[@]}"
+        for eps in $THRESHOLDS; do
+            cell "split kicked-ising threshold $eps rows $rows" launch_all --rows "$rows" --model kicked-ising --steps 20 --threshold "$eps"
+        done
+        case "$rows" in xparity:*|zparity:*) continue ;; esac
+        cell "split tfim approx-topn $REF_CACHE rows $rows" launch_all --rows "$rows" --model tfim --steps 10 --approx-topn "$REF_CACHE"
+        cell "split tfim partition-approx-topn $share rows $rows" launch_all --rows "$rows" --model tfim --steps 10 --partition-approx-topn "$share"
+    done
+    for level in $P2P_LEVELS; do
+        export NCCL_P2P_LEVEL=$level
+        for rows in $ROWS; do
+            [ "$rows" = quadrant ] && [ "$partitions" -ne 4 ] && continue
+            cell "split kicked-ising collapse $REF_CACHE rows $rows NCCL_P2P_LEVEL=$level" launch_all --rows "$rows" --model kicked-ising --steps 20 "${collapse[@]}"
+            cell "split kicked-ising threshold 1e-5 rows $rows NCCL_P2P_LEVEL=$level" launch_all --rows "$rows" --model kicked-ising --steps 20 --threshold 1e-5
+        done
+        unset NCCL_P2P_LEVEL
     done
 }
 

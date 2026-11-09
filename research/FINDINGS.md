@@ -492,7 +492,7 @@ Open levers, by estimated gain: fewer host round trips (taken for joins and `App
 
 A permutation table (one emitting entry per pattern, no colliding outputs, no received entries) scatters rows directly (`k_permute_*`), with no sort, arena or compaction.
 **−62.7% to −66.9%** wall on `cnot` from 1e5 to 1.6e7 (5/5); `heavyhex_step` (rotations only) is flat as the control.
-Open: Clifford layers with received entries, and an emitter count replacing `k_permute_count`'s survivor pass.
+Open: an emitter count replacing `k_permute_count`'s survivor pass; Clifford layers with received entries scatter them (§Device groups take runs, and a remote Clifford layer scatters its received rows).
 
 ### Rotation layers join instead of sorting
 
@@ -679,6 +679,24 @@ Against 32 CPU threads in the same session (`--backend cpu --threads 32`): TFIM 
 Grown by half again without a ceiling, both alternating output columns ratcheted to about `3n` under `ApproxTopN(n)`, and the exact fallback reallocated while the old spare was still held, so kicked Ising `--approx-topn 2e8` failed on a 19.2 GB request.
 A join's output now grows by half again only up to twice the policy's run length limit (`n` for `ApproxTopN`), and empty columns release their term columns before growing (`DeviceColumns::reserve`).
 Peak device memory (`nvidia-smi` every 200 ms, A6000 48 GB): kicked Ising `1e8` **25 352 → 21 864 MiB**, `2e8` out of memory → 42 760 MiB (17.3 s), TFIM 16×16 `1e8` **45 578 → 36 106 MiB** (211 s), about 4.5 × n × bytes per term; TFIM `1.5e8` still fails on a 20.1 GB request, as two `2n` output columns alone take 48 GB at 80 bytes a term.
+
+### Device groups take runs, and a remote Clifford layer scatters its received rows
+
+A group under `ApproxTopN` or `CollapseSample` agrees its total length once per call and admits runs against that bound, which every device carries through its layers by their fanouts and takes from each collective pass; a pass the bound proves a no-op issues no collective (`engine/driver.rs`, `DevicePartition::agreed_len`).
+A remote permutation layer whose rows arrive in one chunk appends them after each bucket's local rows instead of running the sorting fused layer: kicked Ising `--approx-topn 1e7` over four partitions, a crossing bond **13.3 → 5.2 ms**.
+Four partitions of ccqlin038's A6000 against `gpu@ee4e77aa` (`sampling_bench` screen profile, JCC flag, f64, interleaved, 3 rounds, SM 1845–1905 MHz, memory 7601 MHz), with layer passes of the traced run:
+
+| cell | base (s) | now (s) | Δ | passes |
+|---|---|---|---|---|
+| kicked Ising `--approx-topn 1e6` | 2.490 / 2.520 / 2.629 | 1.434 / 1.305 / 1.447 | **−42 / −48 / −45%** | 5420 → 2602 |
+| kicked Ising `--approx-topn 1e7` | 12.72 / 12.70 / 12.75 | 6.60 / 6.70 / 6.72 | **−48 / −47 / −47%** | 5420 → 2565 |
+| kicked Ising `--threshold 2.5e-5` | 12.59 / 12.55 / 12.68 | 7.31 / 7.35 / 7.35 | **−42 / −41 / −42%** | 3060 → 840 |
+| kicked Ising `--collapse --cache 1e7` | 7.15 / 7.46 / 7.26 | 4.69 / 4.87 / 4.79 | **−35 / −35 / −34%** | 5420 → 1036 |
+| TFIM 16×16 `--approx-topn 1e6` | 6.36 / 6.16 / 6.19 | 6.15 / 6.17 / 6.28 | −3 / +0 / +1% | 9920 → 9038 |
+
+One device: thresholds and the TFIM flat, kicked Ising `--approx-topn` −1 to −2%, the collapse cell −45% (§A device rotation run without a filter applies its layers one by one); threshold readouts identical to 12 digits.
+At the cap a rotation layer's pass cannot be deferred (§No exact run rule admits `ApproxTopN` rotation runs at the cap), so the TFIM keeps a pass per layer; on kicked Ising `1e7` the passes after single `R_X` layers are now 1.9 of 6.7 s, much of it the partitions waiting for the fullest one under cut rows.
+Rejected: lagging a group member's length read-backs as a lone device's are, an illegal device address on every split cell; the export sizes from exact lengths.
 
 ### NCCL exchange between MPI ranks
 

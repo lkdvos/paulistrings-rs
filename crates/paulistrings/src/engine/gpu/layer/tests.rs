@@ -214,6 +214,52 @@ fn join_output_feeds_every_path<const W: usize>(
     }
 }
 
+/// A join that counts its output for the `ApproxTopN` pass after it leaves the host's `[len, bins…]` of that output, magnitudes spread over 40 octaves and every bucket's rows over many 16-bit bins.
+fn a_join_counts_its_output_histogram_as_the_host<const W: usize>(num_qubits: usize) {
+    use crate::test_support::spread_magnitudes;
+    use crate::truncation::builtin::octave_histogram;
+    let mut generator = PauliString::<W> { x: [0; W], z: [0; W] };
+    generator.x[0] |= 2;
+    let rotation = PauliRotation::new(generator, 0.37);
+    let base = spread_magnitudes(&rand_sum::<W>(20_000, num_qubits, 0x4157), 40, 0x4158);
+    let input = with_rotation_partners(&base, &generator, 5_000, 0x4159).with_hash(Gf2Hash::new(
+        num_qubits,
+        6,
+        crate::pauli_sum::storage::DEFAULT_HASH_SEED,
+    ));
+    let mut sum = GpuSum::from_host(&input, 0).expect("upload");
+    let mut scratch = LayerScratch::new(&sum, GpuLayerOptions::default()).expect("scratch");
+    scratch.begin(&crate::BuiltinTruncation::ApproxTopN(usize::MAX), true);
+    let prepared = rotation.prepare(sum.hash(), false).expect("prepared");
+    let plan = PartitionPlan::new(
+        &prepared,
+        &crate::pauli_sum::hash::PartitionRows::<W>::none(num_qubits),
+        0,
+    );
+    let layer =
+        DeviceLayer { prepared: &prepared, plan: &plan, keep: &KeepProgram::KEEP, target_bits: 0 };
+    apply_layer_device(&mut sum, &layer, &mut scratch, &InProcessTransport::group(1)[0])
+        .expect("layer");
+    assert!(scratch.record.joined && scratch.histogram_fresh, "the layer joins and counts");
+    let got = sum.stream.clone_dtoh(&scratch.histogram).expect("histogram");
+    let output = sum.to_host().expect("download");
+    let want: Vec<u64> = octave_histogram(&output).iter().map(|&count| u64::from(count)).collect();
+    assert_eq!(got[0] as usize, output.len(), "W={W}: term count");
+    assert_eq!(got[1..], want[..], "W={W}: bins");
+}
+
+#[test]
+fn a_join_counts_its_output_histogram_as_the_host_w1() {
+    crate::require_cuda!();
+    a_join_counts_its_output_histogram_as_the_host::<1>(16);
+}
+
+#[test]
+fn a_join_counts_its_output_histogram_as_the_host_w2() {
+    crate::require_cuda!();
+    a_join_counts_its_output_histogram_as_the_host::<2>(100);
+}
+
 #[test]
 fn join_output_feeds_every_path_w1() {
     crate::require_cuda!();

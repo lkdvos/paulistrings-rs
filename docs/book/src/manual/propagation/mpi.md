@@ -199,7 +199,7 @@ The field list is under [`PartitionStats`](../../library/propagate.md#partitions
 ## Limits
 
 - **Exact `topn` is unavailable**, as in any partitioned run: choosing the `n`-th largest magnitude across ranks is a distributed selection.
-  `truncation.approx_topn(n)` all-reduces its octave histogram and retains exactly the set a single-process run would have.
+  `truncation.approx_topn(n)` all-reduces its magnitude histogram and retains exactly the set a single-process run would have.
   `truncation.partition_topn(n)` and `partition_approx_topn(n)` hold each rank to `n` terms with no collective.
 - **A replicated input caps the sum at what one rank can build.** Reaching the capacity the ranks together have needs a driver that ingests already distributed; the scatter itself is a local filter and costs nothing extra.
 - **Homogeneous groups only.** The wire carries raw host bytes, so a mixed-architecture job, or one mixing compile-time width tiers across ranks, is silently wrong.

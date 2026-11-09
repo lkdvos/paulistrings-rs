@@ -879,7 +879,7 @@ fn clifford_circuits_agree_across_partitions_and_local_layers_permute() {
     }
 }
 
-/// One cutting layer at `P = 2, 4`: exactly `n` terms in total, and every term above the boundary octave agrees with the host's.
+/// One cutting layer at `P = 2, 4`: exactly `n` terms in total, and every term above the boundary bin agrees with the host's.
 #[test]
 fn approx_top_n_keeps_exactly_n_across_device_partitions() {
     require_cuda!();
@@ -888,7 +888,7 @@ fn approx_top_n_keeps_exactly_n_across_device_partitions() {
     let mut circuit = Circuit::<1>::new(nq);
     circuit.push(zz_rotation::<1>(0, 9, 0.3));
     let untruncated = propagate(&circuit, sum.clone(), &KeepAll, Direction::Forward);
-    let octave = |c: num_complex::Complex64| c.norm_sqr().to_bits() >> 52;
+    let octave = paulistrings::test_support::octave_rank;
     for n in [1usize, 777, 1_500, 2_999] {
         let mut octaves: Vec<u64> = untruncated.iter().map(|(_, _, c)| octave(c)).collect();
         octaves.sort_unstable_by(|a, b| b.cmp(a));

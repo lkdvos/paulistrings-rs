@@ -46,6 +46,7 @@ pub(super) use fused::{
     arena_batches, fused_variant, launch_fused, FusedOut, FusedReceived, FusedTable,
 };
 use join::join_layer;
+pub(crate) use join::JOIN_MAX_SHARED_BYTES;
 pub(crate) use options::{gpu_desired_bits, prepared_fanout};
 pub use options::{GpuLayerOptions, DEFAULT_ARENA_BYTES, DEFAULT_RECORDS_PER_BLOCK};
 pub(crate) use rotation_run::apply_shared_bytes as rotation_run_shared_bytes;

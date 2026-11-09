@@ -238,15 +238,18 @@ pub(crate) fn boundary_filter<const W: usize, C: Coefficient>(
     }
 }
 
-/// Bins of [`ApproxTopN`]'s histogram, one per `f64` exponent.
-pub(crate) const APPROX_BINS: usize = 2048;
+/// Mantissa bits of `|c|²` an [`approx_bin`] resolves below its exponent, so a bin spans `1/2^APPROX_SUB_BITS` of an octave: research/FINDINGS.md §`ApproxTopN` bins are quarter-octaves.
+pub(crate) const APPROX_SUB_BITS: u32 = 2;
 
-/// Retain `n` terms, cutting at an octave of `|c|²` instead of selecting exactly.
+/// Bins of [`ApproxTopN`]'s histogram, `2^APPROX_SUB_BITS` per `f64` exponent.
+pub(crate) const APPROX_BINS: usize = 2048 << APPROX_SUB_BITS;
+
+/// Retain `n` terms, cutting at a quarter-octave bin of `|c|²` instead of selecting exactly.
 ///
-/// Every octave of `|c|²` that fits whole is kept from the top down; the first that does not fit, the boundary octave, contributes as many terms as fit in `n`, the first in bucket order (rank order across partitions).
+/// `|c|²` is binned by its exponent and top two mantissa bits; every bin that fits whole is kept from the top down, and the first that does not fit, the boundary bin, contributes as many terms as fit in `n`, the first in bucket order; across partitions each takes a share of them in proportion to its boundary-bin count.
 /// A sum of more than `n` terms keeps exactly `n` (fewer only if coefficients are NaN), and `n == 0` clears.
-/// Which boundary-octave terms survive is not a semantic promise.
-/// Partition-exact: a split sum's octave histogram is the sum of its partitions', so every partition cuts at the boundary one partition would.
+/// Which boundary-bin terms survive is not a semantic promise.
+/// Partition-exact: a split sum's histogram is the sum of its partitions', so every partition cuts at the boundary one partition would.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ApproxTopN(
     /// The retained term count.
@@ -260,32 +263,33 @@ pub(crate) enum EdgeDecision {
     KeepAll,
     /// `n == 0`.
     Clear,
-    /// Keep every term above octave `bin` and `quota` terms of octave `bin`, `kept_above + quota == n` in all.
+    /// Keep every term above bin `bin` and `quota` terms of bin `bin`, `kept_above + quota == n` in all.
     Boundary {
-        /// The boundary octave, `norm_sqr().to_bits() >> 52`.
+        /// The boundary bin, an [`approx_bin`].
         bin: usize,
-        /// Terms above the boundary octave, across the whole sum.
+        /// Terms above the boundary bin, across the whole sum.
         kept_above: usize,
-        /// Boundary-octave terms kept, across the whole sum.
+        /// Boundary-bin terms kept, across the whole sum.
         quota: usize,
     },
 }
 
-/// The octave of `|c|²`, [`APPROX_BINS`] wide.
-pub(crate) fn octave(norm_sqr: f64) -> usize {
-    (norm_sqr.to_bits() >> 52) as usize
+/// [`ApproxTopN`]'s bin of `|c|²`: its exponent and top [`APPROX_SUB_BITS`] mantissa bits, which order bins as the values in them; `k_cut` and `approx_bin` in the device prelude bin alike.
+/// A NaN with its sign bit set shares the top bin.
+pub(crate) fn approx_bin(norm_sqr: f64) -> usize {
+    ((norm_sqr.to_bits() >> (52 - APPROX_SUB_BITS)) as usize).min(APPROX_BINS - 1)
 }
 
-/// `|c|²` against the boundary octave `bin`; a NaN is below every octave.
+/// `|c|²` against the boundary bin `bin`; a NaN is below every bin.
 pub(crate) fn classify_octave(norm_sqr: f64, bin: usize) -> core::cmp::Ordering {
     if norm_sqr.is_nan() {
         core::cmp::Ordering::Less
     } else {
-        octave(norm_sqr).cmp(&bin)
+        approx_bin(norm_sqr).cmp(&bin)
     }
 }
 
-/// Population of each octave of `|c|²`, binned by the exponent bits `norm_sqr().to_bits() >> 52`, [`APPROX_BINS`] long.
+/// Population of each [`approx_bin`] of `|c|²`, [`APPROX_BINS`] long.
 pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(sum: &PauliSum<W, C>) -> Vec<u32> {
     debug_assert!(sum.len() <= u32::MAX as usize, "len exceeds bin counters");
     let num_buckets = sum.num_buckets();
@@ -297,7 +301,7 @@ pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(sum: &PauliSum<W,
             let mut h = vec![0u32; APPROX_BINS];
             for b in (num_buckets * t / tasks)..(num_buckets * (t + 1) / tasks) {
                 for c in sum.bucket(b).2 {
-                    h[octave(c.norm_sqr())] += 1;
+                    h[approx_bin(c.norm_sqr())] += 1;
                 }
             }
             h
@@ -311,17 +315,17 @@ pub(crate) fn octave_histogram<const W: usize, C: Coefficient>(sum: &PauliSum<W,
         .unwrap_or_else(|| vec![0u32; APPROX_BINS])
 }
 
-/// The boundary octave [`ApproxTopN`] cuts at, from a histogram of the whole sum, local or all-reduced.
+/// The boundary bin [`ApproxTopN`] cuts at, from a histogram of the whole sum, local or all-reduced.
 pub(crate) fn octave_edge<Count>(hist: &[Count], total_len: usize, n: usize) -> EdgeDecision
 where
     Count: Copy + Into<u64>,
 {
     debug_assert_eq!(hist.len(), APPROX_BINS, "octave_edge: wrong histogram size");
     octave_edge_within(hist, 0, 0, total_len, n)
-        .expect("a histogram of more than n terms overflows n at some octave")
+        .expect("a histogram of more than n terms overflows n at some bin")
 }
 
-/// [`octave_edge`] from the counts of octaves `base..base + bins.len()` and the `above` terms above them; `None` when the boundary lies outside `bins`.
+/// [`octave_edge`] from the counts of bins `base..base + bins.len()` and the `above` terms above them; `None` when the boundary lies outside `bins`.
 pub(crate) fn octave_edge_within<Count>(
     bins: &[Count],
     base: usize,
@@ -353,7 +357,7 @@ where
     None
 }
 
-/// Apply an [`EdgeDecision`] to one sum or partition, keeping `local_quota` boundary-octave terms.
+/// Apply an [`EdgeDecision`] to one sum or partition, keeping `local_quota` boundary-bin terms.
 pub(crate) fn retain_at_edge<const W: usize, C: Coefficient>(
     sum: &mut PauliSum<W, C>,
     edge: EdgeDecision,
@@ -368,8 +372,9 @@ pub(crate) fn retain_at_edge<const W: usize, C: Coefficient>(
     }
 }
 
-/// This partition's share of a boundary quota: what is left of `quota` after the lower ranks' boundary terms, at most `local_count`.
+/// This partition's share of a boundary quota, in proportion to its share of the boundary terms: [`proportional_share`] of the all-reduced counts.
 ///
+/// A rank-order split biases readouts wherever ranks hold systematically different strings, as cut rows do (research/FINDINGS.md §Resolved: cut-row `ApproxTopN` readouts kept an offset).
 /// Above one partition, one `allreduce_sum_u64` of a length-`P` vector holding each rank's `local_count` in its slot; every rank calls it with the same `quota`.
 pub(crate) fn local_boundary_quota(
     collectives: &dyn Collectives,
@@ -383,8 +388,30 @@ pub(crate) fn local_boundary_quota(
     let mut counts = vec![0u64; collectives.size() as usize];
     counts[rank] = local_count as u64;
     collectives.allreduce_sum_u64(&mut counts);
-    let below: u64 = counts[..rank].iter().sum();
-    (quota as u64).saturating_sub(below).min(local_count as u64) as usize
+    proportional_share(&counts, quota as u64, rank) as usize
+}
+
+/// Rank `rank`'s part of `quota` split over `counts` by largest remainder: the floor of `quota · count / total`, plus one for the ranks with the largest remainders, ties to the lower rank, until the parts add up to `min(quota, total)` exactly.
+///
+/// A pure function of its arguments, so every rank derives the same split from the same reduced counts; no part exceeds its count.
+pub(crate) fn proportional_share(counts: &[u64], quota: u64, rank: usize) -> u64 {
+    let total: u128 = counts.iter().map(|&c| u128::from(c)).sum();
+    let quota = u128::from(quota).min(total);
+    if quota == total {
+        return counts[rank];
+    }
+    let scaled = |r: usize| u128::from(counts[r]) * quota;
+    let floors: u128 = (0..counts.len()).map(|r| scaled(r) / total).sum();
+    let extras = quota - floors;
+    let remainder = scaled(rank) % total;
+    let ahead = (0..counts.len())
+        .filter(|&s| {
+            let other = scaled(s) % total;
+            other > remainder || (other == remainder && s < rank)
+        })
+        .count() as u128;
+    let extra = u128::from(remainder > 0 && ahead < extras);
+    (scaled(rank) / total + extra) as u64
 }
 
 /// [`ApproxTopN`]'s layer pass over a whole sum, returning the decision it applied and the length it decided on.
@@ -421,7 +448,7 @@ pub(crate) fn approx_top_n_pass<const W: usize, C: Coefficient>(
     let histogram = octave_histogram(local);
 
     // `u64`, since `P` partitions' `u32` bins can overflow a `u32`.
-    let mut packed = [0u64; 1 + APPROX_BINS];
+    let mut packed = vec![0u64; 1 + APPROX_BINS];
     packed[0] = local.len() as u64;
     for (slot, &count) in packed[1..].iter_mut().zip(histogram.iter()) {
         *slot = u64::from(count);

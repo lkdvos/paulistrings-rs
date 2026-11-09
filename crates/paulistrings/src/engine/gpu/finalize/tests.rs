@@ -321,6 +321,59 @@ fn the_device_decided_cut_keeps_the_hosts_terms() {
     device_decided_cut_matches::<2>();
 }
 
+/// `|c|²` of `sum`'s terms in key order, since a device cut reorders a bucket, rounded clear of the ulp `√v` squared can carry.
+fn norm_sqrs(sum: &PauliSum<1>) -> Vec<f64> {
+    let mut terms: Vec<(u64, f64)> = sum.iter().map(|(x, _, c)| (x[0], c.norm_sqr())).collect();
+    terms.sort_unstable_by_key(|&(x, _)| x);
+    terms.into_iter().map(|(_, v)| (v * 1e9).round() / 1e9).collect()
+}
+
+/// The device bins as the host does inside one octave: a lone device keeps the bins above a quarter-octave boundary whole, on the hand-placed fixture and on a sum spread uniformly over one octave.
+#[test]
+fn a_lone_device_cuts_at_a_quarter_bin_as_the_host() {
+    crate::require_cuda!();
+    use crate::test_support::{one_octave_sum, sum_of_norm_sqrs, QUARTER_BIN_NORM_SQRS};
+    let fixture = sum_of_norm_sqrs(&QUARTER_BIN_NORM_SQRS, 0);
+    for (n, want) in
+        [(5, vec![1.3, 1.6, 1.9, 1.8, 2.0]), (8, vec![1.0, 1.1, 1.3, 1.4, 1.6, 1.9, 1.8, 2.0])]
+    {
+        let (mut dev, mut scratch) = device(&fixture);
+        approx_top_n_device(Some((&mut dev, &mut scratch)), n, &SoloTransport).expect("cut");
+        assert_eq!(norm_sqrs(&dev.to_host().expect("download")), want, "n={n}");
+    }
+    let spread = one_octave_sum::<1>(20_000, 64, 0xCE47);
+    for n in [2_000usize, 7_500, 12_345, 19_000] {
+        let (mut dev, mut scratch) = device(&spread);
+        approx_top_n_device(Some((&mut dev, &mut scratch)), n, &SoloTransport).expect("cut");
+        let mut want = spread.clone();
+        crate::ApproxTopN(n).finalize_layer(&mut want);
+        assert_eq!(dev.to_host().expect("download").to_arrays(), want.to_arrays(), "n={n}");
+    }
+}
+
+/// A device group splits a quarter-bin boundary as the host group does: the hand-computed shares of `a_group_splits_a_quarter_bin_boundary_in_proportion`.
+#[test]
+fn a_device_group_splits_a_quarter_bin_boundary_in_proportion() {
+    crate::require_cuda!();
+    use crate::engine::partitioned::in_process::on_every_rank;
+    use crate::test_support::sum_of_norm_sqrs;
+    let parts = [
+        sum_of_norm_sqrs(&[1.9, 1.3, 1.0, 1.1], 0),
+        sum_of_norm_sqrs(&[1.8, 1.4, 1.2, 1.6, 0.9, 2.0], 16),
+    ];
+    for (n, want) in [
+        (5, vec![vec![1.9, 1.3], vec![1.8, 1.6, 2.0]]),
+        (8, vec![vec![1.9, 1.3, 1.0], vec![1.8, 1.4, 1.2, 1.6, 2.0]]),
+    ] {
+        let got = on_every_rank(2, |transport| {
+            let (mut dev, mut scratch) = device(&parts[transport.rank() as usize]);
+            approx_top_n_device(Some((&mut dev, &mut scratch)), n, transport).expect("cut");
+            norm_sqrs(&dev.to_host().expect("download"))
+        });
+        assert_eq!(got, want, "n={n}");
+    }
+}
+
 /// A group member's cut keeps the pre-cut longest bucket as a bound, so a join at the bucket-bit limit whose bound is past `MAX_BUCKET_LEN` rescans the lengths instead of refusing.
 fn a_join_after_a_cut_rescans_the_longest_bucket<const W: usize>() {
     use crate::channel::Prepare;
@@ -365,4 +418,33 @@ fn a_join_after_a_cut_rescans_the_longest_bucket_w1() {
 fn a_join_after_a_cut_rescans_the_longest_bucket_w2() {
     crate::require_cuda!();
     a_join_after_a_cut_rescans_the_longest_bucket::<2>();
+}
+
+/// A device group's cut splits the boundary octave in proportion to each partition's share of it, on cut rows thinned unevenly.
+fn a_device_group_splits_the_boundary_in_proportion<const W: usize>() {
+    use crate::engine::partitioned::in_process::on_every_rank;
+    use crate::test_support::{assert_proportional_boundary_cut, skewed_cut_split};
+    let parts = skewed_cut_split(&tie_heavy_sum::<W>(8_000, 64 * W, 0xC07));
+    let len: usize = parts.iter().map(PauliSum::len).sum();
+    for n in [1usize, 300, len / 3, len / 2] {
+        let got = on_every_rank(parts.len() as u32, |transport| {
+            let (mut dev, mut scratch) = device(&parts[transport.rank() as usize]);
+            approx_top_n_device(Some((&mut dev, &mut scratch)), n, transport).expect("cut");
+            dev.assert_invariants_device().expect("invariants");
+            dev.to_host().expect("download")
+        });
+        assert_proportional_boundary_cut(&parts, &got, n, &format!("W={W} n={n}"));
+    }
+}
+
+#[test]
+fn a_device_group_splits_the_boundary_in_proportion_w1() {
+    crate::require_cuda!();
+    a_device_group_splits_the_boundary_in_proportion::<1>();
+}
+
+#[test]
+fn a_device_group_splits_the_boundary_in_proportion_w2() {
+    crate::require_cuda!();
+    a_device_group_splits_the_boundary_in_proportion::<2>();
 }

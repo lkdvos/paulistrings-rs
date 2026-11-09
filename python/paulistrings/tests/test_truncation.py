@@ -3,9 +3,9 @@
 Pin the policy semantics by running ``propagate`` through circuits whose
 output coefficients straddle the cutoff, and check both the simple factories
 and the ``And`` / ``Or`` combinators thread through. ``topn`` and
-``approx_topn`` keep exactly ``n`` — whole octaves (or magnitudes) above the
-boundary, the boundary filled in storage order — pinned against hand-computed
-octave arithmetic and against ``topn`` on the same sums.
+``approx_topn`` keep exactly ``n`` — whole quarter-octave bins (or magnitudes)
+above the boundary, the boundary filled in storage order — pinned against
+hand-computed bin arithmetic and against ``topn`` on the same sums.
 
 Note: the truncation policy only fires inside the engine's merge / finalize
 passes, which only run when at least one channel is in the circuit. These
@@ -83,7 +83,7 @@ def _mags(sum_):
 
 def test_approx_topn_matches_topn_on_a_well_separated_spectrum():
     # Magnitudes 1, 1/4, 1/16, 1/64 square to 1, 1/16, 1/256, 1/4096 — one per
-    # octave of |c|², four octaves apart — so every prefix is an octave
+    # octave of |c|², four octaves apart — so every prefix is a bin
     # boundary and the histogram threshold lands exactly where TopN's does.
     s = PauliSum.from_strings(
         {"II": 1.0, "XI": 0.25, "ZI": 0.0625, "XX": 0.015625},
@@ -97,8 +97,8 @@ def test_approx_topn_matches_topn_on_a_well_separated_spectrum():
 
 
 # |c|² of 1.0, 0.9, 0.7, 0.6, 0.5 is 1.0, 0.81, 0.49, 0.36, 0.25: the top two
-# get an octave each ([1, 2) and [0.5, 1)) and the bottom three share [0.25, 0.5)
-# without being a tie group — which is exactly where the two policies part ways.
+# get an octave each ([1, 2) and [0.5, 1)) and the bottom three share the octave
+# [0.25, 0.5) in its quarter bins [0.4375, 0.5), [0.3125, 0.375) and [0.25, 0.3125).
 _CLUSTERED = {"II": 1.0, "XI": 0.9, "ZI": 0.7, "XX": 0.6, "YI": 0.5}
 
 
@@ -109,18 +109,16 @@ def test_approx_topn_keeps_exactly_n(n):
     assert len(out.coefficients()) == min(n, len(_CLUSTERED))
 
 
-def test_approx_topn_fills_the_boundary_octave():
-    # n = 4, hand-computed on `_CLUSTERED`. The octaves from the top hold 1, 1
-    # and 3 terms: the top two are kept whole, and two of the three in the
-    # boundary octave [0.25, 0.5) of |c|² fill the rest, whichever come first in
-    # bucket order — not necessarily 0.7 and 0.6, which TopN(4) keeps.
+def test_approx_topn_keeps_whole_quarter_bins_above_the_boundary():
+    # n = 4, hand-computed on `_CLUSTERED`. The bins from the top hold one term
+    # each, so 0.7 and 0.6 are kept whole and 0.5 is cut, as TopN(4) cuts it,
+    # where an octave cut would keep two of the three in [0.25, 0.5) in bucket order.
     s = PauliSum.from_strings(_CLUSTERED, num_qubits=2)
     approx = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(4))
     exact = propagated(s, _probe_circuit(2), policy=truncation.topn(4))
     mags = _mags(approx)
     assert len(mags) == 4
-    assert mags[:2] == pytest.approx([1.0, 0.9])
-    assert all(m in (pytest.approx(0.7), pytest.approx(0.6), pytest.approx(0.5)) for m in mags[2:])
+    assert mags == pytest.approx([1.0, 0.9, 0.7, 0.6])
     assert _mags(exact) == pytest.approx([1.0, 0.9, 0.7, 0.6])
 
 
@@ -145,14 +143,15 @@ def test_topn_splits_a_tie_group_to_keep_exactly_n():
 
 
 def test_approx_topn_keeps_n_of_a_single_octave_sum():
-    # 1.0, 1.1, 1.2, 1.3 square into [1, 2) together: one octave, so three of
-    # the four survive, the first three in bucket order.
+    # 1.0, 1.1, 1.2, 1.3 square into the octave [1, 2), the first two into its
+    # bin [1, 1.25): 1.3 and 1.2 survive and one of 1.0 and 1.1, the first in bucket order.
     s = PauliSum.from_strings(
         {"II": 1.0, "XI": 1.1, "ZI": 1.2, "XX": 1.3},
         num_qubits=2,
     )
     out = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(3))
     assert len(out.coefficients()) == 3
+    assert _mags(out)[:2] == pytest.approx([1.3, 1.2])
     kept = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(4))
     assert len(kept.coefficients()) == 4
 
@@ -163,7 +162,7 @@ def test_approx_topn_composes_with_the_operators():
         num_qubits=2,
     )
     # And: the weight cutoff drops XX per term, then approx_topn(2) cuts the
-    # rest to the top two octaves.
+    # rest to the top two bins.
     out = propagated(s, _probe_circuit(2), policy=truncation.approx_topn(2) & truncation.weight(1))
     assert _mags(out) == pytest.approx([1.0, 0.25])
 

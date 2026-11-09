@@ -332,6 +332,38 @@ Each coset-loop worker now sums the counts it takes (`WindowTotals`), and a cut 
 Code A/B against `727d58b2` on ccqlin038 (shared, load 3–28, abba, 4 pairs each), 24-qubit `tfim_step` at 32 threads: finalize per layer **−72%** at `atopn:1e7` P = 1 (0.57 → 0.16 ms, wall −2.1%, 4/4), **−69%** at `atopn:2e6` P = 1 (0.058 → 0.018 ms, wall no consistent change), **−21%** at `atopn:2e6` P = 2 (0.27 → 0.21 ms, the all-reduce wait remains) and **−76%** at `patopn:2e6` P = 2 (0.058 → 0.014 ms); the coset loop shows no consistent change in any cell.
 Quiet-node A/B pending.
 
+### `ApproxTopN` bins are quarter-octaves
+
+`approx_bin` is the exponent of `|c|²` and its top two mantissa bits (`APPROX_SUB_BITS`), on the host, in `k_join`, `k_octave_histogram` and `k_cut` alike, so the boundary bin spans at most a factor 1.25 in `|c|²` and every dropped term lies within that factor of every kept one.
+The boundary bin's quota is taken in bucket order, a prefix of a GF(2)-linear hash that correlates with the strings' structure, so an octave-wide boundary bin biased readouts on one partition as much as across partitions.
+Host `PartitionedSum`, TFIM magnetization at step 10 and kicked Ising `Z₆₂` at step 20, `ApproxTopN(n)` with `m` bins per octave on one partition / four under cut rows / four under seeded rows, against exact `TopN(n)` on one (12×12 the mean over four hash seeds, whose spread is about ±0.002):
+
+| workload | `TopN` | `m = 1` | `m = 2` | `m = 4` | `m = 8` | `m = 16` |
+|---|---|---|---|---|---|---|
+| TFIM 12×12, 1e5 | 0.3374 | 0.3156 / 0.3336 / 0.3151 | 0.3288 / 0.3363 / 0.3290 | 0.3344 / 0.3358 / 0.3336 | 0.3324 / 0.3328 / 0.3325 | 0.3349 / 0.3349 / 0.3351 |
+| TFIM 16×16, 1e5 | 0.2423 | 0.2006 / 0.2070 / 0.2019 | 0.2315 / 0.2337 / 0.2310 | 0.2470 / 0.2459 / 0.2487 | 0.2413 / 0.2465 / 0.2428 | 0.2423 / 0.2433 / 0.2452 |
+| TFIM 16×16, 1e6 | 0.2911 | 0.2892 / 0.2970 / 0.2877 | 0.2894 / 0.2885 / 0.2905 | 0.2911 / 0.2919 / 0.2925 | 0.2933 / 0.2933 / 0.2921 | 0.2915 / 0.2926 / 0.2922 |
+| kicked Ising, 1e6 | 0.1532 | 0.1544 / 0.1536 / 0.1543 | 0.1547 / 0.1533 / 0.1544 | 0.1528 / 0.1538 / 0.1536 | 0.1548 / 0.1535 / 0.1540 | 0.1532 / 0.1538 / 0.1529 |
+| boundary bin, share of `n` (16×16, 1e6) | | 8.7% | 5.0% | 2.5% | 1.3% | 0.7% |
+
+Kicked Ising at `1e7` on one partition reads 0.1639 at `m = 1` and 0.1653 at `m = 4` against `TopN`'s 0.1662.
+From `m = 4` up every layout agrees with the others within the seed spread and with `TopN` within 0.005, and `m = 8` moves no readout further, so `m = 4` stands: `m = 8` would double `k_join`'s shared histogram and put `k_octave_histogram`'s past the 48 KiB static limit.
+Centred means the kept part of the boundary bin is a magnitude-blind sample of it, kept and dropped boundary terms having the same mean `|c|²`, so the cut matches `TopN`'s to first order in the bin width, with the effective cutoff wherever `TopN`'s falls inside the bin, at its centre on average (`approx_top_n_keeps_a_centred_sample_of_the_boundary_bin`).
+On the 12×12 `1e5` trajectory bucket order is nearly so: kept and dropped boundary terms sit at 0.431 and 0.462 of the bin at `m = 1`, 0.490 and 0.530 at `m = 4`, 0.494 and 0.515 at `m = 8`, an offset of 0.031, 0.010 and 0.003 of an octave.
+Rejected: rounding the boundary bin to its nearer edge, keeping all of it or none: no choice is arbitrary, so readouts are identical across hash seeds and layouts, but a pass keeps `n` give or take half the bin and 12×12 `1e5` reads 0.3574, 0.3357 and 0.3305 at `m = 1, 4, 8` against `TopN`'s 0.3374.
+
+`k_join` folds 16-bit bins, two a word (16 KiB, its output rows bounded by `2 · MAX_BUCKET_LEN`), and only the span of words its rows touched; it opts into shared memory past 48 KiB for the largest table.
+`sampling_bench` release, JCC flag, f64, `--backend gpu`, `m = 1` against `m = 4` built from the same tree, interleaved, 3 rounds, SM 1830–1875 MHz, memory 7601 MHz, one idle foreign process on the device: kicked Ising `1e6` +0.5 / +1.2 / +1.1%, `1e7` **+3.6 / +3.5 / +3.5%**, TFIM 16×16 `1e5` +2.7 / +2.5 / +3.1%, `1e6` −1.0 / +0.2 / −0.2%.
+Phase timing puts the `1e7` cost in the join (`merge` 4001 → 4145 ms), about the extra global atomics of finer bins; packing two bins a word in the device histogram would halve them and is not built.
+CPU at 32 threads on the shared host (load 5–30): kicked Ising `1e6` −2.1 / +2.3 / −1.9%, TFIM `1e5` −1.1 / +5.7 / −8.8%, TFIM `1e6` +5.6 / +5.3 / +2.2%; the trajectories differ, and a quiet-node A/B is pending.
+
+### Resolved: cut-row `ApproxTopN` readouts kept an offset
+
+A partitioned `ApproxTopN` handed the boundary octave's quota to the ranks in rank order, and under cut rows a rank is a Z-parity class over qubit blocks; `local_boundary_quota` splits it in proportion to each rank's boundary count by largest remainder, from the same one all-reduce of per-rank counts.
+At octave resolution TFIM 16×16 `1e6` still read 0.2892 on one partition, 0.2970 under cut rows and 0.2877 under seeded rows, and 12×12 `1e5` cut rows sat 0.014–0.017 above one partition over four hash seeds.
+That offset was the octave-wide boundary bin, and the one-partition readout was the biased one (12×12 `1e5`: `TopN` 0.3374, one partition 0.3156, cut rows 0.3336); with quarter-octave bins the three layouts agree within the seed spread (§`ApproxTopN` bins are quarter-octaves).
+Device partitions follow the host: `sampling_bench` 16×16 `1e6` at `m = 4` reads 0.2910 on one device and 0.2913 and 0.2919 on four under cut and seeded rows, against 0.2899, 0.2976 and 0.2879 at `m = 1`.
+
 ### Exchanging layers count and mark their rows a layer ahead
 
 An exchanging layer made three passes over the sum before its coset loop: the deferred `ApproxTopN` cut applied whole, the export's count pass, and a fill scanning every bucket that exports anything.
@@ -589,7 +621,7 @@ Rejected: a tighter rule gains at most 6% and 2%.
 ### `ApproxTopN` cuts in place on device
 
 `k_cut` replaces `k_boundary_counts`, its scan and `k_retain` for `ApproxTopN`: a byte of flag per row, then the dropped rows below a bucket's kept count take the kept rows above it, so the bucket keeps its start and no column is copied (`finalize.rs`); exact `TopN` keeps the order-preserving `retain_device`.
-The kept count follows from the octave histogram unless its top bin, which a NaN shares, is populated, and a lone device within `n` skips the histogram.
+The kept count follows from the histogram unless its top octave, whose bins a NaN shares, is populated, and a lone device within `n` skips the histogram.
 A quota that splits the boundary octave goes to the buckets in index order, found by a decoupled look-back inside `k_cut` (a warp takes its bucket from an atomic counter, so every lower bucket is already running), so a single cut keeps exactly the host's `retain_at_edge` terms.
 `sampling_bench` release, JCC flag, f64, ABAB, 3 rounds, memory 7601 MHz:
 
@@ -664,7 +696,7 @@ Not attempted: a captured graph of a step's layers, since the host now waits on 
 
 ### A lone `ApproxTopN` join counts its output's octave histogram
 
-`k_join` bins each row it writes into a 2048-bin shared histogram after its table and folds it into `[len, bins…]`, so the lone pass after a join skips `k_octave_histogram`'s launch and its read of every coefficient (`LayerScratch::histogram_fresh`, cleared by every mutating layer).
+`k_join` bins each row it writes into a shared histogram after its table and folds it into `[len, bins…]`, so the lone pass after a join skips `k_octave_histogram`'s launch and its read of every coefficient (`LayerScratch::histogram_fresh`, cleared by every mutating layer).
 Against the previous entry, same protocol (SM 1815–1875 MHz): TFIM `--approx-topn 1e5` **1.097 / 1.147 / 1.101 → 1.025 / 0.971 / 1.016 s (−6.5 / −15.3 / −7.7%)**, TFIM `1e6` **4.342 / 4.310 / 4.332 → 3.864 / 3.847 / 3.883 s (−11.0 / −10.7 / −10.4%)**, kicked Ising `1e6` −2.2 / −3.7 / −4.4%, kicked Ising `1e5` mixed (−2.3 / +1.9 / −10.5%); the thresholds, which never count, read −2.3 / +1.8 / +7.8% (TFIM) and +0.6 / +0.4 / +0.5% (kicked Ising).
 Against 32 CPU threads in the same session (`--backend cpu --threads 32`): TFIM `1e5` 1.016 s median against 1.357 s, kicked Ising `1e5` 0.256 s against 0.305 s; before this series the device lost both (1.600 against 1.429 s, 0.351 against 0.314 s).
 

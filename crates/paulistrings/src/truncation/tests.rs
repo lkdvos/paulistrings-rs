@@ -2,8 +2,8 @@ use super::*;
 use crate::engine::partitioned::in_process::InProcessTransport;
 use crate::pauli_sum::PartitionRows;
 use crate::test_support::{
-    assert_same_terms, canonical_triples, first_n_by_rank, octave_rank, rand_sum_real,
-    storage_triples, tie_heavy_sum,
+    assert_proportional_boundary_cut, assert_same_terms, rand_sum_real, skewed_cut_split,
+    tie_heavy_sum,
 };
 use crate::truncation::builtin::{
     And, ApproxTopN, CoefficientThreshold, Or, PerPartition, TopN, WeightCutoff,
@@ -30,9 +30,17 @@ pub(super) fn run_partitioned<const W: usize>(
     pbits: u8,
     pass: impl Fn(&mut PauliSum<W>, &dyn Collectives) + Sync,
 ) -> PauliSum<W> {
-    let parts = split(sum, pbits);
-    let p = parts.len() as u32;
+    let merged = PauliSum::<W>::merge_partitions(run_on_ranks(split(sum, pbits), pass));
+    merged.assert_invariants();
+    merged
+}
 
+/// Run `pass` on each of `parts` in its own thread over one in-process group, returning the partitions in rank order.
+fn run_on_ranks<const W: usize>(
+    parts: Vec<PauliSum<W>>,
+    pass: impl Fn(&mut PauliSum<W>, &dyn Collectives) + Sync,
+) -> Vec<PauliSum<W>> {
+    let p = parts.len() as u32;
     let group = InProcessTransport::group(p);
     let pass = &pass;
     let gathered: Vec<PauliSum<W>> = std::thread::scope(|scope| {
@@ -53,13 +61,10 @@ pub(super) fn run_partitioned<const W: usize>(
         }
         slots.into_iter().map(Option::unwrap).collect()
     });
-
     for local in &gathered {
         local.assert_invariants();
     }
-    let merged = PauliSum::<W>::merge_partitions(gathered);
-    merged.assert_invariants();
-    merged
+    gathered
 }
 
 /// `sum` split into `1 << pbits` partitions, in rank order.
@@ -75,19 +80,22 @@ fn split<const W: usize>(sum: &PauliSum<W>, pbits: u8) -> Vec<PauliSum<W>> {
     parts
 }
 
-/// Partitioned `ApproxTopN(n)` keeps `min(n, len)` terms in total: whole octaves above the boundary and the first boundary-octave terms in rank order, then bucket order.
+/// Partitioned `ApproxTopN(n)` over [`split`] makes the cut [`assert_proportional_boundary_cut`] checks.
 fn assert_partitioned_approx_top_n<const W: usize>(
     input: &PauliSum<W>,
     n: usize,
     pbits: u8,
     what: &str,
 ) {
-    let got = partitioned_finalize(&ApproxTopN(n), input, pbits);
-    assert_eq!(got.len(), n.min(input.len()), "{what}: kept count");
-    let in_rank_order: Vec<_> = split(input, pbits).iter().flat_map(storage_triples).collect();
-    let mut want = first_n_by_rank(&in_rank_order, n, octave_rank);
-    want.sort_unstable_by_key(|&(x, z, _)| (x, z));
-    assert_eq!(canonical_triples(&got), want, "{what}: kept set");
+    assert_approx_top_n_over(split(input, pbits), n, what);
+}
+
+/// Partitioned `ApproxTopN(n)` over `parts`, one per rank, makes the cut [`assert_proportional_boundary_cut`] checks.
+fn assert_approx_top_n_over<const W: usize>(parts: Vec<PauliSum<W>>, n: usize, what: &str) {
+    let got = run_on_ranks(parts.clone(), |local, collectives| {
+        ApproxTopN(n).finalize_layer_partitioned(local, collectives)
+    });
+    assert_proportional_boundary_cut(&parts, &got, n, what);
 }
 
 /// Partitioned finalization is exactly the single-partition one.
@@ -137,6 +145,41 @@ fn approx_top_n_partitioned_keeps_exactly_n_w2_tie_heavy() {
                 &format!("w2 tie-heavy P=2^{pbits} n={n}"),
             );
         }
+    }
+}
+
+/// Cut rows over qubit blocks with partitions thinned unevenly: the boundary octave is split in proportion to each rank's share of it, not handed to the low ranks first.
+#[test]
+fn approx_top_n_splits_the_boundary_octave_across_cut_rows_in_proportion() {
+    let w1 = skewed_cut_split(&rand_sum_real::<1>(4000, 32, 0xC07));
+    let w2 = skewed_cut_split(&tie_heavy_sum::<2>(4000, 100, 0xC07));
+    for n in [1usize, 37, 300, 999, 1500] {
+        assert_approx_top_n_over(w1.clone(), n, &format!("w1 cut n={n}"));
+        assert_approx_top_n_over(w2.clone(), n, &format!("w2 tie-heavy cut n={n}"));
+    }
+}
+
+/// Two ranks share the quarter-bin fixture: rank 0 holds `|c|²` 1.9, 1.3, 1.0, 1.1 and rank 1 the rest.
+/// At `n = 5` the boundary `[1.25, 1.5)` has one term on each rank and a quota of one, which the tie hands to rank 0; at `n = 8` the boundary `[1, 1.25)` has two terms on rank 0 and one on rank 1 for a quota of two, split ⌊4/3⌋ = 1 and ⌊2/3⌋ + 1 = 1 by the larger remainder.
+#[test]
+fn a_group_splits_a_quarter_bin_boundary_in_proportion() {
+    use crate::test_support::sum_of_norm_sqrs;
+    let parts = vec![
+        sum_of_norm_sqrs(&[1.9, 1.3, 1.0, 1.1], 0),
+        sum_of_norm_sqrs(&[1.8, 1.4, 1.2, 1.6, 0.9, 2.0], 16),
+    ];
+    let kept = |n: usize| -> Vec<Vec<f64>> {
+        run_on_ranks(parts.clone(), |local, collectives| {
+            ApproxTopN(n).finalize_layer_partitioned(local, collectives)
+        })
+        .iter()
+        .map(|part| part.iter().map(|(_, _, c)| (c.norm_sqr() * 1e9).round() / 1e9).collect())
+        .collect()
+    };
+    assert_eq!(kept(5), vec![vec![1.9, 1.3], vec![1.8, 1.6, 2.0]]);
+    assert_eq!(kept(8), vec![vec![1.9, 1.3, 1.0], vec![1.8, 1.4, 1.2, 1.6, 2.0]]);
+    for n in [1, 3, 7, 9] {
+        assert_approx_top_n_over(parts.clone(), n, &format!("n={n}"));
     }
 }
 

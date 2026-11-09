@@ -327,7 +327,7 @@ fn per_partition_caps_every_partition_on_every_layer() {
     let policies: [(BuiltinTruncation, &str); 3] = [
         (PerPartition(TopN(N)).into(), "topn"),
         (PerPartition(ApproxTopN(N)).into(), "approx"),
-        (And(ApproxTopN(3 * N), PerPartition(TopN(N))).into(), "topn under approx"),
+        (And(ApproxTopN(8 * N), PerPartition(TopN(N))).into(), "topn under approx"),
     ];
     for (policy, name) in policies {
         for &p in &PS {

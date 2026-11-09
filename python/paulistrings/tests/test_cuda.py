@@ -284,8 +284,20 @@ def test_stats_name_the_device():
     got, stats = propagated_with_stats(s, c, direction="heisenberg", device=0)
     _assert_terms_close(got, want)
     assert stats.layers == len(c)
-    assert stats.terms_in == host_stats.terms_in
-    assert stats.terms_out == host_stats.terms_out
+    # A run is one pass, so its rows after the first carry no time and the run's output, and the device takes longer
+    # rotation runs than the host: every layer both run alone, and every run boundary both share, must agree exactly.
+    def starts(run_stats):
+        return {i for i, ns in enumerate(run_stats.nanos) if ns > 0}
+
+    def ends(run_stats):
+        return {i - 1 for i in starts(run_stats) if i > 0} | {len(c) - 1}
+
+    shared_starts, shared_ends = starts(stats) & starts(host_stats), ends(stats) & ends(host_stats)
+    assert 0 in shared_starts and len(shared_starts) > len(c) // 2
+    for i in shared_starts:
+        assert stats.terms_in[i] == host_stats.terms_in[i], i
+    for i in shared_ends:
+        assert stats.terms_out[i] == host_stats.terms_out[i], i
     assert stats.final_terms == len(got)
     part = stats.partition
     assert part.partitions == 1
@@ -308,6 +320,19 @@ def test_zero_layer_circuit_on_device(device):
     devices = device if isinstance(device, list) else [device]
     assert stats.partition.partitions == len(devices)
     assert stats.partition.devices == devices
+
+
+@needs_cuda
+@pytest.mark.parametrize("device", [0, [0, 0]], ids=["one", "list"])
+def test_collapse_sample_on_device(device):
+    s, c = _observable(8, terms=64), _circuit(8)
+    roomy, stats = propagated_with_stats(s, c, truncation.collapse_sample(10**9, 4, 0), device=device)
+    _assert_terms_close(roomy, propagated(s, c))
+    assert stats.collapses == 0
+    policy = truncation.coeff(1e-3) & truncation.collapse_sample(48, 16, 1)
+    got, stats = propagated_with_stats(s, c, policy, device=device)
+    assert stats.collapses >= 1
+    assert len(got) <= 48
 
 
 # --------------------------------------------------------------------------

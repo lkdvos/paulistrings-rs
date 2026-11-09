@@ -9,9 +9,9 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=benchmarks/results/slurm-%j.out
 #
-# Independent PP-MC trajectories of the 56-qubit OLE (examples/b8_ole), run by disBatch inside this allocation.
+# Independent PP-MC trajectory pairs of the 56-qubit OLE (examples/b8_ole), run by disBatch inside this allocation.
 # One task line = one run_b8.py call over a block of seeds; `--ntasks` tasks run concurrently, each with `--cpus-per-task` threads.
-# Size `--ntasks` so that ntasks x ~3 x 32 B x cache fits in node memory (cache 5e8: ~48 GB per task).
+# Size `--ntasks` so that ntasks x ~4 x 32 B x cache fits in node memory (cache 5e8: ~64 GB per task, which holds both trajectories of a pair).
 #
 # TASKS   task file from examples/b8_ole/make_tasks.py (required)
 # RESUME  a previous job's disBatch status file; its completed tasks are skipped and failed ones retried

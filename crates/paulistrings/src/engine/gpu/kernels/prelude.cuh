@@ -168,14 +168,43 @@ __device__ __forceinline__ u32 lane_id() { return threadIdx.x & 31u; }
 __device__ __forceinline__ u32 warp_id() { return threadIdx.x >> 5; }
 __device__ __forceinline__ u32 lanemask_lt() { return (1u << lane_id()) - 1u; }
 
+// An even W moves a row's words as 16-byte vectors: every key column and every slice of one starts at a row, so they are aligned.
 __device__ __forceinline__ Key load_key(const u64* __restrict__ x, const u64* __restrict__ z, size_t i) {
     Key k;
+#if W % 2 == 0
+#pragma unroll
+    for (int w = 0; w < W; w += 2) {
+        const ulonglong2 a = *reinterpret_cast<const ulonglong2*>(x + i * W + w);
+        const ulonglong2 b = *reinterpret_cast<const ulonglong2*>(z + i * W + w);
+        k.x[w] = a.x;
+        k.x[w + 1] = a.y;
+        k.z[w] = b.x;
+        k.z[w + 1] = b.y;
+    }
+#else
 #pragma unroll
     for (int w = 0; w < W; ++w) {
         k.x[w] = x[i * W + w];
         k.z[w] = z[i * W + w];
     }
+#endif
     return k;
+}
+
+__device__ __forceinline__ void store_key(u64* __restrict__ x, u64* __restrict__ z, size_t i, const Key& k) {
+#if W % 2 == 0
+#pragma unroll
+    for (int w = 0; w < W; w += 2) {
+        *reinterpret_cast<ulonglong2*>(x + i * W + w) = make_ulonglong2(k.x[w], k.x[w + 1]);
+        *reinterpret_cast<ulonglong2*>(z + i * W + w) = make_ulonglong2(k.z[w], k.z[w + 1]);
+    }
+#else
+#pragma unroll
+    for (int w = 0; w < W; ++w) {
+        x[i * W + w] = k.x[w];
+        z[i * W + w] = k.z[w];
+    }
+#endif
 }
 
 __device__ __forceinline__ bool key_eq(const Key& a, const Key& b) {
@@ -223,17 +252,19 @@ __device__ __forceinline__ u64 word_mask(u32 num_qubits, int w) {
     return (1ull << (num_qubits - lo)) - 1ull;
 }
 
+// Bit q of a key column, masked out of every word: a runtime word index, or a select ptxas folds back into one, puts the key in local memory.
+__device__ __forceinline__ u32 key_bit(const u64 (&v)[W], u32 q) {
+    u64 word = 0;
+#pragma unroll
+    for (int w = 0; w < W; ++w) word |= v[w] & (0ull - (u64)((u32)w == (q >> 6)));
+    return (u32)((word >> (q & 63)) & 1ull);
+}
+
 // `LocalPtm::support_bits`: bit 2j is the x-bit of support qubit j, bit 2j+1 its z-bit.
 __device__ __forceinline__ u32 support_bits(const Key& k, u32 support_size, u32 qubit_0, u32 qubit_1) {
     u32 s = 0;
-    if (support_size > 0) {
-        s |= (u32)((k.x[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull);
-        s |= (u32)((k.z[qubit_0 >> 6] >> (qubit_0 & 63)) & 1ull) << 1;
-    }
-    if (support_size > 1) {
-        s |= (u32)((k.x[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 2;
-        s |= (u32)((k.z[qubit_1 >> 6] >> (qubit_1 & 63)) & 1ull) << 3;
-    }
+    if (support_size > 0) s |= key_bit(k.x, qubit_0) | key_bit(k.z, qubit_0) << 1;
+    if (support_size > 1) s |= key_bit(k.x, qubit_1) << 2 | key_bit(k.z, qubit_1) << 3;
     return s;
 }
 
@@ -317,46 +348,95 @@ __device__ __forceinline__ bool keep_eval(const KeepProg& P, KeyFn key, Coeff c)
     return (st & 1u) != 0;
 }
 
+// `walk_bucket`'s `survives`: a nonzero coefficient the keep program passes.
+__device__ __forceinline__ bool survives(const KeepProg& prog, const Key& k, Coeff c) {
+    return !coeff_is_zero(c) && keep_eval(prog, [&]() -> Key { return k; }, c);
+}
+
+// The next slot of the block's `counter` for each lane of the warp that `takes` one.
+__device__ __forceinline__ u32 warp_claim(u32* counter, bool takes) {
+    const u32 bal = __ballot_sync(~0u, takes);
+    u32 base = 0;
+    if (lane_id() == 0 && bal != 0) base = atomicAdd(counter, (u32)__popc(bal));
+    base = __shfl_sync(~0u, base, 0);
+    return base + __popc(bal & lanemask_lt());
+}
+
+// `count[destination] +=` the lanes of the warp bound there, one atomic per destination; `NO_ENTRY` counts nothing.
+__device__ __forceinline__ void count_by_destination(u32* count, u32 destination) {
+    const u32 peers = __match_any_sync(~0u, destination);
+    if (destination != NO_ENTRY && (peers & lanemask_lt()) == 0) atomicAdd(&count[destination], (u32)__popc(peers));
+}
+
+// Each lane's slot claimed from `cursor[destination]`, one atomic per destination; `NO_ENTRY` claims nothing.
+__device__ __forceinline__ size_t claim_by_destination(u32* cursor, u32 destination) {
+    const u32 peers = __match_any_sync(~0u, destination);
+    const u32 leader = __ffs(peers) - 1;
+    u32 base = 0;
+    if (destination != NO_ENTRY && lane_id() == leader) base = atomicAdd(&cursor[destination], (u32)__popc(peers));
+    base = __shfl_sync(~0u, base, leader);
+    return (size_t)base + __popc(peers & lanemask_lt());
+}
+
+// `ApproxTopN`'s octave of |c|^2, its f64 exponent field; a NaN with its sign bit set would index past the top bin, so it shares it.
+#define APPROX_BINS 2048
+__device__ __forceinline__ u32 octave_bin(Coeff c) {
+    const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(c));
+    return min((u32)(bits >> 52), (u32)(APPROX_BINS - 1));
+}
+
+// The inclusive prefix of `v` across the warp.
+template <typename S>
+__device__ __forceinline__ S warp_inclusive_scan(S v) {
+#pragma unroll
+    for (u32 o = 1; o < 32; o <<= 1) {
+        const S t = __shfl_up_sync(~0u, v, o);
+        if (lane_id() >= o) v += t;
+    }
+    return v;
+}
+
+// `items`, ITEMS consecutive values a thread, replaced by their exclusive prefix across the block; returns the total to every thread.
+// swarp holds 33 words of scratch, free again only after the caller's next barrier.
+template <int ITEMS, typename S>
+__device__ __forceinline__ S block_exclusive_scan_items(S (&items)[ITEMS], S* swarp) {
+    const u32 lane = lane_id(), warp = warp_id();
+    S sum = 0;
+#pragma unroll
+    for (int c = 0; c < ITEMS; ++c) sum += items[c];
+    const S inc = warp_inclusive_scan(sum);
+    if (lane == 31) swarp[warp] = inc;
+    __syncthreads();
+    if (warp == 0) {
+        const S v = lane < (blockDim.x >> 5) ? swarp[lane] : (S)0;
+        const S inc2 = warp_inclusive_scan(v);
+        swarp[lane] = inc2 - v;
+        if (lane == 31) swarp[32] = inc2;
+    }
+    __syncthreads();
+    S run = swarp[warp] + inc - sum;
+#pragma unroll
+    for (int c = 0; c < ITEMS; ++c) {
+        const S v = items[c];
+        items[c] = run;
+        run += v;
+    }
+    return swarp[32];
+}
+
 // Exclusive scan of v[0..n) in shared memory, ITEMS contiguous entries per thread; returns the total to every thread.
 // swarp holds 33 words of scratch and is free again on return.
 template <int ITEMS, typename T>
 __device__ __forceinline__ u32 block_exclusive_scan(T* v, u32 n, u32* swarp) {
-    const u32 tid = threadIdx.x, lane = lane_id(), warp = warp_id();
-    const u32 base = tid * ITEMS;
-    u32 loc[ITEMS];
-    u32 sum = 0;
+    const u32 base = threadIdx.x * ITEMS;
+    u32 items[ITEMS];
+#pragma unroll
+    for (int c = 0; c < ITEMS; ++c) items[c] = (base + c < n) ? (u32)v[base + c] : 0u;
+    const u32 total = block_exclusive_scan_items<ITEMS, u32>(items, swarp);
 #pragma unroll
     for (int c = 0; c < ITEMS; ++c) {
-        loc[c] = (base + c < n) ? (u32)v[base + c] : 0u;
-        sum += loc[c];
+        if (base + c < n) v[base + c] = (T)items[c];
     }
-    u32 inc = sum;
-#pragma unroll
-    for (u32 o = 1; o < 32; o <<= 1) {
-        u32 t = __shfl_up_sync(~0u, inc, o);
-        if (lane >= o) inc += t;
-    }
-    if (lane == 31) swarp[warp] = inc;
-    __syncthreads();
-    if (warp == 0) {
-        u32 v2 = (lane < (blockDim.x >> 5)) ? swarp[lane] : 0u;
-        u32 inc2 = v2;
-#pragma unroll
-        for (u32 o = 1; o < 32; o <<= 1) {
-            u32 t = __shfl_up_sync(~0u, inc2, o);
-            if (lane >= o) inc2 += t;
-        }
-        swarp[lane] = inc2 - v2;
-        if (lane == 31) swarp[32] = inc2;
-    }
-    __syncthreads();
-    u32 run = swarp[warp] + inc - sum;
-#pragma unroll
-    for (int c = 0; c < ITEMS; ++c) {
-        if (base + c < n) v[base + c] = (T)run;
-        run += loc[c];
-    }
-    u32 total = swarp[32];
     __syncthreads();
     return total;
 }

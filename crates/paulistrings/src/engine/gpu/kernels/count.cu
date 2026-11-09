@@ -50,3 +50,17 @@ extern "C" __global__ void k_rows(const u32* __restrict__ cnt, const u32* __rest
     }
     rows[p] = r;
 }
+
+// k_unpack_table: one packed upload scattered into a table's buffers, segment after segment, in 32-bit words; a segment of length 0 is skipped.
+extern "C" __global__ void k_unpack_table(const u32* __restrict__ packed, u32* d0, u32 n0, u32* d1, u32 n1, u32* d2,
+                                          u32 n2, u32* d3, u32 n3, u32* d4, u32 n4, u32* d5, u32 n5, u32* d6, u32 n6) {
+    u32* const dst[7] = {d0, d1, d2, d3, d4, d5, d6};
+    const u32 len[7] = {n0, n1, n2, n3, n4, n5, n6};
+    const u32 stride = gridDim.x * blockDim.x;
+    u32 offset = 0;
+#pragma unroll
+    for (int s = 0; s < 7; ++s) {
+        for (u32 i = blockIdx.x * blockDim.x + threadIdx.x; i < len[s]; i += stride) dst[s][i] = packed[offset + i];
+        offset += len[s];
+    }
+}

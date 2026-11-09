@@ -9,7 +9,7 @@
 //! A local layer issues no call for the count: on the schedule of `rebuckets` a partition moves to its own proposal, so counts differ mid-call.
 //! At `P = 1` there is no group: the loop refines every layer, as `propagate` does.
 //!
-//! Consecutive local layers under a policy without a layer pass may run as one pass ([`Runs`]); local layers issue no transport call, so a partition may take a run whatever its peers do.
+//! Consecutive local layers may run as one pass ([`Runs`]); local layers issue no transport call, so a partition may take a run whatever its peers do, but a run defers the policy's layer pass to its end, so under a policy with one only a lone partition takes runs.
 
 use crate::channel::Prepare;
 use crate::coefficient::Coefficient;
@@ -17,8 +17,10 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
-use super::backend::{PartitionBackend, PartitionStorage};
-use super::bucketed::{PermutationStep, RotationRunSpan, RowEmitter, Run, MAX_ROTATION_RUN_LAYERS};
+use super::backend::PartitionBackend;
+use super::bucketed::{
+    max_fanout, PermutationStep, RotationRunSpan, RowEmitter, Run, MAX_ROTATION_RUN_LAYERS,
+};
 use super::plan::PartitionPlan;
 use super::transport::{ByteParts, Transport};
 use crate::channel::prepared::{Prepared, MAX_LOCAL_SUPPORT};
@@ -185,8 +187,10 @@ impl<const W: usize> Lookahead<'_, W> {
 struct Runs<const W: usize, C: Coefficient> {
     /// Runs of one-to-one channels (`engine/bucketed/permutation_run.rs`), tried first.
     permutations: bool,
-    /// Rotation runs (`engine/bucketed/rotation_layer.rs`).
-    rotations: bool,
+    /// Rotation runs (`engine/bucketed/rotation_layer.rs`), up to this bucket-delta span dimension.
+    rotations: Option<usize>,
+    /// [`TruncationPolicy::run_length_limit`]: a run's input length times its layers' fanouts stays within it.
+    limit: usize,
     steps: Vec<PermutationStep<W, C>>,
     layers: Vec<Prepared<W, C>>,
 }
@@ -211,7 +215,8 @@ impl<const W: usize, C: Coefficient> Runs<W, C> {
         if lookahead.exchanges(prepared) {
             return None;
         }
-        if self.permutations {
+        let len = local.len();
+        if self.permutations && len <= self.limit {
             if let Some(first) = PermutationStep::of(prepared) {
                 self.steps.clear();
                 self.steps.push(first);
@@ -225,18 +230,20 @@ impl<const W: usize, C: Coefficient> Runs<W, C> {
                 }
             }
         }
-        if !self.rotations || logging {
-            return None;
-        }
-        let mut span = RotationRunSpan::new(local.hash().bits());
-        if !span.join(prepared) {
+        let dimension = self.rotations.filter(|_| !logging)?;
+        let limit = self.limit;
+        let mut worst = len.saturating_mul(max_fanout(prepared));
+        let mut span = RotationRunSpan::new(local.hash().bits(), dimension);
+        if worst > limit || !span.join(prepared) {
             return None;
         }
         self.layers.clear();
         let layers = &mut self.layers;
         let joined =
             lookahead.extend(start + 1, local.hash(), MAX_ROTATION_RUN_LAYERS - 1, |next| {
-                span.join(&next) && {
+                let grown = worst.saturating_mul(max_fanout(&next));
+                grown <= limit && span.join(&next) && {
+                    worst = grown;
                     layers.push(next);
                     true
                 }
@@ -250,10 +257,10 @@ impl<const W: usize, C: Coefficient> Runs<W, C> {
     }
 }
 
-/// Trace a run of the layers `layers` as one row per layer, its time and phases on the first, into `trace` when given, and log it at `DEBUG`.
+/// Trace a run of the layers `layers` as one row per layer, its time and phases on the first and the backend's counters for the run on each, into `trace` when given, and log it at `DEBUG`.
 #[cold]
 #[allow(clippy::too_many_arguments)]
-fn record_run<const W: usize, C: Coefficient, B: PartitionStorage<W, C>>(
+fn record_run<const W: usize, C: Coefficient, T: ?Sized, B: PartitionBackend<W, C, T>>(
     circuit: &Circuit<W>,
     layers: std::ops::Range<usize>,
     circuit_index_of: &dyn Fn(usize) -> usize,
@@ -268,7 +275,7 @@ fn record_run<const W: usize, C: Coefficient, B: PartitionStorage<W, C>>(
         for layer in layers.clone() {
             let index = circuit_index_of(layer);
             let leads = layer == first;
-            let row = PartitionLayerRow {
+            let mut row = PartitionLayerRow {
                 bits: local.hash().bits(),
                 remote_deltas: 0,
                 collectives: 0,
@@ -290,6 +297,10 @@ fn record_run<const W: usize, C: Coefficient, B: PartitionStorage<W, C>>(
                 device: None,
                 phases: if leads { std::mem::take(&mut phases) } else { LayerPhases::default() },
             };
+            local.trace_layer(&mut row);
+            if !leads {
+                (row.refine_passes, row.receive_chunks) = (0, 0);
+            }
             record_layer_row(trace, row);
         }
     }
@@ -347,9 +358,12 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         adjoint,
         rank,
     };
+    // A run's layer pass follows it alone, and where a group's runs end is each partition's own decision.
+    let limit = if finalizes && !solo { 0 } else { policy.run_length_limit() };
     let mut runs = Runs::<W, C> {
-        permutations: !finalizes && local.takes_runs(),
-        rotations: !finalizes && local.takes_runs(),
+        permutations: limit > 0 && local.takes_runs(),
+        rotations: local.rotation_run_dimension().filter(|_| limit > 0),
+        limit,
         steps: Vec::new(),
         layers: Vec::new(),
     };
@@ -363,7 +377,8 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         let debug_enabled = log::log_enabled!(target: LOG_TARGET, log::Level::Debug);
         let timed_layer = tracing || debug_enabled;
         let layer_start = timed_layer.then(Instant::now);
-        let terms_before = local.len();
+        // A traced layer reads exact counts, which on a device costs a synchronization; untraced, the length is the backend's bound.
+        let terms_before = if tracing { local.exact_len() } else { local.len() };
         let bits_before = local.hash().bits();
         let mut phases = LayerPhases::default();
         let mut clock = LayerClock::new(if tracing { layer_start } else { None });
@@ -430,6 +445,16 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
         {
             timed!(stamp.rearm());
             clock.lap(&mut phases.coset_loop_ns);
+            if finalizes {
+                let counting =
+                    CountingCollectives { inner: transport, calls: &policy_calls, nanos: None };
+                local.finalize_layer(policy, &counting);
+                lap!(stamp, local.stats().finalize_ns);
+                clock.lap(&mut phases.finalize_ns);
+            }
+            if tracing {
+                local.exact_len();
+            }
             // Per layer of the run, as the one-by-one path counts them.
             tally!(local.stats().layers, end - application_index - 1);
             tally!(local.stats().terms_in, terms_before * (end - application_index - 1));
@@ -445,7 +470,16 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 let trace = tracing.then_some(&mut work.rows);
                 let layers = application_index..end;
                 let order = &circuit_index_of;
-                record_run(circuit, layers, order, &*local, before, phases, (rank, size), trace);
+                record_run::<W, C, T, B>(
+                    circuit,
+                    layers,
+                    order,
+                    &*local,
+                    before,
+                    phases,
+                    (rank, size),
+                    trace,
+                );
             }
             application_index = end;
             continue;
@@ -498,7 +532,8 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 crate::engine::trace::FineLayerPhases::between(&before, &local.phase_snapshot())
             });
         }
-        tally!(local.stats().terms_out, local.len());
+        let terms_out = if tracing { local.exact_len() } else { local.len() };
+        tally!(local.stats().terms_out, terms_out);
 
         // The trace sits behind a hoisted flag and a `#[cold]` callee: this loop inlines the merge kernels, which are sensitive to code motion.
         let remote_deltas = counts.remote_deltas;
@@ -513,7 +548,7 @@ pub(crate) fn run_layers<const W: usize, C: Coefficient, T, X, B>(
                 application_index: application_index as u32,
                 gate_name: channel.debug_name(),
                 terms_in: terms_before,
-                terms_out: local.len(),
+                terms_out,
                 rows_sent: counts.rows_sent,
                 bytes_sent: counts.bytes_sent,
                 rows_received: counts.rows_received,

@@ -7,7 +7,7 @@ use paulistrings::{
 use pyo3::prelude::*;
 use std::sync::Mutex;
 
-/// `tree` with its per-term filter replaced by the generic `filter` it is equal to; the layer passes still run through `tree`, once per layer.
+/// `tree` with its per-term filter replaced by the generic `filter` it is equal to; the layer passes, and so the runs between them, are still `tree`'s.
 pub(crate) struct WithFilter<'a, F> {
     filter: F,
     tree: &'a BuiltinTruncation,
@@ -51,6 +51,10 @@ impl<const W: usize, C: Coefficient, F: TruncationPolicy<W, C>> TruncationPolicy
 
     fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         <BuiltinTruncation as TruncationPolicy<W, C>>::fused_approx_top_n(self.tree)
+    }
+
+    fn run_length_limit(&self) -> usize {
+        <BuiltinTruncation as TruncationPolicy<W, C>>::run_length_limit(self.tree)
     }
 }
 

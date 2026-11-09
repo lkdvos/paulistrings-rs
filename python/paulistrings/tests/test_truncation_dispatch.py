@@ -114,8 +114,8 @@ def test_a_dispatched_collapse_sample_draws_the_undispatched_trajectory():
     for _ in range(8):
         c.rx(0.7, 0)
     for seed in range(5):
-        got, got_type = _run(s, c, truncation.collapse_sample(1, seed), {})
-        fallback = truncation.collapse_sample(1, seed) & _both_or(truncation.weight(1))
+        got, got_type = _run(s, c, truncation.collapse_sample(1, 1, seed), {})
+        fallback = truncation.collapse_sample(1, 1, seed) & _both_or(truncation.weight(1))
         want, want_type = _run(s, c, fallback, {})
         assert "WithFilter" in got_type and want_type.endswith("BuiltinTruncation")
         _assert_close(got, want)

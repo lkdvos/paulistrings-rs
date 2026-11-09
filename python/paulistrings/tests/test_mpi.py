@@ -664,7 +664,7 @@ def test_distributed_partition_row_exclude_is_validated_first(observable, circui
 
 
 def test_collapse_sample_with_a_large_cache_is_the_serial_run(observable, circuit, reference):
-    got, stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(10**9, 0) & POLICY, comm=COMM)
+    got, stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(10**9, 4, 0) & POLICY, comm=COMM)
     assert stats.collapses == 0
     if RANK == 0:
         _assert_terms_close(got, reference)
@@ -672,23 +672,44 @@ def test_collapse_sample_with_a_large_cache_is_the_serial_run(observable, circui
 
 def test_collapse_sample_collapses_the_whole_group_and_every_rank_counts_it(observable, circuit):
     cache = NUM_TERMS // 2
-    local, stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(cache, 5), comm=COMM, result="local")
+    local, stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(cache, 4, 5), comm=COMM, result="local")
     total = COMM.allreduce(len(local))
     counts = COMM.allgather(stats.collapses)
     assert counts == [counts[0]] * SIZE
     assert counts[0] >= 1
     assert total <= cache
     if SIZE == 1:
-        serial, serial_stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(cache, 5))
+        serial, serial_stats = propagated_with_stats(observable, circuit, truncation.collapse_sample(cache, 4, 5))
         assert serial_stats.collapses == counts[0]
         _assert_terms_close(local, serial)
 
 
-@needs_cuda_everywhere
-def test_collapse_sample_under_a_device_group_is_not_implemented(observable, circuit):
-    """A collapse is a layer pass no device backend runs; the check is argument-only, so every rank raises alike before adopting the communicator."""
-    with pytest.raises(NotImplementedError, match="collapse_sample"):
-        observable.propagate(circuit, truncation.collapse_sample(10, 0), comm=COMM, device="auto")
+@needs_a_device_group
+def test_collapse_sample_under_a_device_group_with_a_large_cache_is_the_serial_run(observable, circuit, reference):
+    got, stats = propagated_with_stats(
+        observable, circuit, truncation.collapse_sample(10**9, 4, 0) & POLICY, comm=COMM, device="auto"
+    )
+    assert stats.collapses == 0
+    if RANK == 0:
+        _assert_terms_close(got, reference)
+
+
+@needs_a_device_group
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_collapse_sample_under_a_device_group_tiles_the_l1_norm(observable, seed):
+    """Clifford layers keep every |c|, so the group's one collapse draws exactly `samples` points of `norm / samples` over all ranks."""
+    samples = 64
+    circuit = Circuit(NUM_QUBITS)
+    for q in range(_WINDOW):
+        circuit.cnot(q, (q + 1) % _WINDOW)
+    norm = float(np.abs(observable.coefficients_array()).sum())
+    local, stats = propagated_with_stats(
+        observable, circuit, truncation.collapse_sample(NUM_TERMS // 2, samples, seed), comm=COMM, device="auto", result="local"
+    )
+    assert COMM.allgather(stats.collapses) == [1] * SIZE
+    draws = np.abs(local.coefficients_array()) * samples / norm
+    assert np.allclose(draws, np.round(draws), atol=1e-9) and (np.round(draws) >= 1).all()
+    assert COMM.allreduce(int(np.round(draws).sum())) == samples
 
 
 # --------------------------------------------------------------------------

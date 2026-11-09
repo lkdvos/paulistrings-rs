@@ -22,7 +22,7 @@ extern "C" __global__ void k_rescale(const u64* __restrict__ x, const u64* __res
             k = load_key(x, z, src);
             const u32 s = support_bits(k, support_size, qubit_0, qubit_1);
             product = coeff_mul(coeff_load(c, src), coeff_load(amplitude, s));
-            ok = !coeff_is_zero(product) && keep_eval(keep, [&]() -> Key { return k; }, product);
+            ok = survives(keep, k, product);
         }
         const u32 bal = __ballot_sync(~0u, ok);
         if (ok) {

@@ -5,8 +5,9 @@ use num_complex::{Complex32, Complex64};
 use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum};
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
-    and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, cancellation_channel,
-    cancellation_sum, coefficient_tolerance, differential_channels_w1, differential_channels_w2,
+    and, assert_runs_agree, assert_runs_agree_count_only, assert_terms_close,
+    assert_terms_close_up_to_residues, cancellation_channel, cancellation_sum,
+    coefficient_tolerance, device_run_as, differential_channels_w1, differential_channels_w2,
     from_host_with_nvrtc_options, haar_su4_matrix, heavy_cut, non_hermitian_circuit, or,
     propagate_discarding, rand_sum, rand_sum_real, random_circuit, single_cuts, spread_magnitudes,
     trotter_circuit, with_hash, zz_rotation, KeepAll, ShiftX, Xs64,
@@ -82,7 +83,12 @@ fn check_with<const W: usize, T>(
         if let Some(p) = permuted {
             assert_eq!(c.permuted, p, "{what}: {c:?}");
         }
-        assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
+        if discarded == 0.0 {
+            // A rotation run joins one-qubit tables, which can round a cancellation the host makes exact.
+            assert_terms_close_up_to_residues(&got, &want, TOL, &what);
+        } else {
+            assert_runs_agree(policy, discarded, &got, &want, TOL, &what);
+        }
     }
 }
 
@@ -692,10 +698,7 @@ fn device_as<const W: usize, C: Coefficient>(
     policy: &BuiltinTruncation,
     direction: Direction,
 ) -> PauliSum<W> {
-    let narrowed = sum.cast::<C>(0.0).expect("a real input sum");
-    let mut dev = GpuPartitionedSum::<W, C>::from_host(&narrowed, 0).expect("upload");
-    dev.propagate(circuit, policy.clone(), direction).expect("device propagate");
-    dev.gather().expect("download").cast::<Complex64>(0.0).expect("widening never fails")
+    device_run_as::<W, C>(circuit, sum, policy, direction, GpuLayerOptions::default(), false).0
 }
 
 /// The device run in every coefficient type against the host `Complex64` run, both directions.

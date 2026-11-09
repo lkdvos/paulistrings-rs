@@ -175,8 +175,14 @@ Over MPI they beat random rows **2.4× (2 ranks) to 1.9× (8 ranks)**, and **3.4
 
 ### Collapse-to-one sampling (hybrid PP-MC)
 
-`CollapseSample` reproduces arXiv:2607.25998's hybrid PP-MC, collectively over partitions and ranks.
+These numbers are for the collapse-to-one rule (one string drawn by `|c|²`, restarted at coefficient 1), which reproduced arXiv:2607.25998's hybrid PP-MC; `CollapseSample` now draws `samples` systematic points by `|c|` instead, and B8 pairs independent trajectories.
 56-qubit echo at cache 5e7: **131 s on 8 threads, 3.9 GB** against the paper's ~8 min on 10 cores; cache 3e10 over 16 ranks moves no η outside its standard error.
+
+### Unbiased systematic collapse on the echo
+
+On the 9-qubit B8 patch (`L = 2`, η = 9π/40, one channel per gate, exact echo 0.993 over 262 142 terms), the paired unbiased estimator is unusable below saturation: cache 2e5 with 131 072 samples collapses ~90 times per trajectory and gives **40 ± 22** over 60 pairs, cache 3.3e4 gives ~1e20, and caches ≤ 256 give pairs with no shared string (estimate 0).
+Every collapse after a gate loses the cancellations the echo needs, so `Σ|c|` compounds across collapses; on the first 100 gates probed on all nine qubits, with ~15 collapses per trajectory, the same estimator gives 0.429 ± 0.002 against the exact 0.430 over 200 pairs.
+The 56-qubit `L = 1` pair at cache 2e4 and 1e4 samples shares no string (estimate 0).
 
 ### Partition rows on x-bits for CZ and `rz` circuits
 
@@ -219,6 +225,12 @@ Every parser uses the core's Hermitian convention, `Y ↔ (x=1, z=1)` with no ph
 ### Resolved: `AmplitudeDamping` was transposed
 
 `apply`/`apply_adjoint` were swapped; caught by the PauliPropagation.jl baseline, now pinned from both sides.
+
+### Resolved: the debug-build Rayon stack overflow
+
+`octave_histogram` reduced `[u32; 2048]` partials by value, and a debug build keeps each move through Rayon's join frames: **~200 KiB of stack per split level**, 2.0 MiB over 10 levels at 32 threads, so a 2 MiB worker overflowed (flakily in the suite, wherever stealing nested deep enough).
+Heap partials take ~5 KiB a level and fit 128 KiB; the 16 MiB `RUST_MIN_STACK` in `.cargo/config.toml` is gone, and `octave_histogram_fits_a_small_worker_stack` holds the line.
+Never move a multi-KiB value through a Rayon reduction.
 
 ### `Gf2Hash` rows are splitmix64, not xorshift successors
 
@@ -473,8 +485,8 @@ The send side stays whole, the default is unbounded, and the NCCL form is unmeas
 
 Sparse fused layers are neither memory- nor compute-bound: ~50% barrier stalls over eight radix passes, ~50% of shared-memory wavefronts are bank-conflict replays, DRAM 22–26%.
 At 1e4 terms about 0.08 ms of a 0.15 ms layer is host issue and round trips.
-Shipped from this profile: the Clifford permutation path and the on-disk NVRTC cache.
-Open levers, by estimated gain: rotation dedup as a shared-memory hash join instead of eight radix passes (fused layer −50–65%); fewer host round trips, then a captured graph (~2× at 1e4); disabling cudarc event tracking on single-stream sums (−15–18% at 1e4, needs a multi-stream audit); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
+Shipped from this profile: the Clifford permutation path, the rotation join (§Rotation layers join instead of sorting) and the on-disk NVRTC cache.
+Open levers, by estimated gain: fewer host round trips (taken for joins and `ApproxTopN`, §Device layers read their lengths back a layer late), then a captured graph (~2× at 1e4, not attempted, §Fewer stream operations per device layer); geometric over-reservation of arena and output columns (`trotter`, unmeasured); chunked or pinned first `to_host`/`from_host`; fused-layer bank conflicts.
 
 ### GPU Clifford permutation path
 
@@ -482,11 +494,197 @@ A permutation table (one emitting entry per pattern, no colliding outputs, no re
 **−62.7% to −66.9%** wall on `cnot` from 1e5 to 1.6e7 (5/5); `heavyhex_step` (rotations only) is flat as the control.
 Open: Clifford layers with received entries, and an emitter count replacing `k_permute_count`'s survivor pass.
 
+### Rotation layers join instead of sorting
+
+A two-entry table with one identity-mask entry (every rotation, tabulated or wide) and no received entry runs `k_join`: per output bucket a shared open-addressing table over the base rows a partner can land on, probed by the partner rows; every other row is written as it is read, so there is no sort, no fallback and no segmented sum (`JoinTable` in `engine/gpu/prepared.rs`).
+A/B on ccqlin038's A6000 against the radix fused layer, same binary (a since-removed switch), `sampling_bench` release with the JCC flag, f64, SM 1800–1890 MHz, memory 7601 MHz:
+
+| cell | radix wall | join wall | Δ wall | rotation layer mean, radix → join |
+|---|---|---|---|---|
+| kicked Ising `--approx-topn 1e6` (2 pairs) | 3.264 / 3.381 s | 2.679 / 2.839 s | **−17.9% / −16.0%** | 911 → 696 µs |
+| kicked Ising `--approx-topn 1e7` (2 pairs) | 25.82 / 25.98 s | 20.62 / 20.67 s | **−20.1% / −20.4%** | 7739 → 5695 µs |
+| kicked Ising `--threshold 2.5e-5` (2 pairs) | 38.23 / 38.70 s | 28.81 / 28.63 s | **−24.6% / −26.0%** | 11162 → 7421 µs |
+| TFIM 16×16 `--approx-topn 1e6` (2 pairs) | 15.00 / 15.01 s | 13.43 / 13.36 s | **−10.4% / −11.0%** | 1476 → 1322 µs |
+| TFIM 16×16 `--approx-topn 1e7` (1 pair) | 125.69 s | 123.77 s | −1.5% | 12809 → 12654 µs |
+
+Under the threshold both paths give the same counts and ⟨Z₆₂⟩ = 0.171746373755 to 12 digits; under `ApproxTopN` the readouts differ in the fourth digit, as the boundary octave keeps terms in bucket order, which the join's atomic slot claims do not fix.
+Phase timing at kicked Ising 1e7: `merge` (fused layer plus Clifford scatter) 16338 → 10822 ms; a saturated rotation layer's coset loop 9273 → 6332 µs, of which `gather` and `compact` (≈2.5 ms together) are unchanged.
+TFIM at 1e6: `merge` 6649 → 5077 ms (−24%), while `compact` (2.8 s) and the `ApproxTopN` pass (3.5 s) stay.
+Open: the TFIM 1e7 cell (W = 4) gains almost nothing, unexplained without a phase profile.
+Fused runs of commuting rotations, whose outputs can collide across every non-empty entry subset, run per class bucket in shared memory instead of through a base-only table (§Rotation runs under a per-term filter in one pass).
+The join's compaction is gone (§Join layers write the output columns directly).
+
+### Join layers write the output columns directly (revisits §Compaction stays; the loose CSR is rejected)
+
+`k_join` writes each output bucket at its position's pre-dedup offset in the output columns and sets the bucket's start and length itself, so a join layer has no arena and no `k_compact`; the output keeps a gap after each bucket, at most the layer's partner rows, which is the loose CSR the fused layer rejected at `su4`'s 15-fold fanout and costs a join at most twice its input (`layer/join.rs`).
+ncu had the compaction at 20% of a kicked Ising 1e7 rotation layer, 1.3 of its 4.4 GB.
+`sampling_bench` release, JCC flag, f64, ABAB against `gpu@42f46085`, 3 rounds, SM 1845–1890 MHz, memory 7601 MHz:
+
+| cell | before (s) | after (s) | Δ |
+|---|---|---|---|
+| kicked Ising `--approx-topn 1e6` | 1.483 / 1.476 / 1.476 | 1.152 / 1.152 / 1.142 | **−22.3 / −22.0 / −22.6%** |
+| kicked Ising `--approx-topn 1e7` | 10.92 / 10.96 / 10.95 | 8.056 / 8.078 / 8.072 | **−26.2 / −26.3 / −26.3%** |
+| kicked Ising `--threshold 2.5e-5` | 8.044 / 8.077 / 8.075 | 7.901 / 7.920 / 7.831 | −1.8 / −1.9 / −3.0% |
+| TFIM 16×16 `--approx-topn 1e6` | 10.37 / 10.45 / 10.81 | 8.045 / 8.500 / 8.020 | **−22.4 / −18.7 / −25.8%** |
+| TFIM 16×16 `--threshold 1e-5` | 3.127 / 3.087 / 3.176 | 2.558 / 2.605 / 2.574 | **−18.2 / −15.6 / −19.0%** |
+
+Threshold readouts are identical to 12 digits; kicked Ising under a threshold runs its rotations mostly as fused runs (§Rotation runs under a per-term filter in one pass), so it gains little.
+
+### Lone device sums skip cudarc's event tracking
+
+With more than one stream on a context, cudarc waits on and records an event per slice argument of every launch; host timers in `apply_layer_body` at TFIM 16×16 `--collapse --cache 1e5 --samples 2.5e4` (≈40k terms, ~530 µs a pass) put 87 µs in the table upload and `k_count`, 172 µs in `sizes` and 127 µs in the batch loop's five launches with no synchronization in it, ~25 µs a launch.
+A lone partition's sum now lives on a context object of its own with tracking off (`untracked_context` in `engine/gpu/sum.rs`); group members, whose buffers meet peer and NCCL streams, keep it.
+`sampling_bench` GPU f64, SM 1890–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM 1e5 **1.590 / 1.568 → 1.334 / 1.328 s (−16%)**, kicked Ising 1e5 0.412 / 0.398 → 0.382 / 0.370 s (−8%).
+Reading the batch total after the compaction with the fallback counters (three synchronizations a fused or join layer to two) was within the ±10% noise of these cells on its own.
+
+### Rotation runs under a per-term filter in one pass
+
+Under a per-term filter the device ran a rotation run's layers one by one through the join; it now groups the strings any layer touches by class (key off the run's qubits) into class buckets, and one block per class bucket applies every layer in shared memory, asking `keep` after each layer as the host does (`engine/gpu/layer/rotation_run.rs`).
+Kicked Ising at `--threshold 2.5e-5` (phase-timing build, SM 1845–1860 MHz, memory 7601 MHz): **21.8 → 8.44 s**, `rx` 20.7 → 7.4 s, readout identical to 12 digits; per run of 8 layers `gather` (classify and gather) 7.5 ms, `merge` (apply) 10.7 ms, `compact` (place and scatter) 5.2 ms at ~1.2e7 terms.
+About 32% of input strings are touched by a run; 5 of 338 runs outgrew a block (1024 strings), which §A crowded class reruns over global tables now absorbs.
+A row table sized from the block's input rather than its capacity made 107 of 333 runs overflow (16.8 s).
+Rejected: class buckets sized from the previous run's touched fraction, with up to two regathers at one more class bit after an overflow, **8.61 s against 8.44 s**; the fraction swings between runs on different qubits, so 60 attempts overflowed and regathered.
+Open: `gather` and `compact` read every string twice more than the join's lower bound, and the gather writes touched strings scattered by class bucket.
+
+### A crowded class reruns over global tables
+
+A class bucket that outgrows its block lists itself, and only those rerun one block each over tables in global memory sized at four times the largest overflowed input, again at four times the rows on a second overflow; the run falls back to its layers one by one only past 2^22 rows a class bucket or 1 GiB a pass (`apply_wide` in `engine/gpu/layer/rotation_run.rs`).
+On TFIM 16×16 at `--threshold 1e-5` the block fallback had taken 424 of 1240 runs and 3.0 of 3.56 s, 397 of them among the 600 `ZZ` runs: the strings wholly inside a run's qubits share one class, the one with nothing elsewhere, a median 2258 strings in the largest class bucket against the block's 512-string input half, and no class-bit count splits one class.
+`sampling_bench` GPU f64, SM 1845–1905 MHz, memory 7601 MHz, two interleaved pairs: TFIM `--threshold 1e-5` **3.698 / 3.684 → 1.347 / 1.297 s (−64%)**, readout identical to 12 digits; `--threshold 3e-6` 41.3 s (phase-timing build) → 9.79 s.
+
+### Kernel keys stay in registers
+
+ncu (2025.1 runs on ccqlin038; nsys does not) on steady-state launches put `k_join` at 87% of DRAM peak, but a third of its traffic was local memory: `support_bits` indexed a key word at run time (`k.x[q >> 6]`), which spills the whole key to local memory, at 1.4 useful bytes of 32 per sector (`k_join` W = 2: 160 B stack frame, W = 4: 320 B and 84 registers; `k_count` 32/64 B; the permutation run's `run_bit` select too, as ptxas folds a select chain back into an index).
+`key_bit` masks the word out of every word instead: no stack frame left on `k_join` (W = 2), `k_count` or `k_permute_run_*`, and `k_join` W = 4 at 64 registers.
+The rotation run's `rr_bit` and `rr_with_pattern` had the same defect (64–384 B stack frames on `k_rotation_run_*`); with `key_bit` and per-word masks none is left, and TFIM 16×16 `--threshold 1e-5` went **1.299 / 1.322 / 1.313 → 1.153 / 1.126 / 1.149 s (−11% to −15%)**, readout identical (SM 1890–1905 MHz, memory 7601 MHz).
+A/B (`sampling_bench` release, JCC flag, f64, ABAB, SM 1800–1875 MHz, memory 7601 MHz): kicked Ising `--approx-topn 1e7` **15.03 / 15.26 → 11.36 / 11.55 s (−24.4% / −24.3%)**, TFIM 16×16 `--approx-topn 1e6` **14.81 / 14.13 / 13.39 → 12.18 / 11.45 / 11.73 s (−17.7% / −19.0% / −12.4%)**.
+
+### Warp-per-bucket kernels narrow their blocks at few buckets
+
+TFIM 16×16 and kicked Ising at `--approx-topn 1e6` run at 1024 buckets, where eight-warp blocks make a 128-block grid: 44 of 84 SMs hold two blocks and 40 hold one, so `k_retain`, `k_count`, `k_boundary_counts` ran at 23–26% achieved occupancy and `k_retain` at 505 GB/s (ncu).
+`warp_per_bucket` keeps at least 1024 blocks by narrowing to one warp a block: `k_retain` 324 → 265 µs (617 GB/s), `k_count` 130 → 103 µs.
+Wall (ABAB, 3 rounds, SM 1770–1890 MHz, memory 7601 MHz): TFIM `--approx-topn 1e6` **−4.8% / −3.7% / −3.9%**, kicked Ising 1e6 −0.9% / −1.9% / +0.2% (not consistent), kicked Ising 1e7 (16384 buckets, unchanged shape) flat as the control.
+
+### Keys move as 16-byte vectors
+
+ncu found `k_join`'s global loads using 14.5 and its stores 16.4 of 32 bytes per sector per request, one 8-byte word per lane per instruction; `load_key`/`store_key` move an even W's words as `ulonglong2` in the join, compaction, retain and permutation-run scatter.
+Same DRAM bytes, half the LSU requests: TFIM `--approx-topn 1e6` −2.6 / −1.8 / −2.0 / −3.9 / −2.5 / −2.1% (6/6), kicked Ising 1e7 −0.9 / −0.8 / −1.0 / −0.9 / −0.5% (5/5), threshold 2.5e-5 −0.3 / −0.2%, kicked Ising 1e6 mixed (−3.3 to +1.6%).
+
+### A shared-memory carveout hint on `k_join` is flat
+
+ncu showed `k_join` W = 4 limited to one block per SM by shared memory under the driver's default carveout; `CU_FUNC_ATTRIBUTE_PREFERRED_SHARED_MEMORY_CARVEOUT = 100` lifts that to five, but wall moved +1.3% / 0.0% / +1.0% on TFIM `--approx-topn 1e6` and +0.2% / +0.8% / +0.3% on kicked Ising 1e7 (3 rounds), since the join is at 83–87% of DRAM peak either way; rejected.
+
+### Apply blocks pack class buckets by touched rows
+
+Class buckets sized from every string, touched or not, left an apply block a handful of rows on TFIM, where a run touches about 7% of the sum, so per-block setup (table clears, eight layers of barriers) dominated `merge`; class buckets now aim at 32 strings each and `k_rotation_run_ranges` packs consecutive ones into blocks of about 128 touched rows, after one synchronization reads the touched count (`BLOCK_ROWS` in `engine/gpu/layer/rotation_run.rs`).
+`sampling_bench` GPU f64, SM 1890–1905 MHz, memory 7601 MHz, interleaved: TFIM 16×16 `--threshold 1e-5` **1.140 / 1.159 / 1.120 → 0.955 / 0.938 / 0.960 s (−16%)**, `--threshold 3e-6` 8.40 → 6.73 / 6.73 s (−20%), readouts identical; phase timing at 1e-5, `merge` 559 → 275 ms.
+Blocks of 256 touched rows: 0.990 / 0.971 / 0.975 s and 6.75 / 6.72 s, and kicked Ising `--threshold 2.5e-5` 7.07 / 7.11 → 6.27 s; of 512: 1.027 / 1.025 / 1.053 s.
+
+### No exact run rule admits `ApproxTopN` rotation runs at the cap
+
+`ApproxTopN(n)` keeps exactly `n` terms whenever a layer leaves more, and at the cap every TFIM rotation layer adds strings, so its pass is never the no-op a deferred pass needs (`TruncationPolicy::run_length_limit`); only layers whose pass kept every term could join a run under any exact rule.
+TFIM 16×16 on the device, `--layers-out`: at `--approx-topn 1e5` those are 1309 of 9920 layers, 0.158 of 2.678 s wall with 0.016 s of passes, and at `1e6` 1438 layers, 0.229 of 10.21 s; the `len × fanout ≤ n` rule already saves 749 and 1123 passes among them.
+Rejected: a tighter rule gains at most 6% and 2%.
+
+### `ApproxTopN` cuts in place on device
+
+`k_cut` replaces `k_boundary_counts`, its scan and `k_retain` for `ApproxTopN`: a byte of flag per row, then the dropped rows below a bucket's kept count take the kept rows above it, so the bucket keeps its start and no column is copied (`finalize.rs`); exact `TopN` keeps the order-preserving `retain_device`.
+The kept count follows from the octave histogram unless its top bin, which a NaN shares, is populated, and a lone device within `n` skips the histogram.
+A quota that splits the boundary octave goes to the buckets in index order, found by a decoupled look-back inside `k_cut` (a warp takes its bucket from an atomic counter, so every lower bucket is already running), so a single cut keeps exactly the host's `retain_at_edge` terms.
+`sampling_bench` release, JCC flag, f64, ABAB, 3 rounds, memory 7601 MHz:
+
+| change | cell | Δ |
+|---|---|---|
+| in-place cut, atomic-ticket quota, vs `gpu@9b821531` (SM 1830–1905 MHz) | kicked Ising `--approx-topn 1e6` | −16.5 / −17.8 / −16.1% |
+| | kicked Ising `--approx-topn 1e7` | −23.8 / −23.4 / −23.7% |
+| | TFIM 16×16 `--approx-topn 1e6` | −29.0 / −30.1 / −30.6% |
+| quota in bucket order by `k_boundary_counts` and a scan, vs tickets | kicked Ising `--approx-topn 1e7` | +1.3 / +1.6 / +1.6% |
+| | TFIM 16×16 `--approx-topn 1e6` | +6.9 / +5.5 / +5.8% |
+| look-back instead of that pass (SM 1815–1890 MHz) | TFIM 16×16 `--approx-topn 1e5` | −4.4 / −7.9 / −8.9% |
+| | TFIM 16×16 `--approx-topn 1e6` | −2.5 / −3.4 / −5.3% |
+| | kicked Ising `--approx-topn 1e7` | −1.9 / −2.7 / −2.9% |
+
+Rejected: the atomic-ticket quota, which hands the boundary octave to buckets in arrival order.
+It is a valid `ApproxTopN` cut and agrees with the host under `assert_runs_agree`, but TFIM 16×16 at `--approx-topn 1e6` read 0.3027–0.3047 at step 10 against 0.2895–0.2898 for the bucket-order device cut, 0.2892 on the CPU and 0.2837 at `1e7`, drifting from step 3; bucket order reads 0.2894–0.2900.
+
+### Join layers size their output from the source bucket lengths
+
+A join position reads two source buckets, so `in_len[β ^ δ₀] + in_len[β ^ δ₁]` bounds its output: `k_join_rows` and one scan replace `k_count`, `k_rows` and the segment-start download, and the bound totals exactly twice the input rows (`layer/join.rs`).
+The join's refine loop caps only the source bucket length (`k_join`'s 13-bit row index); `--layers-out` traces of kicked Ising `1e7` and TFIM `--threshold 1e-5` ran every layer at the same bucket bits without the fused layer's record cap.
+Sized at twice its input, an exactly reserved output reallocated at nearly every join of a growing run, which cost TFIM `--threshold 1e-5` +30–36%; the output now grows by half again.
+`sampling_bench` release, JCC flag, f64, ABAB, 3 rounds, SM 1800–1905 MHz, memory 7601 MHz:
+
+| change | cell | Δ |
+|---|---|---|
+| sizing from lengths, vs the in-place cut | kicked Ising `--approx-topn 1e6` | −13.0 / −12.0 / −11.6% |
+| | kicked Ising `--approx-topn 1e7` | −15.7 / −15.2 / −14.7% |
+| | TFIM 16×16 `--approx-topn 1e6` | −15.2 / −15.3 / −14.0% |
+| | kicked Ising `--threshold 2.5e-5` | +0.2 / −1.2 / −0.3% |
+| growth by half again, vs exact | TFIM 16×16 `--threshold 1e-5` | −3.3 / −5.1 / −5.1% |
+| | TFIM 16×16 `--approx-topn 1e5` | −0.7 / −2.5 / −5.0% |
+
+Kicked Ising `1e7`'s 14-bit rx layers went from 5246 to 4321 ms at identical bucket bits.
+Together with the in-place cut, against `gpu@baf06f04` (SM 1800–1860 MHz): kicked Ising `--approx-topn 1e6` 1.165 / 1.196 / 1.122 → 0.836 / 0.853 / 0.840 s, `1e7` 8.08 / 8.07 / 8.02 → 5.19 / 5.15 / 5.15 s, TFIM `--approx-topn 1e6` 7.99 / 8.04 / 8.03 → 4.83 / 4.80 / 4.80 s, `1e5` 2.48 / 2.47 / 2.57 → 1.56 / 1.56 / 1.69 s, both thresholds flat.
+
+### Device layers read their lengths back a layer late
+
+A lone sum's join and `ApproxTopN` layers read nothing back: the host carries an upper bound on the length and the longest bucket (`LengthTracker` in `engine/gpu/length.rs`), each publishing step copies the device's `[len, longest]` into pinned memory behind an event, and the host consumes a read-back only once a later one is in flight; the edge of a lone `ApproxTopN` pass is decided on the device (`k_octave_edge`).
+Decisions read only the bound and consumed anchors, never a read-back that happens to have landed, so they do not depend on timing; the bucket policy reads the last anchor with joins taken as keeping the length, so a refine lags its sum by a layer.
+Host synchronizations, counted by a probe around every read-back (`sampling_bench` release, f64):
+
+| layer | before | after |
+|---|---|---|
+| join (`join_sizes`, join total) | 2 | 0, or 1 when the longest-bucket bound passes `MAX_BUCKET_LEN` (33 in a TFIM `--approx-topn 1e5` run) |
+| lone `ApproxTopN` pass (histogram) | 1 | 0 |
+| rescale, permutation, permutation run (total) | 1 | 0 |
+| fused layer, rotation run under a filter | 3, 2 | unchanged |
+| any publishing step | | one lagged wait on the read-back before it |
+
+TFIM 16×16 `--approx-topn 1e5`: 9466 joins spent 731 ms of a 1.62 s run blocked in 27 543 synchronizations; afterwards the lagged waits take 557 ms, the device being now behind the host.
+`sampling_bench` release, JCC flag, f64, interleaved against `gpu@10a369b1`, 3 rounds, SM 1800–1905 MHz, memory 7601 MHz:
+
+| cell | before (s) | after (s) | Δ |
+|---|---|---|---|
+| TFIM 16×16 `--approx-topn 1e5` | 1.551 / 1.614 / 1.600 | 1.212 / 1.204 / 1.204 | **−21.8 / −25.4 / −24.7%** |
+| kicked Ising `--approx-topn 1e5` | 0.351 / 0.354 / 0.324 | 0.306 / 0.291 / 0.328 | −12.8 / −17.8 / +1.0% |
+| TFIM 16×16 `--approx-topn 1e6` | 4.808 / 4.782 / 4.852 | 4.416 / 4.441 / 4.465 | −8.2 / −7.1 / −8.0% |
+| kicked Ising `--approx-topn 1e6` | 0.825 / 0.829 / 0.825 | 0.771 / 0.769 / 0.785 | −6.6 / −7.2 / −4.8% |
+| TFIM 16×16 `--threshold 1e-5` | 1.030 / 0.964 / 1.022 | 0.934 / 0.919 / 0.908 | −9.3 / −4.7 / −11.1% |
+| kicked Ising `--threshold 2.5e-5` | 6.341 / 6.332 / 6.368 | 6.204 / 6.219 / 6.215 | −2.2 / −1.8 / −2.4% |
+
+Threshold readouts are identical to 12 digits; `ApproxTopN` readouts at `1e5` already differ run to run in the fourth digit on the base (TFIM 0.2015 / 0.2006 / 0.2006), as rows land in a bucket in atomic order.
+Not built: a redo from a checkpoint on a device overflow flag; with the bound proving `k_join`'s row index safe, or a synchronous settle when it cannot, no layer can overflow, and the lag keeps the device fed.
+
+### Fewer stream operations per device layer
+
+With the round trips gone the device is the bottleneck at `1e5` (the host waits on its lagged read-backs), so the stream operations of a layer count: a scan of at most 4096 elements is one launch, `k_octave_edge` and `k_join_rows` zero the next pass's buffers so a lone `ApproxTopN` join layer issues no memset, and a layer's tables and position map go up as one packed copy that `k_unpack_table` scatters, from about 24 operations a layer to 9.
+Against the previous entry, same protocol (SM 1800–1905 MHz): TFIM `--approx-topn 1e5` **1.202 / 1.173 / 1.212 → 1.134 / 1.062 / 1.094 s (−5.7 / −9.4 / −9.7%)**, kicked Ising `1e5` −15.3 / −12.1 / −5.9%, TFIM `1e6` −2.8 / −1.8 / −3.8%, kicked Ising `1e6` −5.3 / −3.6 / −4.2%, TFIM `--threshold 1e-5` −8.4 / −3.4 / −1.0%, kicked Ising `--threshold 2.5e-5` flat.
+Phase timing at TFIM `1e5` puts `k_join` at 45 µs a layer, about its DRAM traffic (every source row read twice and the output written once), and the `ApproxTopN` pass (histogram, edge, cut over 128 one-warp buckets) at 47 µs.
+Not attempted: a captured graph of a step's layers, since the host now waits on the device rather than the reverse.
+
+### A lone `ApproxTopN` join counts its output's octave histogram
+
+`k_join` bins each row it writes into a 2048-bin shared histogram after its table and folds it into `[len, bins…]`, so the lone pass after a join skips `k_octave_histogram`'s launch and its read of every coefficient (`LayerScratch::histogram_fresh`, cleared by every mutating layer).
+Against the previous entry, same protocol (SM 1815–1875 MHz): TFIM `--approx-topn 1e5` **1.097 / 1.147 / 1.101 → 1.025 / 0.971 / 1.016 s (−6.5 / −15.3 / −7.7%)**, TFIM `1e6` **4.342 / 4.310 / 4.332 → 3.864 / 3.847 / 3.883 s (−11.0 / −10.7 / −10.4%)**, kicked Ising `1e6` −2.2 / −3.7 / −4.4%, kicked Ising `1e5` mixed (−2.3 / +1.9 / −10.5%); the thresholds, which never count, read −2.3 / +1.8 / +7.8% (TFIM) and +0.6 / +0.4 / +0.5% (kicked Ising).
+Against 32 CPU threads in the same session (`--backend cpu --threads 32`): TFIM `1e5` 1.016 s median against 1.357 s, kicked Ising `1e5` 0.256 s against 0.305 s; before this series the device lost both (1.600 against 1.429 s, 0.351 against 0.314 s).
+
+### A join's output over-reserves up to twice the run's ceiling
+
+Grown by half again without a ceiling, both alternating output columns ratcheted to about `3n` under `ApproxTopN(n)`, and the exact fallback reallocated while the old spare was still held, so kicked Ising `--approx-topn 2e8` failed on a 19.2 GB request.
+A join's output now grows by half again only up to twice the policy's run length limit (`n` for `ApproxTopN`), and empty columns release their term columns before growing (`DeviceColumns::reserve`).
+Peak device memory (`nvidia-smi` every 200 ms, A6000 48 GB): kicked Ising `1e8` **25 352 → 21 864 MiB**, `2e8` out of memory → 42 760 MiB (17.3 s), TFIM 16×16 `1e8` **45 578 → 36 106 MiB** (211 s), about 4.5 × n × bytes per term; TFIM `1.5e8` still fails on a 20.1 GB request, as two `2n` output columns alone take 48 GB at 80 bytes a term.
+
 ### NCCL exchange between MPI ranks
 
 NCCL against host staging at two ranks on one A100 node: `su4` **3.5×**, `cnot` 6.3×, `rotation_remote` 6.8× (`HARDWARE.md § gpu cluster nodes — NCCL exchange between MPI ranks`).
 Verdict: NCCL is the only exchange of an MPI device group; host staging was removed.
 A four-rank hang on workergpu047 is attributed to that node; every job step is bounded by `scripts/slurm/bounded.sh`; two-node NCCL is unmeasured.
+
+### A cold kernel variant costs seconds, once per key
+
+Each `(W, coefficient, options)` variant on ccqlin038's A6000: NVRTC **6–8 s** (2.4 MB PTX at W ≤ 2), the PTX cache hit 1 ms, the driver's PTX→SASS load **5–8 s** cold and 9 ms from its cache; 21 concurrent in-process NVRTC compiles took 90 s, so compiles barely overlap.
+Any `.cu` edit makes every variant cold: the lib's device tests then outran a 600 s bound, against 85 s warm.
+`kernel_set_with_options` builds a key once while concurrent first requests wait: 15 finalize and collapse tests on cold caches went from 36 compiles and loads of 9 variants, 226 s, to 9 and 94 s.
 
 ## Open
 

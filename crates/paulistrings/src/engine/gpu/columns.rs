@@ -117,7 +117,7 @@ impl<const W: usize, C: Coefficient> DeviceColumns<W, C> {
         Ok(terms as u64 * Self::BYTES_PER_TERM as u64 + csr)
     }
 
-    /// Grow to hold `terms` terms and `buckets` buckets, keeping the live rows; the term columns and the CSR grow independently, and a failure reports the whole request's bytes with the capacities unchanged.
+    /// Grow to hold `terms` terms and `buckets` buckets, keeping the live rows; the term columns and the CSR grow independently, and a failure reports the whole request's bytes; it leaves the capacities unchanged, except that empty columns have released their term columns first.
     pub(crate) fn reserve(&mut self, terms: usize, buckets: usize) -> Result<(), GpuError> {
         let grow_terms = terms > self.term_capacity;
         let grow_buckets = buckets > self.bucket_capacity;
@@ -130,6 +130,14 @@ impl<const W: usize, C: Coefficient> DeviceColumns<W, C> {
             if grow_buckets { buckets } else { 0 },
         )?;
         let (n, b) = (self.len, self.buckets);
+        if grow_terms && n == 0 {
+            // Nothing to keep, so the old columns go before the new ones are allocated, and the peak never holds both.
+            self.term_capacity = 0;
+            for column in [&mut self.x, &mut self.z, &mut self.fingerprint] {
+                *column = alloc(stream, 1, ordinal, bytes)?;
+            }
+            self.coeff = alloc(stream, 1, ordinal, bytes)?;
+        }
         if grow_terms {
             grow_keep(stream, &mut self.x, terms * W, n * W, ordinal, bytes)?;
             grow_keep(stream, &mut self.z, terms * W, n * W, ordinal, bytes)?;

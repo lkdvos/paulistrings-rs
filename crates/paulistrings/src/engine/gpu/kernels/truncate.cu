@@ -1,8 +1,7 @@
 // k_octave_histogram: `ApproxTopN`'s octave histogram of |c|^2.
 // k_radix_histogram and k_radix_extract: exact `TopN`'s radix-select over the u64 bit pattern of |c|^2, which orders a non-negative f64 as its value.
-// Both retain through `k_boundary_counts` and `k_retain`: the key `bits >> shift` (shift 52 is the octave, 0 the exact value) above `boundary`, plus a quota of terms at it in bucket order.
+// Exact `TopN` retains through `k_boundary_counts` and `k_retain`: the key `bits >> shift` (shift 0, the exact value) above `boundary`, plus a quota of terms at it in bucket order; `ApproxTopN` cuts in place through `k_cut` at the octave (shift 52).
 
-#define APPROX_BINS 2048
 
 // out[0] += terms, out[1 + k] += population of octave k (`norm_sqr` bits >> 52); one warp per bucket, a shared histogram per block, integer atomics only.
 extern "C" __global__ void k_octave_histogram(const real_t* __restrict__ c, const u32* __restrict__ start,
@@ -17,10 +16,7 @@ extern "C" __global__ void k_octave_histogram(const real_t* __restrict__ c, cons
     for (u32 beta = blockIdx.x * (blockDim.x / WARP) + warp_id(); beta < B; beta += stride) {
         const u32 s = start[beta], len = lens[beta];
         for (u32 r = lane; r < len; r += WARP) {
-            const size_t i = (size_t)s + r;
-            const u64 bits = (u64)__double_as_longlong(coeff_norm_sqr(coeff_load(c, i)));
-            // A NaN with its sign bit set would index past the top bin; it shares it instead.
-            atomicAdd(&h[min((u32)(bits >> 52), (u32)(APPROX_BINS - 1))], 1u);
+            atomicAdd(&h[octave_bin(coeff_load(c, (size_t)s + r))], 1u);
         }
         if (lane == 0) atomicAdd(&terms, len);
     }
@@ -132,11 +128,7 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
         if (ok) {
             const size_t src = (size_t)start + r;
             const size_t dst = (size_t)start + run + __popc(bal & lanemask_lt());
-#pragma unroll
-            for (int w = 0; w < W; ++w) {
-                ox[dst * W + w] = x[src * W + w];
-                oz[dst * W + w] = z[src * W + w];
-            }
+            store_key(ox, oz, dst, load_key(x, z, src));
             coeff_store(oc, dst, v);
             og[dst] = g[src];
         }
@@ -146,4 +138,191 @@ extern "C" __global__ void k_retain(const u64* __restrict__ x, const u64* __rest
         out_start[beta] = start;
         out_len[beta] = run;
     }
+}
+
+// `ApproxTopN`'s cut in place: keep the terms whose key exceeds `boundary`, and of those equal to it the first `quota` in bucket order; `counters[0]` sums the kept terms.
+// One warp per bucket: a flag per row (0 dropped, 1 kept, 2 at the boundary), then the dropped rows below the bucket's kept count take the kept rows above it, so the bucket keeps its start and its kept terms fill its front, in no particular order.
+// The boundary terms ahead of a bucket come from a decoupled look-back over `prefix` (zeroed, one entry per bucket); a warp takes its bucket from `counters[1]` in launch order, so every lower bucket's warp is already running and the look-back never waits on an unscheduled one.
+#define CUT_QUEUE 64
+// `decision`'s words, `CutDecision` in finalize.rs: keep every term, else the boundary octave, its quota, and whether the quota splits the octave.
+#define CUT_KEEP_ALL 0
+#define CUT_BOUNDARY 1
+#define CUT_QUOTA 2
+#define CUT_ORDERED 3
+#define CUT_WARPS 8
+#define CUT_AGGREGATE (1ull << 62)
+#define CUT_INCLUSIVE (2ull << 62)
+#define CUT_VALUE (CUT_AGGREGATE - 1ull)
+
+// The boundary terms of buckets `0..beta`, publishing bucket beta's `at_n` first as its aggregate and then as an inclusive prefix; lane 0's result.
+__device__ __forceinline__ unsigned long long cut_look_back(unsigned long long* prefix, u32 beta, u32 at_n) {
+    volatile unsigned long long* p = prefix;
+    if (beta == 0) {
+        p[0] = CUT_INCLUSIVE | at_n;
+        return 0;
+    }
+    p[beta] = CUT_AGGREGATE | at_n;
+    unsigned long long before = 0;
+    for (u32 j = beta - 1;; --j) {
+        unsigned long long v;
+        do v = p[j]; while (v == 0);
+        before += v & CUT_VALUE;
+        if (v & CUT_INCLUSIVE) break;
+    }
+    p[beta] = CUT_INCLUSIVE | (before + at_n);
+    return before;
+}
+
+__device__ __forceinline__ void cut_move(u64* x, u64* z, real_t* c, u64* g, size_t dst, size_t src) {
+    store_key(x, z, dst, load_key(x, z, src));
+    coeff_store(c, dst, coeff_load(c, src));
+    g[dst] = g[src];
+}
+
+// Appends the rows of `[from, min(from + WARP, end))` that `want` picks to `q[n..]`; returns how many.
+template <class Want>
+__device__ __forceinline__ u32 cut_scan(u32* q, u32 n, u32 from, u32 end, Want want) {
+    const u32 r = from + lane_id();
+    const bool hit = r < end && want(r);
+    const u32 bal = __ballot_sync(~0u, hit);
+    if (hit) q[n + __popc(bal & lanemask_lt())] = r;
+    return __popc(bal);
+}
+
+extern "C" __global__ void __launch_bounds__(CUT_WARPS * WARP) k_cut(
+    u64* x, u64* z, real_t* c, u64* g, const u32* __restrict__ start, u32* __restrict__ lens, u32 B,
+    const u64* __restrict__ decision, u32 shift, unsigned long long* prefix, unsigned long long* __restrict__ counters,
+    u8* __restrict__ flag) {
+    __shared__ u32 queue[CUT_WARPS][2][CUT_QUEUE];
+    const u32 lane = lane_id(), w = warp_id();
+    if (blockIdx.x * (blockDim.x / WARP) + w >= B || decision[CUT_KEEP_ALL] != 0) return;
+    const u64 boundary = decision[CUT_BOUNDARY], quota = decision[CUT_QUOTA];
+    const u32 ordered = (u32)decision[CUT_ORDERED];
+    u32 beta = 0;
+    if (lane == 0) beta = (u32)atomicAdd(&counters[1], 1ull);
+    beta = __shfl_sync(~0u, beta, 0);
+    const u32 s = start[beta], len = lens[beta];
+    u8* f = flag + s;
+    u32 above_n = 0, at_n = 0;
+    for (u32 r0 = 0; r0 < len; r0 += WARP) {
+        const u32 r = r0 + lane;
+        u8 v = 0;
+        if (r < len) {
+            const u64 key = boundary_key(coeff_load(c, (size_t)s + r), shift);
+            v = key == boundary ? 2 : (key != NO_KEY && key > boundary ? 1 : 0);
+            f[r] = v;
+        }
+        above_n += __popc(__ballot_sync(~0u, v == 1));
+        at_n += __popc(__ballot_sync(~0u, v == 2));
+    }
+    unsigned long long first = 0;
+    if (ordered && lane == 0) first = cut_look_back(prefix, beta, at_n);
+    first = __shfl_sync(~0u, first, 0);
+    const u32 at_kept = first >= quota ? 0u : (u32)min((unsigned long long)at_n, quota - first);
+    const u32 kept = above_n + at_kept;
+    __syncwarp();
+    if (at_kept != 0 && at_kept != at_n) {
+        // The bucket that straddles the quota keeps its first `at_kept` boundary rows.
+        u32 rank = 0;
+        for (u32 r0 = 0; r0 < len; r0 += WARP) {
+            const u32 r = r0 + lane;
+            const bool at = r < len && f[r] == 2;
+            const u32 bal = __ballot_sync(~0u, at);
+            if (at) f[r] = rank + __popc(bal & lanemask_lt()) < at_kept ? 1 : 0;
+            rank += __popc(bal);
+        }
+        __syncwarp();
+    }
+    const u8 at_stays = at_kept == at_n ? 2 : 1;
+    const auto keeps = [&](u32 r) -> bool {
+        const u8 v = f[r];
+        return v == 1 || v == at_stays;
+    };
+    u32* holes = queue[w][0];
+    u32* movers = queue[w][1];
+    u32 hole_at = 0, mover_at = kept, nh = 0, nm = 0;
+    // Holes and movers are equally many, so the queues run dry together; neither runs at all when the bucket keeps everything or nothing.
+    for (bool open = kept != 0 && kept != len; open;) {
+        while (nh < WARP && hole_at < kept) {
+            nh += cut_scan(holes, nh, hole_at, kept, [&](u32 r) { return !keeps(r); });
+            hole_at += WARP;
+        }
+        while (nm < WARP && mover_at < len) {
+            nm += cut_scan(movers, nm, mover_at, len, keeps);
+            mover_at += WARP;
+        }
+        __syncwarp();
+        // A queue holds up to `2 * WARP - 1` rows, a round moves at most one per lane.
+        const u32 t = min(min(nh, nm), (u32)WARP);
+        if (t == 0) break;
+        if (lane < t) cut_move(x, z, c, g, (size_t)s + holes[lane], (size_t)s + movers[lane]);
+        const u32 h0 = lane + t < nh ? holes[lane + t] : 0, h1 = lane + t + WARP < nh ? holes[lane + t + WARP] : 0;
+        const u32 m0 = lane + t < nm ? movers[lane + t] : 0, m1 = lane + t + WARP < nm ? movers[lane + t + WARP] : 0;
+        __syncwarp();
+        if (lane + t < nh) holes[lane] = h0;
+        if (lane + t + WARP < nh) holes[lane + WARP] = h1;
+        if (lane + t < nm) movers[lane] = m0;
+        if (lane + t + WARP < nm) movers[lane + WARP] = m1;
+        __syncwarp();
+        nh -= t;
+        nm -= t;
+    }
+    if (lane == 0) {
+        lens[beta] = kept;
+        if (kept != 0) atomicAdd(&counters[0], (unsigned long long)kept);
+    }
+}
+
+// k_octave_edge: the host's `octave_edge` for `n >= 1` over `[len, bins…]`, into `decision` for `k_cut`; one block, each thread summing EDGE_PER octaves from the top down.
+// It then zeroes the histogram, `k_cut`'s counters and its `B` look-back entries, so the next histogram and this cut need no fill.
+#define EDGE_THREADS 256
+#define EDGE_PER (APPROX_BINS / EDGE_THREADS)
+extern "C" __global__ void __launch_bounds__(EDGE_THREADS) k_octave_edge(u64* __restrict__ hist, u64 n,
+                                                                         u64* __restrict__ decision,
+                                                                         unsigned long long* __restrict__ counters,
+                                                                         unsigned long long* __restrict__ prefix,
+                                                                         u32 B) {
+    __shared__ u64 sums[EDGE_THREADS];
+    const u32 t = threadIdx.x;
+    const u32 top = APPROX_BINS - 1 - t * EDGE_PER;
+    u64 own = 0;
+    for (u32 k = 0; k < EDGE_PER; ++k) own += hist[1 + top - k];
+    sums[t] = own;
+    __syncthreads();
+    for (u32 d = 1; d < EDGE_THREADS; d <<= 1) {
+        const u64 v = t >= d ? sums[t - d] : 0;
+        __syncthreads();
+        sums[t] += v;
+        __syncthreads();
+    }
+    const u64 len = hist[0];
+    if (len <= n) {
+        if (t == 0) {
+            decision[CUT_KEEP_ALL] = 1;
+            decision[CUT_BOUNDARY] = 0;
+            decision[CUT_QUOTA] = 0;
+            decision[CUT_ORDERED] = 0;
+        }
+    } else {
+        // The one thread whose octaves cross `n` walks them; the top octaves always hold more than `n` in all.
+        u64 kept = t == 0 ? 0 : sums[t - 1];
+        if (kept <= n && sums[t] > n) {
+            for (u32 k = 0; k < EDGE_PER; ++k) {
+                const u64 population = hist[1 + top - k];
+                if (kept + population > n) {
+                    const u64 quota = n - kept;
+                    decision[CUT_KEEP_ALL] = 0;
+                    decision[CUT_BOUNDARY] = top - k;
+                    decision[CUT_QUOTA] = quota;
+                    decision[CUT_ORDERED] = quota != 0 && quota < population;
+                    break;
+                }
+                kept += population;
+            }
+        }
+    }
+    __syncthreads();
+    for (u32 i = t; i < 1 + APPROX_BINS; i += EDGE_THREADS) hist[i] = 0;
+    for (u32 i = t; i < B; i += EDGE_THREADS) prefix[i] = 0;
+    if (t < 2) counters[t] = 0;
 }

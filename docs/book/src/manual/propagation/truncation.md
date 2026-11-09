@@ -36,13 +36,14 @@ Exact `topn` has no partitioned form, so `approx_topn` is the policy for [NUMA p
 **`partition_topn(n)`** and **`partition_approx_topn(n)`** are `topn(n)` and `approx_topn(n)` on each partition separately, without communicating, so no partition holds more than `n` terms between layers however unevenly the sum splits.
 It keeps the locally rather than the globally largest terms, up to `P·n` in all; `approx_topn(total) & partition_topn(n)` adds a global budget.
 
-**`collapse_sample(cache, seed)` samples instead of filtering.**
-Whenever a gate leaves more than `cache` strings it draws one string with probability `|c|² / Σ|c|²` and replaces the sum with it at coefficient 1, so a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
-It is unbiased only for weight-diagonal read-outs such as the [diagonal echo](../measurements.md#echo); average many seeds and report the standard error.
-`PropagationStats.collapses` counts the draws.
+**`collapse_sample(cache, samples, seed)` samples instead of filtering.**
+Whenever a gate leaves more than `cache` strings it replaces the sum by `samples` systematic draws in proportion to `|c|`, each worth `Σ|c|/samples` in the direction of its coefficient, with repeated draws of one string merged; a run is one trajectory of a Monte Carlo estimator and its result is a random variable of the seed.
+Every collapse is unbiased, so any read-out linear in the final sum, such as `expectation_product`, is an unbiased estimate; average many seeds and report the standard error.
+A quantity quadratic in the sum, such as an [echo](../measurements.md#echo), needs two independent trajectories, one on each side.
+`PropagationStats.collapses` counts the collapses.
 
 ```python
-sampler = truncation.collapse_sample(1_000, 7)
+sampler = truncation.collapse_sample(100_000, 10_000, 7)
 ```
 
 Policies compose with `&` (keep when both agree, and run every layer pass) and `|` (keep when either does); `|` combines per-term filters only, and raises `ValueError` on a `topn`, `approx_topn`, their `partition_` forms or `collapse_sample`:

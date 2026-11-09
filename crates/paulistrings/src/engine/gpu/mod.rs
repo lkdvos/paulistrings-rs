@@ -2,6 +2,7 @@
 //!
 //! [`GpuPartitionedSum`] holds a sum on one device or splits one across the devices of a process, and [`GpuDistributedSum`] holds one device's share per rank of a transport.
 
+mod collapse;
 mod columns;
 mod device;
 mod driver;
@@ -11,6 +12,7 @@ mod finalize;
 mod fingerprint;
 mod kernel_cache;
 mod layer;
+mod length;
 mod module;
 #[cfg(feature = "mpi")]
 mod nccl;

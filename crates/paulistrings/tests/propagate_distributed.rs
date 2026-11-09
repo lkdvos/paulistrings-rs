@@ -523,7 +523,7 @@ fn local_expectations_sum_to_the_whole_sums() {
 
 // ---- CollapseSample ---------------------------------------------------------
 
-/// One rank is the unpartitioned trajectory; more ranks collapse the same way in kind: a bounded, unit-norm sum and a nonzero collapse count on the shared policy.
+/// One rank is the unpartitioned trajectory; more ranks collapse the same way in kind: a sum bounded by the cache and a nonzero collapse count on the shared policy.
 #[test]
 fn collapse_sample_trajectories_over_ranks() {
     const CACHE: usize = 6;
@@ -532,39 +532,37 @@ fn collapse_sample_trajectories_over_ranks() {
         let want = propagate(
             &circuit,
             input.clone(),
-            &CollapseSample::new(CACHE, seed),
+            &CollapseSample::new(CACHE, 4, seed),
             Direction::Heisenberg,
         );
         let one = distributed(
             &circuit,
             &input,
-            &CollapseSample::new(CACHE, seed),
+            &CollapseSample::new(CACHE, 4, seed),
             Direction::Heisenberg,
             1,
         );
         assert_terms_close(&one, &want, 1e-12, &format!("seed {seed} one rank"));
 
         for size in [2u32, 4] {
-            let policy = CollapseSample::new(CACHE, seed);
+            let policy = CollapseSample::new(CACHE, 4, seed);
             let got = distributed(&circuit, &input, &policy, Direction::Heisenberg, size);
             assert!(policy.collapses() >= 1, "seed {seed} ranks={size}");
             assert!(got.len() <= CACHE, "seed {seed} ranks={size}: {} terms", got.len());
-            let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
-            assert!((norm - 1.0).abs() < 1e-12, "seed {seed} ranks={size}: {norm}");
         }
     }
 }
 
-/// Over `InProcessTransport` ranks, one collapse keeps exactly one string in the whole group, drawn with probability `|c|² / Σ|c|²`.
+/// Over `InProcessTransport` ranks one collapse draws exactly `samples` points across the group: every term holds `⌊samples·|c|/Σ|c|⌋` or `⌈…⌉` of them, each worth `Σ|c|/samples`.
 #[test]
-fn collapse_sample_distributed_picks_by_weight() {
+fn collapse_sample_distributed_draws_every_point_once() {
     use paulistrings::test_support::{
-        assert_frequencies, collapsed_index, four_term_keys, weighted_four_term_sum,
-        FOUR_TERM_WEIGHTS,
+        assert_draws_tile_l1, four_term_keys, weighted_four_term_sum,
     };
     use paulistrings::PartitionRuntime;
     let keys = four_term_keys::<1>();
     let input = weighted_four_term_sum::<1>(8);
+    let l1: f64 = input.iter().map(|(_, _, c)| c.norm()).sum();
     let mut circuit = Circuit::<1>::new(8);
     circuit.push(PtmChannel::depolarizing(0, 0.0));
 
@@ -577,23 +575,29 @@ fn collapse_sample_distributed_picks_by_weight() {
 
     let runtimes: Vec<_> =
         (0..size).map(|_| PartitionRuntime::new(&unpinned_partitions(1, 1)).unwrap()).collect();
-    let mut counts = [0usize; 4];
-    for seed in 0..250u64 {
-        let policy = CollapseSample::new(3, seed);
-        let gathered = on_ranks(size, |transport| {
-            use paulistrings::Collectives;
-            let runtime = runtimes[transport.rank() as usize].clone();
-            let options = ScatterOptions { runtime, rows: ScatterRows::Explicit(rows.clone()) };
-            let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
-            split.propagate(&circuit, &policy, Direction::Forward);
-            assert!(split.local().len() <= 1);
-            split.gather()
-        });
-        let got = gathered.into_iter().next().unwrap().unwrap();
-        counts[collapsed_index(&got, &keys)] += 1;
-        assert_eq!(policy.collapses(), 1);
+    for samples in [1usize, 5] {
+        let step = l1 / samples as f64;
+        for seed in 0..40u64 {
+            let policy = CollapseSample::new(3, samples, seed);
+            let gathered = on_ranks(size, |transport| {
+                use paulistrings::Collectives;
+                let runtime = runtimes[transport.rank() as usize].clone();
+                let options = ScatterOptions { runtime, rows: ScatterRows::Explicit(rows.clone()) };
+                let mut split = DistributedSum::scatter_with(input.clone(), transport, options);
+                split.propagate(&circuit, &policy, Direction::Forward);
+                assert!(split.local().len() <= samples);
+                split.gather()
+            });
+            let got = gathered.into_iter().next().unwrap().unwrap();
+            assert_draws_tile_l1(&got, l1, samples, &format!("seed {seed}"));
+            for (x, z, c) in input.iter() {
+                let points = got.get(x, z).map_or(0.0, |found| found.norm()) / step;
+                let share = c.norm() / step;
+                assert!(share.floor() <= points.round() && points.round() <= share.ceil());
+            }
+            assert_eq!(policy.collapses(), 1);
+        }
     }
-    assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("ranks={size}"));
 }
 
 /// A run repartitioned mid-way by other rows, and its buckets rehashed by explicit rows, continues exactly as the unpartitioned run: no term is lost or duplicated, and every rank holds only its new partition's keys.

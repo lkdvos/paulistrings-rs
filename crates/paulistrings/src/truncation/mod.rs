@@ -1,12 +1,12 @@
 //! The [`TruncationPolicy`] trait and the built-in policies.
 
 pub(crate) mod builtin;
+pub(crate) mod collapse_sample;
 pub(crate) mod octave_window;
 mod tree;
 
-pub use builtin::{
-    And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition, TopN, WeightCutoff,
-};
+pub use builtin::{And, ApproxTopN, CoefficientThreshold, Or, PerPartition, TopN, WeightCutoff};
+pub use collapse_sample::CollapseSample;
 pub use tree::BuiltinTruncation;
 
 use crate::coefficient::Coefficient;
@@ -95,6 +95,18 @@ pub trait TruncationPolicy<const W: usize, C: Coefficient = num_complex::Complex
     #[doc(hidden)]
     fn fused_approx_top_n(&self) -> Option<FusedApproxTopN> {
         None
+    }
+
+    /// The largest worst case of a run of local layers, its input length times the product of its layers' fanouts, at which a lone partition may run the layer pass once after the run instead of after each of its layers; `0` when the pass must follow every layer.
+    ///
+    /// An override must answer so that the deferred pass is still correct: [`TopN`] and [`ApproxTopN`] answer `n`, below which every pass of the run leaves the sum unchanged, and [`CollapseSample`] documents its own.
+    #[doc(hidden)]
+    fn run_length_limit(&self) -> usize {
+        if self.finalizes_layer() {
+            0
+        } else {
+            usize::MAX
+        }
     }
 }
 

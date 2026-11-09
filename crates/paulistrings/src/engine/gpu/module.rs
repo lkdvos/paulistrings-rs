@@ -26,11 +26,15 @@ const REFINE: &str = include_str!("kernels/refine.cu");
 const INVARIANTS: &str = include_str!("kernels/invariants.cu");
 const COUNT: &str = include_str!("kernels/count.cu");
 const LAYER: &str = include_str!("kernels/layer.cu");
+const JOIN: &str = include_str!("kernels/join.cu");
 const EXPORT: &str = include_str!("kernels/export.cu");
 const COMPACT: &str = include_str!("kernels/compact.cu");
 const RESCALE: &str = include_str!("kernels/rescale.cu");
 const PERMUTE: &str = include_str!("kernels/permute.cu");
+const PERMUTE_RUN: &str = include_str!("kernels/permute_run.cu");
 const TRUNCATE: &str = include_str!("kernels/truncate.cu");
+const COLLAPSE: &str = include_str!("kernels/collapse.cu");
+const ROTATION_RUN: &str = include_str!("kernels/rotation_run.cu");
 
 /// Every kernel family, concatenated into one NVRTC translation unit; later families use earlier ones' device functions.
 const KERNEL_SOURCES: &[&str] = &[
@@ -43,10 +47,14 @@ const KERNEL_SOURCES: &[&str] = &[
     COUNT,
     EXPORT,
     LAYER,
+    JOIN,
     COMPACT,
     RESCALE,
     PERMUTE,
+    PERMUTE_RUN,
     TRUNCATE,
+    COLLAPSE,
+    ROTATION_RUN,
 ];
 
 /// Records per fused-layer block at the full opt-in shared memory; `-DLAYER_CAP` to the kernels.
@@ -66,6 +74,18 @@ pub(crate) fn layer_threads(w: usize) -> u32 {
         _ => 256,
     }
 }
+
+/// Block width of the join layer (`kernels/join.cu`); `-DJOIN_THREADS` to the kernels.
+pub(crate) const JOIN_THREADS: u32 = 512;
+
+/// Strings a fused rotation-run block holds (`kernels/rotation_run.cu`), input and generated alike; `-DRR_ROWS` to the kernels.
+pub(crate) const RR_ROWS: usize = 1024;
+
+/// Block width of the fused rotation run's apply kernel; `-DRR_THREADS` to the kernels.
+pub(crate) const RR_THREADS: u32 = 256;
+
+/// Block width of the fused rotation run's apply kernel for class buckets that outgrew a block; `-DRR_WIDE_THREADS` to the kernels.
+pub(crate) const RR_WIDE_THREADS: u32 = 512;
 
 /// The coefficient type a kernel set compiles for, `-DCOEFF_SINGLE` and `-DCOEFF_COMPLEX` to the kernels, so two types never share a module.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -110,18 +130,20 @@ pub(crate) fn layer_shared_bytes(capacity: usize, w: usize, coefficient: Coeffic
     (11 * capacity + 144 + 256 * c + 256 * w + 128 + 320 + 72 + 16 + 32 * c + 128) as u32
 }
 
-/// One warp per bucket over `b` buckets, eight warps a block.
+/// One warp per bucket over `b` buckets, up to eight warps a block but narrower while that leaves fewer than 1024 blocks, since a few hundred wide blocks land two on some SMs and one on the rest.
 pub(crate) fn warp_per_bucket(b: usize) -> LaunchConfig {
-    thread_per(b * 32, 256)
+    let warps = 1usize << (b / 1024).clamp(1, 8).ilog2();
+    thread_per(b * 32, 32 * warps as u32)
 }
 
 /// One thread per element over `n` elements, `threads` a block.
 pub(crate) fn thread_per(n: usize, threads: u32) -> LaunchConfig {
-    LaunchConfig {
-        grid_dim: ((n as u32).div_ceil(threads).max(1), 1, 1),
-        block_dim: (threads, 1, 1),
-        shared_mem_bytes: 0,
-    }
+    launch_grid((n as u32).div_ceil(threads).max(1), threads, 0)
+}
+
+/// `grid` blocks of `threads`, with `shared` bytes of dynamic shared memory each.
+pub(crate) fn launch_grid(grid: u32, threads: u32, shared: u32) -> LaunchConfig {
+    LaunchConfig { grid_dim: (grid, 1, 1), block_dim: (threads, 1, 1), shared_mem_bytes: shared }
 }
 
 /// One compiled fused-layer variant: `items` records per thread, so `items * layer_threads(W)` records per block.
@@ -141,6 +163,7 @@ pub(crate) struct KernelSet {
     pub(crate) refine_scatter: CudaFunction,
     pub(crate) check_invariants: CudaFunction,
     pub(crate) count: CudaFunction,
+    pub(crate) unpack_table: CudaFunction,
     pub(crate) rows: CudaFunction,
     pub(crate) export_counts: CudaFunction,
     pub(crate) export_fill: CudaFunction,
@@ -152,13 +175,32 @@ pub(crate) struct KernelSet {
     pub(crate) permute_count: CudaFunction,
     pub(crate) permute_lengths: CudaFunction,
     pub(crate) permute_scatter: CudaFunction,
+    pub(crate) permute_run_count: CudaFunction,
+    pub(crate) permute_run_scatter: CudaFunction,
     pub(crate) octave_histogram: CudaFunction,
     pub(crate) radix_histogram: CudaFunction,
     pub(crate) radix_extract: CudaFunction,
     pub(crate) boundary_counts: CudaFunction,
     pub(crate) retain: CudaFunction,
+    pub(crate) cut: CudaFunction,
+    pub(crate) octave_edge: CudaFunction,
+    pub(crate) collapse_total: CudaFunction,
+    pub(crate) collapse_weights: CudaFunction,
+    pub(crate) collapse_scan_block: CudaFunction,
+    pub(crate) collapse_scan_single: CudaFunction,
+    pub(crate) collapse_scan_add: CudaFunction,
+    pub(crate) collapse_pick: CudaFunction,
     /// Ascending by `items`; the smallest whose capacity covers a layer's largest segment is launched.
     pub(crate) layer: Vec<LayerVariant>,
+    pub(crate) join: CudaFunction,
+    pub(crate) join_rows: CudaFunction,
+    pub(crate) rotation_run_classify: CudaFunction,
+    pub(crate) rotation_run_gather: CudaFunction,
+    pub(crate) rotation_run_apply: CudaFunction,
+    pub(crate) rotation_run_apply_wide: CudaFunction,
+    pub(crate) rotation_run_ranges: CudaFunction,
+    pub(crate) rotation_run_place: CudaFunction,
+    pub(crate) rotation_run_scatter: CudaFunction,
     /// The coefficient type the set was compiled for.
     pub(crate) coefficient: CoefficientLayout,
     threads: usize,
@@ -223,6 +265,10 @@ fn compile_options(
         format!("-DW={w}"),
         format!("-DTHREADS={}", layer_threads(w)),
         format!("-DLAYER_CAP={LAYER_CAP}"),
+        format!("-DJOIN_THREADS={JOIN_THREADS}"),
+        format!("-DRR_ROWS={RR_ROWS}u"),
+        format!("-DRR_THREADS={RR_THREADS}"),
+        format!("-DRR_WIDE_THREADS={RR_WIDE_THREADS}"),
         format!("-DMAX_BUCKET_LEN={MAX_BUCKET_LEN}u"),
         format!("-DKEEP_NODES={KEEP_NODES}"),
         format!("-DOP_KEEP={OP_KEEP}"),
@@ -238,7 +284,9 @@ fn compile_options(
 }
 
 type CacheKey = (u32, usize, CoefficientLayout, Vec<String>);
-type KernelCache = Mutex<HashMap<CacheKey, Arc<KernelSet>>>;
+/// A key's set once built; its mutex is held while building, so concurrent first requests wait for one build instead of each compiling.
+type KernelSlot = Arc<Mutex<Option<Arc<KernelSet>>>>;
+type KernelCache = Mutex<HashMap<CacheKey, KernelSlot>>;
 static KERNEL_CACHE: OnceLock<KernelCache> = OnceLock::new();
 
 fn cache() -> &'static KernelCache {
@@ -262,9 +310,24 @@ pub(crate) fn kernel_set_with_options(
     extra_options: &[String],
 ) -> Result<Arc<KernelSet>, GpuError> {
     let key = (ordinal, w, coefficient, extra_options.to_vec());
-    if let Some(set) = cache().lock().expect("kernel cache mutex poisoned").get(&key) {
+    let slot = cache().lock().expect("kernel cache mutex poisoned").entry(key).or_default().clone();
+    // A build that panicked left the slot empty; the next request builds afresh.
+    let mut slot = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(set) = slot.as_ref() {
         return Ok(set.clone());
     }
+    let set = build_kernel_set(ordinal, w, coefficient, extra_options)?;
+    *slot = Some(set.clone());
+    Ok(set)
+}
+
+/// Compiles (through the PTX cache) and loads the [`KernelSet`] for one key.
+fn build_kernel_set(
+    ordinal: u32,
+    w: usize,
+    coefficient: CoefficientLayout,
+    extra_options: &[String],
+) -> Result<Arc<KernelSet>, GpuError> {
     let context = device::context(ordinal)?;
     let (major, minor) = context.compute_capability().map_err(GpuError::from)?;
     let arch = format!("compute_{major}{minor}");
@@ -302,6 +365,13 @@ pub(crate) fn kernel_set_with_options(
         layer.push(LayerVariant { items, serial, segscan });
         items *= 2;
     }
+    let rotation_run_apply = load("k_rotation_run_apply")?;
+    rotation_run_apply
+        .set_attribute(
+            CUfunction_attribute::CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+            super::layer::rotation_run_shared_bytes(coefficient.bytes()) as i32,
+        )
+        .map_err(GpuError::from)?;
     if layer.is_empty() {
         return Err(GpuError::Unsupported(
             "device opt-in shared memory too small for the fused layer",
@@ -316,6 +386,7 @@ pub(crate) fn kernel_set_with_options(
         refine_scatter: load("k_refine_scatter")?,
         check_invariants: load("k_check_invariants")?,
         count: load("k_count")?,
+        unpack_table: load("k_unpack_table")?,
         rows: load("k_rows")?,
         export_counts: load("k_export_counts")?,
         export_fill: load("k_export_fill")?,
@@ -327,16 +398,34 @@ pub(crate) fn kernel_set_with_options(
         permute_count: load("k_permute_count")?,
         permute_lengths: load("k_permute_lengths")?,
         permute_scatter: load("k_permute_scatter")?,
+        permute_run_count: load("k_permute_run_count")?,
+        permute_run_scatter: load("k_permute_run_scatter")?,
         octave_histogram: load("k_octave_histogram")?,
         radix_histogram: load("k_radix_histogram")?,
         radix_extract: load("k_radix_extract")?,
         boundary_counts: load("k_boundary_counts")?,
         retain: load("k_retain")?,
+        cut: load("k_cut")?,
+        octave_edge: load("k_octave_edge")?,
+        collapse_total: load("k_collapse_total")?,
+        collapse_weights: load("k_collapse_weights")?,
+        collapse_scan_block: load("k_collapse_scan_block")?,
+        collapse_scan_single: load("k_collapse_scan_single")?,
+        collapse_scan_add: load("k_collapse_scan_add")?,
+        collapse_pick: load("k_collapse_pick")?,
         layer,
+        join: load("k_join")?,
+        join_rows: load("k_join_rows")?,
+        rotation_run_classify: load("k_rotation_run_classify")?,
+        rotation_run_gather: load("k_rotation_run_gather")?,
+        rotation_run_apply,
+        rotation_run_apply_wide: load("k_rotation_run_apply_wide")?,
+        rotation_run_ranges: load("k_rotation_run_ranges")?,
+        rotation_run_place: load("k_rotation_run_place")?,
+        rotation_run_scatter: load("k_rotation_run_scatter")?,
         coefficient,
         threads,
     });
-    cache().lock().expect("kernel cache mutex poisoned").insert(key, set.clone());
     Ok(set)
 }
 

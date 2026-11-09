@@ -4,8 +4,6 @@ use crate::dtype::{Dtype, PyCoefficient, Scalar};
 pub(crate) use crate::storage::{
     extract_complex, parse_pauli_key, width_mismatch, Pairing, PauliSumImpl, WidthSum,
 };
-#[cfg(feature = "cuda")]
-use crate::truncation_spec::COLLAPSE_SAMPLE_DEVICE_MSG;
 use crate::truncation_spec::{collapse_count, collapses_since, PyTruncation, TOPN_PARTITIONED_MSG};
 use num_complex::Complex64;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArrayDescr, PyArrayMethods, PyReadonlyArray2};
@@ -798,12 +796,6 @@ fn parse_device_mode(
             return Err(PyNotImplementedError::new_err(format!(
                 "{shown}: {}",
                 crate::gpu::TOPN_DEVICE_MSG
-            )));
-        }
-        // A collapse is a layer pass no device backend runs, at any partition count.
-        if policy.contains_collapse_sample() {
-            return Err(PyNotImplementedError::new_err(format!(
-                "{shown}: {COLLAPSE_SAMPLE_DEVICE_MSG}"
             )));
         }
         let (Some(devices), None) = (devices, comm) else {

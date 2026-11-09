@@ -2,6 +2,26 @@ use super::*;
 use num_complex::Complex64;
 use proptest::prelude::*;
 
+/// A 256 KiB worker stack holds the histogram's reduction at 32 threads, a debug build included; an overflow aborts the binary on a thread named after this test.
+#[test]
+fn octave_histogram_fits_a_small_worker_stack() {
+    let sum = crate::test_support::rand_sum::<1>(20_000, 64, 0x57AC);
+    assert!(sum.num_buckets() >= 128, "too few buckets to split 32 threads × 4 ways");
+    let want = octave_histogram(&sum);
+    assert_eq!(want.iter().map(|&count| count as usize).sum::<usize>(), sum.len());
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(32)
+        .stack_size(256 << 10)
+        .thread_name(|i| format!("octave_histogram_fits_a_small_worker_stack-{i}"))
+        .build()
+        .expect("pool");
+    pool.install(|| {
+        for _ in 0..50 {
+            assert_eq!(octave_histogram(&sum), want);
+        }
+    });
+}
+
 /// At `ε = 0` a magnitude whose square underflows is dropped: `(1e-100)²` survives, `(1e-200)²` rounds to `0.0`.
 #[test]
 fn coefficient_threshold_drops_squares_that_underflow_to_zero() {
@@ -73,7 +93,7 @@ fn or_with_top_n_panics_in_finalizes_layer() {
 fn or_with_layer_passes_nested_in_and_panics_in_finalizes_layer() {
     let policy = Or::new(
         And(WeightCutoff(2), ApproxTopN(4)),
-        And(CollapseSample::new(4, 1), CoefficientThreshold(0.1)),
+        And(crate::truncation::CollapseSample::new(4, 1, 1), CoefficientThreshold(0.1)),
     );
     let _ = <_ as TruncationPolicy<1>>::finalizes_layer(&policy);
 }
@@ -487,130 +507,7 @@ proptest! {
 }
 
 use crate::pauli_sum::Gf2Hash;
-use crate::test_support::{
-    assert_frequencies, assert_terms_close, collapsed_index, first_n_by_rank, four_term_keys,
-    magnitude_rank, octave_rank, rand_sum, storage_triples, weighted_four_term_sum,
-    FOUR_TERM_WEIGHTS,
-};
-
-/// Weights `[0, 1, 0, 2]`: slot 1 owns `[0, 1)`, slot 3 owns `[1, 3)`, and a target at or past 3 falls back to slot 3.
-#[test]
-fn pick_slot_walks_the_running_total() {
-    let w = [0.0, 1.0, 0.0, 2.0];
-    assert_eq!(pick_slot(w, 0.0), Some((1, 0.0)));
-    assert_eq!(pick_slot(w, 0.75), Some((1, 0.75)));
-    assert_eq!(pick_slot(w, 1.0), Some((3, 0.0)));
-    assert_eq!(pick_slot(w, 2.5), Some((3, 1.5)));
-    assert_eq!(pick_slot(w, 3.0), Some((3, 2.0)));
-    assert_eq!(pick_slot([0.0, 0.0], 0.0), None);
-}
-
-#[test]
-fn collapse_sample_is_a_no_op_up_to_the_cache() {
-    let input = weighted_four_term_sum::<1>(8);
-    for cache in [4usize, 5, 100] {
-        let policy = CollapseSample::new(cache, 7);
-        let mut sum = input.clone();
-        policy.finalize_layer(&mut sum);
-        assert_eq!(sum.to_arrays(), input.to_arrays(), "cache {cache}");
-        assert_eq!(policy.collapses(), 0);
-    }
-    assert!(<_ as TruncationPolicy<1>>::finalizes_layer(&CollapseSample::new(4, 7)));
-}
-
-#[test]
-fn collapse_sample_leaves_one_input_string_with_unit_coefficient() {
-    let keys = four_term_keys::<1>();
-    let policy = CollapseSample::new(3, 11);
-    for pass in 1..=5u64 {
-        let mut sum = weighted_four_term_sum::<1>(8);
-        policy.finalize_layer(&mut sum);
-        sum.assert_invariants();
-        collapsed_index(&sum, &keys);
-        assert_eq!(policy.collapses(), pass);
-    }
-}
-
-/// The draw is keyed by the pass as well as the seed, so one seed's successive passes over the same sum do not all pick one string.
-#[test]
-fn collapse_sample_draws_afresh_on_every_pass() {
-    let keys = four_term_keys::<1>();
-    let policy = CollapseSample::new(3, 11);
-    let picks: std::collections::HashSet<usize> = (0..16)
-        .map(|_| {
-            let mut sum = weighted_four_term_sum::<1>(8);
-            policy.finalize_layer(&mut sum);
-            collapsed_index(&sum, &keys)
-        })
-        .collect();
-    assert!(picks.len() > 1, "16 passes of one seed all drew {picks:?}");
-}
-
-/// Picks over 500 seeds match `|c|² / Σ|c|²` with the fixture spread over four buckets.
-fn check_pick_frequencies<const W: usize>(bits: u8) {
-    let keys = four_term_keys::<W>();
-    let input = weighted_four_term_sum::<W>(8).with_hash(Gf2Hash::new(8, bits, 0xB0C4));
-    if bits > 0 {
-        let used = (0..input.num_buckets()).filter(|&b| input.bucket_len(b) > 0).count();
-        assert!(used > 1, "the fixture must span several buckets");
-    }
-    let mut counts = [0usize; 4];
-    for seed in 0..500u64 {
-        let mut sum = input.clone();
-        CollapseSample::new(3, seed).finalize_layer(&mut sum);
-        counts[collapsed_index(&sum, &keys)] += 1;
-    }
-    assert_frequencies(&counts, &FOUR_TERM_WEIGHTS, &format!("W={W} bits={bits}"));
-}
-
-#[test]
-fn collapse_sample_draws_by_squared_magnitude() {
-    check_pick_frequencies::<1>(2);
-}
-
-/// The draw is keyed by `(seed, pass)`, so a trajectory repeats from its seed, and a local pool of one or eight threads picks the same string; coefficients agree to tolerance.
-#[test]
-fn collapse_sample_draw_is_a_function_of_the_seed() {
-    let input = rand_sum::<1>(4000, 16, 0xC011).with_hash(Gf2Hash::new(16, 5, 0x1234));
-    let pick = |threads: usize, seed: u64| {
-        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
-        pool.install(|| {
-            let policy = CollapseSample::new(100, seed);
-            (0..3)
-                .map(|_| {
-                    let mut sum = input.clone();
-                    policy.finalize_layer(&mut sum);
-                    sum
-                })
-                .collect::<Vec<_>>()
-        })
-    };
-    let mut distinct = std::collections::HashSet::new();
-    for seed in 0..8u64 {
-        let one = pick(1, seed);
-        for (other, what) in [(pick(8, seed), "eight threads"), (pick(1, seed), "repeat")] {
-            for (pass, (a, b)) in one.iter().zip(&other).enumerate() {
-                assert_terms_close(b, a, 1e-12, &format!("seed {seed} pass {pass} {what}"));
-            }
-        }
-        for sum in &one {
-            distinct.insert(sum.to_arrays().0[0]);
-        }
-    }
-    assert!(distinct.len() > 4, "passes and seeds must draw differently");
-}
-
-#[test]
-#[should_panic(expected = "cannot draw by weight")]
-fn collapse_sample_rejects_an_all_zero_sum() {
-    let mut sum = PauliSum::<1>::from_sorted_columns(
-        vec![[1], [2]],
-        vec![[0], [0]],
-        vec![Complex64::new(0.0, 0.0); 2],
-        4,
-    );
-    CollapseSample::new(1, 0).finalize_layer(&mut sum);
-}
+use crate::test_support::{first_n_by_rank, magnitude_rank, octave_rank, storage_triples};
 
 /// `And` requires both policies to accept. Pair a coeff threshold with a weight cutoff; only terms passing *both* survive.
 #[test]

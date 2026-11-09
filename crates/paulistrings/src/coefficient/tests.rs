@@ -41,3 +41,14 @@ fn conversions_norms_and_conjugates() {
         Complex32::new(0.5, -1.0)
     );
 }
+
+/// `|c|` in `f64` for every type, without the underflow `norm_sqr` has below about `1e-162`.
+#[test]
+fn magnitude_is_the_absolute_value_in_f64() {
+    assert_eq!((-3.0f64).magnitude(), 3.0);
+    assert_eq!((-0.5f32).magnitude(), 0.5);
+    assert_eq!(Complex64::new(3.0, -4.0).magnitude(), 5.0);
+    assert_eq!(Complex32::new(-3.0, 4.0).magnitude(), 5.0);
+    assert_eq!(Complex64::new(3e-200, 4e-200).magnitude(), 5e-200);
+    assert_eq!(Complex64::new(0.0, 0.0).magnitude(), 0.0);
+}

@@ -20,7 +20,7 @@ sys.path.insert(0, str(HERE))
 
 import ole  # noqa: E402
 
-KEY = ("L", "eta", "delta", "policy", "cache", "eps", "max_weight", "mpi_ranks")
+KEY = ("L", "eta", "delta", "policy", "cache", "samples", "eps", "max_weight", "mpi_ranks")
 
 
 def load(roots) -> dict[tuple, list[dict]]:
@@ -29,7 +29,7 @@ def load(roots) -> dict[tuple, list[dict]]:
         for path in sorted(Path(root).rglob("seed_*.json")):
             rec = json.loads(path.read_text())
             cfg = rec["config"]
-            groups[tuple(round(cfg[k], 6) if isinstance(cfg[k], float) else cfg[k] for k in KEY)].append(rec)
+            groups[tuple(round(cfg.get(k), 6) if isinstance(cfg.get(k), float) else cfg.get(k) for k in KEY)].append(rec)
     return groups
 
 
@@ -66,10 +66,15 @@ def plot(rows, path: Path) -> None:
     series = defaultdict(list)
     for r in rows:
         if "S_diag_mean" in r:
-            series[(r["L"], r["policy"], r["cache"], r["mpi_ranks"])].append(r)
-    for (L, policy, cache, ranks), rs in sorted(series.items(), key=lambda kv: str(kv[0])):
+            series[(r["L"], r["policy"], r["cache"], r["samples"], r["mpi_ranks"])].append(r)
+    for (L, policy, cache, samples, ranks), rs in sorted(series.items(), key=lambda kv: str(kv[0])):
         rs.sort(key=lambda r: r["eta"])
-        label = f"L={L} {policy}" + (f" M={cache:.0e}" if cache else "") + (f" ranks={ranks}" if ranks > 1 else "")
+        label = (
+            f"L={L} {policy}"
+            + (f" M={cache:.0e}" if cache else "")
+            + (f" N={samples:.0e}" if samples else "")
+            + (f" ranks={ranks}" if ranks > 1 else "")
+        )
         ax.errorbar(
             [r["eta"] for r in rs],
             [r["S_diag_mean"] for r in rs],
@@ -112,7 +117,7 @@ def main(argv=None) -> int:
         s = f"S_diag={r['S_diag_mean']:.4f}±{r.get('S_diag_stderr', math.nan):.4f} (std {r.get('S_diag_std', math.nan):.4f})"
         if "S_exact_mean" in r:
             s += f" S_exact={r['S_exact_mean']:.4f}"
-        print(f"L={r['L']} eta={r['eta']:.4f} {r['policy']} M={r['cache']} n={r['n']}: {s} norm={r['norm_mean']:.4g}")
+        print(f"L={r['L']} eta={r['eta']:.4f} {r['policy']} M={r['cache']} N={r['samples']} n={r['n']}: {s} norm={r['norm_mean']:.4g}")
     if args.csv:
         fields = sorted({k for r in rows for k in r}, key=lambda k: (k not in KEY, k))
         with args.csv.open("w", newline="") as fh:

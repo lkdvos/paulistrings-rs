@@ -158,7 +158,21 @@ fn layer_pass_leaves_follow_and() {
     );
     assert!(leaves(&or(T::Weight(3), T::Coefficient(0.1))).is_empty());
     assert!(leaves(&T::Coefficient(0.1)).is_empty());
-    let collapse = T::from(crate::truncation::CollapseSample::new(4, 1));
+    let collapse = T::from(crate::truncation::CollapseSample::new(4, 2, 1));
     assert_eq!(leaves(&and(T::Coefficient(0.1), collapse.clone())), vec![collapse.clone()]);
     assert_eq!(KeepProgram::lower(&collapse).unwrap(), KeepProgram::KEEP);
+}
+
+/// A device collapse counts its draws in 32 bits, so a `CollapseSample` of more is `Unsupported` before any layer, nested or not.
+#[test]
+fn more_draws_than_u32_is_unsupported() {
+    use crate::truncation::CollapseSample;
+    let draws = |samples: usize| T::from(CollapseSample::new(4, samples, 1));
+    assert!(KeepProgram::lower(&draws(u32::MAX as usize)).is_ok());
+    assert!(matches!(
+        KeepProgram::lower(&draws(u32::MAX as usize + 1)),
+        Err(GpuError::Unsupported(_))
+    ));
+    let nested = and(T::Coefficient(0.1), T::PerPartition(Box::new(draws(u32::MAX as usize + 1))));
+    assert!(matches!(KeepProgram::lower(&nested), Err(GpuError::Unsupported(_))));
 }

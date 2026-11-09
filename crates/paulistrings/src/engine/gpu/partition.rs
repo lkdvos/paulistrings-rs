@@ -1,10 +1,11 @@
 //! [`DevicePartition`], one partition of the layer loop held on a CUDA device.
 
+use super::collapse::collapse_sample_device;
 use super::error::GpuError;
 use super::finalize::{approx_top_n_device, top_n_device};
 use super::layer::{
-    apply_layer_device, gpu_desired_bits, prepared_fanout, DeviceLayer, GpuLayerOptions,
-    LayerScratch,
+    apply_layer_device, gpu_desired_bits, permutation_run_device, prepared_fanout,
+    rotation_run_device, DeviceLayer, GpuLayerOptions, LayerScratch,
 };
 use super::sum::{GpuSum, GPU_MAX_BITS};
 use super::truncation::{layer_pass_leaves, KeepProgram};
@@ -12,13 +13,13 @@ use crate::channel::prepared::Prepared;
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
 use crate::engine::backend::{PartitionBackend, PartitionStorage};
-use crate::engine::bucketed::RowEmitter;
+use crate::engine::bucketed::{RowEmitter, Run, MAX_ROTATION_RUN_LAYERS};
 use crate::engine::partitioned::layer::LayerExchangeCounts;
 use crate::engine::plan::PartitionPlan;
 #[cfg(feature = "phase-timing")]
 use crate::engine::stats::PhaseStats;
 use crate::engine::timing::timed;
-use crate::engine::trace::{DeviceLayerRecord, PartitionLayerRow};
+use crate::engine::trace::PartitionLayerRow;
 use crate::engine::transport::{SoloTransport, Transport};
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::storage::desired_bits;
@@ -34,6 +35,8 @@ pub struct FaultPlan {
     pub at_layer: Option<usize>,
     /// The next remote layer's receive growth fails as out of memory, after the skeletons and before the vote.
     pub receive_growth: bool,
+    /// The next remote layer's refine to the agreed bucket count fails as out of memory, partway when it needs more than one bit, before the skeletons.
+    pub remote_refine: bool,
     /// The next chunked receive fails as out of memory once this chunk has moved, after the vote and mid-layer.
     pub after_chunk: Option<usize>,
     /// The partition's device wire fails in its next post or wait.
@@ -56,7 +59,7 @@ pub struct DevicePartition<const W: usize, C: Coefficient = Complex64> {
     error: Option<GpuError>,
     /// `(rank, layer)` of the group's first failure; set on every partition at once, and refuses every later call.
     poison: Option<(usize, usize)>,
-    /// Partitions in the group this partition runs in; above one, the layer never refines off-schedule and the proposal carries growth headroom.
+    /// Partitions in the group this partition runs in; above one, a remote layer runs at the agreed bucket count and the proposal carries growth headroom.
     pub(crate) group_size: u32,
     /// Layers `apply_layer` was asked for since construction.
     layers_applied: usize,
@@ -65,6 +68,9 @@ pub struct DevicePartition<const W: usize, C: Coefficient = Complex64> {
     /// Test hook: fail before the exchange on this layer index.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fail_at_layer: Option<usize>,
+    /// Test record of the schedule: the bucket bits and the records sized after every layer and run.
+    #[cfg(test)]
+    pub(crate) schedule: Vec<(u8, u64)>,
 }
 
 impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
@@ -82,6 +88,8 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
             failed_layer: None,
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: None,
+            #[cfg(test)]
+            schedule: Vec::new(),
         })
     }
 
@@ -99,6 +107,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
         self.fail_at_layer = plan.at_layer;
         let export = &mut self.scratch_mut().export;
         export.fail_receive_growth = plan.receive_growth;
+        export.fail_remote_refine = plan.remote_refine;
         export.fail_after_chunk = plan.after_chunk;
         if let Some(fault) = plan.wire {
             export
@@ -157,6 +166,12 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
         }
     }
 
+    /// The sum and its scratch, for a test driving a device pass directly.
+    #[cfg(test)]
+    pub(crate) fn parts_mut(&mut self) -> (&mut GpuSum<W, C>, &mut LayerScratch<W, C>) {
+        self.healthy_parts().expect("DevicePartition: failed or detached")
+    }
+
     /// The sum and its scratch, unless the partition has failed.
     fn healthy_parts(&mut self) -> Option<(&mut GpuSum<W, C>, &mut LayerScratch<W, C>)> {
         match (self.sum.as_mut(), self.scratch.as_mut()) {
@@ -165,7 +180,7 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
         }
     }
 
-    /// `tree`'s layer pass over `collectives`; a group above one partition reports exact `TopN` `Unsupported`, every group `CollapseSample`, and a `PerPartition` runs as a group of one.
+    /// `tree`'s layer pass over `collectives`; a group above one partition reports exact `TopN` `Unsupported`, and a `PerPartition` runs as a group of one.
     fn layer_pass(&mut self, tree: &BuiltinTruncation, collectives: &dyn Collectives) {
         layer_pass_leaves(tree, &mut |leaf| {
             let result = match leaf {
@@ -179,8 +194,8 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
                     self.layer_pass(inner, &SoloTransport);
                     Ok(())
                 }
-                BuiltinTruncation::CollapseSample(_) => {
-                    Err(GpuError::Unsupported("CollapseSample on device"))
+                BuiltinTruncation::CollapseSample(policy) => {
+                    collapse_sample_device(self.healthy_parts(), policy, collectives)
                 }
                 _ => Err(GpuError::Unsupported("exact TopN on device")),
             };
@@ -190,8 +205,22 @@ impl<const W: usize, C: Coefficient> DevicePartition<W, C> {
 }
 
 impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<W, C> {
+    /// An upper bound on the terms mid-call, as [`GpuSum::len`], so the driver's run admission stays safe; exact once the call settles, a failed lone call included.
     fn len(&self) -> usize {
         self.sum.as_ref().map_or(0, GpuSum::len)
+    }
+
+    /// [`GpuSum::read_len`], which leaves the length tracker as it was, so a traced run decides as an untraced one.
+    fn exact_len(&mut self) -> usize {
+        let read = self.healthy_parts().map(|(sum, _)| sum.read_len());
+        match read {
+            Some(Ok(len)) => len,
+            Some(Err(e)) => {
+                self.record(Err(e));
+                self.len()
+            }
+            None => self.len(),
+        }
     }
 
     fn hash(&self) -> &Gf2Hash<W> {
@@ -207,24 +236,26 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         unreachable!("a device partition proposes at least its own {} bucket bits, so its group never agrees {bits}", self.hash.bits());
     }
 
-    /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits.
+    /// The grow-only host formula raised to the device bucket policy's wish, since the device has no coarsen pass, so a remote layer, which runs at the agreed count and cannot refine, still gets blocks the fused kernel fits; a local layer refines on its own (`apply_layer_body`).
+    /// Both read [`GpuSum::len_estimate`] rather than the bound, so a bucket count lags its sum by a layer instead of overshooting it.
     fn proposed_bits(
         &self,
         prepared: &Prepared<W, C>,
         target_bucket_len: usize,
         min_buckets: usize,
     ) -> u8 {
-        let host = desired_bits(self.len(), target_bucket_len, min_buckets).max(self.hash.bits());
+        let estimate = self.sum.as_ref().map_or(0, GpuSum::len_estimate);
+        let host = desired_bits(estimate, target_bucket_len, min_buckets).max(self.hash.bits());
         let Some(scratch) = self.scratch.as_ref() else {
             return host;
         };
-        // Between agreements a group member cannot refine, so its proposal plans for twice the load a lone device would.
+        // A remote layer cannot refine past an oversize block or received segment, so a group member's proposal plans for twice the load a lone device would.
         let records_per_block = match scratch.options.records_per_block {
             records if self.group_size == 1 => records,
             records => (records / 2).max(1),
         };
         let device = gpu_desired_bits(
-            self.len(),
+            estimate,
             prepared_fanout(prepared),
             records_per_block,
             self.hash.bits(),
@@ -234,14 +265,23 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
         host.max(device)
     }
 
-    /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so.
+    /// Carry the device to the mirror, which the call's closing agreement may have refined with no layer after it to do so, and make the length exact.
+    /// A failed lone partition only settles its length, which holds the last completed layer's output; a failed group member is poisoned, and a device that cannot scan keeps the bound and the recorded error.
     fn settle(&mut self) {
+        if self.error.is_some() {
+            if let (Some(sum), 1) = (self.sum.as_mut(), self.group_size) {
+                let _ = sum.settle_lengths();
+            }
+            return;
+        }
         let bits = self.hash.bits();
         if let Some((sum, _)) = self.healthy_parts() {
-            if sum.hash.bits() < bits {
-                let result = sum.refine_to(bits);
-                self.record(result);
-            }
+            let result = match sum.hash.bits() < bits {
+                true => sum.refine_to(bits),
+                false => Ok(()),
+            };
+            let result = result.and_then(|()| sum.settle_lengths());
+            self.record(result);
         }
     }
 
@@ -258,6 +298,8 @@ impl<const W: usize, C: Coefficient> PartitionStorage<W, C> for DevicePartition<
             failed_layer: self.failed_layer.take(),
             #[cfg(any(test, feature = "test-utils"))]
             fail_at_layer: self.fail_at_layer.take(),
+            #[cfg(test)]
+            schedule: std::mem::take(&mut self.schedule),
         }
     }
 
@@ -275,7 +317,7 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         prepared: &Prepared<W, C>,
         plan: &PartitionPlan,
         _rows: &PartitionRows<W>,
-        _policy: &BuiltinTruncation,
+        policy: &BuiltinTruncation,
         transport: &X,
         _clocked: bool,
         _ahead: Option<&RowEmitter<'_, W, C>>,
@@ -283,9 +325,8 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
         let size = transport.size();
         self.layers_applied += 1;
         if let Some(scratch) = self.scratch.as_mut() {
-            scratch.record = DeviceLayerRecord::default();
-            scratch.refine_passes = 0;
-            scratch.receive_chunks = 0;
+            let lone_approx = matches!(policy, BuiltinTruncation::ApproxTopN(_));
+            scratch.begin(policy, self.group_size == 1 && lone_approx);
         }
         #[cfg(any(test, feature = "test-utils"))]
         if self.fail_at_layer == Some(self.layers_applied - 1) {
@@ -316,16 +357,74 @@ impl<const W: usize, C: Coefficient> PartitionBackend<W, C, BuiltinTruncation>
             started.elapsed().as_nanos() as u64,
             sum.hash().bits(),
         ));
+        #[cfg(test)]
+        self.schedule.push((sum.hash().bits(), scratch.record.records));
         match result {
             Ok(counts) => {
                 self.hash = sum.hash().clone();
                 counts
             }
             Err(e) => {
-                // The mirror keeps the agreed bucket count, so the group's trace rows still agree; `take_error` re-syncs it.
+                // The mirror keeps the count this layer was asked to run at, the one a failed partition pairs its later exchanges at, though the device may have refined past it; `take_error` re-syncs it.
                 self.record(Err(e));
                 failed_counts(plan, size)
             }
+        }
+    }
+
+    /// Permutation runs whenever the scatter path is on.
+    fn takes_runs(&self) -> bool {
+        self.scratch.as_ref().is_some_and(|scratch| scratch.options.clifford)
+    }
+
+    /// A lone partition's rotation runs, of any span, since the device holds no coset in cache.
+    fn rotation_run_dimension(&self) -> Option<usize> {
+        (self.group_size == 1).then_some(MAX_ROTATION_RUN_LAYERS)
+    }
+
+    fn apply_run(&mut self, run: Run<'_, W, C>, policy: &BuiltinTruncation) {
+        let layers = match run {
+            Run::Rotations(layers) => layers.len(),
+            Run::Permutations(steps) => steps.len(),
+        };
+        self.layers_applied += layers;
+        if let Some(scratch) = self.scratch.as_mut() {
+            scratch.begin(policy, false);
+        }
+        // An injected failure names its own layer of the run, as the one-by-one path would.
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(layer) = self
+            .fail_at_layer
+            .filter(|layer| (self.layers_applied - layers..self.layers_applied).contains(layer))
+        {
+            let end = std::mem::replace(&mut self.layers_applied, layer + 1);
+            self.record(Err(GpuError::Unsupported("injected before the exchange")));
+            self.layers_applied = end;
+        }
+        let (keep, target_bits) = (self.keep, self.hash.bits());
+        let Some((sum, scratch)) = self.healthy_parts() else {
+            return;
+        };
+        timed!(let (started, before) = (std::time::Instant::now(), scratch.stats));
+        let result = match run {
+            Run::Permutations(steps) => {
+                permutation_run_device(sum, steps, &keep, target_bits, scratch)
+            }
+            Run::Rotations(layers) => rotation_run_device(sum, layers, &keep, target_bits, scratch),
+        };
+        timed!(fold_layer_stats(
+            scratch,
+            &before,
+            started.elapsed().as_nanos() as u64,
+            sum.hash().bits(),
+        ));
+        #[cfg(test)]
+        let step = (sum.hash().bits(), scratch.record.records);
+        #[cfg(test)]
+        self.schedule.push(step);
+        match result {
+            Ok(()) => self.resync_hash(),
+            Err(e) => self.record(Err(e)),
         }
     }
 

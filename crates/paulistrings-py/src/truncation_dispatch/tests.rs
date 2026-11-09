@@ -17,7 +17,7 @@ fn and(a: BuiltinTruncation, b: BuiltinTruncation) -> BuiltinTruncation {
 }
 
 fn sampler() -> BuiltinTruncation {
-    T::from(CollapseSample::new(4, 7))
+    T::from(CollapseSample::new(4, 2, 7))
 }
 
 #[test]
@@ -60,13 +60,14 @@ fn trees_without_a_lowered_filter_run_as_the_tree() {
 }
 
 #[test]
-fn the_layer_passes_and_partitioned_support_are_the_trees() {
+fn the_layer_passes_run_lengths_and_partitioned_support_are_the_trees() {
     let tree = and(T::Coefficient(1e-3), T::TopN(9));
     let Lowered::Coefficient(lowered) = Lowered::of(&tree) else {
         panic!("a coefficient and a pass lower");
     };
     assert!(<WithFilter<_> as TruncationPolicy<1>>::finalizes_layer(&lowered));
     assert!(!<WithFilter<_> as TruncationPolicy<1>>::supports_partitioned(&lowered));
+    assert_eq!(<WithFilter<_> as TruncationPolicy<1>>::run_length_limit(&lowered), 9);
     let lowered_keep = Lowered::of(&T::Keep);
     let Lowered::Coefficient(lowered_keep) = lowered_keep else {
         panic!("Keep lowers");

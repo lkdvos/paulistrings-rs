@@ -12,6 +12,7 @@
 # Memory: ~3 x 32 B x cache in total, spread over the ranks.
 #
 # POLICY  ppmc (default) | approx_topn | coeff | none     CACHE  cache size or ApproxTopN budget (default 8e9)
+# SAMPLES ppmc draws per collapse (default 1e9)            seeds pair up under ppmc, so SEEDS must name an even count
 # ALPHAS  comma list of tracker alphas (default 0.15)     L      Floquet layers per half (default 6)
 # SEEDS   'lo:hi' (default 0:4)                            EPS    optional coefficient threshold
 # EXACT   1 to also compute the exact rotated_overlap      OUT    results directory (default benchmarks/results/ole)
@@ -40,6 +41,6 @@ for alpha in "${alphas[@]}"; do
     RAYON_NUM_THREADS=$cpus_per_numa srun --ntasks="$ranks" --ntasks-per-node="$per_node" \
         --cpus-per-task="$cpus_per_numa" --cpu-bind=ldoms --mpi=pmix \
         python examples/b8_ole/run_b8.py --mpi --alpha "$alpha" --L "${L:-6}" \
-        --policy "${POLICY:-ppmc}" --cache "${CACHE:-8e9}" --seeds "${SEEDS:-0:4}" \
+        --policy "${POLICY:-ppmc}" --cache "${CACHE:-8e9}" --samples "${SAMPLES:-1e9}" --seeds "${SEEDS:-0:4}" \
         --out "${OUT:-benchmarks/results/ole}" "${extra[@]}"
 done

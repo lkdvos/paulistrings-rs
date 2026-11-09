@@ -284,6 +284,10 @@ impl DeviceWire for NcclComm {
                 ),
             });
         }
+        // NCCL 2.23 keeps a connecting group's thread-local state until the communicator's next op, and an op-less `ncclGroupEnd` on that thread walks it and faults.
+        if ops.is_empty() {
+            return Ok(());
+        }
         self.context.bind_to_thread()?;
         nccl::group_start().map_err(|e| nccl_error(e, "ncclGroupStart"))?;
         let mut first: Option<GpuError> = None;

@@ -109,7 +109,7 @@ fn concurrent_writers_leave_one_valid_file() {
     assert!(hit.to_src().starts_with("ptx-text-"));
 }
 
-/// End-to-end through `module::compile_ptx`: the second call with identical inputs must not invoke NVRTC again, and no cache always compiles.
+/// End-to-end through `module::compile_ptx`: the second call with identical inputs must not invoke NVRTC again; which inputs key an entry is `a_different_source_or_option_misses` and module's `compile_options_carry_the_coefficient_type_and_extra_options`.
 #[test]
 fn a_second_compile_with_the_same_inputs_hits_the_cache() {
     if !libnvrtc_present() {
@@ -127,14 +127,4 @@ fn a_second_compile_with_the_same_inputs_hits_the_cache() {
     assert_eq!(compiles(), before + 1, "first call always compiles");
     compile_ptx(2, c128, "compute_80", &own, cache).expect("second compile");
     assert_eq!(compiles(), before + 1, "second call hits the cache");
-    let other = [own[0].clone(), "-DFINGERPRINT_BITS=8".to_string()];
-    compile_ptx(2, c128, "compute_80", &other, cache).expect("different options");
-    assert_eq!(compiles(), before + 2, "different options miss");
-    compile_ptx(2, c128, "compute_80", &own, None).expect("uncached compile");
-    assert_eq!(compiles(), before + 3, "no cache never hits");
-    let f32_layout = CoefficientLayout::of::<f32>();
-    compile_ptx(2, f32_layout, "compute_80", &own, cache).expect("another coefficient type");
-    assert_eq!(compiles(), before + 4, "another coefficient type misses");
-    compile_ptx(2, f32_layout, "compute_80", &own, cache).expect("its second compile");
-    assert_eq!(compiles(), before + 4, "and then hits its own entry");
 }

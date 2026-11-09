@@ -17,6 +17,16 @@ pub(crate) const NO_ENTRY: u32 = u32::MAX;
 /// Emitting entries per active pattern at or above which a table reduces by the segmented scan rather than the head-serial walk.
 const DENSE_ROWS_PER_PATTERN: f64 = 2.0;
 
+/// A two-entry table the join layer (`kernels/join.cu`) runs: entry `base_entry` has the identity mask, so its rows of bucket `β` keep their keys, and entry `base_entry ^ 1` maps rows of `β ⊕ δ` to keys unique among themselves.
+///
+/// Two rows of one output bucket can therefore share a key only as a (base, partner) pair, and a partner can land only on a base row whose support pattern is in `hit_patterns` (a rotation's: an anticommuting one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct JoinTable {
+    pub(crate) base_entry: u32,
+    /// Bit `s` set when the partner entry emits onto support pattern `s`; unused for a rotation.
+    pub(crate) hit_patterns: u32,
+}
+
 /// A prepared channel's tables as the kernels take them; `bucket_delta` is recomputed from the masks for the current hash, so a refine between `prepare` and the layer costs no second `prepare`.
 #[derive(Clone, Debug)]
 pub(crate) struct DevicePrepared<const W: usize, C = Complex64> {
@@ -52,6 +62,8 @@ pub(crate) struct DevicePrepared<const W: usize, C = Complex64> {
     pub(crate) permutation: bool,
     /// Per support pattern, the one entry that emits for it or [`NO_ENTRY`]; meaningful only when `permutation`.
     pub(crate) entry_of: Vec<u32>,
+    /// The join layer's view of the table, when it has one and no received entry.
+    pub(crate) join: Option<JoinTable>,
     masks: Vec<([u64; W], [u64; W])>,
 }
 
@@ -164,6 +176,7 @@ impl<const W: usize, C: Coefficient> DevicePrepared<W, C> {
             key_preserving: key_preserving && remote.is_empty(),
             permutation: false,
             entry_of,
+            join: None,
             masks,
         };
         let all: Vec<usize> = (0..entries).collect();
@@ -171,8 +184,22 @@ impl<const W: usize, C: Coefficient> DevicePrepared<W, C> {
             && one_entry_per_pattern
             && remote.is_empty()
             && !out.entries_can_collide(&all);
+        out.join = out.join_table();
         out.rehash(hash);
         out
+    }
+
+    fn join_table(&self) -> Option<JoinTable> {
+        if self.entries != 2 || self.received_entries != 0 {
+            return None;
+        }
+        let identity = |e: usize| self.masks[e].0.iter().chain(&self.masks[e].1).all(|&w| w == 0);
+        let base = match (identity(0), identity(1)) {
+            (true, false) => 0,
+            (false, true) => 1,
+            _ => return None,
+        };
+        Some(JoinTable { base_entry: base as u32, hit_patterns: self.output_patterns(base ^ 1) })
     }
 
     /// Recompute every entry's bucket delta under `hash`, after a refine.
@@ -234,6 +261,7 @@ impl<const W: usize, C: Coefficient> DevicePrepared<W, C> {
         t.key_preserving = false;
         t.permutation = false;
         t.entry_of.fill(NO_ENTRY);
+        t.join = None;
         t
     }
 

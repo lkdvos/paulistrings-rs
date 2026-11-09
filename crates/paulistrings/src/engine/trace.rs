@@ -108,7 +108,7 @@ impl FineLayerPhases {
 /// What one device partition counted for a layer beyond the shared record.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeviceLayerRecord {
-    /// Pre-dedup records over every fused block; on the permutation path, its input rows.
+    /// Pre-dedup records over every fused block; on the permutation path, its input rows; on a device join layer, its source rows, which bound them.
     pub records: u64,
     /// The largest fused block's records.
     pub max_block_records: u32,
@@ -126,6 +126,8 @@ pub struct DeviceLayerRecord {
     pub rescaled: bool,
     /// The layer took the permutation path.
     pub permuted: bool,
+    /// The layer took the hash join (`k_join`) or a fused rotation run instead of the fused layer's sort.
+    pub joined: bool,
     /// The fused layer reduced by the segmented scan rather than the head-serial walk.
     pub dense: bool,
 }

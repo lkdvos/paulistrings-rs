@@ -1,9 +1,9 @@
 //! [`BuiltinTruncation`], every builtin policy and combinator as one runtime value.
 
 use super::builtin::{
-    or_operand_error, And, ApproxTopN, CoefficientThreshold, CollapseSample, Or, PerPartition,
-    TopN, WeightCutoff,
+    or_operand_error, And, ApproxTopN, CoefficientThreshold, Or, PerPartition, TopN, WeightCutoff,
 };
+use super::collapse_sample::CollapseSample;
 use super::{FusedApproxTopN, TruncationPolicy};
 use crate::coefficient::Coefficient;
 use crate::collectives::Collectives;
@@ -222,6 +222,19 @@ impl<const W: usize, C: Coefficient> TruncationPolicy<W, C> for BuiltinTruncatio
             | Self::TopN(_)
             | Self::CollapseSample(_)
             | Self::Or(_, _) => None,
+        }
+    }
+
+    fn run_length_limit(&self) -> usize {
+        match self {
+            Self::TopN(n) | Self::ApproxTopN(n) => *n,
+            Self::CollapseSample(s) => {
+                <CollapseSample as TruncationPolicy<W, C>>::run_length_limit(s)
+            }
+            Self::And(a, b) => <Self as TruncationPolicy<W, C>>::run_length_limit(a)
+                .min(<Self as TruncationPolicy<W, C>>::run_length_limit(b)),
+            Self::PerPartition(inner) => <Self as TruncationPolicy<W, C>>::run_length_limit(inner),
+            Self::Keep | Self::Coefficient(_) | Self::Weight(_) | Self::Or(_, _) => usize::MAX,
         }
     }
 }

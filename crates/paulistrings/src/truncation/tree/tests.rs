@@ -81,8 +81,8 @@ fn finalizes_layer_truth_table() {
     assert!(!f(&and(T::Coefficient(1e-3), T::Weight(2))));
     assert!(!f(&or(T::Weight(4), T::Coefficient(1e-3))));
     assert!(f(&and(or(T::Weight(4), T::Keep), T::TopN(5))));
-    assert!(f(&T::from(CollapseSample::new(4, 1))));
-    assert!(f(&and(T::Coefficient(1e-3), T::from(CollapseSample::new(4, 1)))));
+    assert!(f(&T::from(CollapseSample::new(4, 2, 1))));
+    assert!(f(&and(T::Coefficient(1e-3), T::from(CollapseSample::new(4, 2, 1)))));
 }
 
 #[test]
@@ -98,13 +98,13 @@ fn every_builtin_converts_node_for_node() {
     assert_eq!(T::from(KeepAll), T::Keep);
 }
 
-/// A collapse through the tree draws the string the builtin draws at the same pass, and the handle is shared rather than copied by `Clone`.
+/// A collapse through the tree makes the draw the builtin makes at the same pass, and the handle is shared rather than copied by `Clone`.
 #[test]
 fn collapse_sample_shares_one_trajectory_with_the_builtin() {
     let input = rand_sum_real::<1>(200, 16, 0xC011);
     let mut want = input.clone();
-    CollapseSample::new(10, 7).finalize_layer(&mut want);
-    let tree = and(T::Coefficient(0.0), T::from(CollapseSample::new(10, 7)));
+    CollapseSample::new(10, 3, 7).finalize_layer(&mut want);
+    let tree = and(T::Coefficient(0.0), T::from(CollapseSample::new(10, 3, 7)));
     let twin = tree.clone();
     let mut got = input.clone();
     <T as TruncationPolicy<1>>::finalize_layer(&tree, &mut got);
@@ -117,7 +117,7 @@ fn collapse_sample_shares_one_trajectory_with_the_builtin() {
 
     let group = InProcessTransport::group(1);
     let mut got = input.clone();
-    let tree = T::from(CollapseSample::new(10, 7));
+    let tree = T::from(CollapseSample::new(10, 3, 7));
     <T as TruncationPolicy<1>>::finalize_layer_partitioned(&tree, &mut got, &group[0]);
     assert_terms_close(&got, &want, 1e-12, "partitioned P=1");
 }
@@ -127,7 +127,7 @@ fn or_rejects_an_operand_with_a_layer_pass() {
     let passes = [
         T::TopN(3),
         T::ApproxTopN(3),
-        T::from(CollapseSample::new(4, 1)),
+        T::from(CollapseSample::new(4, 2, 1)),
         and(T::Coefficient(0.1), T::TopN(3)),
         and(T::Weight(2), and(T::Keep, T::ApproxTopN(3))),
     ];
@@ -171,7 +171,7 @@ fn a_hand_built_or_with_a_layer_pass_panics_in_finalizes_layer() {
 #[test]
 #[should_panic(expected = "Or combines per-term filters only")]
 fn a_hand_built_or_with_a_layer_pass_panics_in_supports_partitioned() {
-    let tree = T::Or(Box::new(T::from(CollapseSample::new(4, 1))), Box::new(T::Weight(1)));
+    let tree = T::Or(Box::new(T::from(CollapseSample::new(4, 2, 1))), Box::new(T::Weight(1)));
     let _ = tree.supports_partitioned();
 }
 

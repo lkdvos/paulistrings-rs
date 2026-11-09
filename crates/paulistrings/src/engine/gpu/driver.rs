@@ -37,6 +37,7 @@ use crate::engine::LOG_TARGET;
 /// Held across calls: scatter once with [`scatter_to_devices`](Self::scatter_to_devices) or [`scatter_to_devices_with`](Self::scatter_to_devices_with) (or [`from_host`](Self::from_host) for one device), step many times with [`propagate`](Self::propagate), read back with [`gather`](Self::gather).
 ///
 /// A policy is a [`BuiltinTruncation`], which every builtin converts into: per-term filters run inside the fused layer, `ApproxTopN` as a device layer pass with the host's collective, `And`/`Or` as on the host, an exact `TopN` as a local radix-select at one partition only, since the `n`-th largest of a split sum has no collective form, and a `PerPartition` as its policy on each device alone.
+/// A `CollapseSample` collapses on the device (`collapse.rs`), its stretches in the device's storage order, so a device trajectory has the host's law but not its draws.
 ///
 /// `C` is the per-term [`Coefficient`], `Complex64` by default; the device stores it natively, so a real `f32` sum moves 4 bytes of coefficient a term.
 ///
@@ -57,9 +58,6 @@ pub(super) fn lower_for_run<const W: usize, C: Coefficient>(
 ) -> Result<KeepProgram, GpuError> {
     if !policy.supports_partitioned() && !single_partition {
         return Err(GpuError::Unsupported("exact TopN on device"));
-    }
-    if policy.contains_collapse_sample() {
-        return Err(GpuError::Unsupported("CollapseSample on device"));
     }
     let keep = KeepProgram::lower(policy)?;
     let adjoint = matches!(direction, Direction::Heisenberg);
@@ -147,10 +145,10 @@ pub(super) fn upload_share<const W: usize, C: Coefficient>(
     (layer, extra_options): (GpuLayerOptions, &[String]),
 ) -> Result<DevicePartition<W, C>, GpuError> {
     let device_sum = if size == 1 {
-        GpuSum::from_host_with_options(sum, device, extra_options)?
+        GpuSum::from_host_with_options(sum, device, extra_options, true)?
     } else {
         let local = scatter_local(sum, rows, rank, collectives);
-        GpuSum::from_host_with_options(&local, device, extra_options)?
+        GpuSum::from_host_with_options(&local, device, extra_options, false)?
     };
     let mut partition = DevicePartition::new(device_sum, layer)?;
     partition.group_size = size;
@@ -264,7 +262,7 @@ impl<const W: usize, C: Coefficient> PartitionedSum<W, C, DevicePartition<W, C>>
     ///
     /// [`GpuError::Unsupported`] before any layer if a real `C` meets a circuit failing [`Circuit::preserves_hermiticity`].
     /// [`GpuError::Unsupported`] before any layer if the policy's per-term part lowers to more than 15 nodes, if a channel's preparation declines (its support exceeds `MAX_LOCAL_SUPPORT`, two qubits, which only [`PauliRotation`](crate::PauliRotation) may, or it writes outside its declared support), or if the policy holds an exact `TopN` and the split has more than one partition.
-    /// A group member runs every layer at the agreed bucket count and never refines on its own, so a fused-layer block or a received segment over the kernel's cap is [`GpuError::Unsupported`] rather than a retry.
+    /// A group member runs every remote layer at the agreed bucket count, so a fused-layer block or a received segment over the kernel's cap there is [`GpuError::Unsupported`] rather than a retry; a local layer refines past it as a lone partition does.
     /// A device error on any partition is returned after the loop, the first by rank, the partners having finished the call on empty exchange blocks.
     /// Above one partition the split is then **poisoned**: its partitions no longer hold one consistent sum, and every later `propagate` or [`Self::gather`] returns [`GpuError::Poisoned`] until the caller scatters again.
     ///

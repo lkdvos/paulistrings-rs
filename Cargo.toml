@@ -15,6 +15,10 @@ repository = "https://github.com/lkdvos/paulistrings-rs"
 [workspace.dependencies]
 paulistrings = { path = "crates/paulistrings", version = "0.3.1" }
 
+# Host oracles in tests run several times faster; CLAUDE.md §Commands has the opt-level 0 check.
+[profile.dev]
+opt-level = 1
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
@@ -24,6 +28,12 @@ lto = "fat"
 codegen-units = 1
 # Line tables let `perf` attribute samples through fat-LTO inlining, without changing codegen.
 debug = "line-tables-only"
+
+# Quick A/B screening only; quoted numbers come from `release` (CLAUDE.md, Performance discipline).
+[profile.screen]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
 
 # Release codegen plus line tables, for perf (benchmarks/PROFILING.md).
 [profile.profiling]

@@ -43,6 +43,7 @@ uv run pytest python/paulistrings/tests
 MATURIN_PEP517_ARGS="--profile dev" uv run pytest ...            # debug build; every uv command on that venv must then set it
 ```
 
+The dev profile builds at `opt-level = 1`; an occasional `cargo test --workspace --config profile.dev.opt-level=0` catches debug-only stack growth.
 Benchmark `--release` only (`lto = "fat"`, `codegen-units = 1`).
 After changing a script, the probe or a Slurm template, `scripts/smoke-tooling.sh` runs every measurement tool once at smoke size and skips what the host lacks.
 The measurement probe, which also drives the partitioned engine (`--partition-cpus` takes one cpulist per partition, as `numactl -H` prints them):
@@ -119,6 +120,7 @@ Output bits are not a property of the library, so never design, constrain or rej
 
 - Every cargo feature is off by default.
 - Benchmark `--release` only, keep input generation outside the timed region, and report single- and multi-thread numbers separately.
+- `--profile screen` (thin LTO, 16 codegen units) rebuilds about 4× faster and is for screening only; quoted numbers and FINDINGS entries come from `--release`, since fat-LTO layout alone moves untouched code (FINDINGS §SIMD kernels and `target-cpu=x86-64-v3`).
 - Effects below the noise floor need `scripts/ab-compare.sh`, whose criterion is direction consistency across every pair, with the median Δ% as the effect size; a direction-consistent phase delta is not an effect if the total is flat.
 - Run campaigns with `RUST_LOG` unset; every benchmarking script sources `scripts/jcc-rustflags.sh`.
 - Record SM and memory clocks (`nvidia-smi --query-gpu=clocks.sm,clocks.mem --format=csv`) with every GPU number.

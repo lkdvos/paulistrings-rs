@@ -1,15 +1,22 @@
-//! Launching the fused layer kernel: position batches that fit the arena, the kernel variant, and the launch itself.
+//! The fused layer: position batches that fit the arena, the kernel variant, its launch and the compaction into the output.
+
+use std::sync::Arc;
 
 use crate::coefficient::Coefficient;
-use cudarc::driver::{CudaFunction, CudaSlice, LaunchConfig, PushKernelArg};
+use cudarc::driver::{CudaFunction, CudaSlice, PushKernelArg};
 
-use super::TableBuffers;
-use crate::engine::gpu::columns::DeviceColumns;
+use super::{read_back, timed_transfer, LayerScratch, TableBuffers, Transfer};
+use crate::engine::gpu::columns::{grow, DeviceColumns};
 use crate::engine::gpu::error::GpuError;
-use crate::engine::gpu::module::{layer_shared_bytes, layer_threads, KernelSet};
+use crate::engine::gpu::export::receive_chunk;
+use crate::engine::gpu::module::{
+    launch_grid, layer_shared_bytes, layer_threads, thread_per, KernelSet,
+};
 use crate::engine::gpu::prepared::DevicePrepared;
+use crate::engine::gpu::scan::exclusive_scan;
 use crate::engine::gpu::sum::GpuSum;
 use crate::engine::gpu::truncation::KeepProgram;
+use crate::engine::timing::timed;
 
 /// Contiguous position ranges whose pre-dedup rows (`seg`, `b + 1` CSR offsets) fit an arena of `arena_bytes`, each starting a new range at every position of the ascending `starts`, and the largest range's rows.
 pub(in crate::engine::gpu) fn arena_batches<const W: usize, C: Coefficient>(
@@ -39,6 +46,159 @@ pub(in crate::engine::gpu) fn arena_batches<const W: usize, C: Coefficient>(
         .max()
         .unwrap_or(0);
     (batches, max_rows)
+}
+
+/// The fused layer over every position, after the count table: position batches that fit the arena, each launched and compacted into the output, a pending receive taken chunk by chunk; the previous columns become `sum.spare`.
+pub(super) fn fused_layer<const W: usize, C: Coefficient>(
+    sum: &mut GpuSum<W, C>,
+    scratch: &mut LayerScratch<W, C>,
+    table: &DevicePrepared<W, C>,
+    keep: &KeepProgram,
+    records: u32,
+    records_max: u32,
+) -> Result<(), GpuError> {
+    let b = sum.hash.num_buckets();
+    let record_cap = sum.kernels.layer_cap();
+    let kernels: Arc<KernelSet> = sum.kernels.clone();
+    let (func, record_capacity, smem) =
+        fused_variant(&kernels, W, records_max as usize, table.dense);
+    scratch.record.record_capacity = record_capacity as u32;
+
+    // Batches: contiguous position ranges whose pre-dedup rows fit the arena, never straddling a chunk of the pending receive.
+    let chunk_starts: Vec<usize> =
+        scratch.export.pending.as_ref().map_or_else(Vec::new, |p| {
+            (0..p.map.chunks()).map(|c| p.map.bound(c) as usize).collect()
+        });
+    let (batches, max_batch_rows) = arena_batches::<W, C>(
+        &scratch.segment_start_host,
+        scratch.options.arena_bytes,
+        record_cap,
+        &chunk_starts,
+    );
+    scratch.record.batches = batches.len() as u32;
+    scratch.receive_chunks = chunk_starts.len() as u32;
+
+    let stream = sum.stream.clone();
+    let ordinal = sum.device();
+    let mut arena = match scratch.arena.take() {
+        Some(a) => a,
+        None => DeviceColumns::<W, C>::with_capacity(&stream, ordinal, max_batch_rows, 1)?,
+    };
+    arena.len = 0;
+    arena.buckets = 0;
+    arena.reserve(max_batch_rows, 1)?;
+    let mut out = sum.take_spare(0, b)?;
+    grow(&stream, &mut scratch.rows_per_position, b, ordinal)?;
+    stream.memset_zeros(&mut scratch.fallback)?;
+    // A lone batch whose pre-dedup rows already fit the output compacts at offset 0 without its total, which is read once after the compaction.
+    let deferred_total = batches.len() == 1
+        && (scratch.segment_start_host[b] - scratch.segment_start_host[0]) as usize
+            <= out.term_capacity();
+    let mut running = 0u32;
+    let mut next_chunk = 0usize;
+    for &(p0, p1) in &batches {
+        if chunk_starts.get(next_chunk) == Some(&p0) {
+            receive_chunk(sum, scratch, next_chunk)?;
+            next_chunk += 1;
+        }
+        let num_blocks = (p1 - p0) as u32;
+        let p0u = p0 as u32;
+        timed!(let t0 = scratch.event(sum)?);
+        let fused = FusedTable {
+            counts: &scratch.counts,
+            segment_start: &scratch.segment_start,
+            table: &scratch.table,
+        };
+        let received = FusedReceived {
+            offsets: &scratch.export.received_offsets,
+            base: &scratch.export.received_base,
+            x: &scratch.export.received_x,
+            z: &scratch.export.received_z,
+            coefficient: &scratch.export.received_coefficient,
+            fingerprint: &scratch.export.received_fingerprint,
+        };
+        let written = FusedOut {
+            arena: &mut arena,
+            rows_per_position: &mut scratch.rows_per_position,
+            fallback: &mut scratch.fallback,
+        };
+        launch_fused(
+            sum,
+            table,
+            &fused,
+            &received,
+            &scratch.bucket_at,
+            keep,
+            (func, smem),
+            (p0u, num_blocks),
+            written,
+        )?;
+        timed!(scratch.lap(sum, t0, |stats| &mut stats.merge_ns)?);
+        let n = p1 - p0;
+        timed!(let t1 = scratch.event(sum)?);
+        exclusive_scan(
+            &stream,
+            &kernels,
+            &scratch.rows_per_position.slice(p0..p1),
+            &mut scratch.destination_offsets.slice_mut(0..n + 1),
+            n,
+            &mut scratch.scan,
+            &mut scratch.totals,
+        )?;
+        let batch_out = if deferred_total {
+            0
+        } else {
+            let batch_out = read_back(&stream, &mut scratch.stats, &scratch.totals)?[0];
+            out.len = running as usize;
+            let need = (running + batch_out) as usize;
+            if need > out.term_capacity() {
+                let grown = (2 * out.term_capacity()).max(need).min((records as usize).max(need));
+                out.reserve(grown, b)?;
+            }
+            batch_out
+        };
+        // SAFETY: arguments match `k_compact` in compact.cu; `out` holds `running + batch_out` terms.
+        unsafe {
+            stream
+                .launch_builder(&kernels.compact)
+                .arg(&arena.x)
+                .arg(&arena.z)
+                .arg(&arena.coeff)
+                .arg(&arena.fingerprint)
+                .arg(&scratch.segment_start)
+                .arg(&scratch.destination_offsets)
+                .arg(&scratch.rows_per_position)
+                .arg(&scratch.bucket_at)
+                .arg(&p0u)
+                .arg(&running)
+                .arg(&mut out.x)
+                .arg(&mut out.z)
+                .arg(&mut out.coeff)
+                .arg(&mut out.fingerprint)
+                .arg(&mut out.start)
+                .arg(&mut out.lengths)
+                .launch(thread_per(num_blocks as usize * 256, 256))?;
+        }
+        timed!(scratch.lap(sum, t1, |stats| &mut stats.compact_ns)?);
+        running += batch_out;
+    }
+    debug_assert_eq!(next_chunk, chunk_starts.len());
+    let (totals, fallback) = (&scratch.totals, &scratch.fallback);
+    let (total, fallbacks) = timed_transfer(&stream, &mut scratch.stats, Transfer::D2h, || {
+        let total = if deferred_total { stream.clone_dtoh(totals)?[0] } else { 0 };
+        let fallbacks = stream.clone_dtoh(fallback)?;
+        stream.synchronize()?;
+        Ok((total, fallbacks))
+    })?;
+    running += total;
+    scratch.record.high_word_fallbacks += fallbacks[0];
+    scratch.record.full_key_fallbacks += fallbacks[1];
+    scratch.arena = Some(arena);
+    sum.swap_in(out, running as usize);
+    sum.record_exact(running as usize, None);
+    scratch.extent = sum.len();
+    sum.debug_check();
+    Ok(())
 }
 
 /// The fused-layer variant for blocks of up to `records_max` records: the kernel, its record capacity and its dynamic shared bytes.
@@ -138,11 +298,7 @@ pub(in crate::engine::gpu) fn launch_fused<const W: usize, C: Coefficient>(
             .arg(&mut arena.fingerprint)
             .arg(rows_per_position)
             .arg(fallback)
-            .launch(LaunchConfig {
-                grid_dim: (num_blocks, 1, 1),
-                block_dim: (layer_threads(W), 1, 1),
-                shared_mem_bytes: smem,
-            })?;
+            .launch(launch_grid(num_blocks, layer_threads(W), smem))?;
     }
     Ok(())
 }

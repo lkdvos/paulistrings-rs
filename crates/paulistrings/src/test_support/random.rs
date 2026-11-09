@@ -233,3 +233,36 @@ pub fn z0_sum() -> PauliSum<1> {
     acc.add_term(PauliString::<1>::z(0), Complex64::new(1.0, 0.0));
     acc.finalize()
 }
+
+/// `sum` plus, for each of the first `count` terms that anticommute with `generator`, its rotation partner `s ⊕ generator` with a random real coefficient, so a rotation by `generator` sums into those terms.
+/// Panics unless `sum` has `count` such terms and every partner is a new key.
+pub fn with_rotation_partners<const W: usize>(
+    sum: &PauliSum<W>,
+    generator: &PauliString<W>,
+    count: usize,
+    seed: u64,
+) -> PauliSum<W> {
+    let mut rng = Xs64::new(seed);
+    let mut acc = BuildAccumulator::<W>::with_capacity(sum.num_qubits(), sum.len() + count);
+    let mut partners = Vec::with_capacity(count);
+    for (x, z, c) in sum.iter() {
+        let s = PauliString::<W> { x: *x, z: *z };
+        if partners.len() < count && !s.commutes_with(generator) {
+            let mut p = s;
+            for w in 0..W {
+                p.x[w] ^= generator.x[w];
+                p.z[w] ^= generator.z[w];
+            }
+            partners.push(p);
+        }
+        acc.add_term(s, c);
+    }
+    assert_eq!(partners.len(), count, "too few anticommuting terms");
+    for p in partners {
+        let re = (rng.next_u64() as i64 as f64) / (i64::MAX as f64);
+        acc.add_term(p, Complex64::new(re, 0.0));
+    }
+    let out = acc.finalize();
+    assert_eq!(out.len(), sum.len() + count, "a partner was already a key");
+    out
+}

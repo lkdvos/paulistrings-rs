@@ -145,6 +145,30 @@ The table skeletons are under the cluster GPU sections of `research/HARDWARE.md`
 `mpi-gpu.sbatch` exposes every node GPU to every task (`--gpus-per-node`/`--ntasks-per-node`, not `--gpus-per-task=1`): the per-task device cgroup otherwise makes NCCL fall back to SHM through host memory instead of P2P/NVLink.
 Its preamble logs `nvidia-smi topo -m`, `ibv_devinfo -l`, the `nvidia_peermem`/`nv_peer_mem` module state and `ip -br addr`, and `tests/mpi_ranks.rs` runs with `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,P2P,NET`, so the transport NCCL picked is in the job log.
 
+## The sampled multi-GPU jobs
+
+One `CollapseSample` run of `examples/sampling_bench` split over several GPUs, the collapse drawn over the global prefix (`engine/gpu/collapse.rs`), against a one-GPU reference; the sweep is `sampling-cells.sh`.
+
+| script | what it runs |
+|---|---|
+| `sampling-gpus.sbatch` | one 4-GPU node, one process: `--backend gpus` over every GPU (peer copies), the reference on GPU 0 |
+| `sampling-mpi-gpu.sbatch` | one GPU per MPI rank over NCCL (`--backend mpi-gpu`), gated by the `mpi_ranks` net; one node or several |
+
+Per model (kicked Ising 20 steps, 16×16 TFIM 10 steps): the reference at `REF_CACHE` (1e8) on one GPU, then the split run at every cache of `CACHES` (1e8 and 4e8, plus 8e8 at 8 ranks), samples = cache / 4, seed 1; then kicked Ising at `REF_CACHE` under seeded rows, `--approx-topn REF_CACHE` on one GPU and split (the deterministic scaling cell), and with `PT=1` the largest kicked-Ising cell again under `phase-timing` for the export and exchange split.
+Split runs use `--rows cut` (equal contiguous qubit blocks: every `R_X` is local, only crossing bonds exchange).
+Each cell is bounded by `CELL_BOUND` seconds and a failed cell does not stop the sweep.
+
+```bash
+env -u SBATCH_RESERVATION sbatch scripts/slurm/sampling-gpus.sbatch                         # 1 node, 4 GPUs, one process
+env -u SBATCH_RESERVATION sbatch scripts/slurm/sampling-mpi-gpu.sbatch                      # 1 node, 4 ranks
+env -u SBATCH_RESERVATION sbatch --nodes=2 scripts/slurm/sampling-mpi-gpu.sbatch            # 2 nodes, 8 ranks
+```
+
+`sampling_bench` reports `total_ns` and `step_ns` from an untraced run, since a traced device layer settles exact term counts and runs slower; `--trace` repeats the run traced and adds the trace-derived fields from that second run, whose wall time is `traced_ns`.
+Only the `-pt` cell passes `--trace`.
+Read the JSON lines for `total_ns`, `step_terms`, `peak_step_terms`, `readout`, `clocks`, and `partitions.devices`; the trace fields are `null` in a line without `--trace`: `passes`, `max_terms`, `mean_terms`, `peak_terms`, `kinds` and the layer phases, and under `partitions` `terms_max` per partition (balance and the memory high-water), `remote_layers`, `remote_layer_ns` and `collective_ns` (exchange and collapse agreement), `bytes_sent`.
+`export_ns` and `exchange_ns` under `partitions` come from the `phase-timing` build, traced or not.
+
 ## Bounded steps
 
 Every `srun` in the GPU templates runs through `bounded <secs> srun ...` from `scripts/slurm/bounded.sh`: `timeout` sends TERM at the bound and KILL 30 s later, the step's status is reported, and a failed step lists the compute processes left on the node's GPUs (`leftover_gpu_processes`, an `--overlap` step so it runs beside whatever is stuck).

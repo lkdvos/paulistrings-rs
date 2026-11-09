@@ -11,11 +11,6 @@ pub(crate) const TOPN_PARTITIONED_MSG: &str =
     "exact truncation.topn is not supported in partitioned mode; use \
      truncation.approx_topn, truncation.partition_topn or partitions=None";
 
-/// Why a policy containing a `collapse_sample` cannot run on a CUDA device, worded for the Python `NotImplementedError`.
-#[cfg(feature = "cuda")]
-pub(crate) const COLLAPSE_SAMPLE_DEVICE_MSG: &str =
-    "truncation.collapse_sample has no device form; run it on the host (device=None)";
-
 /// Collapses since `before`, both read from `policy` with [`collapse_count`].
 pub(crate) fn collapses_since(policy: &BuiltinTruncation, before: Option<u64>) -> Option<u64> {
     collapse_count(policy).zip(before).map(|(after, before)| after - before)
@@ -117,7 +112,7 @@ mod tests {
 
     #[test]
     fn collapse_count_sums_distinct_samplers() {
-        let sampler = |seed| BuiltinTruncation::from(CollapseSample::new(1, seed));
+        let sampler = |seed| BuiltinTruncation::from(CollapseSample::new(1, 1, seed));
         assert_eq!(collapse_count(&BuiltinTruncation::Keep), None);
         assert_eq!(collapse_count(&BuiltinTruncation::ApproxTopN(3)), None);
         let (a, b) = (sampler(0), sampler(1));

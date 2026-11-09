@@ -380,7 +380,7 @@ mod partitioned {
     }
 
     /// Every layer gets a record, the per-partition vectors are `P` long, the
-    /// diagonal of `rows_sent` is zero, and draining leaves tracing on.
+    /// diagonal of `rows_sent` is zero, draining leaves tracing on and disabling turns it off.
     #[test]
     fn a_trace_records_every_layer() {
         let circuit = circuit();
@@ -430,6 +430,13 @@ mod partitioned {
         assert_eq!(ps.take_trace(), Some(paulistrings::PartitionTrace::default()),);
         ps.propagate(&circuit, &KeepAll, Direction::Forward);
         assert_eq!(ps.take_trace().expect("still tracing").layers.len(), circuit.len(),);
+
+        // Disabling drops any records left and stops recording.
+        ps.propagate(&circuit, &KeepAll, Direction::Forward);
+        ps.disable_trace();
+        assert_eq!(ps.take_trace(), None);
+        ps.propagate(&circuit, &KeepAll, Direction::Forward);
+        assert_eq!(ps.take_trace(), None);
     }
 
     /// A single wide rotation whose generator crosses: exactly the terms that

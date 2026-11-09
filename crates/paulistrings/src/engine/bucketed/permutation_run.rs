@@ -1,6 +1,6 @@
 //! Runs of one-to-one channels applied as one pass: every string walks the steps that touch its qubits, then the sum is rehashed and each bucket sorted once.
 //!
-//! Contracts: a [`PermutationStep`] maps distinct strings to distinct strings, so a run never sums two strings and agrees with the per-layer path to floating-point tolerance (its coefficients see the same products in the same order); every intermediate string is dropped exactly when the per-layer merge would drop it (an exact zero, or `keep_term` refusing it), with `keep_term` taken as a function of its arguments, so a step that leaves a string unchanged does not ask it again; the run skips the layer passes between its steps, so only a policy without one may run it.
+//! Contracts: a [`PermutationStep`] maps distinct strings to distinct strings, so a run never sums two strings and agrees with the per-layer path to floating-point tolerance (its coefficients see the same products in the same order); every intermediate string is dropped exactly when the per-layer merge would drop it (an exact zero, or `keep_term` refusing it), with `keep_term` taken as a function of its arguments, so a step that leaves a string unchanged does not ask it again; the run skips the layer passes between its steps, so it runs only within the policy's `TruncationPolicy::run_length_limit`.
 
 use rayon::prelude::*;
 
@@ -120,6 +120,18 @@ impl<const W: usize, C: Coefficient> PermutationStep<W, C> {
         })
     }
 
+    /// The step as the device walks it: its two support qubits (the first repeated for a one-qubit step), whether the second is one, the inert patterns, and per pattern the local delta and amplitude.
+    #[cfg(feature = "cuda")]
+    pub(crate) fn walk_table(&self) -> StepWalk<'_, C> {
+        StepWalk {
+            qubits: self.qubit,
+            two_qubit: self.second != 0,
+            inert: self.inert,
+            delta: &self.delta,
+            amplitude: &self.amplitude,
+        }
+    }
+
     /// The support pattern of a key, packed as the prepared table's `local_delta`.
     #[inline(always)]
     fn pattern(&self, x: &[u64; W], z: &[u64; W]) -> usize {
@@ -141,6 +153,16 @@ impl<const W: usize, C: Coefficient> PermutationStep<W, C> {
         x[w1] ^= ((d >> 2) & 1) << b1;
         z[w1] ^= ((d >> 3) & 1) << b1;
     }
+}
+
+/// [`PermutationStep::walk_table`].
+#[cfg(feature = "cuda")]
+pub(crate) struct StepWalk<'s, C> {
+    pub(crate) qubits: [usize; MAX_LOCAL_SUPPORT],
+    pub(crate) two_qubit: bool,
+    pub(crate) inert: u16,
+    pub(crate) delta: &'s [u8; LOCAL_DIM],
+    pub(crate) amplitude: &'s [C; LOCAL_DIM],
 }
 
 /// The working set of [`apply_permutation_run`], kept across runs for its allocations.

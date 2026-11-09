@@ -865,7 +865,7 @@ fn run_host_cases(r: &mut Runner) {
     });
 
     // ---- sampling truncation ------------------------------------------------
-    r.case("collapse sample keeps one bounded unit-norm trajectory", |r| {
+    r.case("collapse sample keeps one bounded trajectory", |r| {
         use paulistrings::test_support::{collapsing_circuit, z0_sum};
         use paulistrings::CollapseSample;
         const CACHE: usize = 6;
@@ -873,7 +873,7 @@ fn run_host_cases(r: &mut Runner) {
 
         for seed in 0..4u64 {
             // One policy per process, as a launcher gives each rank its own.
-            let policy = CollapseSample::new(CACHE, seed);
+            let policy = CollapseSample::new(CACHE, 4, seed);
             let transport = MpiTransport::from_communicator(r.world);
             let mut split = DistributedSum::scatter_with(
                 input.clone(),
@@ -886,13 +886,11 @@ fn run_host_cases(r: &mut Runner) {
             if r.rank == 0 {
                 assert!(policy.collapses() >= 1, "seed {seed}: rank 0 counts collapses");
                 let got = got.expect("rank 0 gathers");
-                let norm: f64 = got.iter().map(|(_, _, c)| c.norm_sqr()).sum();
-                assert!((norm - 1.0).abs() < 1e-12, "seed {seed}: {norm}");
                 if r.size == 1 {
                     let want = propagate(
                         &circuit,
                         input.clone(),
-                        &CollapseSample::new(CACHE, seed),
+                        &CollapseSample::new(CACHE, 4, seed),
                         Direction::Heisenberg,
                     );
                     assert_terms_close(&got, &want, 1e-12, "one rank is propagate");
@@ -1056,6 +1054,45 @@ mod device {
                 SEED,
                 "device distinct-size blocks",
             );
+        });
+
+        // Clifford layers keep every |c|, so the group's collapse must tile the whole sum's L1 norm into exactly `SAMPLES` draws of `norm / SAMPLES`: a point lost or drawn twice at a rank boundary breaks the count.
+        r.case("device collapse sample tiles the group's L1 norm", |r| {
+            use paulistrings::test_support::assert_draws_tile_l1;
+            use paulistrings::CollapseSample;
+            const SAMPLES: usize = 64;
+            let circuit = cnot_ring::<1>(12);
+            let sum = rand_sum::<1>(2_000, 12, 0xB041);
+            let norm: f64 = sum.iter().map(|(_, _, c)| c.norm()).sum();
+            for seed in 0..3u64 {
+                let policy = std::sync::Arc::new(CollapseSample::new(100, SAMPLES, seed));
+                let device = local_device_for_comm(r.world).expect("a device on every rank");
+                let options = GpuScatterOptions {
+                    rows: ScatterRows::Policy(PartitionRowPolicy::Seeded(Some(SEED))),
+                    ..GpuScatterOptions::new(&[device]).expect("placement")
+                };
+                let transport = MpiTransport::from_communicator(r.world);
+                let mut split = MpiGpuSum::scatter_to_device_with(&sum, transport, options)
+                    .expect("device scatter");
+                split
+                    .propagate(
+                        &circuit,
+                        BuiltinTruncation::CollapseSample(policy.clone()),
+                        Direction::Heisenberg,
+                    )
+                    .expect("device propagate");
+                let got = split.gather().expect("device gather");
+                let Some(got) = r.root_result(got, "device collapse") else {
+                    assert_eq!(policy.collapses(), 0, "only rank 0 counts");
+                    continue;
+                };
+                assert_eq!(
+                    policy.collapses(),
+                    1,
+                    "seed {seed}: one collapse, then under the cache"
+                );
+                assert_draws_tile_l1(&got, norm, SAMPLES, &format!("seed {seed}"));
+            }
         });
     }
 }

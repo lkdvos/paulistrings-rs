@@ -18,7 +18,21 @@ fn reserve_of_an_absurd_term_count_is_out_of_memory() {
         }
         other => panic!("expected OutOfMemory, got {other:?}"),
     }
-    assert_eq!(columns.term_capacity(), 1, "a failed reserve leaves the columns untouched");
+    assert_eq!(
+        columns.term_capacity(),
+        0,
+        "empty columns release their term columns before growing"
+    );
+}
+
+#[test]
+fn a_failed_reserve_leaves_live_columns_untouched() {
+    crate::require_cuda!();
+    let s = stream();
+    let mut columns = DeviceColumns::<16>::with_capacity(&s, 0, 1, 1).expect("tiny alloc");
+    columns.len = 1;
+    assert!(matches!(columns.reserve(4_000_000_000, 1), Err(GpuError::OutOfMemory { .. })));
+    assert_eq!(columns.term_capacity(), 1, "a failed reserve keeps live columns as they were");
 }
 
 #[test]

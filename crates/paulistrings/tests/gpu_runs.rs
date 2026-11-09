@@ -160,22 +160,44 @@ fn device_runs_agree_with_the_host_w2() {
     runs_agree::<2>(90, 0x5EED2);
 }
 
-/// `sum` over `p` partitions of device 0, cut into equal contiguous qubit blocks, so every `R_X` is local and only a bond across blocks exchanges.
+/// Equal contiguous qubit blocks, so every `R_X` is local and only a bond across blocks exchanges.
+fn cut_rows(num_qubits: usize, p: usize) -> PartitionRowPolicy {
+    let per = num_qubits / p;
+    PartitionRowPolicy::Cut((0..p).map(|b| (b * per..(b + 1) * per).collect()).collect())
+}
+
+/// `log2(p)` rows, row `i` the x-parity of qubits `2i` and `2i + 1`, so every `ZZ` is local and only an `R_X` on those qubits exchanges.
+fn x_parity_rows(num_qubits: usize, p: usize) -> PartitionRowPolicy {
+    let rows = (0..p.trailing_zeros() as usize)
+        .map(|i| (0..2 * num_qubits).map(|c| c / 2 == i).collect())
+        .collect();
+    PartitionRowPolicy::Matrix(rows)
+}
+
+/// `sum` over `p` partitions of device 0 under [`cut_rows`].
 fn cut_split<const W: usize>(
     sum: &PauliSum<W>,
     p: usize,
     layer: GpuLayerOptions,
+) -> GpuPartitionedSum<W> {
+    split_by(sum, p, layer, cut_rows(sum.num_qubits(), p))
+}
+
+/// `sum` over `p` partitions of device 0, split by `rows`, traced.
+fn split_by<const W: usize>(
+    sum: &PauliSum<W>,
+    p: usize,
+    layer: GpuLayerOptions,
+    rows: PartitionRowPolicy,
 ) -> GpuPartitionedSum<W> {
     let config = PartitionConfig {
         placement: Placement::Devices { devices: vec![0], per_device: p },
         bind_memory: false,
         threads_per_partition: None,
     };
-    let per = sum.num_qubits() / p;
-    let blocks = (0..p).map(|b| (b * per..(b + 1) * per).collect()).collect();
     let options = GpuScatterOptions {
         devices: PartitionRuntime::new(&config).expect("placement"),
-        rows: ScatterRows::Policy(PartitionRowPolicy::Cut(blocks)),
+        rows: ScatterRows::Policy(rows),
         layer,
     };
     let mut split = GpuPartitionedSum::scatter_to_devices_with(sum, options).expect("scatter");
@@ -201,12 +223,13 @@ fn joined_layers(trace: &PartitionTrace, what: &str) -> Vec<bool> {
         .collect()
 }
 
-/// [`kicked_chain`] over a cut group of `p` partitions against the host, both directions; returns, per direction, the trace of the device run.
+/// [`kicked_chain`] over a group of `p` partitions split by `rows_of(num_qubits, p)` against the host, both directions; returns, per direction, the trace of the device run.
 fn group_agrees<const W: usize>(
     circuit: &Circuit<W>,
     sum: &PauliSum<W>,
     policy_of: &dyn Fn(Direction) -> BuiltinTruncation,
     p: usize,
+    rows_of: fn(usize, usize) -> PartitionRowPolicy,
     what: &str,
 ) -> Vec<PartitionTrace> {
     let mut traces = Vec::new();
@@ -214,7 +237,7 @@ fn group_agrees<const W: usize>(
         let policy = policy_of(direction);
         let what = format!("{what} P={p} {direction:?}");
         let (want, discarded) = propagate_discarding(circuit, sum.clone(), &policy, direction);
-        let mut split = cut_split(sum, p, GpuLayerOptions::default());
+        let mut split = split_by(sum, p, GpuLayerOptions::default(), rows_of(sum.num_qubits(), p));
         split.propagate(circuit, policy.clone(), direction).expect("device propagate");
         let got = split.gather().expect("gather");
         assert_runs_agree(
@@ -258,7 +281,13 @@ fn light_cut<const W: usize>(
     cutting
 }
 
-fn group_runs_agree<const W: usize>(num_qubits: usize, seed: u64) {
+/// `remote_rotations`: whether `rows_of` leaves the rotations remote and the bonds local, or the reverse.
+fn group_runs_agree<const W: usize>(
+    num_qubits: usize,
+    seed: u64,
+    rows_of: fn(usize, usize) -> PartitionRowPolicy,
+    remote_rotations: bool,
+) {
     let input = sparse_input::<W>(num_qubits, seed);
     let circuit = kicked_chain::<W>(num_qubits, 0.6);
     let caps = [Direction::Forward, Direction::Heisenberg].map(|d| light_cut(&circuit, &input, d));
@@ -275,8 +304,12 @@ fn group_runs_agree<const W: usize>(num_qubits: usize, seed: u64) {
     for p in [2usize, 4] {
         for (name, policy) in &policies {
             let what = format!("{name} W={W}");
-            for trace in group_agrees(&circuit, &input, policy, p, &what) {
+            for trace in group_agrees(&circuit, &input, policy, p, rows_of, &what) {
                 let joined = joined_layers(&trace, &what);
+                for layer in trace.layers.iter().filter(|layer| layer.remote_deltas > 0) {
+                    let rotation = is_rotation(num_qubits, layer.circuit_index);
+                    assert_eq!(rotation, remote_rotations, "{what} P={p}: remote layer {layer:?}");
+                }
                 let of = |rotation: bool| {
                     trace.layers.iter().zip(&joined).filter(move |(layer, &joined)| {
                         joined && is_rotation(num_qubits, layer.circuit_index) == rotation
@@ -302,13 +335,21 @@ fn group_runs_agree<const W: usize>(num_qubits: usize, seed: u64) {
 #[test]
 fn device_group_runs_agree_with_the_host_w1() {
     require_cuda!();
-    group_runs_agree::<1>(16, 0x6A1);
+    group_runs_agree::<1>(16, 0x6A1, cut_rows, false);
 }
 
 #[test]
 fn device_group_runs_agree_with_the_host_w2() {
     require_cuda!();
-    group_runs_agree::<2>(96, 0x6A2);
+    group_runs_agree::<2>(96, 0x6A2, cut_rows, false);
+}
+
+/// Under x-parity rows the remote layers are rotations, which break the rotation runs, while every `ZZ` stays local and in its Clifford run.
+#[test]
+fn device_group_runs_agree_under_x_parity_rows() {
+    require_cuda!();
+    group_runs_agree::<1>(16, 0x6A5, x_parity_rows, true);
+    group_runs_agree::<2>(96, 0x6A6, x_parity_rows, true);
 }
 
 /// Rotations growing a dense sum refine the partitions, in the run or at the crossing bond after it, which runs at one agreed count.

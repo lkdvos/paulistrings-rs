@@ -14,14 +14,14 @@ pub(crate) mod layer;
 #[cfg(feature = "mpi")]
 pub mod mpi;
 pub(crate) mod operator_products;
+pub(crate) mod row_policy;
 pub(crate) mod runtime;
 pub(crate) mod sum;
 pub(crate) mod topology;
 
-pub use distributed::{
-    repartition_share, DistributedSum, PartitionRowPolicy, ScatterOptions, ScatterRows,
-};
+pub use distributed::{repartition_share, DistributedSum, ScatterOptions, ScatterRows};
 pub use driver::propagate_partitioned;
+pub use row_policy::{PartitionRowPolicy, FOR_RUN_PARITY_GROUP};
 pub use runtime::PartitionRuntime;
 pub use sum::PartitionedSum;
 pub use topology::{numa_nodes, CpuSet, PartitionConfig, Placement, TopologyError};

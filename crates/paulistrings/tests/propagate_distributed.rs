@@ -16,9 +16,9 @@ use num_complex::Complex64;
 use paulistrings::test_support::InProcessTransport;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close, collapsing_circuit,
-    haar_su4_matrix, heavy_cut, propagate_discarding, rand_sum, rand_sum_real, single_cuts,
-    spread_magnitudes, trotter_circuit, truncated_liouvillian, unpinned_partitions,
-    unpinned_scatter, z0_sum, zz_rotation, KeepAll,
+    haar_su4_matrix, heavy_cut, kicked_ising, propagate_discarding, rand_sum, rand_sum_real,
+    single_cuts, site_and_magnetization, spread_magnitudes, square_lattice, trotter_circuit,
+    truncated_liouvillian, unpinned_partitions, unpinned_scatter, z0_sum, zz_rotation, KeepAll,
 };
 use paulistrings::Collectives;
 use paulistrings::PtmChannel;
@@ -772,6 +772,30 @@ fn lanczos_coefficients_agree_across_ranks() {
         assert_eq!(b, &got[0], "rank {rank} disagrees with rank 0");
         for (n, (g, w)) in b.iter().zip(&want).enumerate() {
             assert!((g - w).abs() < 1e-9 * w, "rank {rank} b_{}: {g} vs {w}", n + 1);
+        }
+    }
+}
+
+/// Rank groups split by `PartitionRowPolicy::for_run`, parity rows for a site and block rows for the magnetization, agree with one process.
+#[test]
+fn for_run_rows_match_propagate() {
+    let (lx, ly) = (4, 4);
+    let circuit = kicked_ising::<1>(lx * ly, &square_lattice(lx, ly), 0.4, 0.9, 2);
+    let (site, magnetization) = site_and_magnetization::<1>(lx * ly, 9);
+    let truncation = CoefficientThreshold(1e-7);
+    for (name, observable) in [("site", site), ("magnetization", magnetization)] {
+        let rows = PartitionRowPolicy::for_run(&observable, &circuit);
+        let (want, discarded) =
+            propagate_discarding(&circuit, observable.clone(), &truncation, Direction::Heisenberg);
+        for size in [2u32, 4] {
+            let gathered = on_ranks(size, |transport| {
+                let mut split = scatter_by_policy(observable.clone(), transport, rows.clone());
+                split.propagate(&circuit, &truncation, Direction::Heisenberg);
+                split.gather()
+            });
+            let got = gathered.into_iter().next().unwrap().expect("rank 0 gathers");
+            let what = format!("{name} ranks={size}");
+            assert_runs_agree(truncation, discarded, &got, &want, TOL, &what);
         }
     }
 }

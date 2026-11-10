@@ -13,7 +13,7 @@ Random partition rows put roughly half of a dense two-qubit gate's deltas across
 **In-process partitioning is worth it when the exchange is rare**, and there are two ways to make it rare.
 When the circuit has a known geometry, `partition_row_blocks=` replaces the random draw with an explicit cut — one contiguous block of qubits per partition — so only gates that straddle the cut exchange; the kwarg is described under [MPI ranks](mpi.md#partition-row-selection) and works identically under `partitions=`.
 On a heavy-hex kicked-Ising step, cut rows made `P = 2` 15–21% faster per step than the single-process engine ([`research/FINDINGS.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/FINDINGS.md) §Cut partition rows).
-Choosing rows automatically for a circuit with no obvious geometry is open research (`research/FINDINGS.md` §Partition rows without a known lattice).
+`partition_rows="auto"` reads the geometry off a circuit whose two-qubit gates are all `ZZ`-type (or all `XX`-type) and picks parity or block rows from the observable's extent ([MPI ranks](mpi.md#partition-row-selection)); choosing rows for a circuit with mixed two-qubit gates is open research (`research/FINDINGS.md` §Partition rows without a known lattice).
 
 ## Python
 

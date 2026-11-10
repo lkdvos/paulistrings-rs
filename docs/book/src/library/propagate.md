@@ -38,7 +38,7 @@ The GIL is released for the duration of both calls.
 | `partition_row_seed` | `int \| None` | `None` = the sum's own hash seed | which GF(2) rows decide a term's partition |
 | `partition_row_blocks` | `list[list[int]] \| None` | `None` | explicit disjoint qubit blocks, one per partition, instead of a seeded draw |
 | `partition_row_exclude` | `dict[str, list[int]] \| None` | `None` | `{"x": [...], "z": [...]}`: the seeded draw with these qubits' x-bits / z-bits read by no row |
-| `partition_rows` | `bool array \| None` | `None` | the rows outright, shape `(log2(P), 2 * num_qubits)`, x-bits first, as `PauliSum.hash_rows()` lays them out and [`paulistrings.hashes`](#paulistringshashes) builds them |
+| `partition_rows` | `bool array \| "auto" \| None` | `None` | the rows outright, shape `(log2(P), 2 * num_qubits)`, x-bits first, as `PauliSum.hash_rows()` lays them out and [`paulistrings.hashes`](#paulistringshashes) builds them; `"auto"` picks parity or block rows from the circuit and the observable ([MPI ranks](../manual/propagation/mpi.md#partition-row-selection)) |
 | `comm` | `mpi4py.MPI.Comm \| None` | `None` | run one partition per MPI rank instead of `partitions` |
 | `result` | `"gather" \| "local"` | `"gather"` | only read under `comm=`: `"gather"` leaves the whole sum on rank 0 and an empty one elsewhere; `"local"`, each rank's own share as a plain `PauliSum`, is deprecated in favour of [`PauliSum.partition`](#partitionedpaulisum) |
 | `device` | `None \| int \| list[int] \| "auto"` | `None` | run on CUDA devices instead of the host; see below |
@@ -56,7 +56,7 @@ The GIL is released for the duration of both calls.
 
 In partitioned mode `RAYON_NUM_THREADS` and `engine` are ignored, and `truncation.topn` raises `NotImplementedError` (use `approx_topn`, or `partition_topn` for a per-partition cap).
 
-`partition_row_blocks` excludes `partition_row_seed` and `partition_row_exclude`, and `partition_rows` excludes every other row keyword; all but the seed need `partitions=`, `comm=` or a list of several devices.
+`partition_row_blocks` excludes `partition_row_seed` and `partition_row_exclude`, and `partition_rows` excludes every other row keyword; all but the seed need `partitions=`, `comm=` or a list of several devices, and `partition_rows="auto"` needs the circuit, so `partition` and `repartition` reject it.
 A partition is named by `log2(P)` rows over the `2 * num_qubits` key coordinates, so `P` is at most `2^min(2 * num_qubits, 31)`.
 Rows that leave some partitions unreachable (linearly dependent rows, or an exclusion that leaves no coordinate readable) run with a `RuntimeWarning` naming the shortfall; only a malformed keyword is a `ValueError`.
 Rows that overlap the span of the bucket hash's active rows correlate partitions with buckets, so some of their pairs stay empty; that costs balance only once the run refines to the overlapping bucket row, so it is logged as a warning on the `paulistrings` logger at that layer, once per run.

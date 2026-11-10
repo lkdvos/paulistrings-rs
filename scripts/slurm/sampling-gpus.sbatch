@@ -18,6 +18,8 @@
 #   REF_CACHE    the one-GPU reference cache and approx-topn cap (default 1e8); the approx-topn splits run at CACHES
 #   THRESHOLDS   kicked-Ising coefficient thresholds, each on one GPU and split (default "2.5e-5 1e-5")
 #   DEVICES      the device list (default: every GPU the job sees)
+#   ROWS         the split cells' --rows (default auto: x-parity rows for kicked Ising's Z_62, a cut for the TFIM's magnetization)
+#   SWEEP=rows   the row-choice sweep instead (run_rows_sweep in sampling-cells.sh), over ROWS (default "auto cut quadrant xparity:2") and P2P_LEVELS (NCCL_P2P_LEVEL values, default none)
 #   PT=0         skip the phase-timing rerun of the largest kicked-Ising cell (export/exchange split)
 #   CELL_BOUND   seconds one cell may take (default 2400)
 #   PS_REV       commit to build (default: HEAD when the job starts), in a private git worktree
@@ -53,7 +55,7 @@ launch_all=("$bin" --backend gpus --devices "$DEVICES")
 failed=0
 . scripts/slurm/sampling-cells.sh
 echo "== sweep on devices $DEVICES, caches $CACHES, reference $REF_CACHE -> $sidecar"
-run_sweep
+if [ "${SWEEP:-}" = rows ]; then run_rows_sweep "$(tr , '\n' <<< "$DEVICES" | wc -l)"; else run_sweep; fi
 
 phase_timing_cell cuda,phase-timing "$out/sampling-gpus-$tag-pt.jsonl"
 

@@ -7,9 +7,10 @@ use paulistrings::gpu::{GpuError, GpuLayerOptions, GpuPartitionedSum, GpuScatter
 use paulistrings::require_cuda;
 use paulistrings::test_support::{
     assert_runs_agree, assert_runs_agree_count_only, assert_terms_close,
-    assert_terms_close_up_to_residues, coefficient_tolerance, heavy_cut, propagate_discarding,
-    rand_sum, rand_sum_real, random_circuit, rows_reading_z63, single_cuts, spread_magnitudes,
-    su4_chain, trotter_circuit, with_hash, x0_terms_identity_on_q63, zz_rotation, KeepAll,
+    assert_terms_close_up_to_residues, coefficient_tolerance, heavy_cut, kicked_ising,
+    propagate_discarding, rand_sum, rand_sum_real, random_circuit, rows_reading_z63, single_cuts,
+    site_and_magnetization, spread_magnitudes, square_lattice, su4_chain, trotter_circuit,
+    with_hash, x0_terms_identity_on_q63, zz_rotation, KeepAll,
 };
 use paulistrings::test_support::{count_remote_deltas, set_fault_plan, FaultPlan};
 use paulistrings::{
@@ -206,6 +207,36 @@ fn a_rotation_crossing_the_partition_agrees() {
         }
         check(&circuit, &sum, &KeepAll, "crossing zz", &[p]);
         check(&circuit, &sum, &ApproxTopN(3_000), "crossing zz approx", &[p]);
+    }
+}
+
+/// `PartitionRowPolicy::for_run` rows, parity rows for a site and block rows for the magnetization, agree with the host on a kicked-Ising lattice.
+#[test]
+fn for_run_rows_agree() {
+    require_cuda!();
+    let (lx, ly) = (4, 4);
+    let circuit = kicked_ising::<1>(lx * ly, &square_lattice(lx, ly), 0.4, 0.9, 2);
+    let (site, magnetization) = site_and_magnetization::<1>(lx * ly, 9);
+    let truncation = CoefficientThreshold(1e-7);
+    for (name, observable) in [("site", site), ("magnetization", magnetization)] {
+        let rows = PartitionRowPolicy::for_run(&observable, &circuit);
+        for direction in [Direction::Forward, Direction::Heisenberg] {
+            let (want, discarded) =
+                propagate_discarding(&circuit, observable.clone(), &truncation, direction);
+            for p in [2usize, 4] {
+                let options = GpuScatterOptions {
+                    devices: PartitionRuntime::new(&config(p)).expect("placement"),
+                    rows: ScatterRows::Policy(rows.clone()),
+                    layer: GpuLayerOptions::default(),
+                };
+                let mut split = GpuPartitionedSum::scatter_to_devices_with(&observable, options)
+                    .expect("scatter");
+                split.propagate(&circuit, truncation, direction).expect("propagate");
+                let got = split.gather().expect("gather");
+                let what = format!("{name} P={p} {direction:?}");
+                assert_runs_agree(truncation, discarded, &got, &want, TOL, &what);
+            }
+        }
     }
 }
 

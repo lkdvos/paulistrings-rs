@@ -17,22 +17,35 @@ Options:
                              Lx x Ly (default 16x16)
   --observable site:Q|magnetization  (default: the model's)
   --steps N                  Trotter steps (default: 20)
-  --backend cpu|gpu|gpus|mpi-gpu
-                             the host engine; one CUDA device; one sum split over --devices in
-                             this process (GpuPartitionedSum); or one device per MPI rank over NCCL
-                             (MpiGpuSum, features cuda and mpi, launched under mpirun or srun)
-                             (default: cpu)
+  --backend cpu|cpus|gpu|gpus|mpi-gpu
+                             the host engine; one sum split over --partitions host partitions
+                             (PartitionedSum, --threads shared evenly); one CUDA device; one sum
+                             split over --devices in this process (GpuPartitionedSum); or one
+                             device per MPI rank over NCCL (MpiGpuSum, features cuda and mpi,
+                             launched under mpirun or srun) (default: cpu)
   --threads N                host threads (default: all available)
   --device N|auto            the ordinal under gpu (default 0), or this rank's under mpi-gpu
                              (default auto: a device near the rank's CPUs)
   --devices LIST             gpus: comma-separated ordinals, one partition each, repeats allowed
                              (default: 0)
-  --rows seeded|cut          gpus and mpi-gpu: partition rows drawn from the sum's hash seed, or a
-                             cut of the qubits into equal contiguous blocks, under which every
-                             R_X is local and only the bonds crossing blocks exchange (default: cut)
+  --partitions N             cpus: host partitions (default: 2)
+  --rows auto|seeded|cut|quadrant|xparity:K|zparity:K
+                             split backends: PartitionRowPolicy::for_run, which picks xparity:2
+                             for a site observable and cut for the magnetization; partition rows
+                             drawn from the sum's hash seed; a cut of the qubits into equal
+                             contiguous blocks, under which every R_X is local and only the bonds
+                             crossing blocks exchange; the same over four lattice quadrants meeting
+                             at the observable's site (the lattice centre for the magnetization),
+                             at 4 partitions; or log2(P) rows, row i the parity of the x-bits
+                             (z-bits) of the i-th K qubits in breadth-first order from the
+                             observable's site (the lattice centre for the magnetization), under
+                             which every R_ZZ is local and only the R_X on those qubits exchange
+                             (only the bonds leaving those groups) (default: auto)
   --dtype f64|f32            coefficient type (default: f64)
   --threshold EPS            drop |c| <= EPS
   --approx-topn N            keep N terms per layer (octave cut)
+  --partition-approx-topn N  keep N terms per layer on each partition alone, with no collective
+                             (PerPartition(ApproxTopN(N)); the same as --approx-topn N unsplit)
   --collapse                 CollapseSample, with --cache N --samples M --seed S
   --trace                    after the timed run, repeat it with the layer trace on and report the per-kind,
                              phase, per-partition and pass figures from that run (it settles exact device term
@@ -41,7 +54,7 @@ Options:
   --json-out FILE            append one JSON line with the run summary (rank 0 only under mpi-gpu)
   -h, --help                 print this message
 
-Exactly one of --threshold, --approx-topn and --collapse is required.
+Exactly one of --threshold, --approx-topn, --partition-approx-topn and --collapse is required.
 The partition count of gpus and the rank count of mpi-gpu must be powers of two.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +66,8 @@ pub(crate) enum Model {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Backend {
     Cpu,
+    /// One sum over `partitions` host partitions of this process.
+    Cpus,
     Gpu,
     /// One sum over `devices.len()` partitions of this process.
     Gpus,
@@ -64,6 +79,7 @@ impl Backend {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Backend::Cpu => "cpu",
+            Backend::Cpus => "cpus",
             Backend::Gpu => "gpu",
             Backend::Gpus => "gpus",
             Backend::MpiGpu => "mpi-gpu",
@@ -74,15 +90,35 @@ impl Backend {
 /// How a split run assigns keys to partitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rows {
+    /// `PartitionRowPolicy::for_run` on the observable and one step.
+    Auto,
     Seeded,
     Cut,
+    /// Each row the x-parity of `K` qubits nearest the observable's site.
+    XParity(usize),
+    /// Each row the z-parity of `K` qubits nearest the observable's site.
+    ZParity(usize),
+    /// Z-only rows labelling four lattice quadrants that meet at the observable's site.
+    Quadrant,
 }
 
 impl Rows {
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> String {
         match self {
-            Rows::Seeded => "seeded",
-            Rows::Cut => "cut",
+            Rows::Auto => "auto".to_string(),
+            Rows::Seeded => "seeded".to_string(),
+            Rows::Cut => "cut".to_string(),
+            Rows::XParity(k) => format!("xparity:{k}"),
+            Rows::ZParity(k) => format!("zparity:{k}"),
+            Rows::Quadrant => "quadrant".to_string(),
+        }
+    }
+
+    /// The qubits per row of `xparity:K` and `zparity:K`, zero otherwise.
+    pub(crate) fn group(self) -> usize {
+        match self {
+            Rows::XParity(k) | Rows::ZParity(k) => k,
+            _ => 0,
         }
     }
 }
@@ -91,7 +127,13 @@ impl Rows {
 pub(crate) enum Truncation {
     Threshold(f64),
     ApproxTopN(usize),
-    Collapse { cache: usize, samples: usize, seed: u64 },
+    /// `PerPartition(ApproxTopN(n))`: each partition keeps `n` on its own, with no collective.
+    PartitionApproxTopN(usize),
+    Collapse {
+        cache: usize,
+        samples: usize,
+        seed: u64,
+    },
 }
 
 impl Truncation {
@@ -99,6 +141,7 @@ impl Truncation {
         match self {
             Truncation::Threshold(eps) => format!("threshold:{eps:e}"),
             Truncation::ApproxTopN(n) => format!("approx-topn:{n}"),
+            Truncation::PartitionApproxTopN(n) => format!("partition-approx-topn:{n}"),
             Truncation::Collapse { cache, samples, seed } => {
                 format!("collapse:cache={cache},samples={samples},seed={seed}")
             }
@@ -116,6 +159,7 @@ pub(crate) struct Config {
     /// `--device`; `None` is ordinal 0 under `gpu` and the rank's nearest device under `mpi-gpu`.
     pub(crate) device: Option<u32>,
     pub(crate) devices: Vec<u32>,
+    pub(crate) partitions: usize,
     pub(crate) rows: Rows,
     pub(crate) dtype: &'static str,
     pub(crate) truncation: Truncation,
@@ -170,7 +214,8 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
         device: None,
         devices: vec![0],
-        rows: Rows::Cut,
+        partitions: 2,
+        rows: Rows::Auto,
         dtype: "f64",
         truncation: Truncation::Threshold(0.0),
         trace: false,
@@ -208,6 +253,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--backend" => {
                 cfg.backend = match value(args, &mut i, flag)? {
                     "cpu" => Backend::Cpu,
+                    "cpus" => Backend::Cpus,
                     "gpu" => Backend::Gpu,
                     "gpus" => Backend::Gpus,
                     "mpi-gpu" => Backend::MpiGpu,
@@ -227,11 +273,20 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
                     .map(|d| number(d.trim(), flag))
                     .collect::<Result<_, _>>()?;
             }
+            "--partitions" => cfg.partitions = number(value(args, &mut i, flag)?, flag)?,
             "--rows" => {
-                cfg.rows = match value(args, &mut i, flag)? {
-                    "seeded" => Rows::Seeded,
-                    "cut" => Rows::Cut,
-                    other => return Err(format!("unknown rows '{other}'")),
+                let text = value(args, &mut i, flag)?;
+                cfg.rows = match (text, text.split_once(':')) {
+                    ("auto", _) => Rows::Auto,
+                    ("seeded", _) => Rows::Seeded,
+                    ("cut", _) => Rows::Cut,
+                    ("quadrant", _) => Rows::Quadrant,
+                    (_, Some(("xparity", k))) => Rows::XParity(number(k, flag)?),
+                    (_, Some(("zparity", k))) => Rows::ZParity(number(k, flag)?),
+                    _ => return Err(format!("unknown rows '{text}'")),
+                };
+                if matches!(cfg.rows, Rows::XParity(0) | Rows::ZParity(0)) {
+                    return Err("--rows xparity:K and zparity:K need K >= 1".into());
                 }
             }
             "--dtype" => {
@@ -248,6 +303,11 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--approx-topn" => {
                 let n: f64 = number(value(args, &mut i, flag)?, flag)?;
                 cfg.truncation = Truncation::ApproxTopN(n as usize);
+                truncations += 1;
+            }
+            "--partition-approx-topn" => {
+                let n: f64 = number(value(args, &mut i, flag)?, flag)?;
+                cfg.truncation = Truncation::PartitionApproxTopN(n as usize);
                 truncations += 1;
             }
             "--collapse" => {
@@ -271,7 +331,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         i += 1;
     }
     if truncations != 1 {
-        return Err("exactly one of --threshold, --approx-topn and --collapse is required".into());
+        return Err("exactly one of --threshold, --approx-topn, --partition-approx-topn and --collapse is required".into());
     }
     if collapse {
         let cache = cache.ok_or("--collapse needs --cache")?;
@@ -284,6 +344,9 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
     }
     if cfg.steps == 0 || cfg.threads == 0 {
         return Err("--steps and --threads must be positive".into());
+    }
+    if cfg.backend == Backend::Cpus && !cfg.partitions.is_power_of_two() {
+        return Err(format!("--partitions {} is not a power of two", cfg.partitions));
     }
     if cfg.backend == Backend::Gpus && !cfg.devices.len().is_power_of_two() {
         return Err(format!(

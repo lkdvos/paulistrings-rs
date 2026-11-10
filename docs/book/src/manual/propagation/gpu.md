@@ -105,7 +105,7 @@ print(stats.partition.devices)   # [0, 1, 2, 3]
 The list length must be a power of two, since a partition is named by `log2(P)` rows; `device=[0, 1, 2]` is a `ValueError`.
 An ordinal may repeat, `device=[0, 0]` putting two partitions on device 0, which runs the exchange on one GPU.
 `"auto"` takes devices `0..k` for the largest power of two `k` visible, and is the one-device run when only one is.
-`partition_row_seed=` and `partition_row_blocks=` choose the rows as they do for `partitions=`, the block count equal to the list length.
+`partition_row_seed=`, `partition_row_blocks=` and `partition_rows=` (`"auto"` included) choose the rows as they do for `partitions=`, the block count equal to the list length.
 `stats.partition.partitions` is the list length, `devices` the list, and the per-layer lists carry one entry per partition.
 The call scatters, propagates and gathers every time; a resident multi-device sum is Rust-only (below).
 
@@ -137,6 +137,7 @@ let evolved = split.gather()?;
 ```
 
 `scatter_to_devices_with` takes a `GpuScatterOptions { devices, rows, layer }`: a runtime resolved from `Placement::Devices`, the partition rows, and the device layer's knobs (`GpuLayerOptions`); `GpuScatterOptions::new(&devices)` fills in the defaults.
+`rows: ScatterRows::Policy(PartitionRowPolicy::for_run(&observable, &circuit))` is Python's `partition_rows="auto"`; `PartitionRowPolicy::parity_around` and `blocks` build parity and block rows by hand.
 
 The exchanged columns move device to device.
 With `enable_trace`, every layer's `PartitionLayerRecord` carries the device partitions' counters as `device` (a `DeviceLayerRecord` each: records, block size, arena batches, fallbacks, path taken) beside the shared `refine_passes` and `receive_chunks`.

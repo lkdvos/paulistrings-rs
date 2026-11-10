@@ -152,16 +152,26 @@ fn ms(ns: u64) -> f64 {
     ns as f64 * 1e-6
 }
 
+fn rows_label(report: &Report) -> String {
+    report.rows.as_ref().map_or("-".to_string(), |rows| rows.label.clone())
+}
+
 fn backend_label(cfg: &Config, report: &Report) -> String {
     match cfg.backend {
         Backend::Cpu => format!("cpu threads={}", cfg.threads),
+        Backend::Cpus => format!(
+            "cpus partitions={} threads={} rows={}",
+            cfg.partitions,
+            cfg.threads,
+            rows_label(report)
+        ),
         Backend::Gpu => format!("gpu device={}", cfg.device.unwrap_or(0)),
         Backend::Gpus | Backend::MpiGpu => format!(
             "{} partitions={} devices={:?} rows={}",
             cfg.backend.name(),
             report.devices.len(),
             report.devices,
-            cfg.rows.name()
+            rows_label(report)
         ),
     }
 }
@@ -252,7 +262,7 @@ fn print_trace(report: &Report, traced: &TraceSummary) {
         ms(traced.coset_loop_ns),
         ms(traced.finalize_ns),
     );
-    if report.devices.len() > 1 {
+    if traced.partitions.terms_final.len() > 1 {
         print_partitions(report, &traced.partitions, traced.layers);
     }
 }
@@ -261,9 +271,9 @@ fn print_partitions(report: &Report, parts: &PartitionSummary, layers: usize) {
     let total_rows: u64 = parts.rows_sent.iter().sum();
     let total_bytes: u64 = parts.bytes_sent.iter().sum();
     println!(
-        "  partitions: remote_layers={} of {layers} crossed_bonds={} rows_exchanged={total_rows} bytes_exchanged={total_bytes}",
+        "  partitions: remote_layers={} of {layers} remote_channels/step={} rows_exchanged={total_rows} bytes_exchanged={total_bytes}",
         parts.remote_layers,
-        report.crossed_bonds.map_or("-".to_string(), |c| c.to_string()),
+        report.rows.as_ref().and_then(|rows| rows.remote_channels).map_or("-".to_string(), |c| c.to_string()),
     );
     println!(
         "  {:>4} {:>6} {:>13} {:>13} {:>11} {:>15} {:>13} {:>11} {:>12}",
@@ -397,10 +407,10 @@ fn append_json(
     #[cfg(not(feature = "phase-timing"))]
     let (export_ns, exchange_ns): (Option<Vec<u64>>, Option<Vec<u64>>) = (None, None);
     let partitions = serde_json::json!({
-        "count": report.devices.len().max(1),
+        "count": if cfg.backend == Backend::Cpus { cfg.partitions } else { report.devices.len().max(1) },
         "devices": report.devices,
-        "rows": cfg.rows.name(),
-        "crossed_bonds": report.crossed_bonds,
+        "rows": report.rows.as_ref().map(|rows| &rows.label),
+        "remote_channels_per_step": report.rows.as_ref().and_then(|rows| rows.remote_channels),
         "remote_layers": parts.map(|p| &p.remote_layers),
         "terms_final": parts.map(|p| &p.terms_final),
         "terms_max": parts.map(|p| &p.terms_max),

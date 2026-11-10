@@ -1,5 +1,6 @@
 //! The storage behind a Python `PauliSum`: [`WidthSum`], one coefficient type's sum monomorphized over the widths, and [`PauliSumImpl`], the dtype enum over it.
 
+use crate::circuit::CircuitImpl;
 use crate::dtype::{imaginary_error, narrow, Dtype, PyCoefficient, Scalar};
 use num_complex::{Complex32, Complex64};
 use numpy::{IntoPyArray, PyReadonlyArray1, PyReadonlyArray2};
@@ -107,6 +108,18 @@ impl<C: PyCoefficient> WidthSum<C> {
 
     pub fn hash_seed(&self) -> u64 {
         for_each_width!(self, |s| s.hash().seed())
+    }
+
+    /// [`PartitionRowPolicy::for_run`] on this sum and `circuit`; `None` on a width mismatch.
+    pub fn row_policy_for_run(&self, circuit: &CircuitImpl) -> Option<PartitionRowPolicy> {
+        match (self, circuit) {
+            (Self::W1(s), CircuitImpl::W1(c)) => Some(PartitionRowPolicy::for_run(s, c)),
+            (Self::W2(s), CircuitImpl::W2(c)) => Some(PartitionRowPolicy::for_run(s, c)),
+            (Self::W4(s), CircuitImpl::W4(c)) => Some(PartitionRowPolicy::for_run(s, c)),
+            (Self::W8(s), CircuitImpl::W8(c)) => Some(PartitionRowPolicy::for_run(s, c)),
+            (Self::W16(s), CircuitImpl::W16(c)) => Some(PartitionRowPolicy::for_run(s, c)),
+            _ => None,
+        }
     }
 
     /// `None` when the two sums were monomorphized at different widths, which can only happen if their qubit counts fall in different dispatch bands.
@@ -349,6 +362,7 @@ impl PauliSumImpl {
         pub fn hash_rank_deficiency(&self) -> Option<String>;
         pub fn xz_flat(&self) -> (usize, Vec<u64>, Vec<u64>);
         pub fn partition_rank_deficiency(&self, policy: &PartitionRowPolicy, bits: u8) -> Option<String>;
+        pub fn row_policy_for_run(&self, circuit: &CircuitImpl) -> Option<PartitionRowPolicy>;
     }
 
     pub fn with_hash_rows(&self, rows: &[Vec<bool>], seed: u64) -> Self {

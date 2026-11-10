@@ -93,6 +93,19 @@ It cannot be combined with `partition_row_blocks=`.
 
 A combination of rows that the circuit conserves splits nothing: kicked Ising conserves the z-parity of the whole register, so when the strings occupy only a few blocks of a z-only `partition_row_blocks=` cut, one combination of its rows is nearly constant and half the partitions stay nearly empty.
 
+`partition_rows="auto"` lets `propagate` pick the rows from the circuit and the observable (`PartitionRowPolicy::for_run` in Rust), for a circuit whose two-qubit gates set one kind of bit, as `ZZ`/`CZ` set only z-bits:
+
+<!-- doctest: skip -->
+```python
+observable.propagate(circuit, policy, comm=comm, partition_rows="auto")
+```
+
+An observable on at most two qubits gets **parity rows**: row `i` reads the x-bits of the `i`-th pair of qubits nearest the observable on the circuit's two-qubit graph, so every `ZZ` stays local and only the `rx` on those `2 · log2(P)` qubits exchange.
+Any other observable, such as a magnetization, gets a z-only cut of the qubits into equal blocks in index order, since terms spread over the register have no content on a few qubits near one site and would stay in one partition.
+On four GPUs, x-parity rows ran kicked Ising's collapse and threshold cells 2.7–3.2× faster than one GPU, against 1.6–2.0× under the cut ([`research/FINDINGS.md`](https://github.com/lkdvos/paulistrings-rs/blob/main/research/FINDINGS.md) §Parity rows balance a local observable, block rows an extensive one).
+`XX`-type two-qubit gates swap the roles of x- and z-bits, and a circuit whose two-qubit gates set both kinds of bit (`cnot`, a dense SU(4)) gets the seeded draw.
+`"auto"` is not the default because a split `approx_topn` or collapse depends on the rows, which the seeded draw keeps independent of the qubits' geometry.
+
 ## Keeping the sum split
 
 `propagate(comm=...)` leaves the whole evolved sum on rank 0 and an **empty** `PauliSum` of the same `num_qubits` on every other rank, which materializes everything on one rank.

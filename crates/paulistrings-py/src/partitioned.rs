@@ -524,6 +524,7 @@ impl PartitionedPauliSum {
             partition_row_exclude,
             partition_rows,
             num_qubits,
+            None,
         )?;
         rows.validate_count(num_qubits, count, &format!("{count} partition(s)"))?;
         let policy = rows.policy();

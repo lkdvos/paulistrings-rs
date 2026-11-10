@@ -150,3 +150,39 @@ def test_remote_layers_predict_the_engines_plan():
         stats = _start().propagate_with_stats(circuit, partitions=2, partition_rows=rows)
         planned = [predicted[i] for i in stats.circuit_index]
         assert [not local for local in stats.partition.local] == planned
+
+
+def _kicked_ising_4x4():
+    """One kicked-Ising step on the open 4 x 4 square lattice: ``rx`` on every qubit (layers 0-15), then ``ZZ`` on every bond."""
+    circuit = paulistrings.Circuit(16)
+    for q in range(16):
+        circuit.rx(0.4, q)
+    bonds = [(q, q + 1) for q in range(16) if q % 4 < 3] + [(q, q + 4) for q in range(12)]
+    for a, b in bonds:
+        circuit.pauli_rotation("ZZ", [a, b], 0.9)
+    return circuit, bonds
+
+
+@needs_two_domains
+def test_auto_partition_rows_follow_the_observable_and_keep_the_result():
+    circuit, bonds = _kicked_ising_4x4()
+    site = PauliSum.from_strings({"I" * 5 + "Z" + "I" * 10: 1.0}, num_qubits=16)
+    magnetization = PauliSum.from_strings({"I" * q + "Z" + "I" * (15 - q): 1 / 16 for q in range(16)}, num_qubits=16)
+    # A one-site observable gets x-parity rows over itself and its lowest neighbour, qubits 5 and 1: only their kicks exchange.
+    # The magnetization gets a z-only cut between qubits 0-7 and 8-15: only the four bonds across it exchange.
+    crossing = {16 + i for i, (a, b) in enumerate(bonds) if (a < 8) != (b < 8)}
+    for start, remote in [(site, {1, 5}), (magnetization, crossing)]:
+        stats = start.copy().propagate_with_stats(circuit, partitions=2, partition_rows="auto")
+        assert {i for i, local in zip(stats.circuit_index, stats.partition.local) if not local} == remote
+        got = start.copy()
+        got.propagate(circuit, partitions=2, partition_rows="auto")
+        _assert_terms_close(got, propagated(start, circuit), tol=1e-10)
+
+
+def test_auto_partition_rows_need_a_circuit():
+    with pytest.raises(ValueError, match="only propagate and propagate_with_stats take it"):
+        _start().partition(partitions=1, partition_rows="auto")
+    with pytest.raises(ValueError, match='not "cut"'):
+        _start().propagate(_fanout_circuit(N), partitions=1, partition_rows="cut")
+    with pytest.raises(ValueError, match="takes none of"):
+        _start().propagate(_fanout_circuit(N), partitions=1, partition_rows="auto", partition_row_seed=1)

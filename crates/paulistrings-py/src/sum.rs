@@ -1507,9 +1507,12 @@ pub(crate) struct RowKwargs {
     blocks: Option<Vec<Vec<usize>>>,
     exclude: Option<(Vec<usize>, Vec<usize>)>,
     rows: Option<Vec<Vec<bool>>>,
+    /// `partition_rows="auto"`, resolved by `PartitionRowPolicy::for_run` on the observable and the circuit.
+    auto: Option<PartitionRowPolicy>,
 }
 
 impl RowKwargs {
+    /// `run` is the observable and circuit of a `propagate` call, which `partition_rows="auto"` needs.
     pub(crate) fn parse(
         py: Python<'_>,
         seed: Option<u64>,
@@ -1517,7 +1520,40 @@ impl RowKwargs {
         exclude: Option<&Bound<'_, PyAny>>,
         rows: Option<&Bound<'_, PyAny>>,
         num_qubits: usize,
+        run: Option<(&PauliSumImpl, &crate::circuit::Circuit)>,
     ) -> PyResult<Self> {
+        let auto_requested = match rows.filter(|obj| !obj.is_none()) {
+            Some(obj) => match obj.extract::<String>() {
+                Ok(text) if text == "auto" => true,
+                Ok(text) => {
+                    return Err(PyValueError::new_err(format!(
+                        "partition_rows takes a boolean matrix or \"auto\", not \"{text}\""
+                    )))
+                }
+                Err(_) => false,
+            },
+            None => false,
+        };
+        let rows = rows.filter(|_| !auto_requested);
+        let auto =
+            match (auto_requested, run) {
+                (false, _) => None,
+                (true, None) => return Err(PyValueError::new_err(
+                    "partition_rows=\"auto\" picks rows from the circuit, so only propagate and \
+                     propagate_with_stats take it",
+                )),
+                (true, Some((sum, circuit))) => {
+                    Some(sum.row_policy_for_run(&circuit.inner).ok_or_else(|| {
+                        PyValueError::new_err("the circuit's width differs from the sum's")
+                    })?)
+                }
+            };
+        if auto.is_some() && (seed.is_some() || blocks.is_some() || exclude.is_some()) {
+            return Err(PyValueError::new_err(
+                "partition_rows=\"auto\" picks the rows itself, so it takes none of \
+                 partition_row_seed=, partition_row_blocks= or partition_row_exclude=",
+            ));
+        }
         let blocks = parse_partition_row_blocks(blocks)?;
         if seed.is_some() && blocks.is_some() {
             return Err(PyValueError::new_err(
@@ -1550,14 +1586,14 @@ impl RowKwargs {
                  partition_row_blocks= or partition_row_exclude=",
             ));
         }
-        Ok(Self { seed, blocks, exclude, rows })
+        Ok(Self { seed, blocks, exclude, rows, auto })
     }
 
     /// The keyword that only means something when the sum is split, if one was given.
     fn split_only_keyword(&self) -> Option<&'static str> {
         if self.blocks.is_some() {
             Some("partition_row_blocks")
-        } else if self.rows.is_some() {
+        } else if self.rows.is_some() || self.auto.is_some() {
             Some("partition_rows")
         } else if self.exclude.is_some() {
             Some("partition_row_exclude")
@@ -1590,6 +1626,9 @@ impl RowKwargs {
 
     pub(crate) fn policy(&self) -> PartitionRowPolicy {
         let (exclude_x, exclude_z) = self.exclude.clone().unwrap_or_default();
+        if let Some(policy) = &self.auto {
+            return policy.clone();
+        }
         match (&self.rows, &self.blocks, &self.exclude) {
             (Some(rows), ..) => PartitionRowPolicy::Matrix(rows.clone()),
             (None, Some(blocks), _) => PartitionRowPolicy::Cut(blocks.clone()),
@@ -2115,7 +2154,7 @@ impl PauliSum {
     /// `partition_row_seed` picks which GF(2) rows decide a term's partition (`None`, the default, falls back to the sum's own hash seed — unchanged from before this knob existed). `partition_row_blocks`, an alternative to the seed, gives one disjoint qubit block per partition (`PartitionRows::cut`, e.g. `[[0, ..., 63], [64, ..., 126]]` for a 2-partition cut) — a term's partition is then the XOR of the blocks in which it has odd Z-weight, a locality cut rather than a GF(2)-random draw. The two are mutually exclusive with each other, and either needs `partitions=` or `comm=`.
     /// Under `comm=` the block count must equal the MPI group size, and the blocks must be identical on every rank (the split is a local filter every rank computes for itself).
     /// `partition_row_exclude`, a dict `{"x": [qubits], "z": [qubits]}` and the other alternative to `partition_row_blocks`, keeps the seeded draw (`partition_row_seed` still applies) but clears the named x-bits and z-bits from every row, so strings differing only there share a partition.
-    /// `partition_rows`, a boolean (or 0/1) array of shape `(log2(P), 2 * num_qubits)` laid out as `hash_rows()` (see `paulistrings.hashes`), gives the rows outright and takes no other row keyword; under `comm=` every rank must pass the same rows.
+    /// `partition_rows`, a boolean (or 0/1) array of shape `(log2(P), 2 * num_qubits)` laid out as `hash_rows()` (see `paulistrings.hashes`), gives the rows outright and takes no other row keyword; under `comm=` every rank must pass the same rows. `partition_rows="auto"` picks them from the circuit and `self` (`PartitionRowPolicy::for_run`): x-parity rows near an observable on at most two qubits under a circuit whose two-qubit gates are `ZZ`-type, a z-only cut in qubit order for a wider observable, the mirror for `XX`-type gates, and the seeded draw for mixed ones.
     /// Rows that leave partitions unreachable run with a `RuntimeWarning`; rows that overlap the span of the bucket hash's active rows are logged as a warning (`paulistrings` logger) at the layer whose bucket count reaches the overlap.
     ///
     /// `comm` takes an `mpi4py` communicator and runs one partition per rank, as an alternative to `partitions` (place via the launcher, e.g. `mpirun --map-by ppr:1:numa --bind-to numa`). Requires `MPI_THREAD_SERIALIZED` set before importing MPI, a power-of-two rank count, and every rank calling with the same replicated input in the same order.
@@ -2171,6 +2210,7 @@ impl PauliSum {
                 partition_row_exclude,
                 partition_rows,
                 self.inner.num_qubits(),
+                Some((&self.inner, circuit)),
             )?,
             comm,
             gather,
@@ -2230,6 +2270,7 @@ impl PauliSum {
                 partition_row_exclude,
                 partition_rows,
                 self.inner.num_qubits(),
+                Some((&self.inner, circuit)),
             )?,
             comm,
             gather,
@@ -2269,6 +2310,7 @@ impl PauliSum {
             partition_row_exclude,
             partition_rows,
             self.inner.num_qubits(),
+            None,
         )?;
         crate::partitioned::partition(py, &self.inner, partitions, pin_memory, rows, comm)
     }

@@ -1,0 +1,270 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `crates/paulistrings/src/engine/partitioned/row_policy.rs`."><title>row_policy.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="paulistrings" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0 (4a4ef493e 2026-03-02)" data-channel="1.94.0" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">paulistrings/engine/partitioned/</div>row_policy.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! [`PartitionRowPolicy`], how a scatter picks the partition rows it splits a sum by, and [`PartitionRowPolicy::for_run`], the choice a circuit and its observable suggest.
+<a href=#2 id=2 data-nosnippet>2</a>
+<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::collections::VecDeque;
+<a href=#4 id=4 data-nosnippet>4</a>
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">crate</span>::circuit::Circuit;
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span><span class="kw">crate</span>::coefficient::Coefficient;
+<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::pauli_string::qubit_mask;
+<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::hash::PartitionRows;
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span><span class="kw">crate</span>::pauli_sum::PauliSum;
+<a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span><span class="kw">crate</span>::readout::PauliAxis;
+<a href=#11 id=11 data-nosnippet>11</a>
+<a href=#12 id=12 data-nosnippet>12</a><span class="doccomment">/// The qubits per row [`PartitionRowPolicy::for_run`] gives parity rows, the best balance on four Blackwell GPUs (`research/FINDINGS.md` §X-parity rows on device groups).
+<a href=#13 id=13 data-nosnippet>13</a></span><span class="kw">pub const </span>FOR_RUN_PARITY_GROUP: usize = <span class="number">2</span>;
+<a href=#14 id=14 data-nosnippet>14</a>
+<a href=#15 id=15 data-nosnippet>15</a><span class="doccomment">/// Which partition rows a scatter splits by: a seeded GF(2)-random draw, a qubit cut that keeps a channel local when its qubits share a block, parity rows near a site, or explicit rows.
+<a href=#16 id=16 data-nosnippet>16</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
+<a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub enum </span>PartitionRowPolicy {
+<a href=#18 id=18 data-nosnippet>18</a>    <span class="doccomment">/// [`PartitionRows::from_seed`] with this seed, or the sum's own hash seed at `None`; the default.
+<a href=#19 id=19 data-nosnippet>19</a>    </span>Seeded(<span class="prelude-ty">Option</span>&lt;u64&gt;),
+<a href=#20 id=20 data-nosnippet>20</a>    <span class="doccomment">/// [`PartitionRows::cut`]: one disjoint qubit block per rank, in rank order; the rows are z-only.
+<a href=#21 id=21 data-nosnippet>21</a>    </span>Cut(Vec&lt;Vec&lt;usize&gt;&gt;),
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// [`PartitionRows::from_seed_excluding`]: a seeded draw whose rows read neither the x-bits of `exclude_x` nor the z-bits of `exclude_z`, so keys differing only there share a partition.
+<a href=#23 id=23 data-nosnippet>23</a>    </span>SeededExcluding {
+<a href=#24 id=24 data-nosnippet>24</a>        <span class="doccomment">/// As in [`Seeded`](Self::Seeded).
+<a href=#25 id=25 data-nosnippet>25</a>        </span>seed: <span class="prelude-ty">Option</span>&lt;u64&gt;,
+<a href=#26 id=26 data-nosnippet>26</a>        <span class="doccomment">/// Qubits whose x-bit no row reads.
+<a href=#27 id=27 data-nosnippet>27</a>        </span>exclude_x: Vec&lt;usize&gt;,
+<a href=#28 id=28 data-nosnippet>28</a>        <span class="doccomment">/// Qubits whose z-bit no row reads.
+<a href=#29 id=29 data-nosnippet>29</a>        </span>exclude_z: Vec&lt;usize&gt;,
+<a href=#30 id=30 data-nosnippet>30</a>    },
+<a href=#31 id=31 data-nosnippet>31</a>    <span class="doccomment">/// [`PartitionRows::from_matrix`]: one row per partition bit as a flag matrix over the `2 · num_qubits` coordinates, x-bits first.
+<a href=#32 id=32 data-nosnippet>32</a>    </span>Matrix(Vec&lt;Vec&lt;bool&gt;&gt;),
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// [`parity`](Self::parity): row `i` reads the `axis` bits of the qubits `order[i · group..(i + 1) · group]`.
+<a href=#34 id=34 data-nosnippet>34</a>    </span>Parity {
+<a href=#35 id=35 data-nosnippet>35</a>        <span class="doccomment">/// Which bits a row reads: x-bits for `X`, z-bits for `Z`, both for `Y`.
+<a href=#36 id=36 data-nosnippet>36</a>        </span>axis: PauliAxis,
+<a href=#37 id=37 data-nosnippet>37</a>        <span class="doccomment">/// The qubits, nearest the observable first; the rows read its first `log2(P) · group`.
+<a href=#38 id=38 data-nosnippet>38</a>        </span>order: Vec&lt;usize&gt;,
+<a href=#39 id=39 data-nosnippet>39</a>        <span class="doccomment">/// Qubits per row.
+<a href=#40 id=40 data-nosnippet>40</a>        </span>group: usize,
+<a href=#41 id=41 data-nosnippet>41</a>    },
+<a href=#42 id=42 data-nosnippet>42</a>    <span class="doccomment">/// [`blocks`](Self::blocks): `order` cut into `P` contiguous runs, position `i` in run `⌊i · P / len⌋`, labelled as [`Cut`](Self::Cut) labels its blocks, the rows reading `axis` bits.
+<a href=#43 id=43 data-nosnippet>43</a>    </span>Blocks {
+<a href=#44 id=44 data-nosnippet>44</a>        <span class="doccomment">/// Which bits a row reads, as in [`Parity`](Self::Parity).
+<a href=#45 id=45 data-nosnippet>45</a>        </span>axis: PauliAxis,
+<a href=#46 id=46 data-nosnippet>46</a>        <span class="doccomment">/// Every qubit at most once; run `b` is partition `b`'s block.
+<a href=#47 id=47 data-nosnippet>47</a>        </span>order: Vec&lt;usize&gt;,
+<a href=#48 id=48 data-nosnippet>48</a>    },
+<a href=#49 id=49 data-nosnippet>49</a>}
+<a href=#50 id=50 data-nosnippet>50</a>
+<a href=#51 id=51 data-nosnippet>51</a><span class="kw">impl </span>PartitionRowPolicy {
+<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// Parity rows: row `i` is the parity of the `axis` bits of the `i`-th `group` qubits of `order`, so a channel moves a term between partitions exactly when one of its key shifts sets an odd number of those bits in some row's group.
+<a href=#53 id=53 data-nosnippet>53</a>    ///
+<a href=#54 id=54 data-nosnippet>54</a>    /// `X` rows read x-bits only, so a channel whose shifts set no x-bit (`R_Z`, `R_ZZ`, any diagonal gate or dephasing) is local whatever its qubits, and only a channel setting x-bits on the rows' `log2(P) · group` qubits is remote; `Z` rows mirror that with `R_X` and `R_XX` local; `Y` rows read both bits, which keeps exactly the `Y`-type shifts local.
+<a href=#55 id=55 data-nosnippet>55</a>    /// They balance an observable on few qubits whose terms grow outward from `order`'s head, since every term then has content on the rows' qubits; an observable spread over the register leaves most terms with none there and in partition 0 (`research/FINDINGS.md` §Parity rows balance a local observable, block rows an extensive one).
+<a href=#56 id=56 data-nosnippet>56</a>    ///
+<a href=#57 id=57 data-nosnippet>57</a>    /// # Panics
+<a href=#58 id=58 data-nosnippet>58</a>    ///
+<a href=#59 id=59 data-nosnippet>59</a>    /// When resolved, if `group` is zero, if the rows need more qubits than `order` holds, or if `order` repeats a qubit or names one outside the register.
+<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub fn </span>parity(axis: PauliAxis, order: Vec&lt;usize&gt;, group: usize) -&gt; <span class="self">Self </span>{
+<a href=#61 id=61 data-nosnippet>61</a>        <span class="self">Self</span>::Parity { axis, order, group }
+<a href=#62 id=62 data-nosnippet>62</a>    }
+<a href=#63 id=63 data-nosnippet>63</a>
+<a href=#64 id=64 data-nosnippet>64</a>    <span class="doccomment">/// [`parity`](Self::parity) rows over the qubits nearest `sites` on the interaction graph `edges`, in [`nearest_first`](Self::nearest_first) order.
+<a href=#65 id=65 data-nosnippet>65</a>    ///
+<a href=#66 id=66 data-nosnippet>66</a>    /// # Panics
+<a href=#67 id=67 data-nosnippet>67</a>    ///
+<a href=#68 id=68 data-nosnippet>68</a>    /// As [`nearest_first`](Self::nearest_first), and as [`parity`](Self::parity) when resolved.
+<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub fn </span>parity_around(
+<a href=#70 id=70 data-nosnippet>70</a>        axis: PauliAxis,
+<a href=#71 id=71 data-nosnippet>71</a>        num_qubits: usize,
+<a href=#72 id=72 data-nosnippet>72</a>        edges: <span class="kw-2">&amp;</span>[(usize, usize)],
+<a href=#73 id=73 data-nosnippet>73</a>        sites: <span class="kw-2">&amp;</span>[usize],
+<a href=#74 id=74 data-nosnippet>74</a>        group: usize,
+<a href=#75 id=75 data-nosnippet>75</a>    ) -&gt; <span class="self">Self </span>{
+<a href=#76 id=76 data-nosnippet>76</a>        <span class="self">Self</span>::parity(axis, <span class="self">Self</span>::nearest_first(num_qubits, edges, sites), group)
+<a href=#77 id=77 data-nosnippet>77</a>    }
+<a href=#78 id=78 data-nosnippet>78</a>
+<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Block rows: `order` cut into `P` contiguous runs, position `i` in run `⌊i · P / len⌋`, run `b` labelled `b` as [`PartitionRows::cut`] labels its blocks, every row reading `axis` bits.
+<a href=#80 id=80 data-nosnippet>80</a>    ///
+<a href=#81 id=81 data-nosnippet>81</a>    /// A term's label is the XOR of the labels of the runs it has odd `axis`-weight in, so under `Z` rows every `R_X` is local and a `ZZ` bond is remote exactly when it crosses runs; `X` rows mirror that.
+<a href=#82 id=82 data-nosnippet>82</a>    /// They balance an observable spread over the register, whose terms occupy every run; a circuit that conserves the total `axis` parity starves half the partitions once the terms occupy few runs, as a local observable's do (`research/FINDINGS.md` §Row choice on heavy-hex: x-parity rows beat the z-only cut).
+<a href=#83 id=83 data-nosnippet>83</a>    ///
+<a href=#84 id=84 data-nosnippet>84</a>    /// # Panics
+<a href=#85 id=85 data-nosnippet>85</a>    ///
+<a href=#86 id=86 data-nosnippet>86</a>    /// When resolved, as [`PartitionRows::cut`] on the runs, and if `order` repeats a qubit.
+<a href=#87 id=87 data-nosnippet>87</a>    </span><span class="kw">pub fn </span>blocks(axis: PauliAxis, order: Vec&lt;usize&gt;) -&gt; <span class="self">Self </span>{
+<a href=#88 id=88 data-nosnippet>88</a>        <span class="self">Self</span>::Blocks { axis, order }
+<a href=#89 id=89 data-nosnippet>89</a>    }
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a>    <span class="doccomment">/// Every qubit of a `num_qubits` register in breadth-first order over `edges` from all of `sites` at once, `sites` first in ascending order, each qubit's neighbours in ascending order, and the qubits `edges` never reach last in ascending order.
+<a href=#92 id=92 data-nosnippet>92</a>    ///
+<a href=#93 id=93 data-nosnippet>93</a>    /// # Panics
+<a href=#94 id=94 data-nosnippet>94</a>    ///
+<a href=#95 id=95 data-nosnippet>95</a>    /// If a site or an edge's qubit is outside the register.
+<a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub fn </span>nearest_first(
+<a href=#97 id=97 data-nosnippet>97</a>        num_qubits: usize,
+<a href=#98 id=98 data-nosnippet>98</a>        edges: <span class="kw-2">&amp;</span>[(usize, usize)],
+<a href=#99 id=99 data-nosnippet>99</a>        sites: <span class="kw-2">&amp;</span>[usize],
+<a href=#100 id=100 data-nosnippet>100</a>    ) -&gt; Vec&lt;usize&gt; {
+<a href=#101 id=101 data-nosnippet>101</a>        <span class="kw">let </span><span class="kw-2">mut </span>adjacent = <span class="macro">vec!</span>[Vec::new(); num_qubits];
+<a href=#102 id=102 data-nosnippet>102</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>(a, b) <span class="kw">in </span>edges {
+<a href=#103 id=103 data-nosnippet>103</a>            <span class="macro">assert!</span>(
+<a href=#104 id=104 data-nosnippet>104</a>                a &lt; num_qubits &amp;&amp; b &lt; num_qubits,
+<a href=#105 id=105 data-nosnippet>105</a>                <span class="string">"edge ({a}, {b}) is outside the {num_qubits}-qubit register"
+<a href=#106 id=106 data-nosnippet>106</a>            </span>);
+<a href=#107 id=107 data-nosnippet>107</a>            adjacent[a].push(b);
+<a href=#108 id=108 data-nosnippet>108</a>            adjacent[b].push(a);
+<a href=#109 id=109 data-nosnippet>109</a>        }
+<a href=#110 id=110 data-nosnippet>110</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen = <span class="macro">vec!</span>[<span class="bool-val">false</span>; num_qubits];
+<a href=#111 id=111 data-nosnippet>111</a>        <span class="kw">let </span><span class="kw-2">mut </span>starts = sites.to_vec();
+<a href=#112 id=112 data-nosnippet>112</a>        starts.sort_unstable();
+<a href=#113 id=113 data-nosnippet>113</a>        starts.dedup();
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw">let </span><span class="kw-2">mut </span>queue = VecDeque::new();
+<a href=#115 id=115 data-nosnippet>115</a>        <span class="kw">for </span><span class="kw-2">&amp;</span>site <span class="kw">in </span><span class="kw-2">&amp;</span>starts {
+<a href=#116 id=116 data-nosnippet>116</a>            <span class="macro">assert!</span>(site &lt; num_qubits, <span class="string">"site {site} is outside the {num_qubits}-qubit register"</span>);
+<a href=#117 id=117 data-nosnippet>117</a>            seen[site] = <span class="bool-val">true</span>;
+<a href=#118 id=118 data-nosnippet>118</a>            queue.push_back(site);
+<a href=#119 id=119 data-nosnippet>119</a>        }
+<a href=#120 id=120 data-nosnippet>120</a>        <span class="kw">let </span><span class="kw-2">mut </span>order = Vec::with_capacity(num_qubits);
+<a href=#121 id=121 data-nosnippet>121</a>        <span class="kw">while let </span><span class="prelude-val">Some</span>(q) = queue.pop_front() {
+<a href=#122 id=122 data-nosnippet>122</a>            order.push(q);
+<a href=#123 id=123 data-nosnippet>123</a>            adjacent[q].sort_unstable();
+<a href=#124 id=124 data-nosnippet>124</a>            <span class="kw">for </span><span class="kw-2">&amp;</span>next <span class="kw">in </span><span class="kw-2">&amp;</span>adjacent[q] {
+<a href=#125 id=125 data-nosnippet>125</a>                <span class="kw">if </span>!seen[next] {
+<a href=#126 id=126 data-nosnippet>126</a>                    seen[next] = <span class="bool-val">true</span>;
+<a href=#127 id=127 data-nosnippet>127</a>                    queue.push_back(next);
+<a href=#128 id=128 data-nosnippet>128</a>                }
+<a href=#129 id=129 data-nosnippet>129</a>            }
+<a href=#130 id=130 data-nosnippet>130</a>        }
+<a href=#131 id=131 data-nosnippet>131</a>        order.extend((<span class="number">0</span>..num_qubits).filter(|<span class="kw-2">&amp;</span>q| !seen[q]));
+<a href=#132 id=132 data-nosnippet>132</a>        order
+<a href=#133 id=133 data-nosnippet>133</a>    }
+<a href=#134 id=134 data-nosnippet>134</a>
+<a href=#135 id=135 data-nosnippet>135</a>    <span class="doccomment">/// The rows `circuit` and its `observable` suggest, from which bits the circuit's entanglers set and how far the observable spreads.
+<a href=#136 id=136 data-nosnippet>136</a>    ///
+<a href=#137 id=137 data-nosnippet>137</a>    /// When every channel on two or more qubits shifts only z-bits (`ZZ`-type entanglers) the parity axis is `X`, when only x-bits it is `Z`; any other circuit gets [`Seeded`](Self::Seeded) rows.
+<a href=#138 id=138 data-nosnippet>138</a>    /// An observable on at most [`FOR_RUN_PARITY_GROUP`] qubits, under a circuit some channel of which sets parity-axis bits, gets [`parity_around`](Self::parity_around) rows at that axis from its support over the entanglers' graph, which keep every entangler local.
+<a href=#139 id=139 data-nosnippet>139</a>    /// Any other observable gets [`blocks`](Self::blocks) over the qubits in index order, reading the bits the entanglers set, which keeps every single-qubit rotation about the parity axis local.
+<a href=#140 id=140 data-nosnippet>140</a>    ///
+<a href=#141 id=141 data-nosnippet>141</a>    /// Partitioned results agree with one partition's to rounding under any rows for an exact or threshold truncation; a partitioned `ApproxTopN` hands its boundary quota out in rank order and a collapse draws over the partitions in rank order, so their results depend on the rows (`research/FINDINGS.md` §The rank-order boundary quota biases cut-row splits), which is why this is not the scatters' default.
+<a href=#142 id=142 data-nosnippet>142</a>    ///
+<a href=#143 id=143 data-nosnippet>143</a>    /// # Panics
+<a href=#144 id=144 data-nosnippet>144</a>    ///
+<a href=#145 id=145 data-nosnippet>145</a>    /// When resolved, as [`parity`](Self::parity) or [`blocks`](Self::blocks): parity rows for `P` partitions need `2 · log2(P)` qubits.
+<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub fn </span>for_run&lt;<span class="kw">const </span>W: usize, C: Coefficient&gt;(
+<a href=#147 id=147 data-nosnippet>147</a>        observable: <span class="kw-2">&amp;</span>PauliSum&lt;W, C&gt;,
+<a href=#148 id=148 data-nosnippet>148</a>        circuit: <span class="kw-2">&amp;</span>Circuit&lt;W&gt;,
+<a href=#149 id=149 data-nosnippet>149</a>    ) -&gt; <span class="self">Self </span>{
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">let </span>num_qubits = circuit.num_qubits();
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="kw">let </span><span class="kw-2">mut </span>edges = Vec::new();
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">let </span>(<span class="kw-2">mut </span>entangler_x, <span class="kw-2">mut </span>entangler_z, <span class="kw-2">mut </span>sets_x, <span class="kw-2">mut </span>sets_z) =
+<a href=#153 id=153 data-nosnippet>153</a>            (<span class="bool-val">false</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>, <span class="bool-val">false</span>);
+<a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">for </span>(channel, shifts) <span class="kw">in </span>circuit.channels().iter().zip(circuit.deltas()) {
+<a href=#155 id=155 data-nosnippet>155</a>            <span class="kw">let </span><span class="prelude-val">Some</span>(shifts) = shifts <span class="kw">else </span>{ <span class="kw">continue </span>};
+<a href=#156 id=156 data-nosnippet>156</a>            <span class="kw">let </span>shifts_x = shifts.iter().any(|(x, <span class="kw">_</span>)| x.iter().any(|<span class="kw-2">&amp;</span>w| <span class="macro">w !</span>= <span class="number">0</span>));
+<a href=#157 id=157 data-nosnippet>157</a>            <span class="kw">let </span>shifts_z = shifts.iter().any(|(<span class="kw">_</span>, z)| z.iter().any(|<span class="kw-2">&amp;</span>w| <span class="macro">w !</span>= <span class="number">0</span>));
+<a href=#158 id=158 data-nosnippet>158</a>            sets_x |= shifts_x;
+<a href=#159 id=159 data-nosnippet>159</a>            sets_z |= shifts_z;
+<a href=#160 id=160 data-nosnippet>160</a>            <span class="kw">let </span>qubits = mask_qubits(<span class="kw-2">&amp;</span>channel.support());
+<a href=#161 id=161 data-nosnippet>161</a>            <span class="kw">if </span>qubits.len() &gt;= <span class="number">2 </span>{
+<a href=#162 id=162 data-nosnippet>162</a>                entangler_x |= shifts_x;
+<a href=#163 id=163 data-nosnippet>163</a>                entangler_z |= shifts_z;
+<a href=#164 id=164 data-nosnippet>164</a>                edges.extend(qubits.iter().zip(<span class="kw-2">&amp;</span>qubits[<span class="number">1</span>..]).map(|(<span class="kw-2">&amp;</span>a, <span class="kw-2">&amp;</span>b)| (a, b)));
+<a href=#165 id=165 data-nosnippet>165</a>            }
+<a href=#166 id=166 data-nosnippet>166</a>        }
+<a href=#167 id=167 data-nosnippet>167</a>        <span class="kw">let </span>(parity_axis, block_axis, kicked) = <span class="kw">match </span>(entangler_x, entangler_z) {
+<a href=#168 id=168 data-nosnippet>168</a>            (<span class="bool-val">false</span>, <span class="bool-val">true</span>) =&gt; (PauliAxis::X, PauliAxis::Z, sets_x),
+<a href=#169 id=169 data-nosnippet>169</a>            (<span class="bool-val">true</span>, <span class="bool-val">false</span>) =&gt; (PauliAxis::Z, PauliAxis::X, sets_z),
+<a href=#170 id=170 data-nosnippet>170</a>            <span class="kw">_ </span>=&gt; <span class="kw">return </span><span class="self">Self</span>::Seeded(<span class="prelude-val">None</span>),
+<a href=#171 id=171 data-nosnippet>171</a>        };
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="kw">let </span><span class="kw-2">mut </span>support = [<span class="number">0u64</span>; W];
+<a href=#173 id=173 data-nosnippet>173</a>        <span class="kw">for </span>(x, z, <span class="kw">_</span>) <span class="kw">in </span>observable.iter() {
+<a href=#174 id=174 data-nosnippet>174</a>            <span class="kw">for </span>w <span class="kw">in </span><span class="number">0</span>..W {
+<a href=#175 id=175 data-nosnippet>175</a>                support[w] |= x[w] | z[w];
+<a href=#176 id=176 data-nosnippet>176</a>            }
+<a href=#177 id=177 data-nosnippet>177</a>        }
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let </span>sites = mask_qubits(<span class="kw-2">&amp;</span>support);
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">if </span>kicked &amp;&amp; sites.len() &lt;= FOR_RUN_PARITY_GROUP {
+<a href=#180 id=180 data-nosnippet>180</a>            <span class="self">Self</span>::parity_around(parity_axis, num_qubits, <span class="kw-2">&amp;</span>edges, <span class="kw-2">&amp;</span>sites, FOR_RUN_PARITY_GROUP)
+<a href=#181 id=181 data-nosnippet>181</a>        } <span class="kw">else </span>{
+<a href=#182 id=182 data-nosnippet>182</a>            <span class="self">Self</span>::blocks(block_axis, (<span class="number">0</span>..num_qubits).collect())
+<a href=#183 id=183 data-nosnippet>183</a>        }
+<a href=#184 id=184 data-nosnippet>184</a>    }
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="doccomment">/// The rows for `2^bits` partitions of a `num_qubits` register, with `default_seed` standing in for a `None` seed.
+<a href=#187 id=187 data-nosnippet>187</a>    ///
+<a href=#188 id=188 data-nosnippet>188</a>    /// # Panics
+<a href=#189 id=189 data-nosnippet>189</a>    ///
+<a href=#190 id=190 data-nosnippet>190</a>    /// As the [`PartitionRows`] constructor each variant names, and if an excluded qubit is out of range.
+<a href=#191 id=191 data-nosnippet>191</a>    </span><span class="kw">pub fn </span>rows&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#193 id=193 data-nosnippet>193</a>        num_qubits: usize,
+<a href=#194 id=194 data-nosnippet>194</a>        bits: u8,
+<a href=#195 id=195 data-nosnippet>195</a>        default_seed: u64,
+<a href=#196 id=196 data-nosnippet>196</a>    ) -&gt; PartitionRows&lt;W&gt; {
+<a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">let </span>mask = |qubits: <span class="kw-2">&amp;</span>[usize]| qubit_mask(qubits.iter().copied(), num_qubits);
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#199 id=199 data-nosnippet>199</a>            <span class="self">Self</span>::Seeded(seed) =&gt; {
+<a href=#200 id=200 data-nosnippet>200</a>                PartitionRows::from_seed(num_qubits, bits, seed.unwrap_or(default_seed))
+<a href=#201 id=201 data-nosnippet>201</a>            }
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="self">Self</span>::Cut(blocks) =&gt; PartitionRows::cut(num_qubits, blocks),
+<a href=#203 id=203 data-nosnippet>203</a>            <span class="self">Self</span>::SeededExcluding { seed, exclude_x, exclude_z } =&gt; {
+<a href=#204 id=204 data-nosnippet>204</a>                PartitionRows::from_seed_excluding(
+<a href=#205 id=205 data-nosnippet>205</a>                    num_qubits,
+<a href=#206 id=206 data-nosnippet>206</a>                    bits,
+<a href=#207 id=207 data-nosnippet>207</a>                    seed.unwrap_or(default_seed),
+<a href=#208 id=208 data-nosnippet>208</a>                    <span class="kw-2">&amp;</span>mask(exclude_x),
+<a href=#209 id=209 data-nosnippet>209</a>                    <span class="kw-2">&amp;</span>mask(exclude_z),
+<a href=#210 id=210 data-nosnippet>210</a>                )
+<a href=#211 id=211 data-nosnippet>211</a>            }
+<a href=#212 id=212 data-nosnippet>212</a>            <span class="self">Self</span>::Matrix(rows) =&gt; PartitionRows::from_matrix(num_qubits, rows),
+<a href=#213 id=213 data-nosnippet>213</a>            <span class="self">Self</span>::Parity { axis, order, group } =&gt; {
+<a href=#214 id=214 data-nosnippet>214</a>                <span class="macro">assert!</span>(<span class="kw-2">*</span>group &gt; <span class="number">0</span>, <span class="string">"parity rows need at least one qubit per row"</span>);
+<a href=#215 id=215 data-nosnippet>215</a>                assert_distinct(order, num_qubits);
+<a href=#216 id=216 data-nosnippet>216</a>                <span class="kw">let </span>needed = bits <span class="kw">as </span>usize * group;
+<a href=#217 id=217 data-nosnippet>217</a>                <span class="macro">assert!</span>(
+<a href=#218 id=218 data-nosnippet>218</a>                    needed &lt;= order.len(),
+<a href=#219 id=219 data-nosnippet>219</a>                    <span class="string">"{bits} parity rows of {group} qubits need {needed} qubits, the order holds {}"</span>,
+<a href=#220 id=220 data-nosnippet>220</a>                    order.len()
+<a href=#221 id=221 data-nosnippet>221</a>                );
+<a href=#222 id=222 data-nosnippet>222</a>                <span class="kw">let </span>masks = order.chunks(<span class="kw-2">*</span>group).take(bits <span class="kw">as </span>usize).map(mask);
+<a href=#223 id=223 data-nosnippet>223</a>                on_axis(num_qubits, <span class="kw-2">*</span>axis, masks.collect())
+<a href=#224 id=224 data-nosnippet>224</a>            }
+<a href=#225 id=225 data-nosnippet>225</a>            <span class="self">Self</span>::Blocks { axis, order } =&gt; {
+<a href=#226 id=226 data-nosnippet>226</a>                assert_distinct(order, num_qubits);
+<a href=#227 id=227 data-nosnippet>227</a>                <span class="kw">let </span>partitions = <span class="number">1usize </span>&lt;&lt; bits;
+<a href=#228 id=228 data-nosnippet>228</a>                <span class="kw">let </span><span class="kw-2">mut </span>blocks = <span class="macro">vec!</span>[Vec::new(); partitions];
+<a href=#229 id=229 data-nosnippet>229</a>                <span class="kw">for </span>(i, <span class="kw-2">&amp;</span>q) <span class="kw">in </span>order.iter().enumerate() {
+<a href=#230 id=230 data-nosnippet>230</a>                    blocks[i * partitions / order.len()].push(q);
+<a href=#231 id=231 data-nosnippet>231</a>                }
+<a href=#232 id=232 data-nosnippet>232</a>                <span class="kw">let </span>cut = PartitionRows::&lt;W&gt;::cut(num_qubits, <span class="kw-2">&amp;</span>blocks);
+<a href=#233 id=233 data-nosnippet>233</a>                on_axis(num_qubits, <span class="kw-2">*</span>axis, cut.rows().<span class="number">1</span>.to_vec())
+<a href=#234 id=234 data-nosnippet>234</a>            }
+<a href=#235 id=235 data-nosnippet>235</a>        }
+<a href=#236 id=236 data-nosnippet>236</a>    }
+<a href=#237 id=237 data-nosnippet>237</a>}
+<a href=#238 id=238 data-nosnippet>238</a>
+<a href=#239 id=239 data-nosnippet>239</a><span class="doccomment">/// Rows reading the `axis` bits of each mask.
+<a href=#240 id=240 data-nosnippet>240</a></span><span class="kw">fn </span>on_axis&lt;<span class="kw">const </span>W: usize&gt;(
+<a href=#241 id=241 data-nosnippet>241</a>    num_qubits: usize,
+<a href=#242 id=242 data-nosnippet>242</a>    axis: PauliAxis,
+<a href=#243 id=243 data-nosnippet>243</a>    masks: Vec&lt;[u64; W]&gt;,
+<a href=#244 id=244 data-nosnippet>244</a>) -&gt; PartitionRows&lt;W&gt; {
+<a href=#245 id=245 data-nosnippet>245</a>    <span class="kw">let </span>zero = <span class="macro">vec!</span>[[<span class="number">0u64</span>; W]; masks.len()];
+<a href=#246 id=246 data-nosnippet>246</a>    <span class="kw">match </span>axis {
+<a href=#247 id=247 data-nosnippet>247</a>        PauliAxis::X =&gt; PartitionRows::from_rows(num_qubits, masks, zero),
+<a href=#248 id=248 data-nosnippet>248</a>        PauliAxis::Y =&gt; PartitionRows::from_rows(num_qubits, masks.clone(), masks),
+<a href=#249 id=249 data-nosnippet>249</a>        PauliAxis::Z =&gt; PartitionRows::from_rows(num_qubits, zero, masks),
+<a href=#250 id=250 data-nosnippet>250</a>    }
+<a href=#251 id=251 data-nosnippet>251</a>}
+<a href=#252 id=252 data-nosnippet>252</a>
+<a href=#253 id=253 data-nosnippet>253</a><span class="doccomment">/// Panics if `order` repeats a qubit or names one outside the register.
+<a href=#254 id=254 data-nosnippet>254</a></span><span class="kw">fn </span>assert_distinct(order: <span class="kw-2">&amp;</span>[usize], num_qubits: usize) {
+<a href=#255 id=255 data-nosnippet>255</a>    <span class="kw">let </span><span class="kw-2">mut </span>seen = <span class="macro">vec!</span>[<span class="bool-val">false</span>; num_qubits];
+<a href=#256 id=256 data-nosnippet>256</a>    <span class="kw">for </span><span class="kw-2">&amp;</span>q <span class="kw">in </span>order {
+<a href=#257 id=257 data-nosnippet>257</a>        <span class="macro">assert!</span>(q &lt; num_qubits, <span class="string">"qubit {q} is outside the {num_qubits}-qubit register"</span>);
+<a href=#258 id=258 data-nosnippet>258</a>        <span class="macro">assert!</span>(!seen[q], <span class="string">"the row order repeats qubit {q}"</span>);
+<a href=#259 id=259 data-nosnippet>259</a>        seen[q] = <span class="bool-val">true</span>;
+<a href=#260 id=260 data-nosnippet>260</a>    }
+<a href=#261 id=261 data-nosnippet>261</a>}
+<a href=#262 id=262 data-nosnippet>262</a>
+<a href=#263 id=263 data-nosnippet>263</a><span class="doccomment">/// The qubits a mask sets, ascending.
+<a href=#264 id=264 data-nosnippet>264</a></span><span class="kw">fn </span>mask_qubits&lt;<span class="kw">const </span>W: usize&gt;(mask: <span class="kw-2">&amp;</span>[u64; W]) -&gt; Vec&lt;usize&gt; {
+<a href=#265 id=265 data-nosnippet>265</a>    (<span class="number">0</span>..<span class="number">64 </span>* W).filter(|<span class="kw-2">&amp;</span>q| (mask[q / <span class="number">64</span>] &gt;&gt; (q % <span class="number">64</span>)) &amp; <span class="number">1 </span>== <span class="number">1</span>).collect()
+<a href=#266 id=266 data-nosnippet>266</a>}
+<a href=#267 id=267 data-nosnippet>267</a>
+<a href=#268 id=268 data-nosnippet>268</a><span class="attr">#[cfg(test)]
+<a href=#269 id=269 data-nosnippet>269</a></span><span class="kw">mod </span>tests;
+</code></pre></div></section></main></body></html>

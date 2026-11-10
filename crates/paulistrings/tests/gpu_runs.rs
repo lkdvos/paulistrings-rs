@@ -167,11 +167,8 @@ fn cut_rows(num_qubits: usize, p: usize) -> PartitionRowPolicy {
 }
 
 /// `log2(p)` rows, row `i` the x-parity of qubits `2i` and `2i + 1`, so every `ZZ` is local and only an `R_X` on those qubits exchanges.
-fn x_parity_rows(num_qubits: usize, p: usize) -> PartitionRowPolicy {
-    let rows = (0..p.trailing_zeros() as usize)
-        .map(|i| (0..2 * num_qubits).map(|c| c / 2 == i).collect())
-        .collect();
-    PartitionRowPolicy::Matrix(rows)
+fn x_parity_rows(num_qubits: usize, _p: usize) -> PartitionRowPolicy {
+    PartitionRowPolicy::parity(PauliAxis::X, (0..num_qubits).collect(), 2)
 }
 
 /// `sum` over `p` partitions of device 0 under [`cut_rows`].

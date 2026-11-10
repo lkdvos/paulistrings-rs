@@ -28,8 +28,8 @@ pub(crate) struct Report {
     pub(crate) clocks: Option<String>,
     /// Each partition's device ordinal in rank order; empty on the host.
     pub(crate) devices: Vec<u32>,
-    /// Channels of one step that cross the partition rows, `None` under seeded rows or at one partition.
-    pub(crate) remote_channels: Option<usize>,
+    /// The rows a split run scattered by, `None` unsplit.
+    pub(crate) rows: Option<crate::rows::RowsSummary>,
     /// Whether this process prints and writes the report: false only on a non-zero MPI rank.
     pub(crate) root: bool,
     /// One entry per partition; an MPI run carries rank 0's in full and the exchange fields of the others.
@@ -83,7 +83,7 @@ pub(crate) fn run_cpu<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>>
             download_ns: 0,
             clocks: None,
             devices: Vec::new(),
-            remote_channels: None,
+            rows: None,
             root: true,
             #[cfg(feature = "phase-timing")]
             stats: scratch.take_stats().per_partition,
@@ -114,7 +114,8 @@ pub(crate) fn run_cpus<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>
         eprintln!("sampling_bench: partitions: {e}");
         std::process::exit(2);
     });
-    let (rows, remote_channels) = scatter_rows::<W>(cfg.rows, quench, partitions);
+    let (rows, rows_summary) =
+        scatter_rows::<W, C>(cfg.rows, quench, &observable, &circuit, partitions);
     let mut split =
         PartitionedSum::<W, C>::scatter_with(observable, ScatterOptions { runtime, rows });
     if traced {
@@ -137,7 +138,7 @@ pub(crate) fn run_cpus<const W: usize, C: Coefficient, P: TruncationPolicy<W, C>
         download_ns: 0,
         clocks: None,
         devices: Vec::new(),
-        remote_channels,
+        rows: Some(rows_summary),
         root: true,
         #[cfg(feature = "phase-timing")]
         stats: split.take_stats().per_partition,
@@ -166,7 +167,8 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
     let observable = quench.observable_sum::<W, C>();
     let started = Instant::now();
     let options = GpuScatterOptions::new(&devices).unwrap_or_else(|e| fail("placement", e));
-    let (rows, remote_channels) = scatter_rows::<W>(cfg.rows, quench, devices.len());
+    let (rows, rows_summary) =
+        scatter_rows::<W, C>(cfg.rows, quench, &observable, &circuit, devices.len());
     let mut split = GpuPartitionedSum::<W, C>::scatter_to_devices_with(
         &observable,
         GpuScatterOptions { rows, ..options },
@@ -201,7 +203,7 @@ pub(crate) fn run_gpu<const W: usize, C: Coefficient>(
         download_ns,
         clocks,
         devices,
-        remote_channels,
+        rows: Some(rows_summary),
         root: true,
         #[cfg(feature = "phase-timing")]
         stats: split.take_stats().per_partition,

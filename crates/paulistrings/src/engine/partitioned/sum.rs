@@ -7,10 +7,11 @@ use crate::coefficient::Coefficient;
 use num_complex::Complex64;
 use std::marker::PhantomData;
 
-use super::distributed::{repartition_share, PartitionRowPolicy, ScatterOptions, ScatterRows};
+use super::distributed::{repartition_share, ScatterOptions, ScatterRows};
 #[cfg(feature = "phase-timing")]
 use super::driver::DriverLaps;
 use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
+use super::row_policy::PartitionRowPolicy;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use crate::circuit::Circuit;

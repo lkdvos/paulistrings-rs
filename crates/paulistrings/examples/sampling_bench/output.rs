@@ -152,6 +152,10 @@ fn ms(ns: u64) -> f64 {
     ns as f64 * 1e-6
 }
 
+fn rows_label(report: &Report) -> String {
+    report.rows.as_ref().map_or("-".to_string(), |rows| rows.label.clone())
+}
+
 fn backend_label(cfg: &Config, report: &Report) -> String {
     match cfg.backend {
         Backend::Cpu => format!("cpu threads={}", cfg.threads),
@@ -159,7 +163,7 @@ fn backend_label(cfg: &Config, report: &Report) -> String {
             "cpus partitions={} threads={} rows={}",
             cfg.partitions,
             cfg.threads,
-            cfg.rows.name()
+            rows_label(report)
         ),
         Backend::Gpu => format!("gpu device={}", cfg.device.unwrap_or(0)),
         Backend::Gpus | Backend::MpiGpu => format!(
@@ -167,7 +171,7 @@ fn backend_label(cfg: &Config, report: &Report) -> String {
             cfg.backend.name(),
             report.devices.len(),
             report.devices,
-            cfg.rows.name()
+            rows_label(report)
         ),
     }
 }
@@ -269,7 +273,7 @@ fn print_partitions(report: &Report, parts: &PartitionSummary, layers: usize) {
     println!(
         "  partitions: remote_layers={} of {layers} remote_channels/step={} rows_exchanged={total_rows} bytes_exchanged={total_bytes}",
         parts.remote_layers,
-        report.remote_channels.map_or("-".to_string(), |c| c.to_string()),
+        report.rows.as_ref().and_then(|rows| rows.remote_channels).map_or("-".to_string(), |c| c.to_string()),
     );
     println!(
         "  {:>4} {:>6} {:>13} {:>13} {:>11} {:>15} {:>13} {:>11} {:>12}",
@@ -405,8 +409,8 @@ fn append_json(
     let partitions = serde_json::json!({
         "count": if cfg.backend == Backend::Cpus { cfg.partitions } else { report.devices.len().max(1) },
         "devices": report.devices,
-        "rows": cfg.rows.name(),
-        "remote_channels_per_step": report.remote_channels,
+        "rows": report.rows.as_ref().map(|rows| &rows.label),
+        "remote_channels_per_step": report.rows.as_ref().and_then(|rows| rows.remote_channels),
         "remote_layers": parts.map(|p| &p.remote_layers),
         "terms_final": parts.map(|p| &p.terms_final),
         "terms_max": parts.map(|p| &p.terms_max),

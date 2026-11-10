@@ -3,9 +3,9 @@
 
 use num_complex::Complex64;
 use paulistrings::test_support::{
-    approx_eq, assert_runs_agree, assert_terms_close, drop_tiny, low_weight_sum, partition_rows,
-    propagate_discarding, rand_sum, spread_magnitudes, truncated_liouvillian, unpinned_partitions,
-    KeepAll,
+    approx_eq, assert_runs_agree, assert_terms_close, drop_tiny, kicked_ising, low_weight_sum,
+    partition_rows, propagate_discarding, rand_sum, site_and_magnetization, spread_magnitudes,
+    square_lattice, truncated_liouvillian, unpinned_partitions, KeepAll,
 };
 use paulistrings::{propagate, Circuit, Direction, PauliAxis, PauliString, PauliSum, ProductBasis};
 use paulistrings::{ApproxTopN, CoefficientThreshold};
@@ -277,4 +277,46 @@ fn a_traced_split_records_each_product_as_one_layer() {
         assert_eq!(row[rank], 0, "partition {rank} sent to itself");
     }
     assert!(layer.bytes_sent.iter().flatten().sum::<u64>() > sent * 16);
+}
+
+/// Kicked Ising on an `lx × ly` square lattice from its centre site and from the magnetization, split by `PartitionRowPolicy::for_run` (parity rows, then block rows), agrees with one partition.
+fn for_run_rows_agree<const W: usize>(lx: usize, ly: usize) {
+    let num_qubits = lx * ly;
+    let circuit = kicked_ising::<W>(num_qubits, &square_lattice(lx, ly), 0.4, 0.9, 2);
+    let (site, magnetization) = site_and_magnetization::<W>(num_qubits, (ly / 2) * lx + lx / 2);
+    let truncation = CoefficientThreshold(1e-7);
+    for (name, observable, parity) in
+        [("site", site, true), ("magnetization", magnetization, false)]
+    {
+        let rows = PartitionRowPolicy::for_run(&observable, &circuit);
+        assert_eq!(matches!(rows, PartitionRowPolicy::Parity { .. }), parity, "{name}: {rows:?}");
+        for direction in [Direction::Heisenberg, Direction::Forward] {
+            let (want, discarded) =
+                propagate_discarding(&circuit, observable.clone(), &truncation, direction);
+            for partitions in [2usize, 4] {
+                let runtime =
+                    PartitionRuntime::new(&config(partitions)).expect("topology resolves");
+                let rows = ScatterRows::Policy(rows.clone());
+                let mut split = PartitionedSum::scatter_with(
+                    observable.clone(),
+                    ScatterOptions { runtime, rows },
+                );
+                split.propagate(&circuit, &truncation, direction);
+                let what = format!("{name} W={W} P={partitions} {direction:?}");
+                let occupied = (0..partitions).filter(|&r| !split.partition(r).is_empty()).count();
+                assert!(occupied > 1, "{what}: one partition holds every term");
+                assert_runs_agree(truncation, discarded, &split.into_gathered(), &want, TOL, &what);
+            }
+        }
+    }
+}
+
+#[test]
+fn for_run_rows_agree_with_one_partition_w1() {
+    for_run_rows_agree::<1>(4, 4);
+}
+
+#[test]
+fn for_run_rows_agree_with_one_partition_w2() {
+    for_run_rows_agree::<2>(9, 8);
 }

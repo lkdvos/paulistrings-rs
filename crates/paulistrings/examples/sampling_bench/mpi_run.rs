@@ -158,7 +158,8 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
     };
     let (circuit, _) = quench.circuit::<W>(1);
     let observable = quench.observable_sum::<W, C>();
-    let (rows, remote_channels) = scatter_rows::<W>(cfg.rows, quench, size as usize);
+    let (rows, rows_summary) =
+        scatter_rows::<W, C>(cfg.rows, quench, &observable, &circuit, size as usize);
     let options = GpuScatterOptions {
         rows,
         ..GpuScatterOptions::new(&[device]).unwrap_or_else(|e| fail("placement", e))
@@ -208,7 +209,7 @@ pub(crate) fn run_mpi_gpu<const W: usize, C: Coefficient>(
         download_ns,
         clocks: Some(clocks),
         devices: devices.into_iter().map(|d| d as u32).collect(),
-        remote_channels,
+        rows: Some(rows_summary),
         root: rank == 0,
         #[cfg(feature = "phase-timing")]
         stats,

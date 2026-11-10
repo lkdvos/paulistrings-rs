@@ -155,7 +155,7 @@ One `CollapseSample` run of `examples/sampling_bench` split over several GPUs, t
 | `sampling-mpi-gpu.sbatch` | one GPU per MPI rank over NCCL (`--backend mpi-gpu`), gated by the `mpi_ranks` net; one node or several |
 
 Per model (kicked Ising 20 steps, 16×16 TFIM 10 steps): the reference at `REF_CACHE` (1e8) on one GPU, then the split run at every cache of `CACHES` (1e8 and 4e8, plus 8e8 at 8 ranks), samples = cache / 4, seed 1; then kicked Ising at `REF_CACHE` under seeded rows; per model `--approx-topn REF_CACHE` on one GPU and `--approx-topn` split at every cache of `CACHES` (the deterministic scaling cells); kicked Ising at every threshold of `THRESHOLDS` (2.5e-5 and 1e-5) on one GPU and split; and with `PT=1` the largest kicked-Ising cell again under `phase-timing` for the export and exchange split.
-Split runs use `--rows cut` (equal contiguous qubit blocks: every `R_X` is local, only crossing bonds exchange).
+Split runs use `--rows $ROWS`, by default `auto` (`PartitionRowPolicy::for_run`): x-parity rows of two qubits each nearest kicked Ising's `Z_62`, under which every `ZZ` is local, and equal contiguous qubit blocks for the TFIM's magnetization, under which every `R_X` is local; `SWEEP=rows` compares the choices in `ROWS`.
 Each cell is bounded by `CELL_BOUND` seconds and a failed cell does not stop the sweep.
 
 ```bash

@@ -29,17 +29,18 @@ Options:
   --devices LIST             gpus: comma-separated ordinals, one partition each, repeats allowed
                              (default: 0)
   --partitions N             cpus: host partitions (default: 2)
-  --rows seeded|cut|quadrant|xparity:K|zparity:K
-                             split backends: partition rows drawn from the sum's hash seed; a cut
-                             of the qubits into equal contiguous blocks, under which every R_X is
-                             local and only the bonds crossing blocks exchange; the same over four
-                             lattice quadrants meeting at the observable's site (the lattice
-                             centre for the magnetization), at 4 partitions; or log2(P) rows,
-                             row i the parity of the x-bits (z-bits) of the i-th K qubits in
-                             breadth-first order from the observable's site (the lattice centre
-                             for the magnetization), under which every R_ZZ is local and only the
-                             R_X on those qubits exchange (only the bonds leaving those groups)
-                             (default: cut)
+  --rows auto|seeded|cut|quadrant|xparity:K|zparity:K
+                             split backends: PartitionRowPolicy::for_run, which picks xparity:2
+                             for a site observable and cut for the magnetization; partition rows
+                             drawn from the sum's hash seed; a cut of the qubits into equal
+                             contiguous blocks, under which every R_X is local and only the bonds
+                             crossing blocks exchange; the same over four lattice quadrants meeting
+                             at the observable's site (the lattice centre for the magnetization),
+                             at 4 partitions; or log2(P) rows, row i the parity of the x-bits
+                             (z-bits) of the i-th K qubits in breadth-first order from the
+                             observable's site (the lattice centre for the magnetization), under
+                             which every R_ZZ is local and only the R_X on those qubits exchange
+                             (only the bonds leaving those groups) (default: auto)
   --dtype f64|f32            coefficient type (default: f64)
   --threshold EPS            drop |c| <= EPS
   --approx-topn N            keep N terms per layer (octave cut)
@@ -89,6 +90,8 @@ impl Backend {
 /// How a split run assigns keys to partitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Rows {
+    /// `PartitionRowPolicy::for_run` on the observable and one step.
+    Auto,
     Seeded,
     Cut,
     /// Each row the x-parity of `K` qubits nearest the observable's site.
@@ -102,11 +105,20 @@ pub(crate) enum Rows {
 impl Rows {
     pub(crate) fn name(self) -> String {
         match self {
+            Rows::Auto => "auto".to_string(),
             Rows::Seeded => "seeded".to_string(),
             Rows::Cut => "cut".to_string(),
             Rows::XParity(k) => format!("xparity:{k}"),
             Rows::ZParity(k) => format!("zparity:{k}"),
             Rows::Quadrant => "quadrant".to_string(),
+        }
+    }
+
+    /// The qubits per row of `xparity:K` and `zparity:K`, zero otherwise.
+    pub(crate) fn group(self) -> usize {
+        match self {
+            Rows::XParity(k) | Rows::ZParity(k) => k,
+            _ => 0,
         }
     }
 }
@@ -203,7 +215,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
         device: None,
         devices: vec![0],
         partitions: 2,
-        rows: Rows::Cut,
+        rows: Rows::Auto,
         dtype: "f64",
         truncation: Truncation::Threshold(0.0),
         trace: false,
@@ -265,6 +277,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Config, String> {
             "--rows" => {
                 let text = value(args, &mut i, flag)?;
                 cfg.rows = match (text, text.split_once(':')) {
+                    ("auto", _) => Rows::Auto,
                     ("seeded", _) => Rows::Seeded,
                     ("cut", _) => Rows::Cut,
                     ("quadrant", _) => Rows::Quadrant,

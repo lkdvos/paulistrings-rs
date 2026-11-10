@@ -36,10 +36,11 @@ sampling="${CARGO_TARGET_DIR:-target}/release/examples/sampling_bench"
 "$sampling" --model tfim --lattice 4x4 --steps 2 --threads 2 --threshold 1e-4
 "$sampling" --model kicked-ising --lattice 3x7 --steps 3 --threads 2 --collapse --cache 64 --samples 64 --seed 1
 step "sampling_bench: host partitions under each row choice"
-for rows in cut seeded quadrant xparity:2 zparity:2; do
+for rows in auto cut seeded quadrant xparity:2 zparity:2; do
     "$sampling" --backend cpus --partitions 4 --threads 4 --rows "$rows" --steps 4 --approx-topn 2000 --trace
 done
 "$sampling" --backend cpus --partitions 4 --threads 4 --rows quadrant --model tfim --lattice 6x6 --steps 2 --partition-approx-topn 500 --trace
+"$sampling" --backend cpus --partitions 2 --threads 4 --model tfim --lattice 6x6 --steps 2 --approx-topn 500 --trace
 step "ab-compare: a one-pair runtime-knob A/B"
 scripts/ab-compare.sh smoke-tooling --a . --b . --probe "${cell[*]}" --probe-b "${cell[*]} --partitions 2" --pairs 1
 step "bench-campaign: one item of each kind"
@@ -66,7 +67,7 @@ if nvidia-smi -L >/dev/null 2>&1; then
     cargo build --offline --release -p paulistrings --example sampling_bench --features cuda
     "$sampling" --backend gpu --steps 4 --approx-topn 2000 --json-out "$out/sampling.jsonl"
     "$sampling" --backend gpu --steps 4 --approx-topn 2000 --trace --json-out "$out/sampling.jsonl"
-    step "sampling_bench: four partitions on device 0, cut and seeded rows"
+    step "sampling_bench: four partitions on device 0, auto, seeded and x-parity rows"
     "$sampling" --backend gpus --devices 0,0,0,0 --steps 6 --collapse --cache 2e4 --samples 5e3 --seed 1 --trace --json-out "$out/sampling.jsonl"
     "$sampling" --backend gpus --devices 0,0 --rows seeded --model tfim --lattice 4x4 --steps 2 --approx-topn 2000
     "$sampling" --backend gpus --devices 0,0,0,0 --rows xparity:2 --steps 6 --partition-approx-topn 500 --trace

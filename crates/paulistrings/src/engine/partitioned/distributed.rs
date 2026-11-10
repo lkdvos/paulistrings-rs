@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 #[cfg(feature = "phase-timing")]
 use super::driver::DriverLaps;
 use super::driver::{scatter_local, DriverFrame, LOG_TARGET};
+use super::row_policy::PartitionRowPolicy;
 use super::runtime::PartitionRuntime;
 use super::topology::{PartitionConfig, TopologyError};
 use crate::circuit::Circuit;
@@ -19,7 +20,6 @@ use crate::engine::trace::PartitionTrace;
 use crate::engine::transport::ByteParts;
 use crate::engine::transport::Transport;
 use crate::engine::{progress_scope, Direction, PropagateOptions};
-use crate::pauli_string::qubit_mask;
 use crate::pauli_sum::hash::{Gf2Hash, PartitionRows};
 use crate::pauli_sum::PauliSum;
 use crate::truncation::TruncationPolicy;
@@ -29,58 +29,6 @@ use crate::engine::stats::PartitionPhaseStats;
 
 /// Parts the gather ships per rank: bucket lengths, then the three columns.
 const GATHER_PARTS: usize = 4;
-
-/// Which partition rows a scatter splits by: a seeded GF(2)-random draw, a qubit cut that keeps a channel local when its qubits share a block, or explicit rows.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PartitionRowPolicy {
-    /// [`PartitionRows::from_seed`] with this seed, or the sum's own hash seed at `None`; the default.
-    Seeded(Option<u64>),
-    /// [`PartitionRows::cut`]: one disjoint qubit block per rank, in rank order; the rows are z-only.
-    Cut(Vec<Vec<usize>>),
-    /// [`PartitionRows::from_seed_excluding`]: a seeded draw whose rows read neither the x-bits of `exclude_x` nor the z-bits of `exclude_z`, so keys differing only there share a partition.
-    SeededExcluding {
-        /// As in [`Seeded`](Self::Seeded).
-        seed: Option<u64>,
-        /// Qubits whose x-bit no row reads.
-        exclude_x: Vec<usize>,
-        /// Qubits whose z-bit no row reads.
-        exclude_z: Vec<usize>,
-    },
-    /// [`PartitionRows::from_matrix`]: one row per partition bit as a flag matrix over the `2 · num_qubits` coordinates, x-bits first.
-    Matrix(Vec<Vec<bool>>),
-}
-
-impl PartitionRowPolicy {
-    /// The rows for `2^bits` partitions of a `num_qubits` register, with `default_seed` standing in for a `None` seed.
-    ///
-    /// # Panics
-    ///
-    /// As the [`PartitionRows`] constructor each variant names, and if an excluded qubit is out of range.
-    pub fn rows<const W: usize>(
-        &self,
-        num_qubits: usize,
-        bits: u8,
-        default_seed: u64,
-    ) -> PartitionRows<W> {
-        let mask = |qubits: &[usize]| qubit_mask(qubits.iter().copied(), num_qubits);
-        match self {
-            Self::Seeded(seed) => {
-                PartitionRows::from_seed(num_qubits, bits, seed.unwrap_or(default_seed))
-            }
-            Self::Cut(blocks) => PartitionRows::cut(num_qubits, blocks),
-            Self::SeededExcluding { seed, exclude_x, exclude_z } => {
-                PartitionRows::from_seed_excluding(
-                    num_qubits,
-                    bits,
-                    seed.unwrap_or(default_seed),
-                    &mask(exclude_x),
-                    &mask(exclude_z),
-                )
-            }
-            Self::Matrix(rows) => PartitionRows::from_matrix(num_qubits, rows),
-        }
-    }
-}
 
 /// How a `scatter_with` runs its partitions and picks the rows the sum splits by.
 #[derive(Clone)]

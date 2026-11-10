@@ -735,7 +735,7 @@ The model predicts kicked Ising `--approx-topn 1e8` 1.35× → 1.9–2.0×, `--t
 
 Rows reading the x-parity of `K` qubits nearest the site leave only their `R_X` remote and every `ZZ` in its Clifford run (kicked Ising `1e7` on the A6000, the `rzz` layers 1610 → 356 ms), but a remote rotation runs the sorting fused layer, ~10–12 ms against ~3 ms for a remote permutation's scatter, and it ships about 43% of the sum against the cut's 11%.
 Their balance depends on the truncation: `K = 2` at 1.04 under the collapse, where the fullest rank sends 3.4e7 rows against the cut's 1.17e8 (model 2.0–2.7×), but 1.53 under `ApproxTopN`, whose kept strings favour identity on the row qubits; `K = 4` balances at 1.30 and doubles the rows.
-On the TFIM's magnetization every string starts with no x-bit, so x-parity rows leave one partition with nearly the whole sum (imbalance 3.9 at `K = 1`).
+On the TFIM's magnetization x-parity rows leave one partition with nearly the whole sum (imbalance 3.9 at `K = 1`), since the observable spreads over the register (§Parity rows balance a local observable, block rows an extensive one).
 `--threshold 2.5e-5` at `K = 2` ran four partitions of the shared 48 GB A6000 out of memory once, in the fused remote layer's records, and passed on a rerun.
 
 ### A per-partition `ApproxTopN` removes the TFIM's group pass but not kicked Ising's
@@ -743,6 +743,23 @@ On the TFIM's magnetization every string starts with no x-bit, so x-parity rows 
 `PerPartition(ApproxTopN(n / 4))` takes each partition's pass alone; on four partitions of one A6000 the TFIM `1e6` split ran 14.2 → 6.9 s (cut) and 5.3 s (quadrant), each partition's collective waits 7.8–8.1 → 1.1–1.4 s, and read 0.2855 / 0.2906 against 0.2899 alone and the global cut's 0.3083 (§The rank-order boundary quota biases cut-row splits).
 Kicked Ising lost: 6.7 → 9.0 s under cut rows, layer passes 2565 → 4643, since a per-partition bound is forgotten at every exchange and no longer admits group runs, and under cut rows the starved partitions never reach their share (readout 0.1568 against 0.1641).
 The device group's pass downloads its histogram and reduces it on the host each layer; a stream-ordered NCCL reduction with the edge and the rank-order quota decided on the device is the candidate for keeping the global cap, unbuilt.
+
+### Parity rows balance a local observable, block rows an extensive one
+
+Parity rows near one site fail on an observable spread over the register whatever the model or the rows' axis, and balance a one-site observable on either model: most terms of a sum of `Z_q` over every site have no content on the rows' qubits and stay in partition 0.
+Host `PartitionedSum`, four partitions, `--approx-topn 1e6`, remote channels per step and work-weighted imbalance (§A four-GPU split is bound by imbalance, exchange and per-pass collectives, in that order):
+
+| observable | `cut` | `quadrant` | `xparity:2` | `zparity:2` |
+|---|---|---|---|---|
+| kicked Ising `Z_62` | 13, 1.94 | | 4, 1.65 | |
+| kicked Ising magnetization | 13, 1.26 | | 4, 3.79 | 5, 3.69 |
+| TFIM 16×16 magnetization | 48, 1.22 | 32, 1.25 | 8, 3.87 | 12, 3.84 |
+| TFIM 16×16 `Z_119` (centre) | 48, 2.09 | 32, 1.38 | 8, 1.21 | 12, 1.29 |
+
+Both models kick with `R_X` and entangle with `R_ZZ`, and both observables are `Z`-only, so neither the model nor the observable's x-support tells the cases apart; the observable's extent does.
+`PartitionRowPolicy::for_run` therefore takes parity rows off the entanglers' axis for an observable on at most two qubits and block rows on the entanglers' axis, contiguous in qubit index (`cut`), otherwise; `quadrant` needs lattice positions, which a circuit does not carry.
+On four Blackwell GPUs (job 7435145, one MPI rank per GPU over NCCL) `xparity:2` against `cut` ran kicked Ising's collapse at `1e8` in 5.31 against 7.88 s (2.66× against 1.79× one GPU), `--threshold 2.5e-5` in 1.01 against 1.75 s and `--threshold 1e-5` in 6.96 against 11.1 s (3.16× against 1.99×), and `--approx-topn 1e8` in 9.66 against 12.6 s, where `quadrant` took 8.29 s; the TFIM's `--approx-topn 1e8` took 42.3 s under `cut` and 40.8 s under `quadrant`.
+`sampling_bench --rows` and the sampled Slurm templates default to `auto`, which is `for_run`; the scatters keep `Seeded`, since a split `ApproxTopN` or collapse depends on the rows (§The rank-order boundary quota biases cut-row splits) and seeded rows need no circuit.
 
 ## Open
 
@@ -759,7 +776,7 @@ The same signature as the atomic-ticket quota (§`ApproxTopN` cuts in place on d
 
 ### Partition rows without a known lattice
 
-`cut` needs a hand-bisectable lattice and the greedy selector was removed for imbalance; a choice scoring balance and remote weight together is open.
+`PartitionRowPolicy::for_run` reads the lattice off a circuit whose entanglers set one kind of bit and cuts an extensive observable's register by qubit index, which suits a lattice numbered row by row; mixed entanglers fall back to seeded rows, and the greedy selector was removed for imbalance, so a choice scoring balance and remote weight together is open.
 
 ### The small per-rank distributed regime
 

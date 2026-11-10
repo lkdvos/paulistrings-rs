@@ -8,8 +8,11 @@
 : "${SEED:=1}"
 : "${THRESHOLDS:=2.5e-5 1e-5}"
 : "${CELL_BOUND:=2400}"
-# The row-choice sweep (SWEEP=rows): split rows to compare, the partition count of the split, and NCCL_P2P_LEVEL values to repeat its collapse and threshold cells under.
-: "${ROWS:=cut quadrant xparity:2}"
+# Split rows: under the sweep one choice for every split cell, under SWEEP=rows the list it compares; auto is sampling_bench's default (PartitionRowPolicy::for_run).
+: "${ROWS:=}"
+split_rows=${ROWS:-auto}
+sweep_rows=${ROWS:-auto cut quadrant xparity:2}
+# NCCL_P2P_LEVEL values to repeat the row sweep's collapse and threshold cells under.
 : "${P2P_LEVELS:=}"
 
 samples_of() { python3 -c "import sys; print(int(float(sys.argv[1]) / 4))" "$1"; }
@@ -31,11 +34,11 @@ run_sweep() {
         cell "reference $model" launch_one --model "$model" --steps "$steps" \
             --collapse --cache "$REF_CACHE" --samples "$(samples_of "$REF_CACHE")" --seed "$SEED"
         for cache in $CACHES; do
-            cell "split $model cache $cache" launch_all --model "$model" --steps "$steps" \
+            cell "split $model cache $cache" launch_all --rows "$split_rows" --model "$model" --steps "$steps" \
                 --collapse --cache "$cache" --samples "$(samples_of "$cache")" --seed "$SEED"
         done
     done
-    # Seeded rows against the default cut, at the reference size.
+    # Seeded rows against the split rows, at the reference size.
     cell "split kicked-ising seeded rows" launch_all --rows seeded --model kicked-ising --steps 20 \
         --collapse --cache "$REF_CACHE" --samples "$(samples_of "$REF_CACHE")" --seed "$SEED"
     # The deterministic scaling cells: the same ApproxTopN cap on one device and on all of them, then the larger caps split.
@@ -43,17 +46,17 @@ run_sweep() {
         read -r model steps <<< "$spec"
         cell "reference $model approx-topn $REF_CACHE" launch_one --model "$model" --steps "$steps" --approx-topn "$REF_CACHE"
         for cache in $CACHES; do
-            cell "split $model approx-topn $cache" launch_all --model "$model" --steps "$steps" --approx-topn "$cache"
+            cell "split $model approx-topn $cache" launch_all --rows "$split_rows" --model "$model" --steps "$steps" --approx-topn "$cache"
         done
     done
     # Thresholds keep every term above eps, so reference and split read out alike to rounding.
     for eps in $THRESHOLDS; do
         cell "reference kicked-ising threshold $eps" launch_one --model kicked-ising --steps 20 --threshold "$eps"
-        cell "split kicked-ising threshold $eps" launch_all --model kicked-ising --steps 20 --threshold "$eps"
+        cell "split kicked-ising threshold $eps" launch_all --rows "$split_rows" --model kicked-ising --steps 20 --threshold "$eps"
     done
 }
 
-# run_rows_sweep <partitions>: one-device references, then each split cell under every row choice in ROWS (quadrant only at 4 partitions, x-parity rows only on kicked Ising, whose site-centred light cone they balance),
+# run_rows_sweep <partitions>: one-device references, then each split cell under every row choice in ROWS (quadrant only at 4 partitions, explicit parity rows only on kicked Ising, whose site-centred light cone they balance),
 # under the global ApproxTopN cap and its per-partition share (PerPartition(ApproxTopN(cap / P)), no layer collective), the thresholds and the collapse.
 run_rows_sweep() {
     local partitions=$1 rows eps level share
@@ -65,7 +68,7 @@ run_rows_sweep() {
         cell "reference kicked-ising threshold $eps" launch_one --model kicked-ising --steps 20 --threshold "$eps"
     done
     cell "reference tfim approx-topn $REF_CACHE" launch_one --model tfim --steps 10 --approx-topn "$REF_CACHE"
-    for rows in $ROWS; do
+    for rows in $sweep_rows; do
         [ "$rows" = quadrant ] && [ "$partitions" -ne 4 ] && continue
         cell "split kicked-ising approx-topn $REF_CACHE rows $rows" launch_all --rows "$rows" --model kicked-ising --steps 20 --approx-topn "$REF_CACHE"
         cell "split kicked-ising partition-approx-topn $share rows $rows" launch_all --rows "$rows" --model kicked-ising --steps 20 --partition-approx-topn "$share"
@@ -79,7 +82,7 @@ run_rows_sweep() {
     done
     for level in $P2P_LEVELS; do
         export NCCL_P2P_LEVEL=$level
-        for rows in $ROWS; do
+        for rows in $sweep_rows; do
             [ "$rows" = quadrant ] && [ "$partitions" -ne 4 ] && continue
             cell "split kicked-ising collapse $REF_CACHE rows $rows NCCL_P2P_LEVEL=$level" launch_all --rows "$rows" --model kicked-ising --steps 20 "${collapse[@]}"
             cell "split kicked-ising threshold 1e-5 rows $rows NCCL_P2P_LEVEL=$level" launch_all --rows "$rows" --model kicked-ising --steps 20 --threshold 1e-5
@@ -95,6 +98,6 @@ phase_timing_cell() {
     largest=$(tr ' ' '\n' <<< "$CACHES" | sort -g | tail -1)
     cargo build --offline --release -p paulistrings --features "$1" --example sampling_bench
     sidecar=$2
-    cell "phase-timing split kicked-ising cache $largest" launch_all --model kicked-ising --steps 20 --trace \
+    cell "phase-timing split kicked-ising cache $largest" launch_all --rows "$split_rows" --model kicked-ising --steps 20 --trace \
         --collapse --cache "$largest" --samples "$(samples_of "$largest")" --seed "$SEED"
 }

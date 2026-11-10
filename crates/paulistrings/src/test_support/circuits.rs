@@ -269,3 +269,51 @@ pub const HEAVY_HEX_127_EDGES: [(usize, usize); 144] = [
 pub fn heavy_hex_127_edges() -> Vec<(usize, usize)> {
     HEAVY_HEX_127_EDGES.to_vec()
 }
+
+/// The bonds of an open `lx × ly` square lattice, qubit `(x, y)` at `y · lx + x`, each `(q, q + 1)` before `(q, q + lx)`.
+pub fn square_lattice(lx: usize, ly: usize) -> Vec<(usize, usize)> {
+    let mut bonds = Vec::new();
+    for q in 0..lx * ly {
+        if q % lx + 1 < lx {
+            bonds.push((q, q + 1));
+        }
+        if q + lx < lx * ly {
+            bonds.push((q, q + lx));
+        }
+    }
+    bonds
+}
+
+/// `steps` kicked-Ising steps on `bonds`: `R_X(kick)` on every qubit, then `R_ZZ(bond)` on every bond.
+pub fn kicked_ising<const W: usize>(
+    num_qubits: usize,
+    bonds: &[(usize, usize)],
+    kick: f64,
+    bond: f64,
+    steps: usize,
+) -> crate::Circuit<W> {
+    let mut circuit = crate::Circuit::<W>::new(num_qubits);
+    for _ in 0..steps {
+        for q in 0..num_qubits {
+            circuit.push(crate::PauliRotation::new(PauliString::<W>::x(q), kick));
+        }
+        for &(a, b) in bonds {
+            circuit.push(zz_rotation::<W>(a, b, bond));
+        }
+    }
+    circuit
+}
+
+/// `Z` on `site` alone, and the magnetization `(1/n) Σ_q Z_q`: a local and an extensive observable, which `PartitionRowPolicy::for_run` splits by parity and by block rows.
+pub fn site_and_magnetization<const W: usize>(
+    num_qubits: usize,
+    site: usize,
+) -> (crate::PauliSum<W>, crate::PauliSum<W>) {
+    let mut local = crate::BuildAccumulator::<W>::new(num_qubits);
+    local.add_term(PauliString::<W>::z(site), Complex64::new(1.0, 0.0));
+    let mut extensive = crate::BuildAccumulator::<W>::new(num_qubits);
+    for q in 0..num_qubits {
+        extensive.add_term(PauliString::<W>::z(q), Complex64::new(1.0 / num_qubits as f64, 0.0));
+    }
+    (local.finalize(), extensive.finalize())
+}

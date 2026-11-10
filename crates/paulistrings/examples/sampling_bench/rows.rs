@@ -2,30 +2,42 @@
 
 use std::collections::VecDeque;
 
-use paulistrings::{PartitionRowPolicy, PartitionRows, ScatterRows};
+use paulistrings::{
+    Circuit, Coefficient, PartitionRowPolicy, PartitionRows, PauliAxis, PauliSum, ScatterRows,
+};
 
 use crate::cli::Rows;
 use crate::models::{IsingQuench, Observable};
 
-/// The scatter rows of a split run over `partitions`, and the channels of one step that cross them (`None` under seeded rows or at one partition).
-pub(crate) fn scatter_rows<const W: usize>(
+/// What a split run scatters by: `label` names the rows (`auto(...)` with the choice it resolved to), `remote_channels` counts the channels of one step that cross them (`None` under seeded rows or at one partition).
+pub(crate) struct RowsSummary {
+    pub(crate) label: String,
+    pub(crate) remote_channels: Option<usize>,
+}
+
+/// The scatter rows of a split run of `step` (one Trotter step) on `observable` over `partitions`.
+pub(crate) fn scatter_rows<const W: usize, C: Coefficient>(
     rows: Rows,
     quench: &IsingQuench,
+    observable: &PauliSum<W, C>,
+    step: &Circuit<W>,
     partitions: usize,
-) -> (ScatterRows<W>, Option<usize>) {
+) -> (ScatterRows<W>, RowsSummary) {
     let bits = partitions.trailing_zeros() as usize;
     let n = quench.num_qubits;
-    if partitions == 1 || rows == Rows::Seeded {
-        return (ScatterRows::Policy(PartitionRowPolicy::Seeded(None)), None);
-    }
+    let around_start = |axis| {
+        PartitionRowPolicy::parity_around(
+            axis,
+            n,
+            &quench.bonds,
+            &[start_qubit(quench)],
+            rows.group(),
+        )
+    };
     let policy = match rows {
-        Rows::Seeded => unreachable!(),
-        Rows::Cut => {
-            let block_of = |q: usize| q * partitions / n;
-            PartitionRowPolicy::Cut(
-                (0..partitions).map(|b| (0..n).filter(|&q| block_of(q) == b).collect()).collect(),
-            )
-        }
+        Rows::Auto => PartitionRowPolicy::for_run(observable, step),
+        Rows::Seeded => PartitionRowPolicy::Seeded(None),
+        Rows::Cut => PartitionRowPolicy::blocks(PauliAxis::Z, (0..n).collect()),
         Rows::Quadrant => {
             assert_eq!(partitions, 4, "--rows quadrant splits into exactly four partitions");
             // Labels 0..3 as (x ≥ x0) + 2 (y ≥ y0): each row, and their sum, halves the plane through the site, so the conserved total z-parity fixes none of them.
@@ -38,27 +50,30 @@ pub(crate) fn scatter_rows<const W: usize>(
                 (0..partitions).map(|b| (0..n).filter(|&q| block_of(q) == b).collect()).collect(),
             )
         }
-        Rows::XParity(k) | Rows::ZParity(k) => {
-            assert!(bits * k <= n, "--rows {}: {bits} rows of {k} qubits exceed {n}", rows.name());
-            let offset = if matches!(rows, Rows::XParity(_)) { 0 } else { n };
-            let order = breadth_first(quench, start_qubit(quench));
-            PartitionRowPolicy::Matrix(
-                order
-                    .chunks(k)
-                    .take(bits)
-                    .map(|group| {
-                        let mut row = vec![false; 2 * n];
-                        for &q in group {
-                            row[offset + q] = true;
-                        }
-                        row
-                    })
-                    .collect(),
-            )
-        }
+        Rows::XParity(_) => around_start(PauliAxis::X),
+        Rows::ZParity(_) => around_start(PauliAxis::Z),
     };
-    let remote = remote_channels_per_step(&policy.rows::<W>(n, bits as u8, 0), quench);
-    (ScatterRows::Policy(policy), Some(remote))
+    let resolved = match (&policy, rows) {
+        (PartitionRowPolicy::Seeded(_), _) => "seeded".to_string(),
+        (PartitionRowPolicy::Parity { axis, group, .. }, _) => {
+            format!("{}parity:{group}", axis_name(*axis))
+        }
+        (PartitionRowPolicy::Blocks { axis: PauliAxis::Z, .. }, _) => "cut".to_string(),
+        (PartitionRowPolicy::Blocks { axis, .. }, _) => format!("{}blocks", axis_name(*axis)),
+        (_, rows) => rows.name(),
+    };
+    let label = if rows == Rows::Auto { format!("auto({resolved})") } else { resolved };
+    let remote_channels = (partitions > 1 && !matches!(policy, PartitionRowPolicy::Seeded(_)))
+        .then(|| remote_channels_per_step(&policy.rows::<W>(n, bits as u8, 0), quench));
+    (ScatterRows::Policy(policy), RowsSummary { label, remote_channels })
+}
+
+fn axis_name(axis: PauliAxis) -> &'static str {
+    match axis {
+        PauliAxis::X => "x",
+        PauliAxis::Y => "y",
+        PauliAxis::Z => "z",
+    }
 }
 
 /// The channels of one Trotter step whose generator some row reads an odd number of bits of.
@@ -82,33 +97,22 @@ fn start_qubit(quench: &IsingQuench) -> usize {
     match quench.observable {
         Observable::Site(q) => q,
         Observable::Magnetization => (0..quench.num_qubits)
-            .min_by_key(|&q| depths(quench, q).into_iter().max().unwrap_or(0))
+            .min_by_key(|&q| eccentricity(quench, q))
             .expect("a lattice has qubits"),
     }
 }
 
-/// Every qubit's breadth-first distance from `start`.
-fn depths(quench: &IsingQuench, start: usize) -> Vec<usize> {
-    breadth_first_with_depth(quench, start).1
-}
-
-/// Every qubit in breadth-first order from `start`, neighbours in index order.
-fn breadth_first(quench: &IsingQuench, start: usize) -> Vec<usize> {
-    breadth_first_with_depth(quench, start).0
-}
-
-fn breadth_first_with_depth(quench: &IsingQuench, start: usize) -> (Vec<usize>, Vec<usize>) {
+/// The largest breadth-first distance from `start` over the bonds.
+fn eccentricity(quench: &IsingQuench, start: usize) -> usize {
     let mut adjacent = vec![Vec::new(); quench.num_qubits];
     for &(a, b) in &quench.bonds {
         adjacent[a].push(b);
         adjacent[b].push(a);
     }
     let mut depth = vec![usize::MAX; quench.num_qubits];
-    let (mut order, mut queue) = (Vec::new(), VecDeque::from([start]));
+    let mut queue = VecDeque::from([start]);
     depth[start] = 0;
     while let Some(q) = queue.pop_front() {
-        order.push(q);
-        adjacent[q].sort_unstable();
         for &next in &adjacent[q] {
             if depth[next] == usize::MAX {
                 depth[next] = depth[q] + 1;
@@ -116,5 +120,5 @@ fn breadth_first_with_depth(quench: &IsingQuench, start: usize) -> (Vec<usize>, 
             }
         }
     }
-    (order, depth)
+    depth.into_iter().filter(|&d| d != usize::MAX).max().unwrap_or(0)
 }

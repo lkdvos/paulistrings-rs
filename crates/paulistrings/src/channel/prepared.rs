@@ -281,7 +281,7 @@ impl<const W: usize> LocalPtm<W> {
     }
 
     /// Lift a local delta to full-width XOR masks.
-    fn lift(&self, local_delta: u8) -> ([u64; W], [u64; W]) {
+    pub(crate) fn lift(&self, local_delta: u8) -> ([u64; W], [u64; W]) {
         let mut mx = [0u64; W];
         let mut mz = [0u64; W];
         for j in 0..self.k as usize {

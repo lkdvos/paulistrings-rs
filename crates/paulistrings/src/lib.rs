@@ -10,6 +10,8 @@ mod circuit;
 mod coefficient;
 mod collectives;
 mod engine;
+#[cfg(feature = "hash-kernel")]
+pub mod hash_kernel;
 mod pauli_string;
 mod pauli_sum;
 mod phase;
